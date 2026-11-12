@@ -192,7 +192,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         // Without a majority: serve from this node's replica, unless told not to serve without a
         // leader, or the directory has files this replica has not applied.
         let refused = if cluster.stop_without_leader.is_some() {
-            Some(MigrationError::Cluster(format!("no usable leader within {:?}, and stop_without_leader_ms is set", cluster.migrations_wait)))
+            Some(MigrationError::Unavailable(format!("no usable leader within {leader_wait:?}, and stop_without_leader_ms is set")))
         } else if let Some(migrations) = &migrations {
             db.check_local_migrations(migrations).await.err()
         } else {
@@ -251,9 +251,13 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
                 tracing::info!("cluster node {} has caught up with the cluster", cluster.node_id);
             }
             // As with migrations: a node that exits without this has its local database rebuilt.
-            Err(e) if migrations_dir_set || cluster.stop_without_leader.is_some() => {
+            Err(e) if migrations_dir_set => {
                 let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
                 stop(MigrationError::Cluster(e));
+            }
+            Err(e) if cluster.stop_without_leader.is_some() => {
+                let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
+                stop(MigrationError::Unavailable(format!("{e}, and stop_without_leader_ms is set")));
             }
             Err(e) => {
                 tracing::warn!("cluster node {}: {e}; serving before catching up, so answers may come from old data", cluster.node_id);
