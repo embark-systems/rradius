@@ -5,33 +5,12 @@ use rradius_bench::packet::{write_response, Signer, ACCESS_ACCEPT, ACCESS_REJECT
 use serde_json::Value;
 use std::net::{SocketAddr, UdpSocket};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 pub const SECRET: &str = "test-secret";
-
-/// The same as `rradius_core::test_support::server::free_port`, which this crate does not
-/// depend on.
-///
-/// A port for one server to bind later, handed out once, from below the range systems use
-/// for outgoing connections (above 32767 on Linux, above 49151 on macOS).
-///
-/// This does not ask the system for a free port, or check that a port is free, because
-/// both open a socket. Closing it leaves the port for anyone to take first, and on macOS,
-/// where a socket is not close-on-exec from the moment it exists, a server being spawned
-/// by a test alongside can inherit it and hold the port for as long as it runs.
-///
-/// The start moves with the clock, 20 ports a second, because a server that just ended
-/// leaves its TCP ports unusable for a while: a run starting seconds after another stays
-/// past the ports that one used, and the range lasts ten minutes before it comes round.
-pub fn free_port() -> u16 {
-    static NEXT: AtomicU16 = AtomicU16::new(0);
-    let seconds = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
-    let _ = NEXT.compare_exchange(0, 20000 + (seconds % 600) as u16 * 20, Ordering::SeqCst, Ordering::SeqCst);
-    NEXT.fetch_add(1, Ordering::SeqCst)
-}
 
 pub fn signer() -> Signer {
     Signer::new(SECRET.as_bytes()).unwrap()

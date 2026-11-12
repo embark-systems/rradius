@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+pub mod bench;
 pub mod certs;
 pub mod eap;
 pub mod radius;

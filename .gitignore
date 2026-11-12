@@ -12,13 +12,12 @@ rradius-server/examples/data/
 /rradius-*/examples/scenarios/*/aka.key
 /rradius-*/examples/scenarios/*/ticket.seal
 rradius-server/spikes/hiqlite/target/
-rradius-bench/examples/data/
-rradius-bench/examples/eap-certs/
+# What running the measuring configurations leaves behind, and their certificates
+rradius-server/benchmarks/data/
+rradius-server/benchmarks/eap-certs/
 
 # Created by docker/init-secrets.sh
 docker/secrets/
 
 # Built by packaging/release.sh
 dist/
-rradius-bench/examples/aka.key
-rradius-bench/examples/aka-migrations/2_subscribers.sql
