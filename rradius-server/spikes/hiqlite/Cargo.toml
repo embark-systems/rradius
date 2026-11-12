@@ -1,0 +1,14 @@
+# Standalone spike for the hiqlite-cluster change; not part of the rradius-server build.
+[package]
+name = "hiqlite-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+hiqlite = { version = "0.15.3", default-features = false, features = ["sqlite", "auto-heal"] }
+mlua = { version = "0.12", features = ["luajit", "async", "send"] }
+tokio = { version = "1.54", features = ["full"] }
+tempfile = "3"

@@ -1,0 +1,29 @@
+# One node. Run docker/init-secrets.sh once first, then: docker compose up --build
+services:
+  rradius:
+    build: .
+    image: rradius-server
+    restart: unless-stopped
+    # Time to finish the database shutdown; the default 10 s can cut it short.
+    stop_grace_period: 30s
+    ports:
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+    volumes:
+      - ./docker/config:/etc/rradius:ro
+      - data:/var/lib/rradius
+    secrets:
+      - raft
+      - api
+      - radius
+
+volumes:
+  data:
+
+secrets:
+  raft:
+    file: docker/secrets/raft.secret
+  api:
+    file: docker/secrets/api.secret
+  radius:
+    file: docker/secrets/radius.secret

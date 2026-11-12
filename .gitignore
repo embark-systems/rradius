@@ -1,0 +1,24 @@
+# Build output of the workspace and of the crates that keep workspaces of their own
+target/
+rradius-server/examples/data/
+# What running a scenario of the manual leaves behind
+/rradius-*/examples/scenarios/*/data/
+# The upstreams that some scenarios start for local tests, such as realm-proxy/partner.
+/rradius-*/examples/scenarios/*/*/data/
+/rradius-*/examples/scenarios/*/spool/
+/rradius-*/examples/scenarios/*/certs/
+# Made by a scenario's setup.sh: key files, and the demonstration rows sealed under them
+/rradius-*/examples/scenarios/*/dpsk.key
+/rradius-*/examples/scenarios/*/aka.key
+/rradius-*/examples/scenarios/*/ticket.seal
+rradius-server/spikes/hiqlite/target/
+rradius-bench/examples/data/
+rradius-bench/examples/eap-certs/
+
+# Created by docker/init-secrets.sh
+docker/secrets/
+
+# Built by packaging/release.sh
+dist/
+rradius-bench/examples/aka.key
+rradius-bench/examples/aka-migrations/2_subscribers.sql

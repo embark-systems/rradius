@@ -1,0 +1,7 @@
+# The crates built together, with one Cargo.lock. The fuzz targets and the hiqlite spike keep
+# workspaces of their own: cargo-fuzz builds with nightly and sanitizers, and its dependencies
+# stay out of the server's lock file.
+[workspace]
+members = ["rradius-core", "rradius-server", "rradius-bench"]
+exclude = ["rradius-server/fuzz", "rradius-server/spikes/hiqlite"]
+resolver = "2"

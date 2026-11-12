@@ -1,0 +1,43 @@
+# For measuring EAP with rradius-bench only: the secrets are in this file, and the one user is
+# "bench" with the password "bench". The certificates go in eap-certs/, made by the commands
+# in "效能量測" in docs/usage.md.
+dictionary = "../../share/dictionary"
+
+[lua]
+script = "accept.lua"
+max_execution_ms = 5000
+
+[cluster]
+data_dir = "data/eap"
+secret_raft = "bench-raft-secret-012345"
+secret_api = "bench-api-secret-0123456"
+migrations_dir = "eap-migrations"
+
+# Checks the password of PEAP and TTLS; for EAP-TLS, that the account is there.
+[auth]
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM users WHERE username = ?"
+
+[radius]
+bind = "127.0.0.1"
+
+[radius.eap]
+cert_file = "eap-certs/server.pem"
+key_file = "eap-certs/server.key"
+client_ca_file = "eap-certs/ca.pem"
+methods = ["tls", "peap", "ttls"]
+# A load holds this many conversations at once, all from one client.
+max_sessions = 65536
+max_sessions_per_client = 65536
+
+[[radius.clients]]
+name = "local"
+address = "127.0.0.1"
+secret = "bench-secret"
+# EAP-TLS is offered first; the tool asks for PEAP or TTLS with a Nak, one round more.
+eap_methods = ["tls", "peap", "ttls"]
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

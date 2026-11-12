@@ -1,0 +1,29 @@
+# For measuring TACACS+ with rradius-bench only: the secrets are in this file, and every
+# login, authorization and accounting record is accepted. See "效能量測" in docs/usage.md.
+dictionary = "../../share/dictionary"
+
+[lua]
+script = "accept.lua"
+max_execution_ms = 5000
+
+[cluster]
+data_dir = "data/tacacs"
+secret_raft = "bench-raft-secret-012345"
+secret_api = "bench-api-secret-0123456"
+
+# Port 4949 rather than 49, which needs privileges. rradius-bench takes it with --tacacs-port.
+# Each TACACS+ socket of the tool is one connection, so a load with concurrency above
+# max_connections would have connections refused.
+[tacacs]
+bind = "127.0.0.1"
+port = 4949
+max_connections = 8192
+
+[[tacacs.clients]]
+name = "local"
+address = "127.0.0.1"
+secret = "bench-secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

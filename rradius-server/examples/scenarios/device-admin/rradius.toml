@@ -1,0 +1,36 @@
+# 網路設備管理（TACACS+）：管理員登入路由器和交換器，依角色決定權限等級和能下的指令，
+# 每個指令都記下來。
+# 說明：docs/manual/06-device-admin.md
+
+dictionary = "../../../../share/dictionary"
+
+# TACACS+ 的授權和計費都交給這個腳本；認證交給下面的串接。
+[lua]
+script = "tacacs.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+[auth]
+policy = "first_match"
+
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM admins WHERE username = ? AND enabled = 1"
+
+[tacacs]
+bind = "0.0.0.0"
+port = 49                    # 需要權限，見手冊
+idle_timeout_ms = 300000
+
+[[tacacs.clients]]
+name = "core-routers"
+address = "10.50.0.0/24"
+secret_file = "tacacs.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

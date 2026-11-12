@@ -1,0 +1,7 @@
+[env]
+# The SQLite that rusqlite bundles, built with the query planner stability guarantee. From 3.54
+# on, SQLite plans a JOIN filtered by a bound parameter again each time the parameter is bound,
+# and hiqlite binds a cached statement's parameters anew for every read: a broadband login fell
+# from about 47,000 to 17,000 a second. With this, plans do not depend on bound values, which
+# only matters with ANALYZE statistics, and hiqlite makes none. See docs/usage.md section 1.
+LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_QPSG"

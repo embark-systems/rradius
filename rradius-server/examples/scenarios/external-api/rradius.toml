@@ -1,0 +1,45 @@
+# 帳號在別的系統：會員系統（或帳務系統）已經有帳號和密碼，rradius 不存帳號，
+# 每次登入用 HTTPS 問它的 API。
+# 說明：docs/manual/10-external-api.md
+
+dictionary = "../../../../share/dictionary"
+
+# 計費照樣寫進本機的資料表，用快速開始的腳本。
+[lua]
+script = "accounting.lua"
+
+# 腳本只能呼叫這裡列出的主機。沒有這個區段時，腳本裡沒有 http_request。
+[lua.http]
+allowed_hosts = ["members.example.com"]   # 只寫主機：只允許 HTTPS 的 443 埠
+timeout_ms = 1500        # 要比 NAS 的重送時間短
+max_concurrent = 64      # 同時最多幾個請求在等這台主機
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+[auth]
+policy = "first_match"
+
+[[auth.handlers]]
+type = "lua"
+script = "member-api.lua"
+# 這個腳本真的把密碼交給 API 比對過。EAP-TTLS 的內層 PAP 要有這個設定才會放行。
+verifies_password = true
+
+[radius]
+bind = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[[radius.clients]]
+name = "hotspot"
+address = "10.95.0.0/24"
+secret_file = "hotspot.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

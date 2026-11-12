@@ -1,0 +1,54 @@
+# 從舊系統搬帳號：把舊目錄、舊 RADIUS 伺服器或 /etc/shadow 匯出的密碼雜湊原樣放進資料表，
+# 使用者不必重設密碼。之後改密碼時改存新的格式。
+# 說明：docs/manual/09-migrate-users.md
+
+dictionary = "../../../../share/dictionary"
+
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+[auth]
+policy = "first_match"
+
+[[auth.handlers]]
+type = "sql"
+# 密碼欄是 {格式}值，伺服器依前綴決定怎麼比對，見 docs/usage.md 第 5 節。
+user_query = "SELECT password FROM users WHERE username = ? AND enabled = 1"
+reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
+
+# 舊系統的名稱大小寫不一、有的帶網域：查帳號前先統一。資料表一律存小寫。
+[auth.username]
+strip_realm = "both"
+lowercase = true
+
+# rradius-server user passwd 之後存成 bcrypt，舊格式的帳號就這樣一個一個換掉。
+# origin 改成 rradius，方便統計還有多少帳號留在舊格式。
+[accounts]
+scheme = "bcrypt"
+add = "INSERT INTO users (username, password, origin) VALUES (?1, ?2, 'rradius')"
+passwd = "UPDATE users SET password = ?2, origin = 'rradius' WHERE username = ?1"
+enable = "UPDATE users SET enabled = 1 WHERE username = ?1"
+disable = "UPDATE users SET enabled = 0 WHERE username = ?1"
+delete = "DELETE FROM users WHERE username = ?1"
+show = "SELECT username, enabled, origin FROM users WHERE username = ?1"
+
+[radius]
+bind = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[[radius.clients]]
+name = "nas"
+address = "10.90.0.0/24"
+secret_file = "nas.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

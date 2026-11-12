@@ -1,0 +1,32 @@
+# License check of every dependency: `cargo deny --locked check licenses`, here and with
+# `--manifest-path rradius-server/fuzz/Cargo.toml`. packaging/release.sh runs it before it
+# packages anything. Only licenses are checked; advisories, bans and sources are not.
+
+[licenses]
+# Permissive licenses only; about.toml's `accepted` lists the same, change both. An expression passes when one of its OR branches is all allowed,
+# so `MIT OR Apache-2.0 OR LGPL-2.1-or-later` passes through MIT.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+# Below this, a license file is not taken to be the license it looks like.
+confidence-threshold = 0.8
+exceptions = [
+    # libFuzzer's license; the fuzz targets are not released.
+    { allow = ["NCSA"], crate = "libfuzzer-sys" },
+]
+
+[licenses.private]
+# The crates of this repository, all `publish = false`: rradius-enterprise is proprietary.
+ignore = true

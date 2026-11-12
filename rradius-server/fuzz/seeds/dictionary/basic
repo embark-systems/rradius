@@ -1,0 +1,13 @@
+VENDOR Cisco 9
+ATTRIBUTE User-Name 1 string
+ATTRIBUTE Framed-IPv6-Prefix 97 ipv6prefix
+ATTRIBUTE Tunnel-Type 64 integer has_tag
+VALUE Tunnel-Type VLAN 13
+BEGIN-VENDOR Cisco
+ATTRIBUTE Cisco-AVPair 1 string
+END-VENDOR Cisco
+BEGIN-TLV Parent
+ATTRIBUTE Child 1 integer
+END-TLV Parent
+ATTRIBUTE Hex 0x1A octets
+$INCLUDE other

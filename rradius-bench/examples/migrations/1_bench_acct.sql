@@ -1,0 +1,1 @@
+CREATE TABLE bench_acct (id TEXT PRIMARY KEY, ts INTEGER);

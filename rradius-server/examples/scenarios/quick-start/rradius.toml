@@ -1,0 +1,45 @@
+# 快速開始：單機，使用者存在 SQL 資料表，計費寫進資料表。
+# 說明：docs/manual/02-quick-start.md
+#
+#   cd rradius-server
+#   cargo run --release -- --config examples/scenarios/quick-start/rradius.toml
+#
+# 相對路徑都以這個檔案所在的目錄為準。
+
+dictionary = "../../../../share/dictionary"
+
+# 有 [auth] 時，認證交給下面的串接；這個腳本只處理計費。
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+# 啟動時依序套用 migrations/ 裡的 SQL 檔，建立資料表和示範帳號。
+migrations_dir = "migrations"
+
+[auth]
+policy = "first_match"
+
+[[auth.handlers]]
+type = "sql"
+# 停用的帳號查不到，等同不存在：串接只有這個處理器，所以會被拒絕。
+user_query = "SELECT password FROM users WHERE username = ? AND enabled = 1"
+reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
+
+[radius]
+bind = "127.0.0.1"
+auth_port = 1812
+acct_port = 1813
+# 回應 Status-Server，監控不必用測試帳號登入。
+status_server = true
+
+[[radius.clients]]
+name = "localhost"
+address = "127.0.0.1"
+secret_file = "localhost.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

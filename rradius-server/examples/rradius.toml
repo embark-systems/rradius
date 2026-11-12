@@ -1,0 +1,313 @@
+# Example rradius-server configuration.
+# Relative paths are resolved against the directory of this file.
+#
+#   cargo run -- --config examples/rradius.toml
+#
+# Commented-out blocks are complete: remove the leading "# " from a block's
+# setting lines to enable it. Lines starting with "# # " are optional settings
+# shown with their default or an example value.
+
+dictionary = "../../share/dictionary"
+
+# The top-level Lua script handles RADIUS accounting and TACACS+ authorization
+# and accounting. It also authenticates every client that no [auth] chain
+# covers: all clients without [auth], or clients without `auth` when [auth] has
+# only named chains.
+# Scripts run in Luau (Lua 5.1 based, no goto) on shared sandboxed VMs: the
+# built-in libraries are read-only and io, os.execute, require, loadstring,
+# getfenv and setfenv are not available. Every script, including "lua" auth handlers, is compiled at
+# startup, so a syntax error stops the server. Each request has its own
+# globals. The limits below apply to this script and to "lua" auth handlers:
+# query_timeout_ms limits each sql_query / sql_execute call, and
+# max_execution_ms limits the script's own run time in one request (time spent
+# waiting for the database does not count); a script that exceeds it is
+# stopped and the request rejected.
+[lua]
+script = "../tests/fixtures/auth.lua"
+query_timeout_ms = 5000
+max_execution_ms = 1000
+# max_memory_mb limits what each Lua VM holds, with one VM per CPU. A script past it gets
+# an error. Changing it needs a restart.
+# max_memory_mb = 256
+# Lets scripts call HTTP APIs with http_request, only on the hosts listed. Without this
+# table scripts cannot. See section 4.11 of docs/usage.md before using it.
+# [lua.http]
+# allowed_hosts = ["api.example.com", "billing.internal:8443", "http://legacy.internal:8080"]
+# timeout_ms = 2000                     # keep it below the device's retransmit timeout
+# max_response_bytes = 1048576
+# max_concurrent = 64                   # per host, accounting and the rest apart
+# # ca_file = "internal-ca.pem"
+
+[cluster]
+# Embedded hiqlite node. Without [[cluster.nodes]] this is a single node with
+# id 1, Raft on 127.0.0.1:8100 and API on 127.0.0.1:8200.
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+
+# SQL files named <number>_<name>.sql, numbered from 1 without gaps, applied at
+# startup before serving. Applied files must not change. Every node needs the
+# same files: update them on all nodes, then restart one at a time. The wait
+# (default 60000 ms) is how long to wait for the cluster before giving up.
+# migrations_dir = "migrations"
+# migrations_wait_ms = 60000
+# Raft log entries between two snapshots of the database (default 100000). Fewer means a
+# quicker start after a crash, but more copying of the whole database while writes wait;
+# see docs/usage.md section 2.2.
+# snapshot_every = 100000
+# Connections for reading the local database, 1 to 128 (default: twice the CPUs the
+# process may use, at most 32). More let more requests read at once; each holds its own
+# page cache.
+# read_connections = 8
+
+# A three-node cluster lists every node, including this one, and sets node_id:
+# node_id = 1
+# Traffic between nodes is not encrypted: keep it on a network you trust (docs/usage.md, 2.2).
+# [[cluster.nodes]]
+# id = 1
+# raft = "10.0.0.1:8100"
+# api = "10.0.0.1:8200"
+# [[cluster.nodes]]
+# id = 2
+# raft = "10.0.0.2:8100"
+# api = "10.0.0.2:8200"
+# [[cluster.nodes]]
+# id = 3
+# raft = "10.0.0.3:8100"
+# api = "10.0.0.3:8200"
+
+# Authentication chains. Without [auth], the [lua] script authenticates.
+# The [[auth.handlers]] entries form the default chain, used by clients without
+# `auth`. Each [auth.chains.<name>] defines a named chain that a client selects
+# with its `auth` setting; each chain is built once and shared by every client
+# and protocol that selects it.
+# Handlers run in order; each accepts, rejects or ignores (skips) the request.
+#   policy = "first_match": the first handler that does not ignore decides.
+#   policy = "all_accept":  handlers run until one rejects or challenges; one must accept.
+#     With a handler that compares passwords (sql, ldap, lua with verifies_password) in the
+#     chain, one of those must accept, and scripts after them run only once one has.
+# The policy under [auth] belongs to the default chain, so set it only together
+# with [[auth.handlers]].
+#
+# [auth]
+# policy = "first_match"
+#
+# SQL: each query takes the user name as its only parameter. The ? count is
+# checked as plain characters, so do not put ? inside string literals.
+# Stored passwords may be plaintext, {clear}, {crypt}, {SHA}, {SSHA}, {nthash} or
+# {argon2}, or for moving accounts from other systems, the formats section 5 of
+# docs/usage.md lists, such as {SSHA512} and {PBKDF2-SHA512};
+# CHAP only works with plaintext or {clear}. A plaintext password that itself
+# starts with "{" must be stored with the {clear} prefix. Users whose password
+# column is NULL or empty are always rejected. default_user makes unknown users
+# try that account's password: everyone who knows it is accepted, so only set
+# it deliberately.
+# [[auth.handlers]]
+# type = "sql"
+# user_query = "SELECT password FROM users WHERE username = ?"
+# # certificate_query = "SELECT 1 FROM users WHERE username = ? AND enabled = 1"   # EAP-TLS, in place of user_query
+# reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
+# # default_user = "DEFAULT"
+# # timeout_ms = 5000
+#
+# Lua: the script returns 'accept', 'reject' or 'ignore'.
+# [[auth.handlers]]
+# type = "lua"
+# script = "../tests/fixtures/auth.lua"
+# # verifies_password = true              # EAP-TTLS with inner PAP: only if the script compares the password
+#
+# User names: how to derive the name that sql and ldap handlers look up, and
+# that lua handlers see as auth_user. Steps run in this order. An empty result,
+# or one that allowed (which must match the whole name) refuses, rejects without
+# running a handler. Passwords are verified with the received name, as MS-CHAPv2
+# needs. Named chains use [auth.chains.<name>.username] and inherit nothing.
+# Put your data in lowercase before turning on lowercase.
+# [auth.username]
+# strip_realm = "suffix"     # none (default), suffix, prefix or both
+# lowercase = true           # default false
+# allowed = "[a-z0-9._-]+"   # optional
+#
+# LDAP: a service account finds the user with filter ({user} is the escaped
+# user name). No entry ignores; several entries reject. An empty password is
+# always rejected, and any server error (bad service account, failed search)
+# rejects instead of skipping to the next handler. URLs are tried in order
+# only when a server cannot be reached or exceeds timeout_ms.
+# ldap:// upgrades with StartTLS; plain text needs allow_plaintext = true.
+# Connections stay open between requests, up to pool_size per URL, and are
+# bound as the service account again before each reuse.
+# [[auth.handlers]]
+# type = "ldap"
+# urls = ["ldaps://dc1.example.com", "ldaps://dc2.example.com"]
+# bind_dn = "cn=radius,ou=services,dc=example,dc=com"
+# bind_password_file = "ldap.secret"      # or bind_password = "..."
+# base_dn = "ou=people,dc=example,dc=com"
+# filter = "(uid={user})"
+# # certificate_filter = "(&(uid={user})(!(pwdAccountLockedTime=*)))"   # EAP-TLS; without it, this handler ignores certificates
+# password_check = "bind"                 # bind as the user; PAP only
+# reply_attributes = { "Filter-Id" = "radiusFilterId" }   # each value becomes one attribute
+# # timeout_ms = 5000
+# # ca_file = "ldap-ca.pem"               # extra trusted CA, PEM
+# # pool_size = 4                         # open connections per URL
+# required_groups = ["cn=vpn,ou=groups,dc=example,dc=com"]   # reject others, as a wrong password would be
+# # group_attribute = "memberOf"          # default; or search with these two together:
+# # group_base_dn = "ou=groups,dc=example,dc=com"
+# # group_filter = "(member={dn})"
+# [[auth.handlers.group_reply]]            # attributes for the members of one group
+# group = "cn=staff,ou=groups,dc=example,dc=com"
+# attributes = { "Filter-Id" = "staff" }
+#
+# A named chain for VPN gateways (see the vpn-gw client below). It reads the
+# password attribute instead of binding, which also allows CHAP with {clear}
+# values.
+# [auth.chains.vpn]
+# policy = "first_match"
+# [[auth.chains.vpn.handlers]]
+# type = "ldap"
+# urls = ["ldaps://dc1.example.com"]
+# bind_dn = "cn=radius,ou=services,dc=example,dc=com"
+# bind_password_file = "ldap.secret"
+# base_dn = "ou=people,dc=example,dc=com"
+# filter = "(uid={user})"
+# password_check = "attribute"
+# password_attribute = "userPassword"
+
+[radius]
+bind = "0.0.0.0"          # or a list: ["192.0.2.1", "2001:db8::1"]
+auth_port = 1812
+acct_port = 1813
+# Access-Requests without a Message-Authenticator are discarded by default, which
+# protects against BlastRADIUS. A device that cannot send one needs "no" or "auto"
+# (single-host clients only) here or on its client entry below.
+# require_message_authenticator = "yes"
+# limit_proxy_state = "yes"
+# Answer Status-Server (RFC 5997), for health checks without a test user.
+# status_server = true
+# Requests handled at once, counted separately so accounting cannot take the
+# places of logins. Both still share the script VMs and the database, so keep
+# accounting scripts light. Packets beyond the limit are dropped without a
+# reply; the NAS retransmits them.
+# max_auth_inflight = 4096
+# max_acct_inflight = 4096
+# send_disconnect and send_coa: how long one attempt waits, and how many attempts.
+# coa_timeout_ms = 1000
+# coa_attempts = 3
+
+# EAP, for 802.1X and WPA-Enterprise. With EAP-TLS, a valid certificate then goes to the
+# client's chain or the top-level script, which decide whether it may log in. All rounds of a
+# login have to reach the same node. A change applies to new logins on SIGHUP.
+# [radius.eap]
+# cert_file = "eap-server.pem"
+# key_file = "eap-server.key"
+# client_ca_file = "eap-ca.pem"
+# crl_file = "eap-ca.crl"
+# methods = ["tls"]                   # also "peap" and "ttls", which need [auth], and "aka-prime", which needs [radius.eap.aka]; with several, each client needs eap_methods
+# fragment_size = 1000
+# session_timeout_ms = 30000
+# max_sessions = 4096
+# max_sessions_per_client = 1024
+# max_sessions_per_device = 4
+# match_identity = true
+#
+# Needed when methods holds "aka-prime". With nothing else in methods, cert_file and key_file
+# above are not needed, and are refused.
+#   [radius.eap.aka]
+#   network_name = "WLAN"               # what the card is told; devices may check it
+#   key_file = "aka.key"                # 64 hex digits, mode 0600 or 0640, the same on every node
+#   previous_key_file = "aka-old.key"   # while rows are being resealed under key_file
+#   subscriber_query = "SELECT ki, opc FROM aka_subscribers WHERE imsi = ?"
+#   # The number moves only once a card proves it holds the key: knowing an IMSI is not enough
+#   # to push it on or keep the card out. max(sqn, ?) keeps it from going back.
+#   current_sqn_query = "SELECT sqn FROM aka_subscribers WHERE imsi = ?"
+#   proven_sqn_query = "UPDATE aka_subscribers SET sqn = max(sqn, ?) WHERE imsi = ? RETURNING sqn"
+#   resync_query = "UPDATE aka_subscribers SET sqn = max(sqn, ?) + 32 WHERE imsi = ? RETURNING sqn"
+#   amf = "8000"                        # the first bit has to be 1
+#   query_timeout_ms = 5000
+#   # The older way moves the number for every Challenge, before any proof, and so needs a limit
+#   # per subscriber, which anyone who knows an IMSI can use up:
+#   #   next_sqn_query = "UPDATE aka_subscribers SET sqn = sqn + 32 WHERE imsi = ? RETURNING sqn"
+#   #   max_vectors_per_minute = 10     # per node, per subscriber, on average
+
+# Accounting taken while the database fails: written to this directory, answered, and replayed
+# through the script later. Scripts must be able to run a request twice. The files hold
+# User-Name and other personal data, and a lost disk loses what is waiting here. dir is
+# relative to this file. A change needs a restart.
+# [radius.accounting_spool]
+# dir = "spool"
+# max_bytes = 1073741824
+# replay_interval_ms = 5000
+
+# RADIUS over TLS (RFC 6614) on one port, for traffic crossing untrusted networks. A client
+# needs a certificate from client_ca_file and a source address listed below, or a tls_name
+# its certificate is valid for, or both; its secret is not used on this port. crl_file
+# (PEM, optional) lists revoked certificates: keep it fresh, and send SIGHUP after a change.
+# [radius.tls]
+# bind = "0.0.0.0"
+# port = 2083
+# cert_file = "radsec-server.pem"
+# key_file = "radsec-server.key"
+# client_ca_file = "ca.pem"               # only this CA is trusted, not the system's
+# max_connections = 1024
+# idle_timeout_ms = 300000
+
+# The longest matching network wins, regardless of order.
+[[radius.clients]]
+name = "localhost"
+address = "127.0.0.1"
+secret_file = "local.secret"
+
+[[radius.clients]]
+name = "192.168.1.x"
+address = "192.168.1.0/24"
+secret_file = "192.secret"
+
+# [[radius.clients]]
+# name = "core-switches"
+# address = "192.168.2.0/24"
+# secret_file = "core.secret"
+# coa_port = 3799                         # where this NAS takes send_disconnect and send_coa
+# # eap_methods = ["tls"]                 # required when [radius.eap] methods has several; [] for no EAP
+#
+# A VPN gateway authenticated by the "vpn" chain above.
+# [[radius.clients]]
+# name = "vpn-gw"
+# address = "10.1.0.0/16"
+# secret_file = "vpn-gw.secret"
+# auth = "vpn"
+
+# Messages go to stderr with a time and a level. A restart applies changes here.
+# auth writes one record per authentication decision, whatever the level. Those
+# records hold user names. Lines that output cannot keep up with, or that fail to
+# be written, are lost and counted in rradius_log_dropped_lines_total, so they are
+# not a reliable audit trail.
+# [log]
+# level = "info"   # error, warn, info (default) or debug
+# format = "text"  # text (default) or json
+# auth = true      # default true
+
+# Write out in full the requests of these users and clients, and their responses, whatever
+# level says. Personal data goes in the log. Secrets show as <hidden>. It stops by itself; a
+# SIGHUP applies a change here, and starts the time again.
+# [log.trace]
+# users = ["alice"]
+# clients = ["localhost"]              # names of [[radius.clients]]
+# minutes = 30                         # required, up to 1440
+
+# Counters in the Prometheus text format at GET /metrics. Anyone who can reach this port
+# can read them: there is no authentication, so bind it to an internal address only.
+# [metrics]
+# bind = "127.0.0.1"
+# port = 9812
+
+# TACACS+ starts only when this section is present. Port 49 needs privileges.
+# [tacacs]
+# bind = "0.0.0.0"
+# port = 49
+# max_body_len = 65536
+# max_connections = 1024                  # further connections are closed at once
+# idle_timeout_ms = 300000                # closed without a complete packet for this long
+#
+# [[tacacs.clients]]
+# name = "router-1"
+# address = "10.0.0.5"
+# secret_file = "router-1.secret"
+# # auth = "vpn"                          # select a named chain

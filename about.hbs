@@ -1,0 +1,25 @@
+# Third-party licenses
+
+This program is built from the Rust crates listed below. Each section names a license, the
+crates under it, and its text as the crates carry it.
+
+## Overview
+
+{{#each overview}}
+- {{{name}}} (`{{id}}`): {{count}} crate(s)
+{{/each}}
+
+{{#each licenses}}
+## {{{name}}} (`{{id}}`)
+
+Used by:
+
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+````text
+{{{text}}}
+````
+
+{{/each}}

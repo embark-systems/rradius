@@ -1,0 +1,75 @@
+# 遠端存取：VPN 閘道用公司目錄（LDAP／AD）的帳號登入，只有 vpn 群組的人能連，
+# 依群組給不同的存取規則；跳板機另外要求密碼加 TOTP 驗證碼。
+# 說明：docs/manual/05-remote-access.md
+
+dictionary = "../../../../share/dictionary"
+
+# 計費交給快速開始的腳本。兩個 client 都指定了串接，認證不會來到這裡。
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+# VPN：用服務帳號找到使用者，再以使用者的身分 bind 驗證密碼（只支援 PAP）。
+[auth.chains.vpn]
+policy = "first_match"
+
+[[auth.chains.vpn.handlers]]
+type = "ldap"
+urls = ["ldaps://dc1.corp.example.com", "ldaps://dc2.corp.example.com"]
+bind_dn = "CN=svc-radius,OU=Service Accounts,DC=corp,DC=example,DC=com"
+bind_password_file = "ldap.secret"
+base_dn = "OU=People,DC=corp,DC=example,DC=com"
+# AD：停用的帳號（userAccountControl 第 2 位元）找不到，等同不存在。
+filter = "(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+password_check = "bind"
+required_groups = ["CN=vpn-users,OU=Groups,DC=corp,DC=example,DC=com"]
+# ca_file = "corp-ca.pem"          # 目錄伺服器的憑證不是系統信任的 CA 簽的時候
+
+# 群組決定 VPN 閘道套用哪一組規則（閘道上要有同名的 filter／group policy）。
+[[auth.chains.vpn.handlers.group_reply]]
+group = "CN=it-staff,OU=Groups,DC=corp,DC=example,DC=com"
+attributes = { "Filter-Id" = "vpn-it" }
+
+[[auth.chains.vpn.handlers.group_reply]]
+group = "CN=contractors,OU=Groups,DC=corp,DC=example,DC=com"
+attributes = { "Filter-Id" = "vpn-contractor", "Session-Timeout" = "28800" }
+
+# 使用者可能輸入 CORP\alice 或 alice@corp.example.com。
+[auth.chains.vpn.username]
+strip_realm = "both"
+lowercase = true
+
+# 跳板機：密碼之後回 Access-Challenge，要求 TOTP 驗證碼。
+[auth.chains.mfa]
+policy = "first_match"
+
+[[auth.chains.mfa.handlers]]
+type = "lua"
+script = "two-step-totp.lua"
+
+[radius]
+bind = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[[radius.clients]]
+name = "vpn-gw"
+address = "10.60.0.1"
+secret_file = "vpn-gw.secret"
+auth = "vpn"
+
+[[radius.clients]]
+name = "jump-host"
+address = "10.60.0.20"
+secret_file = "jump-host.secret"
+auth = "mfa"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

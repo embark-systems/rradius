@@ -1,0 +1,24 @@
+# For measuring with rradius-bench only: the secrets are in this file, and everyone is
+# accepted. See "效能量測" in docs/usage.md.
+dictionary = "../../share/dictionary"
+
+[lua]
+script = "accept.lua"
+max_execution_ms = 5000
+
+[cluster]
+data_dir = "data/accept"
+secret_raft = "bench-raft-secret-012345"
+secret_api = "bench-api-secret-0123456"
+
+[radius]
+bind = "127.0.0.1"
+
+[[radius.clients]]
+name = "local"
+address = "127.0.0.1"
+secret = "bench-secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

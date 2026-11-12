@@ -1,0 +1,31 @@
+# 有線網路的 MAC 認證（MAB）：印表機、IP 電話、監視器這類不會 802.1X 的設備，
+# 交換器用 MAC 位址當帳號來問，認得的設備放進各自的 VLAN。
+# 說明：docs/manual/04-wired-mab.md
+
+dictionary = "../../../../share/dictionary"
+
+# 沒有 [auth] 時，認證和計費都交給這個腳本。範例腳本只看 MAC 位址，計費一律回覆。
+[lua]
+script = "mac-auth.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+[radius]
+bind = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+# 整個管理網段的交換器共用一個 client。
+[[radius.clients]]
+name = "access-switches"
+address = "10.40.0.0/24"
+secret_file = "switches.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

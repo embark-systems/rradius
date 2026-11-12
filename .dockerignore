@@ -1,0 +1,7 @@
+# Only the workspace's manifests and sources, and share, go into the build.
+*
+!Cargo.toml
+!Cargo.lock
+!rradius-*/Cargo.toml
+!rradius-*/src
+!share

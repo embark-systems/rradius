@@ -1,0 +1,66 @@
+# Three nodes. Each answers RADIUS on its own host ports: 1812/1813, 2812/2813, 3812/3813.
+# Run docker/init-secrets.sh once first, then: docker compose -f compose.cluster.yaml up --build
+services:
+  node1:
+    image: rradius-server
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["--config", "/etc/rradius/cluster/node1.toml"]
+    ports:
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+    volumes:
+      - ./docker/config:/etc/rradius:ro
+      - data1:/var/lib/rradius
+    secrets:
+      - raft
+      - api
+      - radius
+
+  node2:
+    image: rradius-server
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["--config", "/etc/rradius/cluster/node2.toml"]
+    ports:
+      - "2812:1812/udp"
+      - "2813:1813/udp"
+    volumes:
+      - ./docker/config:/etc/rradius:ro
+      - data2:/var/lib/rradius
+    secrets:
+      - raft
+      - api
+      - radius
+
+  node3:
+    image: rradius-server
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["--config", "/etc/rradius/cluster/node3.toml"]
+    ports:
+      - "3812:1812/udp"
+      - "3813:1813/udp"
+    volumes:
+      - ./docker/config:/etc/rradius:ro
+      - data3:/var/lib/rradius
+    secrets:
+      - raft
+      - api
+      - radius
+
+volumes:
+  data1:
+  data2:
+  data3:
+
+secrets:
+  raft:
+    file: docker/secrets/raft.secret
+  api:
+    file: docker/secrets/api.secret
+  radius:
+    file: docker/secrets/radius.secret

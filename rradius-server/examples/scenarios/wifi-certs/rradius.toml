@@ -1,0 +1,58 @@
+# 憑證登入的 Wi-Fi，加上撤銷檢查：遺失的筆電用撤銷清單擋下。
+# 說明：docs/manual/08-wifi-certs.md
+#
+# 憑證和撤銷清單不在 repo 裡，先執行 ./setup.sh 產生。
+
+dictionary = "../../../../share/dictionary"
+
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+# 憑證通過（含撤銷檢查）之後，名稱還要在這張表裡而且啟用。
+[auth]
+policy = "first_match"
+
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT NULL FROM devices WHERE name = ?"
+certificate_query = "SELECT 1 FROM devices WHERE name = ? AND enabled = 1"
+reply_query = """WITH d AS (SELECT vlan FROM devices WHERE name = ?)
+  SELECT 'Tunnel-Type:1', 'VLAN' FROM d
+  UNION ALL SELECT 'Tunnel-Medium-Type:1', 'IEEE-802' FROM d
+  UNION ALL SELECT 'Tunnel-Private-Group-Id:1', vlan FROM d"""
+
+[radius]
+bind = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[radius.eap]
+cert_file = "certs/server.pem"
+key_file = "certs/server.key"
+client_ca_file = "certs/ca.pem"
+methods = ["tls"]
+
+# 撤銷清單（CRL）：列在裡面的憑證握手就失敗。憑證鏈上每一層 CA 都要有 CRL。
+# 更新檔案後要送 SIGHUP 才會重讀。
+crl_file = "certs/ca.crl"
+
+[[radius.clients]]
+name = "wlc"
+address = "10.30.0.10"
+secret_file = "wlc.secret"
+
+[accounts]
+enable = "UPDATE devices SET enabled = 1 WHERE name = ?1"
+disable = "UPDATE devices SET enabled = 0 WHERE name = ?1"
+show = "SELECT name, vlan, enabled FROM devices WHERE name = ?1"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

@@ -1,0 +1,57 @@
+# 企業 Wi-Fi（WPA2／WPA3-Enterprise，802.1X）：公司配發的電腦用憑證（EAP-TLS），
+# 員工自己的手機用帳號密碼（PEAP-MSCHAPv2），依群組放進不同 VLAN。
+# 說明：docs/manual/03-enterprise-wifi.md
+#
+# 憑證不在 repo 裡，先執行 ./make-certs.sh 產生示範用的 CA 和伺服器憑證。
+
+dictionary = "../../../../share/dictionary"
+
+# 有 [auth] 時，這個腳本只處理計費。
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+# 帳號和裝置在同一張表。憑證通過後用 certificate_query，密碼登入用 user_query，
+# 兩者都依群組回覆 VLAN。
+[auth]
+policy = "first_match"
+
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM accounts WHERE name = ? AND kind = 'user' AND enabled = 1"
+certificate_query = "SELECT 1 FROM accounts WHERE name = ? AND kind = 'device' AND enabled = 1"
+reply_query = "SELECT r.attribute, r.value FROM accounts a JOIN group_reply r ON r.grp = a.grp WHERE a.name = ?"
+
+# 員工可能輸入 Alice@corp.example.com，資料表存小寫、不含 realm 的名稱。
+# 憑證登入不去掉 realm（見 docs/usage.md 2.12 節），所以裝置名稱存憑證上的完整名稱。
+[auth.username]
+strip_realm = "suffix"
+lowercase = true
+
+[radius]
+bind = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[radius.eap]
+cert_file = "certs/server.pem"
+key_file = "certs/server.key"
+client_ca_file = "certs/ca.pem"
+methods = ["tls", "peap"]
+
+# 無線控制器。先提供 EAP-TLS，沒有憑證的裝置可以改用 PEAP。
+[[radius.clients]]
+name = "wlc"
+address = "10.30.0.10"
+secret_file = "wlc.secret"
+eap_methods = ["tls", "peap"]
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

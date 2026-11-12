@@ -1,0 +1,76 @@
+[package]
+name = "rradius-core"
+version = "0.1.0"
+edition = "2021"
+# Not published to crates.io.
+publish = false
+license = "BSD-2-Clause"
+description = "The library of the rradius servers"
+
+[lib]
+name = "rradius_core"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1.54", features = ["full"] }
+mlua = { version = "0.12", features = ["luau", "async", "send"] }
+parking_lot = "0.13"
+socket2 = { version = "0.6", features = ["all"] }
+# Serves the cache-line-aligned allocations of aligned_alloc.rs.
+tikv-jemallocator = "0.7"
+hmac = "0.13"
+md-5 = "0.11.0"
+ipnet = "2.12.2"
+regex = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = { version = "1.1.8", features = ["preserve_order"] }
+# webpki-roots: hiqlite builds an HTTP client for the other nodes, and that fails on a
+# host with no CA certificates unless some roots are built in. Node traffic is plain HTTP.
+hiqlite = { version = "0.16.0", default-features = false, features = ["sqlite", "auto-heal", "webpki-roots"] }
+# hiqlite reads migrations through this trait; we supply files read at runtime.
+rust-embed = "8"
+rust-embed-utils = "8"
+# The salt of Tunnel-Password (RFC 2868 section 3.5).
+getrandom = "0.4"
+# MS-CHAPv2 (RFC 2759) is defined in terms of DES.
+des = "0.9"
+# {argon2} passwords; hiqlite already depends on this crate.
+argon2 = "0.6"
+sha1 = "0.11"
+ring = "0.17"
+zeroize = "1"
+sha2 = "0.11"
+pbkdf2 = "0.13"
+md4 = "0.11"
+base64 = "0.23"
+pwhash = "1"
+deadpool = { version = "0.13", default-features = false, features = ["managed"] }
+ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-native-certs = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "json", "registry", "smallvec"] }
+tracing-appender = "0.2"
+rustls-webpki = { version = "0.103", default-features = false, features = ["std"] }
+x509-parser = "0.18"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+# Forwarders and extensions hand back boxed futures.
+futures = "0.3"
+# The `user` commands read rows from the cluster, whose column names only its serialization shows.
+serde_json = "1"
+# Turning off the terminal's echo while the `user` commands read a password.
+libc = "0.2"
+# For the `test-support` feature only.
+rcgen = { version = "0.14", optional = true }
+tempfile = { version = "3", optional = true }
+
+[features]
+# The helpers of the core's tests, for the tests of crates built on it.
+test-support = ["dep:rcgen", "dep:tempfile"]
+
+[dev-dependencies]
+rcgen = "0.14"
+ldap3_proto = "0.9.0"
+tempfile = "3"
+tokio-util = { version = "0.7", features = ["codec"] }

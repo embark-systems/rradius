@@ -1,0 +1,30 @@
+RADIUS dictionaries
+
+The dictionary files in this directory (share/dictionary and
+share/dictionary.*) are not part of rradius itself and are not covered
+by the rradius license. They come from the FreeRADIUS project:
+
+  Source:   https://github.com/FreeRADIUS/freeradius-server
+            branch v3.2.x, directory share/
+  Imported: 2026-11-03
+  Changes:  none; the files are unmodified copies. Upstream has since
+            added and changed attributes that these copies do not have.
+
+Copyright holders, as stated in each file:
+
+  - The FreeRADIUS Server project and contributors: all files except
+    the three below.
+  - The Cnergee Access Server project: dictionary.cnergee
+  - SmartShare Systems: dictionary.smartsharesystems
+  - dictionary.travelping names no copyright holder; it carries the
+    CC-BY 4.0 license line.
+
+License: Creative Commons Attribution 4.0 International (CC-BY 4.0),
+https://creativecommons.org/licenses/by/4.0/. The full text is in
+LICENSE in this directory, copied unchanged from upstream share/LICENSE.
+
+dictionary.meraki and dictionary.pfsense carry a copyright line but no
+license line of their own; they are distributed under the upstream
+share/LICENSE like the rest of the directory. dictionary.pfsense names
+its original source as the pfSense project
+(https://github.com/pfsense/pfsense, src/usr/share/doc/radius/dictionary.pfsense).

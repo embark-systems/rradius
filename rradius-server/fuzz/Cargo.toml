@@ -1,0 +1,52 @@
+[package]
+name = "rradius-server-fuzz"
+version = "0.0.0"
+publish = false
+license = "BSD-2-Clause"
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rradius-core = { path = "../../rradius-core" }
+tokio = { version = "1", features = ["rt", "io-util"] }
+
+# Not part of the server's build: its lockfile and dependencies stay apart.
+[workspace]
+
+[[bin]]
+name = "radius_packet"
+path = "fuzz_targets/radius_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tacacs_packet"
+path = "fuzz_targets/tacacs_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dictionary"
+path = "fuzz_targets/dictionary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "attribute_text"
+path = "fuzz_targets/attribute_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eap_packet"
+path = "fuzz_targets/eap_packet.rs"
+test = false
+doc = false
+bench = false

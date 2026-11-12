@@ -1,0 +1,32 @@
+# Used by compose.yaml. Relative paths are resolved against this directory.
+dictionary = "/usr/share/rradius/dictionary"
+
+[lua]
+script = "auth.lua"
+
+[cluster]
+data_dir = "/var/lib/rradius"
+secret_raft_file = "/run/secrets/raft"
+secret_api_file = "/run/secrets/api"
+migrations_dir = "migrations"
+
+[auth]
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM users WHERE username = ?"
+
+[radius]
+# Private networks, which is where Docker's own addresses come from. Narrow this to your
+# devices. A device that cannot send a Message-Authenticator needs
+# require_message_authenticator = "no" on its entry: see docs/usage.md.
+[[radius.clients]]
+address = "10.0.0.0/8"
+secret_file = "/run/secrets/radius"
+
+[[radius.clients]]
+address = "172.16.0.0/12"
+secret_file = "/run/secrets/radius"
+
+[[radius.clients]]
+address = "192.168.0.0/16"
+secret_file = "/run/secrets/radius"

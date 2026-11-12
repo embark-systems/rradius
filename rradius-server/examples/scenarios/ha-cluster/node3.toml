@@ -1,0 +1,70 @@
+# 三節點高可用叢集的第 3 個節點。三份設定只差 node_id 和 listen。
+# 節點之間走 WireGuard（10.99.0.0/24），設定方式見 docs/usage.md 2.2 節。
+# 說明：docs/manual/07-ha-cluster.md
+#
+# 資料表、示範帳號（migrations/2_demo_users.sql，正式環境要刪掉）和計費腳本（accounting.lua）
+# 都和快速開始相同。
+
+dictionary = "../../../../share/dictionary"
+
+[lua]
+script = "accounting.lua"
+# 叢集失去多數節點時，寫入要等這麼久才失敗，計費才會寫進暫存並回覆 NAS。
+# 要比 NAS 的重送間隔短，否則 NAS 的重送會被當成處理中而丟棄。
+query_timeout_ms = 2000
+
+[cluster]
+node_id = 3
+listen = "10.99.0.3"           # 只在 WireGuard 介面上監聽 raft 和 api
+data_dir = "data"
+secret_raft_file = "raft.secret"  # 三個節點要相同
+secret_api_file = "api.secret"    # 三個節點要相同
+migrations_dir = "migrations"     # 三個節點要相同
+migrations_wait_ms = 120000       # 一起重開時，等其他節點的時間
+
+[[cluster.nodes]]
+id = 1
+raft = "10.99.0.1:8100"
+api = "10.99.0.1:8200"
+[[cluster.nodes]]
+id = 2
+raft = "10.99.0.2:8100"
+api = "10.99.0.2:8200"
+[[cluster.nodes]]
+id = 3
+raft = "10.99.0.3:8100"
+api = "10.99.0.3:8200"
+
+[auth]
+policy = "first_match"
+
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM users WHERE username = ? AND enabled = 1"
+reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
+
+[radius]
+bind = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+# NAS 和負載平衡器用它判斷節點是否活著。
+status_server = true
+
+# 每台 NAS 把三個節點都設成 RADIUS 伺服器。共用密碼在三個節點上要相同。
+[[radius.clients]]
+name = "nas-network"
+address = "10.80.0.0/16"
+secret_file = "nas.secret"
+
+# 叢集失去多數節點、寫不進資料庫時，計費先寫在本機，恢復後重放。
+[radius.accounting_spool]
+dir = "spool"
+max_bytes = 1073741824
+
+# 監控系統從內部網路抓。沒有認證，不要對外開放。
+[metrics]
+bind = "10.99.0.3"
+port = 9812
+
+[log]
+format = "json"

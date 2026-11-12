@@ -1,0 +1,31 @@
+[package]
+name = "rradius-server"
+version = "0.1.0"
+edition = "2021"
+# Not published to crates.io.
+publish = false
+license = "BSD-2-Clause"
+
+[[bin]]
+name = "rradius-server"
+path = "src/main.rs"
+
+[dependencies]
+rradius-core = { path = "../rradius-core" }
+
+[dev-dependencies]
+# The test helpers both programs share.
+rradius-core = { path = "../rradius-core", features = ["test-support"] }
+hiqlite = { version = "0.16.0", default-features = false, features = ["sqlite", "auto-heal", "webpki-roots"] }
+hmac = "0.13"
+libc = "0.2"
+md-5 = "0.11.0"
+rcgen = "0.14"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1"
+sha1 = "0.11"
+sha2 = "0.11"
+socket2 = { version = "0.6", features = ["all"] }
+tempfile = "3"
+tokio = { version = "1.54", features = ["full"] }

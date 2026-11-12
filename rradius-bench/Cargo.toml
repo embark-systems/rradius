@@ -1,0 +1,36 @@
+[package]
+name = "rradius-bench"
+version = "0.1.0"
+edition = "2021"
+# Not published to crates.io.
+publish = false
+license = "BSD-2-Clause"
+description = "Load generator for RADIUS servers"
+
+[lib]
+name = "rradius_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rradius-bench"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+aes = "0.9"
+des = "0.9"
+hdrhistogram = { version = "7", default-features = false }
+hmac = "0.13"
+md-5 = "0.11.0"
+md4 = "0.11"
+mio = { version = "1", features = ["os-poll", "net"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.11"
+sha2 = "0.11"
+socket2 = "0.6"
+
+[dev-dependencies]
+rcgen = "0.14"
+tempfile = "3"
