@@ -1507,6 +1507,8 @@ pub struct RadiusServer {
     unknown_realm_lines: Mutex<DiscardLog>,
     auth_overload_lines: Mutex<DiscardLog>,
     acct_overload_lines: Mutex<DiscardLog>,
+    /// EAP requests refused because their client has `mfa`.
+    mfa_eap_lines: Mutex<DiscardLog>,
     /// Requests handled at once, separately so accounting cannot starve authentication.
     auth_slots: Arc<Semaphore>,
     acct_slots: Arc<Semaphore>,
@@ -1541,6 +1543,7 @@ impl RadiusServer {
             stranger_discards: Mutex::default(),
             unknown_realm_lines: Mutex::default(),
             auth_overload_lines: Mutex::default(),
+            mfa_eap_lines: Mutex::default(),
             acct_overload_lines: Mutex::default(),
             auth_slots: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT)),
             acct_slots: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT)),
@@ -2041,6 +2044,16 @@ impl RadiusServer {
             self.metrics.radius_discarded_no_leader.inc();
             return None;
         }
+        // An EAP login cannot be asked for a code, so letting it through would skip the second
+        // factor: a client with `mfa` gets none.
+        if packet.attribute(EAP_MESSAGE).is_some() && client.mfa.is_some() {
+            let line = self.mfa_eap_lines.lock().unwrap_or_else(PoisonError::into_inner).line(Instant::now(), || format!("RADIUS client {}: EAP refused, as the client has mfa", client.name));
+            if let Some(line) = line {
+                log_line(tracing::Level::WARN, line);
+            }
+            let user = String::from_utf8_lossy(packet.attribute(1).unwrap_or_default()).into_owned();
+            return self.second_factor_answer(client, packet, source, &user, "", "script", crate::second_factor::Decision::Reject { log: None });
+        }
         if packet.attribute(EAP_MESSAGE).is_some() {
             let settings = self.eap.settings();
             if settings.is_some() || packet.attribute(STATE).is_some_and(|state| self.eap.has_conversation(state)) {
@@ -2071,7 +2084,11 @@ impl RadiusServer {
         if let Some((mode, factor)) = &factor {
             let request = crate::second_factor::SecondFactorRequest { protocol: "radius", client, mode: *mode, user: &factor_user, password: factor_password.as_deref().map(Vec::as_slice), state: packet.attribute(STATE) };
             let before = factor.before_chain(&request).await;
-            let chain = client.auth.as_deref().unwrap_or("default");
+            // Named as the chain's own record would be.
+            let chain = match state.chains.as_deref().and_then(|chains| chains.for_client(client)) {
+                Some(_) => client.auth.as_deref().unwrap_or("default"),
+                None => "script",
+            };
             match before {
                 crate::second_factor::Before::Continue { password: Some(password) } => {
                     for (name, value) in &mut attributes {
@@ -2082,7 +2099,7 @@ impl RadiusServer {
                     chain_password = Some(password);
                 }
                 crate::second_factor::Before::Continue { password: None } => {}
-                crate::second_factor::Before::Answer(decision) => return self.second_factor_answer(client, packet, source, &factor_user, &factor_user, chain, decision),
+                crate::second_factor::Before::Answer { decision, account } => return self.second_factor_answer(client, packet, source, &factor_user, account.as_deref().unwrap_or(&factor_user), chain, decision),
                 crate::second_factor::Before::Reject { log } => return self.second_factor_answer(client, packet, source, &factor_user, "", chain, crate::second_factor::Decision::Reject { log }),
                 crate::second_factor::Before::Unavailable { log } => return self.second_factor_answer(client, packet, source, &factor_user, "", chain, crate::second_factor::Decision::Unavailable { log }),
             }
@@ -7391,7 +7408,7 @@ pub(crate) mod tests {
     }
 
     /// A second factor for tests. An answer carrying the State `fake-state` is accepted with the
-    /// code 123456; `append` clients give the code after the password; the User-Names
+    /// code 123456, recorded for the account `account-of-<user>`; `append` clients give the code after the password; the User-Names
     /// `sf-refused` and `sf-unavailable` are refused and not answered before the chain.
     struct FakeSecondFactor;
 
@@ -7401,10 +7418,11 @@ pub(crate) mod tests {
             Box::pin(async move {
                 let password = request.password.unwrap_or_default();
                 if request.state == Some(b"fake-state".as_slice()) {
-                    return Before::Answer(match password {
+                    let decision = match password {
                         b"123456" => Decision::Accept(vec![("Reply-Message".to_string(), AttrValue::Bytes(b"welcome".to_vec()))]),
                         _ => Decision::Reject { log: Some(format!("wrong code for {}", request.user)) },
-                    });
+                    };
+                    return Before::Answer { decision, account: Some(format!("account-of-{}", request.user)) };
                 }
                 match request.user {
                     "sf-refused" => Before::Reject { log: Some("sf refused the request".to_string()) },
@@ -7480,10 +7498,13 @@ pub(crate) mod tests {
         let challenged = ask(3, "127.0.0.2", "sf-challenge", "pw", None).await?.ok_or("no challenge")?;
         assert_eq!((challenged.code, challenged.attribute(STATE), reply_message(&challenged).as_deref()), (ACCESS_CHALLENGE, Some(b"fake-state".as_slice()), Some("Enter the code")));
         let record = crate::logging::records_for("sf-challenge");
-        assert_eq!((record[0].handler.as_str(), record[0].decision.as_str()), ("mfa", "challenge"));
+        assert_eq!((record[0].handler.as_str(), record[0].decision.as_str(), record[0].chain.as_str()), ("mfa", "challenge", "script"));
         let answered = ask(4, "127.0.0.2", "sf-answer", "123456", Some(b"fake-state")).await?.ok_or("no answer to the code")?;
         assert_eq!((answered.code, reply_message(&answered).as_deref()), (ACCESS_ACCEPT, Some("welcome")));
-        assert_eq!(crate::logging::records_for("sf-answer")[0].handler, "mfa");
+        // As the challenge's record: the chain of a client without one is the script's, and the
+        // account is the one the second factor kept.
+        let record = crate::logging::records_for("sf-answer");
+        assert_eq!((record[0].handler.as_str(), record[0].chain.as_str(), record[0].account.as_str()), ("mfa", "script", "account-of-sf-answer"));
 
         // Rejected before the chain, logged; unavailable: not answered, counted.
         let discarded = server.metrics.radius_discarded_database.get();
@@ -7508,6 +7529,35 @@ pub(crate) mod tests {
         server.replace_state(RadiusState::new(second_factor_clients()?, engine, None));
         let unchanged = ask(10, "127.0.0.2", "sf-unchanged", "pw", None).await?.ok_or("no answer without a second factor")?;
         assert_eq!((unchanged.code, reply_message(&unchanged)), (ACCESS_ACCEPT, None));
+        Ok(())
+    }
+
+    /// The EAP on Clients With a Second Factor requirement: refused without the chain, logged; a
+    /// client without `mfa` still reaches the chain.
+    #[tokio::test]
+    async fn test_second_factor_refuses_eap() -> Result<(), String> {
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'accept'")?);
+        let state = RadiusState::new(second_factor_clients()?, engine, None).with_second_factor(Some(Arc::new(FakeSecondFactor)));
+        let server = RadiusServer::from_state(any_addr(), any_addr(), state, share_dictionary());
+        // EAP-Response/Identity.
+        let identity = [&[2u8, 1, 0, 11, 1][..], b"sf-eap"].concat();
+        let ask = |identifier: u8, address: &'static str| {
+            let request = RadiusPacket::create_access_request(identifier, [identifier; 16], vec![(1, b"sf-eap".to_vec()), (EAP_MESSAGE, identity.clone())], SECRET);
+            let server = &server;
+            async move { server.receive(PacketKind::Auth, &request, from(address)).await.map(|answer| RadiusPacket::parse(&answer).map_err(|e| format!("{e:?}"))).transpose() }
+        };
+        let mut answers = Vec::new();
+        let log = logged_during(async {
+            for (identifier, address) in [(1, "127.0.0.1"), (2, "127.0.0.2")] {
+                answers.push(ask(identifier, address).await);
+            }
+        })
+        .await;
+        for answer in answers {
+            assert_eq!(answer?.ok_or("no answer to EAP")?.code, ACCESS_REJECT);
+        }
+        assert!(log.contains("RADIUS client nas-a: EAP refused, as the client has mfa"), "{log}");
+        assert_ne!(ask(3, "127.0.0.3").await?.map(|answer| answer.code), Some(ACCESS_REJECT), "without mfa");
         Ok(())
     }
 

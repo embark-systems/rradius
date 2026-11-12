@@ -32,8 +32,9 @@ pub enum Before {
     /// Run the chain; with `password`, give it that instead of the request's, such as the
     /// password without the code appended to it.
     Continue { password: Option<Zeroizing<Vec<u8>>> },
-    /// The request answers a challenge: answer it without running the chain.
-    Answer(Decision),
+    /// The request answers a challenge: answer it without running the chain. `account` is the
+    /// account the chain found when it asked, for the record; without it, the user name.
+    Answer { decision: Decision, account: Option<String> },
     /// Refused without running the chain; `log` is written at WARN when there is one.
     Reject { log: Option<String> },
     /// Not answered, as the database could not be used: the client asks again.

@@ -942,7 +942,8 @@ impl TacacsServer {
                 AuthenStep::Reply(reply) => (reply, false),
                 AuthenStep::Undecodable(reply) => (reply, true),
                 AuthenStep::NoReply => continue,
-                AuthenStep::Finished { attributes, credentials } => match Self::decide_login(credentials, attributes, engine, chain, client, source, mfa.map(|(mode, factor)| Factor { mode, factor, can_ask: true })).await {
+                // An ASCII login is asked for its code, whichever way the client gives it otherwise.
+                AuthenStep::Finished { attributes, credentials } => match Self::decide_login(credentials, attributes, engine, chain, client, source, mfa.map(|(_, factor)| Factor { mode: crate::clients::SecondFactorMode::Challenge, factor, can_ask: true })).await {
                     Login::Reply(reply) => (reply, false),
                     Login::AskCode { code_for, reply } => {
                         logins.wait_for_code(packet.session_id, packet.seq_num.wrapping_add(2), code_for, Instant::now());
@@ -950,7 +951,7 @@ impl TacacsServer {
                     }
                 },
                 AuthenStep::Code { code_for, code } => match mfa {
-                    Some((mode, factor)) => (Self::check_code(&code_for, &code, client, source, chain.is_some(), mode, factor).await, false),
+                    Some((_, factor)) => (Self::check_code(&code_for, &code, client, source, chain.is_some(), crate::clients::SecondFactorMode::Challenge, factor).await, false),
                     // A reload took the second factor away while the login waited.
                     None => (authen_reply(AUTHEN_STATUS_FAIL, 0, &[]), false),
                 },
@@ -985,6 +986,10 @@ impl TacacsServer {
     /// sees the login before the chain and after it accepts.
     #[allow(clippy::too_many_arguments)]
     async fn decide_login(mut credentials: Credentials, mut attributes: Vec<(String, AttrValue)>, engine: &Arc<LuaAuthEngine>, chain: Option<&AuthChain>, client: &Client, source: IpAddr, factor: Option<Factor<'_>>) -> Login {
+        // Whoever enables logged in with a code already; another one within its step would be
+        // refused as used, so an enable checks its own password only.
+        let enable = attributes.iter().any(|(name, value)| name == "authen_service" && *value == AttrValue::Number(f64::from(AUTHEN_SVC_ENABLE)));
+        let factor = factor.filter(|_| !enable);
         let factor_user = credentials.user.clone().unwrap_or_default();
         let factor_chain = if chain.is_some() { client.auth.as_deref().unwrap_or("default") } else { "script" };
         let factor_password = match (&factor, &credentials.secret) {
@@ -1004,7 +1009,7 @@ impl TacacsServer {
                     None
                 }
                 crate::second_factor::Before::Continue { password: None } => None,
-                crate::second_factor::Before::Answer(decision) => Some(decision),
+                crate::second_factor::Before::Answer { decision, .. } => Some(decision),
                 crate::second_factor::Before::Reject { log } => Some(crate::second_factor::Decision::Reject { log }),
                 crate::second_factor::Before::Unavailable { log } => Some(crate::second_factor::Decision::Unavailable { log }),
             };
@@ -1404,12 +1409,12 @@ pub(crate) mod tests {
         }
 
         /// A connection from a client with `mfa = mode` and `FakeTacacsFactor`, whose script
-        /// accepts the password `secret`.
+        /// accepts the password `secret`, enable requests included.
         async fn with_factor(mode: crate::clients::SecondFactorMode) -> Result<Self, String> {
             let engine = script_engine("return get_attr('data') == 'secret' and 'accept' or 'reject'").await;
             let mut clients = ClientTable::default();
             clients.add("127.0.0.1", Some("nas-mfa".to_string()), SECRET.to_vec(), ClientOptions { mfa: Some(mode), ..ClientOptions::default() }).map_err(|e| format!("{e:?}"))?;
-            let state = TacacsState { clients: Arc::new(clients), engine, chains: None, enable: EnableMode::default(), tls_only: false, second_factor: Some(Arc::new(FakeTacacsFactor)) };
+            let state = TacacsState { clients: Arc::new(clients), engine, chains: None, enable: EnableMode::Login, tls_only: false, second_factor: Some(Arc::new(FakeTacacsFactor)) };
             let live = Live::new(state);
             let metrics = Arc::new(Metrics::default());
             let (stream, server) = duplex(4096);
@@ -1505,18 +1510,39 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// The code after the password: an ASCII login of an `append` client, and a PAP login, which
-    /// gives it that way whatever the client's `mfa`.
+    /// The code after the password of a PAP login, whatever the client's `mfa`; an ASCII login of
+    /// an `append` client is asked for its code all the same.
     #[tokio::test]
     async fn test_second_factor_appended() -> Result<(), String> {
         let mut connection = AsciiConnection::with_factor(crate::clients::SecondFactorMode::Append).await?;
-        assert_eq!(connection.login(b"tf-append", &[b"secret123456"]).await, AUTHEN_STATUS_PASS);
-        assert_eq!(connection.login(b"tf-append-wrong", &[b"secret000000"]).await, AUTHEN_STATUS_FAIL);
+        let (seq, status, ..) = connection.ask(ASCII_SESSION, 1, &ascii_start_body(b"tf-append")).await;
+        assert_eq!((seq, status), (2, AUTHEN_STATUS_GETPASS));
+        let (seq, status, flags, prompt) = connection.ask(ASCII_SESSION, 3, &continue_body(b"secret", 0)).await;
+        assert_eq!((seq, status, flags, prompt.as_slice()), (4, AUTHEN_STATUS_GETDATA, REPLY_FLAG_NOECHO, b"Code: ".as_slice()));
+        assert_eq!(connection.ask(ASCII_SESSION, 5, &continue_body(b"123456", 0)).await.1, AUTHEN_STATUS_PASS);
+        assert_eq!(connection.login(b"tf-append-wrong", &[b"secret", b"000000"]).await, AUTHEN_STATUS_FAIL);
+        assert_eq!(connection.ask(ASCII_SESSION, 1, &start_body(b"tf-append-pap", b"secret123456")).await.1, AUTHEN_STATUS_PASS);
         let mut connection = AsciiConnection::with_factor(crate::clients::SecondFactorMode::Challenge).await?;
         assert_eq!(connection.ask(ASCII_SESSION, 1, &start_body(b"tf-pap", b"secret123456")).await.1, AUTHEN_STATUS_PASS);
         assert_eq!(connection.ask(ASCII_SESSION, 1, &start_body(b"tf-pap-no-code", b"secret")).await.1, AUTHEN_STATUS_FAIL);
         assert_eq!(connection.ask(ASCII_SESSION, 1, &start_body(b"tf-refused", b"secret123456")).await.1, AUTHEN_STATUS_FAIL);
         assert_eq!(crate::logging::records_for("tf-pap-no-code")[0].handler, "mfa");
+        Ok(())
+    }
+
+    /// The Enable scenario: an enable request checks its password only, with no code asked for
+    /// (ASCII) or appended (PAP), for either `mfa`.
+    #[tokio::test]
+    async fn test_second_factor_not_for_enable() -> Result<(), String> {
+        for mode in [crate::clients::SecondFactorMode::Challenge, crate::clients::SecondFactorMode::Append] {
+            let mut connection = AsciiConnection::with_factor(mode).await?;
+            let (seq, status, ..) = connection.ask(ASCII_SESSION, 1, &typed_start_body(AUTHEN_TYPE_ASCII, AUTHEN_SVC_ENABLE, b"tf-enable", b"")).await;
+            assert_eq!((seq, status), (2, AUTHEN_STATUS_GETPASS), "{mode:?}");
+            assert_eq!(connection.ask(ASCII_SESSION, 3, &continue_body(b"secret", 0)).await.1, AUTHEN_STATUS_PASS, "{mode:?}");
+            assert_eq!(connection.ask(ASCII_SESSION, 1, &typed_start_body(AUTHEN_TYPE_PAP, AUTHEN_SVC_ENABLE, b"tf-pap-enable", b"secret")).await.1, AUTHEN_STATUS_PASS, "{mode:?}");
+            assert_eq!(connection.ask(ASCII_SESSION, 1, &typed_start_body(AUTHEN_TYPE_PAP, AUTHEN_SVC_ENABLE, b"tf-pap-enable", b"wrong")).await.1, AUTHEN_STATUS_FAIL, "{mode:?}");
+        }
+        assert!(crate::logging::records_for("tf-enable").iter().all(|record| record.handler == "script"));
         Ok(())
     }
 
