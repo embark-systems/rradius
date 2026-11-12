@@ -131,7 +131,7 @@ impl Default for LogSettings {
 }
 
 /// How an authentication chain combines its handlers' results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthPolicy {
     /// The first handler that does not ignore decides.
@@ -414,11 +414,12 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     dictionary: PathBuf,
     /// Moved to `[lua].script`; only read to report the new place.
+    #[schemars(skip)]
     script: Option<toml::Value>,
     lua: Option<RawLua>,
     cluster: Option<RawCluster>,
@@ -429,18 +430,19 @@ struct RawConfig {
     runtime: Option<RawRuntime>,
     log: Option<RawLog>,
     /// `[proxy]`, which an extension reads.
+    #[schemars(skip)]
     proxy: Option<toml::Value>,
     accounts: Option<RawAccounts>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawRuntime {
     #[serde(default)]
     pin_threads: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawAccounts {
     add: Option<String>,
@@ -451,16 +453,19 @@ struct RawAccounts {
     show: Option<String>,
     scheme: Option<String>,
     /// `[accounts.clients]`, which an extension reads.
+    #[schemars(skip)]
     clients: Option<toml::Value>,
     /// `[accounts.dpsk]`, which an extension reads.
+    #[schemars(skip)]
     dpsk: Option<toml::Value>,
     /// Read by the extension for EAP-AKA'.
+    #[schemars(skip)]
     aka: Option<toml::Value>,
 }
 
 
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawLog {
     level: Option<String>,
@@ -470,7 +475,7 @@ struct RawLog {
     trace: Option<RawTrace>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawTrace {
     #[serde(default)]
@@ -484,7 +489,7 @@ fn default_log_auth() -> bool {
     true
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawMetrics {
     #[serde(default = "loopback_address")]
@@ -513,7 +518,7 @@ fn default_coa_attempts() -> u32 {
     3
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawLua {
     script: PathBuf,
@@ -526,7 +531,7 @@ struct RawLua {
     http: Option<RawScriptHttp>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawScriptHttp {
     allowed_hosts: Vec<String>,
@@ -559,7 +564,7 @@ fn default_max_execution_ms() -> u64 {
     1000
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawAuth {
     policy: Option<AuthPolicy>,
@@ -570,7 +575,7 @@ struct RawAuth {
     chains: BTreeMap<String, RawChain>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawChain {
     #[serde(default)]
@@ -580,7 +585,7 @@ struct RawChain {
     handlers: Vec<RawAuthHandler>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawUsername {
     strip_realm: Option<String>,
@@ -591,7 +596,7 @@ struct RawUsername {
 
 // Only read at startup and on reload, so size does not matter here.
 #[allow(clippy::large_enum_variant)]
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RawAuthHandler {
     Sql {
@@ -610,7 +615,7 @@ enum RawAuthHandler {
     Ldap(RawLdap),
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawLdap {
     urls: Vec<String>,
@@ -640,7 +645,7 @@ struct RawLdap {
     group_reply: Vec<RawGroupReply>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawGroupReply {
     group: String,
@@ -648,7 +653,7 @@ struct RawGroupReply {
     attributes: OrderedPairs,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum RawPasswordCheck {
     #[default]
@@ -672,6 +677,24 @@ fn default_ldap_pool_size() -> usize {
 #[derive(Default)]
 struct OrderedPairs(Vec<(String, String)>);
 
+impl schemars::JsonSchema for OrderedPairs {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "OrderedPairs".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type": "object", "additionalProperties": {"type": "string"}})
+    }
+}
+
+/// The schema of `[radius].bind`: one address, or a list of them.
+#[derive(schemars::JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum AddressOrList {
+    One(IpAddr),
+    List(Vec<IpAddr>),
+}
+
 impl<'de> Deserialize<'de> for OrderedPairs {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Visitor;
@@ -692,7 +715,7 @@ impl<'de> Deserialize<'de> for OrderedPairs {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawCluster {
     #[serde(default = "default_node_id")]
@@ -704,6 +727,7 @@ struct RawCluster {
     secret_api_file: Option<PathBuf>,
     listen: Option<IpAddr>,
     /// Moved to `[lua].query_timeout_ms`; only read to report the new place.
+    #[schemars(skip)]
     query_timeout_ms: Option<toml::Value>,
     nodes: Option<Vec<RawClusterNode>>,
     migrations_dir: Option<PathBuf>,
@@ -715,6 +739,7 @@ struct RawCluster {
     read_connections: usize,
     stop_without_leader_ms: Option<u64>,
     /// `[cluster.backup]`, read by an extension.
+    #[schemars(skip)]
     backup: Option<toml::Value>,
 }
 
@@ -722,7 +747,7 @@ fn default_snapshot_every() -> u64 {
     DEFAULT_SNAPSHOT_EVERY
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawClusterNode {
     id: u64,
@@ -745,10 +770,11 @@ pub fn any_address() -> IpAddr {
     IpAddr::V4(Ipv4Addr::UNSPECIFIED)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawRadius {
     /// One address or a list of them; `radius_binds` reads it, to say what is wrong in its own words.
+    #[schemars(with = "Option<AddressOrList>")]
     bind: Option<toml::Value>,
     #[serde(default = "default_auth_port")]
     auth_port: u16,
@@ -770,23 +796,28 @@ struct RawRadius {
     #[serde(default = "default_coa_attempts")]
     coa_attempts: u32,
     /// `[radius.tls]`, which an extension reads.
+    #[schemars(skip)]
     tls: Option<toml::Value>,
     accounting_spool: Option<RawSpool>,
     eap: Option<RawEap>,
     /// `[radius.coa]`, which an extension reads.
+    #[schemars(skip)]
     coa: Option<toml::Value>,
     /// `[radius.dynamic_clients]`, which an extension reads.
+    #[schemars(skip)]
     dynamic_clients: Option<toml::Value>,
     /// `[radius.dpsk]`, which an extension reads.
+    #[schemars(skip)]
     dpsk: Option<toml::Value>,
     #[serde(default)]
     clients: Vec<RawClient>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawEap {
     /// `[radius.eap.aka]`, which an extension reads.
+    #[schemars(skip)]
     aka: Option<toml::Value>,
     cert_file: Option<PathBuf>,
     key_file: Option<PathBuf>,
@@ -816,7 +847,9 @@ struct RawEap {
     /// The file before `ticket_seal_file`, while changing it: opens keys, seals none.
     previous_ticket_seal_file: Option<PathBuf>,
     /// Read by the extension that checks revocation, as is `ocsp_url`.
+    #[schemars(skip)]
     ocsp: Option<toml::Value>,
+    #[schemars(skip)]
     ocsp_url: Option<toml::Value>,
 }
 
@@ -848,7 +881,7 @@ fn default_eap_max_sessions() -> usize {
     4096
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawSpool {
     dir: PathBuf,
@@ -875,7 +908,7 @@ pub fn default_acct_port() -> u16 {
     1813
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawTacacs {
     #[serde(default = "any_address")]
@@ -896,6 +929,7 @@ struct RawTacacs {
     #[serde(default)]
     authorize_groups: BTreeMap<String, Vec<String>>,
     /// `[tacacs.tls]`, which the extension that serves TACACS+ over TLS reads.
+    #[schemars(skip)]
     tls: Option<toml::Value>,
 }
 
@@ -935,7 +969,7 @@ fn default_max_body_len() -> usize {
     crate::tacacs::MAX_BODY_LEN
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawClient {
     name: Option<String>,
@@ -957,6 +991,11 @@ pub struct RawClient {
     authorize_group: Option<String>,
     /// RADIUS only: may send CoA on its RadSec connection, for the CoA relay.
     coa_sender: Option<bool>,
+}
+
+/// The JSON Schema of the sections the core reads, from the structures that read them.
+pub(crate) fn core_schema() -> schemars::Schema {
+    schemars::schema_for!(RawConfig)
 }
 
 /// Loads and validates the TOML configuration at `path`. Errors name the file

@@ -13,6 +13,7 @@ pub mod certs;
 pub mod eap;
 pub mod radius;
 pub mod scenario;
+pub mod schema;
 pub mod server;
 
 /// The root of the core's repository, which holds this crate. A crate that depends on this one

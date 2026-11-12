@@ -5,7 +5,7 @@ use std::fmt;
 use std::net::IpAddr;
 
 /// How strictly a client's Access-Requests are held to carrying a Message-Authenticator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageAuthenticatorPolicy {
     #[default]

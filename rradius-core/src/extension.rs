@@ -232,6 +232,12 @@ pub trait Extension: Send + Sync {
         &[]
     }
 
+    /// The JSON Schema of each section it reads, under the section's dotted path, which the
+    /// `schema` command adds to the schema of the configuration file.
+    fn schemas(&self) -> Vec<(&'static str, schemars::Schema)> {
+        Vec::new()
+    }
+
     /// Reads its sections: those of `sections` the file has; `base` is the
     /// directory of the file, `extensions` those of the program, for the revocation check of a
     /// TLS section. What it returns goes into `ServerConfig`: settings of its own, and settings of

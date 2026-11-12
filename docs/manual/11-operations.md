@@ -104,6 +104,8 @@ end
 
 ## 重新載入（SIGHUP）
 
+**改設定檔之前：** 用 `rradius-server schema` 產生 schema 給編輯器用，寫錯的欄位在編輯時就會標出來（使用文件第 2 節）；改完仍要跑 `--check`。
+
 大部分的設定改完送 SIGHUP 就生效，不必重啟：
 
 ```bash
