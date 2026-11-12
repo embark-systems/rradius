@@ -2110,6 +2110,19 @@ fn test_accounting_export_needs_enterprise() -> Result<(), String> {
     Ok(())
 }
 
+/// `[accounting_export]` added while the program runs is refused at SIGHUP, and the program goes on
+/// with what it had.
+#[test]
+fn test_accounting_export_refused_at_reload() -> Result<(), String> {
+    let server = Server::start(PROGRAM, tempfile::tempdir().map_err(|e| e.to_string())?, "return 'accept'", None);
+    assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
+    server.write_config_text(|text| format!("{text}[accounting_export]\ndirectory = \"exports\"\n[accounting_export.table]\nquery = \"SELECT 1\"\n"));
+    let stderr = server.reload(RELOAD_FAILED);
+    assert!(stderr.contains("accounting export needs rradius-enterprise"), "{stderr}");
+    assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
+    Ok(())
+}
+
 /// The settings RadSec, and only it, uses, as the program without it takes them: at a start and
 /// in a check (the table of the radsec spec, this program's column).
 #[test]

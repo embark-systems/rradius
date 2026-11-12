@@ -376,18 +376,29 @@ fn decoded_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_sec
                 let plain = decrypt_user_password(value, shared_secret, &packet.authenticator);
                 read_attribute(dictionary, 0, vec![number], &plain, &mut result);
             }
+            VENDOR_SPECIFIC if unknown && !vendor_specific_named(dictionary, value) => result.push((format!("Attr-{number}"), AttrValue::Bytes(value.clone()))),
             VENDOR_SPECIFIC if value.len() >= 5 => at = read_vendor_specific(dictionary, attributes, at, &mut result),
             _ => match dictionary.get(0, &[number]).map(|attribute| attribute.data_type.as_str()) {
                 Some("extended") => {
                     if let Some((extended, data)) = value.split_first() {
-                        read_extended(dictionary, number, *extended, data, &mut result);
+                        if unknown && !extended_named(dictionary, number, *extended, data) {
+                            result.push((format!("Attr-{number}"), AttrValue::Bytes(value.clone())));
+                        } else {
+                            read_extended(dictionary, number, *extended, data, &mut result);
+                        }
                     }
                 }
                 Some("long-extended") => {
                     let (joined, next) = join_fragments(attributes, at - 1);
                     at = next;
                     if let Some((extended, data)) = joined {
-                        read_extended(dictionary, number, extended, &data, &mut result);
+                        if unknown && !extended_named(dictionary, number, extended, &data) {
+                            let mut whole = vec![extended];
+                            whole.extend_from_slice(&data);
+                            result.push((format!("Attr-{number}"), AttrValue::Bytes(whole)));
+                        } else {
+                            read_extended(dictionary, number, extended, &data, &mut result);
+                        }
                     }
                 }
                 None if unknown => result.push((format!("Attr-{number}"), AttrValue::Bytes(value.clone()))),
@@ -396,6 +407,33 @@ fn decoded_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_sec
         }
     }
     result
+}
+
+/// Whether the dictionary names the vendor of a Vendor-Specific value and every attribute in it.
+fn vendor_specific_named(dictionary: &Dictionary, value: &[u8]) -> bool {
+    let Some((vendor, mut rest)) = value.split_first_chunk::<4>() else { return false };
+    let vendor = u32::from_be_bytes(*vendor);
+    let format = dictionary.vendor_format(vendor);
+    let mut count = 0;
+    while let Some((number, _, _, after)) = vendor_attribute(rest, format) {
+        if dictionary.get(vendor, &[number]).is_none() {
+            return false;
+        }
+        count += 1;
+        rest = after;
+    }
+    count > 0 && rest.is_empty()
+}
+
+/// Whether the dictionary names an extended attribute, and the vendor attribute in it if it is an
+/// Extended-Vendor-Specific one.
+fn extended_named(dictionary: &Dictionary, top: u32, extended: u8, data: &[u8]) -> bool {
+    let Some(attribute) = dictionary.get(0, &[top, u32::from(extended)]) else { return false };
+    if attribute.data_type != "evs" {
+        return true;
+    }
+    let Some((vendor, rest)) = data.split_first_chunk::<4>() else { return false };
+    rest.first().is_some_and(|number| dictionary.get(u32::from_be_bytes(*vendor), &[top, u32::from(extended), u32::from(*number)]).is_some())
 }
 
 /// The attributes of an accounting request as an `AccountingRecord` has them.
@@ -7896,6 +7934,30 @@ pub(crate) mod tests {
         // Authentication is not told.
         let _ = server.receive(PacketKind::Auth, &pap(4, "alice", "pw"), from("127.0.0.1")).await;
         assert!(observed.taken().is_empty());
+        Ok(())
+    }
+
+    /// A Vendor-Specific attribute the dictionary does not name, whole as `Attr-26`; one it names,
+    /// by name; an extended attribute of an unnamed Extended-Type as `Attr-241`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_accounting_observer_unknown_vendor_and_extended() -> Result<(), String> {
+        let dictionary = share_dictionary();
+        let vendor = (4_000_000u32..4_000_100).find(|vendor| dictionary.get(*vendor, &[1]).is_none()).ok_or("every vendor named")?;
+        let extended = (1..=255u8).find(|kind| dictionary.get(0, &[241, u32::from(*kind)]).is_none()).ok_or("every Extended-Type named")?;
+        let named = dictionary.get(9, &[1]).map(|attribute| attribute.name.clone()).ok_or("no vendor 9 attribute 1")?;
+        let mut unnamed_vsa = vendor.to_be_bytes().to_vec();
+        unnamed_vsa.extend_from_slice(&[1, 4, 0xbe, 0xef]);
+        let mut named_vsa = 9u32.to_be_bytes().to_vec();
+        named_vsa.extend_from_slice(&[1, 5, b'a', b'=', b'b']);
+        let observed = Arc::new(Observed::default());
+        let server = script_server("xyzzy5461", "return 'accept'").await.with_accounting_observer(Some(observed.clone()));
+        let packet = RadiusPacket::create_accounting_request(1, vec![(40, vec![0, 0, 0, 1]), (26, unnamed_vsa), (26, named_vsa), (241, vec![extended, 0x01, 0x02])], b"xyzzy5461");
+        server.receive(PacketKind::Acct, &packet, from("127.0.0.1")).await.ok_or("not answered")?;
+        let records = observed.taken();
+        let attributes: Vec<(&str, &str)> = records.first().ok_or("not observed")?.attributes.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+        let vendor_hex = format!("0x{vendor:08x}0104beef");
+        let extended_hex = format!("0x{extended:02x}0102");
+        assert_eq!(attributes, vec![("Acct-Status-Type", "Start"), ("Attr-26", vendor_hex.as_str()), (named.as_str(), "a=b"), ("Attr-241", extended_hex.as_str())]);
         Ok(())
     }
 
