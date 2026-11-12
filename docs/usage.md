@@ -121,6 +121,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | EAP session resumption | `[radius.eap]` 的 `resumption_ms`、`shared_tickets`、`ticket_seal_file` | 用戶端重新連線時省掉完整握手 |
 | OCSP | `[radius.eap]`、`[radius.tls]`、`[tacacs.tls]` 的 `ocsp`、`ocsp_url` | CA 只提供 OCSP、不發 CRL 時檢查撤銷 |
 | TACACS+ over TLS | `[tacacs.tls]`；`[[tacacs.clients]]` 的 `tls_name` | RFC 9887 |
+| 雙因素 | `[mfa]`；`[[radius.clients]]`、`[[tacacs.clients]]` 的 `mfa`；`otp` 指令 | 密碼之後再要驗證器 App（TOTP）或 HOTP token 的 6 位數驗證碼 |
 
 最小設定：
 
@@ -1318,6 +1319,12 @@ local rows = sql_query("SELECT plan FROM users WHERE username = ?", {get_attr('U
 - **沒有密碼的帳號：** 比對前先拒絕 `NULL` 或空字串，否則不帶密碼的請求會比對成功。
 - **一律用參數：** `User-Name` 和 `State` 都由外部控制，要用 `params` 傳入。
 - **多節點：** 第二個請求可能到另一個節點，那裡的資料庫副本可能略為落後，查不到剛寫入的資料，鎖定也可能晚一點生效；範例用的 `DELETE` 和 `UPDATE` 經過叢集，不受影響。
+
+**推播核准範例：** 見 [`rradius-server/examples/push-approval.lua`](../rradius-server/examples/push-approval.lua)。密碼通過後，用 `http_request`（4.11 節）請外部的推播服務送通知到使用者手機，再查詢直到核准、拒絕或逾時，核准才接受。它是 `policy = "all_accept"` 串接裡、接在比對密碼的處理器（`sql`、`ldap`）之後的 `lua` 處理器，所以密碼錯的人不會收到推播。檔案開頭寫了它假設的服務介面，實際的網址、欄位要換成你用的服務；測試以假的服務執行這份腳本，涵蓋核准、拒絕、逾時。要注意：
+
+- **NAS 的 RADIUS 逾時要比 `WAIT_SECONDS`（範例是 30 秒）長，** 否則使用者還在看手機時，NAS 已經放棄或重送。pam_radius 是 `/etc/pam_radius.conf` 裡伺服器那一行的逾時。
+- **等待中的登入佔用 `max_auth_inflight` 的名額**（2.3 節），一直到結束。很多人同時在等時會擠掉其他登入，請依同時在等的人數調高。
+- **`[lua.http]` 的 `timeout_ms` 要大於 `POLL_SECONDS`，** 範例每次查詢讓服務最多等這麼久才回答。`max_execution_ms` 不包含等待。
 
 ### 4.5 RADIUS 屬性
 

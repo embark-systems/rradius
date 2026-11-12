@@ -430,10 +430,11 @@ struct AsciiLogin {
     code_for: Option<CodeFor>,
 }
 
-/// Whose code an ASCII login waits for: the password is not kept.
+/// Whose code an ASCII login waits for, and what the chain replied: the password is not kept.
 struct CodeFor {
     user: String,
     account: String,
+    replies: Vec<(String, AttrValue)>,
 }
 
 /// What to do with an authentication packet.
@@ -1046,13 +1047,13 @@ impl TacacsServer {
         // The password was accepted: the second factor asks for the code, or checks one.
         if let (true, Some(Factor { mode, factor, can_ask })) = (accepted, &factor) {
             let request = crate::second_factor::SecondFactorRequest { protocol: "tacacs", client, mode: *mode, user: &factor_user, password: factor_password.as_deref().map(Vec::as_slice), state: None };
-            let accepted = crate::second_factor::Accepted { attributes: std::mem::take(&mut replies), account: account.clone() };
+            let accepted = crate::second_factor::Accepted { attributes: replies.clone(), account: account.clone() };
             let account = account.as_deref().unwrap_or("");
             match factor.after_accept(&request, accepted).await {
                 crate::second_factor::Decision::Accept(attributes) => replies = attributes,
                 crate::second_factor::Decision::Challenge { reply_message, .. } if *can_ask => {
                     record_login(client, source, user, account, chain_name, "mfa", "challenge");
-                    let code_for = CodeFor { user: factor_user.clone(), account: account.to_string() };
+                    let code_for = CodeFor { user: factor_user.clone(), account: account.to_string(), replies };
                     return Login::AskCode { code_for, reply: authen_reply(AUTHEN_STATUS_GETDATA, REPLY_FLAG_NOECHO, reply_message.as_bytes()) };
                 }
                 // A PAP login cannot be asked for more.
@@ -1079,7 +1080,11 @@ impl TacacsServer {
     /// Checks the code an ASCII login was asked for after its password.
     async fn check_code(code_for: &CodeFor, code: &[u8], client: &Client, source: IpAddr, chained: bool, mode: crate::clients::SecondFactorMode, factor: &dyn crate::second_factor::SecondFactor) -> Vec<u8> {
         let request = crate::second_factor::SecondFactorRequest { protocol: "tacacs", client, mode, user: &code_for.user, password: None, state: None };
-        let decision = factor.verify_code(&request, code).await;
+        // The chain's replies go out with the second factor's, once the code is right.
+        let decision = match factor.verify_code(&request, code).await {
+            crate::second_factor::Decision::Accept(more) => crate::second_factor::Decision::Accept(code_for.replies.iter().cloned().chain(more).collect()),
+            other => other,
+        };
         let chain = if chained { client.auth.as_deref().unwrap_or("default") } else { "script" };
         Self::second_factor_reply(client, source, &code_for.user, &code_for.account, chain, decision)
     }

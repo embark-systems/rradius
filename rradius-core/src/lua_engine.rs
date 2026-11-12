@@ -740,6 +740,29 @@ impl Db {
         tokio::time::timeout(limit, caught_up).await.map_err(|_| format!("this node's replica did not catch up with the cluster within {limit:?}"))?
     }
 
+    /// Like `query_values`, read on the leader, so that it holds what the cluster committed before
+    /// now even when this node's replica has not applied it yet; slower, as the leader pauses
+    /// replication for it. A row from the leader keeps its column names to itself, so `texts` and
+    /// `integers` name the columns to read, none of them NULL.
+    pub async fn query_consistent(&self, sql: &str, params: Vec<hiqlite::Param>, texts: &[&str], integers: &[&str]) -> Result<Vec<DbRow>, DbFailure> {
+        if let Some(refused) = refused_without_leader(&self.cluster_status()) {
+            return Err(refused);
+        }
+        let rows = self.client.query_consistent(sql.to_string(), params).await.map_err(DbFailure::from)?;
+        rows.into_iter()
+            .map(|mut row| {
+                let mut columns = Vec::with_capacity(texts.len() + integers.len());
+                for name in texts {
+                    columns.push((name.to_string(), DbValue::Text(row.try_get::<String>(name).map_err(DbFailure::from)?)));
+                }
+                for name in integers {
+                    columns.push((name.to_string(), DbValue::Integer(row.try_get::<i64>(name).map_err(DbFailure::from)?)));
+                }
+                Ok(columns)
+            })
+            .collect()
+    }
+
     /// Like `query_with_params`, saying whether a failure was the cluster's.
     pub async fn query_classified(&self, sql: &str, params: &[&str]) -> Result<Vec<DbRow>, DbFailure> {
         self.query_bound(sql, params.iter().map(|p| hiqlite::Param::Text(p.to_string())).collect()).await

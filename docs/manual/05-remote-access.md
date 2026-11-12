@@ -120,10 +120,15 @@ echo 'User-Name=ops1,User-Password=<驗證碼>,State=<State 的值>' \
 
 pam_radius 會把 Access-Challenge 的 `Reply-Message` 顯示給使用者，再把輸入送回來，所以 SSH 登入時會先問密碼、再問驗證碼。`/etc/pam_radius.conf` 寫 rradius 的位址和 `jump-host.secret` 的內容，逾時建議 5 秒以上。
 
+### 用手機推播代替驗證碼
+
+不想輸入驗證碼時，可以改用推播：密碼通過後，手機跳出通知，使用者按「核准」才登入。rradius 不內建推播（各家服務的介面和費用不同），repo 的 `examples/push-approval.lua` 示範怎麼用 `http_request` 呼叫推播服務：串接改成 `all_accept`，`two-step-totp.lua` 換成比對密碼的處理器，後面接這份腳本，再設定 `[lua.http]` 允許服務的主機（[核心文件 4.4 節〈推播核准範例〉](../usage.md#44-回傳值)）。等使用者按核准要時間，所以 pam_radius 的逾時要比腳本的 `WAIT_SECONDS` 長，例如 35 秒；同時等待的人也會佔用 `max_auth_inflight` 的名額。
+
 ### 換成自己的帳號
 
 - `two-step-totp.lua` 的密碼存在 `mfa_users.password`，**以明文比對。** 要用雜湊或改用 LDAP 驗證密碼，就要改寫腳本：例如串接改成 `all_accept`，前面放 LDAP 處理器比對密碼，腳本只做驗證碼。這時第二步的「密碼」是驗證碼，LDAP 會拒絕，所以腳本要在有 `State` 時接手，寫法較複雜，建議先在測試環境確認。
 - 驗證碼金鑰用 Base32，每人一把，產生後以 QR code（`otpauth://totp/...`）給使用者掃描。
+- rradius-enterprise 有內建的雙因素（`[mfa]`）：client 加一行 `mfa = "challenge"`，密碼照樣由 LDAP 或資料表比對，驗證碼由程式處理，不必寫這份腳本，也支援 TACACS+ 和 HOTP 硬體 token。
 
 ## 上線前
 

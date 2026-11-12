@@ -70,7 +70,8 @@ pub trait SecondFactor: Send + Sync {
     fn after_accept<'a>(&'a self, request: &'a SecondFactorRequest<'a>, accepted: Accepted) -> BoxFuture<'a, Decision>;
 
     /// TACACS+: checks `code`, the answer to the question asked after a `Challenge`, which the
-    /// session itself remembers. Accept, Reject or Unavailable.
+    /// session itself remembers with the chain's replies; those of an `Accept` are added to them.
+    /// Accept, Reject or Unavailable.
     fn verify_code<'a>(&'a self, request: &'a SecondFactorRequest<'a>, code: &'a [u8]) -> BoxFuture<'a, Decision>;
 }
 

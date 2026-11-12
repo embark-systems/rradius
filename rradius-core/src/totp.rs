@@ -4,12 +4,12 @@ use crate::passwords::constant_time_eq;
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 
-const STEP_SECONDS: u64 = 30;
+pub const STEP_SECONDS: u64 = 30;
 /// Steps accepted on either side of the current one, for clocks that differ.
-const WINDOW: u64 = 1;
+pub const WINDOW: u64 = 1;
 
 /// Decodes RFC 4648 Base32, in either case and with or without padding.
-fn decode_base32(text: &str) -> Option<Vec<u8>> {
+pub fn decode_base32(text: &str) -> Option<Vec<u8>> {
     let mut bytes = Vec::with_capacity(text.len() * 5 / 8);
     let (mut buffer, mut bits) = (0u32, 0u32);
     for c in text.trim_end_matches('=').bytes() {
@@ -27,6 +27,32 @@ fn decode_base32(text: &str) -> Option<Vec<u8>> {
         }
     }
     Some(bytes)
+}
+
+/// RFC 4648 Base32 in capitals, without padding, as authenticator apps take a secret.
+pub fn encode_base32(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut text = String::with_capacity(bytes.len().div_ceil(5) * 8);
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for byte in bytes {
+        buffer = (buffer << 8) | u32::from(*byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            text.push(char::from(ALPHABET[((buffer >> bits) & 31) as usize]));
+        }
+        buffer &= (1 << bits) - 1;
+    }
+    if bits > 0 {
+        text.push(char::from(ALPHABET[((buffer << (5 - bits)) & 31) as usize]));
+    }
+    text
+}
+
+/// The six digits of HOTP (RFC 4226) for `counter`; TOTP's counter is the time step. `None`
+/// only for a key HMAC cannot take, which no key length is.
+pub fn hotp(key: &[u8], counter: u64) -> Option<String> {
+    code_for_step(key, counter)
 }
 
 /// The six digits for a counter value, per RFC 4226 section 5.3.
@@ -89,6 +115,26 @@ mod tests {
             (20000000000, "353130"),
         ] {
             assert_eq!(verify(SECRET, code.as_bytes(), time).unwrap(), Some(time / 30), "{time}");
+        }
+    }
+
+    // RFC 4226 appendix D, the secret `12345678901234567890`.
+    #[test]
+    fn test_rfc4226_vectors() {
+        let codes = ["755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583", "399871", "520489"];
+        for (counter, code) in codes.iter().enumerate() {
+            assert_eq!(hotp(b"12345678901234567890", counter as u64).as_deref(), Some(*code), "counter {counter}");
+        }
+    }
+
+    #[test]
+    fn test_base32_encoding() {
+        assert_eq!(encode_base32(b"12345678901234567890"), SECRET);
+        assert_eq!(encode_base32(b"foo"), "MZXW6");
+        assert_eq!(encode_base32(b""), "");
+        for length in 0..=21 {
+            let bytes: Vec<u8> = (0..length).map(|i| (i * 37 + 11) as u8).collect();
+            assert_eq!(decode_base32(&encode_base32(&bytes)).unwrap(), bytes, "{length} octets");
         }
     }
 
