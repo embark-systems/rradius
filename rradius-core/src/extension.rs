@@ -156,7 +156,7 @@ impl std::fmt::Debug for ExtensionSettings {
 
 /// Sections that only `rradius-enterprise` reads, with what the message of a program without
 /// them says.
-const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 10] = [
+const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 11] = [
     ("radius.eap.aka", "EAP-AKA' needs rradius-enterprise"),
     ("accounts.aka", "EAP-AKA' needs rradius-enterprise"),
     ("radius.tls", "RadSec needs rradius-enterprise"),
@@ -167,6 +167,7 @@ const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 10] = [
     ("radius.coa", "CoA needs rradius-enterprise"),
     ("proxy", "proxying needs rradius-enterprise"),
     ("tacacs.tls", "TACACS+ over TLS needs rradius-enterprise"),
+    ("cluster.backup", "backups need rradius-enterprise"),
 ];
 
 /// Commands that only `rradius-enterprise` has, likewise.

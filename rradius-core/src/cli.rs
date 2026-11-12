@@ -149,7 +149,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + cluster.migrations_wait;
     // In a block of its own, so that what it borrows is free again once the node has started.
     let started = {
-        let start = lua_engine::Db::start(cluster);
+        let start = lua_engine::Db::start_with(cluster, &config.extensions);
         tokio::pin!(start);
         let limit = migrations.is_some().then_some(deadline);
         let started = tokio::select! {

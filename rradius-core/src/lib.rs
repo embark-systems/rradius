@@ -33,6 +33,8 @@ pub mod tacacs;
 pub mod tacacs_rules;
 pub mod tacacs_transport;
 pub mod totp;
+#[cfg(feature = "backup")]
+pub mod backup;
 pub mod lua_engine;
 pub mod passwords;
 #[cfg(test)]

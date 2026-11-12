@@ -64,10 +64,16 @@ libc = "0.2"
 # For the `test-support` feature only.
 rcgen = { version = "0.14", optional = true }
 tempfile = { version = "3", optional = true }
+# For the `backup` feature only: the key hiqlite encrypts backups with.
+cryptr = { version = "0.12", default-features = false, optional = true }
 
 [features]
 # The helpers of the core's tests, for the tests of crates built on it.
 test-support = ["dep:rcgen", "dep:tempfile"]
+# Backups of the cluster database, for rradius-enterprise: hiqlite's backups, configured from the
+# `ClusterBackup` an extension makes of `[cluster.backup]`. Its `toml` feature is the only way to
+# give hiqlite a backup schedule of our own.
+backup = ["hiqlite/backup", "hiqlite/toml", "dep:cryptr"]
 
 [dev-dependencies]
 rcgen = "0.14"
