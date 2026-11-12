@@ -24,6 +24,7 @@ pub mod records;
 pub mod reload;
 pub mod revocation;
 pub mod runtime;
+pub mod schema;
 pub mod script_http;
 pub mod session_resumption;
 pub mod spool;

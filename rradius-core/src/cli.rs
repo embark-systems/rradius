@@ -28,6 +28,26 @@ pub struct Program {
 }
 
 const USAGE: &str = "usage: rradius-server --config <path>";
+const SCHEMA_USAGE: &str = "usage: rradius-server schema";
+
+/// The `schema` command: prints the JSON Schema of the configuration file; the exit status.
+fn print_schema(program: &str, extensions: &crate::extension::Extensions, rest: &[String]) -> i32 {
+    if !rest.is_empty() {
+        eprintln!("{SCHEMA_USAGE}");
+        return 2;
+    }
+    let text = crate::schema::build(program, extensions).and_then(|schema| serde_json::to_string_pretty(&schema).map_err(|e| e.to_string()));
+    match text {
+        Ok(text) => {
+            println!("{text}");
+            0
+        }
+        Err(e) => {
+            eprintln!("schema: {e}");
+            1
+        }
+    }
+}
 
 /// Prints `message` and exits with status 2, the status for usage and configuration errors.
 /// Directly: this has to be written before the process ends, in whatever state logging is,
@@ -99,6 +119,9 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         println!("{} {}", program.name, program.version);
         return Ok(());
     }
+    if args.get(1).is_some_and(|command| command == "schema") {
+        std::process::exit(print_schema(program.name, extensions, &args[2..]));
+    }
     if args.get(1).is_some_and(|command| command == "user") {
         std::process::exit(accounts::run(&args[2..]).await);
     }
@@ -112,7 +135,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = match args.as_slice() {
         [_, flag, path] if flag == "--config" => path,
         [_, check, flag, path] | [_, flag, path, check] if check == "--check" && flag == "--config" => std::process::exit(admin::check(path)),
-        _ => exit_with(format!("{USAGE}\nusage: rradius-server --version\n{}\n{}", admin::CHECK_USAGE, accounts::USAGE) + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()),
+        _ => exit_with(format!("{USAGE}\nusage: rradius-server --version\n{}\n{SCHEMA_USAGE}\n{}", admin::CHECK_USAGE, accounts::USAGE) + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()),
     };
     // Only now: the commands above do not listen for these, and must end on them. As PID 1 the
     // server would ignore them until the end of startup, and be killed.
