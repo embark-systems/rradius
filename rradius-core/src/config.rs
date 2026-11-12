@@ -433,6 +433,9 @@ struct RawConfig {
     #[schemars(skip)]
     proxy: Option<toml::Value>,
     accounts: Option<RawAccounts>,
+    /// `[accounting_export]`, which an extension reads.
+    #[schemars(skip)]
+    accounting_export: Option<toml::Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -1032,7 +1035,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
     let aka = raw.radius.as_mut().and_then(|radius| radius.eap.as_mut()).and_then(|eap| eap.aka.take());
     let tacacs_tls = raw.tacacs.as_mut().and_then(|tacacs| tacacs.tls.take());
     let cluster_backup = raw.cluster.as_mut().and_then(|cluster| cluster.backup.take());
-    let found = [("radius.eap.aka", aka), ("accounts.aka", raw.accounts.as_mut().and_then(|accounts| accounts.aka.take())), ("radius.dpsk", dpsk), ("accounts.dpsk", dpsk_statements), ("radius.tls", radsec_section), ("radius.dynamic_clients", dynamic_clients), ("accounts.clients", client_statements), ("radius.coa", coa_relay), ("proxy", raw.proxy.take()), ("tacacs.tls", tacacs_tls), ("cluster.backup", cluster_backup)];
+    let found = [("radius.eap.aka", aka), ("accounts.aka", raw.accounts.as_mut().and_then(|accounts| accounts.aka.take())), ("radius.dpsk", dpsk), ("accounts.dpsk", dpsk_statements), ("radius.tls", radsec_section), ("radius.dynamic_clients", dynamic_clients), ("accounts.clients", client_statements), ("radius.coa", coa_relay), ("proxy", raw.proxy.take()), ("tacacs.tls", tacacs_tls), ("cluster.backup", cluster_backup), ("accounting_export", raw.accounting_export.take())];
     let shared_text: Arc<str> = Arc::from(text.as_str());
     let found = found.into_iter().filter_map(|(section, value)| value.map(|value| crate::extension::Section::new(section, value, shared_text.clone()))).collect();
     let extension_settings = crate::extension::settings(extensions, found, base).map_err(fail)?;

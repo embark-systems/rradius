@@ -349,6 +349,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             .with_limits(radius.max_auth_inflight, radius.max_acct_inflight)
             .with_status_server(radius.status_server)
             .with_eap(radius.eap.clone())
+            .with_accounting_observer(extensions.accounting_observer(&config))
             .with_metrics(metrics.clone());
         let radius_server = match &radius.accounting_spool {
             Some(spool) => match Spool::open(&spool.dir, spool.max_bytes, metrics.acct_spool.clone()) {

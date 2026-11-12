@@ -60,6 +60,33 @@ pub trait Served: Send + Sync {
     fn stop(&self) {}
 }
 
+/// One accounting request that was answered, for an `AccountingObserver`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountingRecord {
+    /// When its Accounting-Response was made.
+    pub time: std::time::SystemTime,
+    /// The name of the client it came from.
+    pub client: String,
+    pub source: std::net::IpAddr,
+    /// `udp` or `radsec`.
+    pub transport: &'static str,
+    /// What answered it: `script` when the script accepted it, `spool` when it was written down
+    /// to replay or send on later, `proxy` when another server answered it.
+    pub handling: &'static str,
+    /// Its attributes in the order of the packet, by their names in the dictionary and with their
+    /// values as text: a number by its name in the dictionary when it has one, text as it is,
+    /// other octets as `0x` and hexadecimal. One the dictionary does not name is `Attr-<type>`,
+    /// with its octets in hexadecimal.
+    pub attributes: Vec<(String, String)>,
+}
+
+/// What is told of each accounting request the RADIUS server answers, once its Accounting-Response
+/// is made; a retransmission answered from the duplicate cache is not told again.
+pub trait AccountingObserver: Send + Sync {
+    /// Returns at once: on the path of the answer, it never waits.
+    fn observe(&self, record: &AccountingRecord);
+}
+
 /// A section of the configuration that an extension reads, such as `[accounts.aka]`.
 #[derive(Clone)]
 pub struct Section {
@@ -163,7 +190,7 @@ impl std::fmt::Debug for ExtensionSettings {
 
 /// Sections that only `rradius-enterprise` reads, with what the message of a program without
 /// them says.
-const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 11] = [
+const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 12] = [
     ("radius.eap.aka", "EAP-AKA' needs rradius-enterprise"),
     ("accounts.aka", "EAP-AKA' needs rradius-enterprise"),
     ("radius.tls", "RadSec needs rradius-enterprise"),
@@ -175,6 +202,7 @@ const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 11] = [
     ("proxy", "proxying needs rradius-enterprise"),
     ("tacacs.tls", "TACACS+ over TLS needs rradius-enterprise"),
     ("cluster.backup", "backups need rradius-enterprise"),
+    ("accounting_export", "accounting export needs rradius-enterprise"),
 ];
 
 /// Commands that only `rradius-enterprise` has, likewise.
@@ -290,6 +318,13 @@ pub trait Extension: Send + Sync {
     fn forwarder(&self, context: &crate::forwarding::ForwardingContext<'_>) -> Result<Option<Arc<dyn crate::forwarding::Forwarder>>, String> {
         let _ = context;
         Ok(None)
+    }
+
+    /// What is told of the accounting requests the RADIUS server answers; asked once, at the
+    /// start. `None`, as for every extension of a program without one, makes no record at all.
+    fn accounting_observer(&self, config: &ServerConfig) -> Option<Arc<dyn AccountingObserver>> {
+        let _ = config;
+        None
     }
 
     /// What proves the identity of requests before the chain runs, such as per-user pre-shared
@@ -510,6 +545,11 @@ impl Extensions {
     /// The client source of the first extension that has one.
     pub fn client_source(&self, context: &crate::client_source::ClientSourceContext<'_>) -> Option<Arc<dyn crate::client_source::ClientSource>> {
         self.list.iter().find_map(|extension| extension.client_source(context))
+    }
+
+    /// The accounting observer of the first extension that has one.
+    pub fn accounting_observer(&self, config: &ServerConfig) -> Option<Arc<dyn AccountingObserver>> {
+        self.list.iter().find_map(|extension| extension.accounting_observer(config))
     }
 
     /// The pre-chain authenticator of the first extension that has one.
