@@ -2123,6 +2123,28 @@ fn test_accounting_export_refused_at_reload() -> Result<(), String> {
     Ok(())
 }
 
+/// `mfa` on a client needs rradius-enterprise: `--check` ends with status 2 and says so, and the
+/// setting added while the program runs is refused at SIGHUP (Second Factor Settings: Core
+/// program).
+#[test]
+fn test_mfa_needs_the_enterprise_program() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&config, format!("{text}mfa = \"challenge\"\n")).map_err(|e| e.to_string())?;
+    let output = Command::new(PROGRAM).arg("--check").arg("--config").arg(&config).output().map_err(|e| e.to_string())?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("mfa needs rradius-enterprise"), "{stderr}");
+    let server = Server::start(PROGRAM, tempfile::tempdir().map_err(|e| e.to_string())?, "return 'accept'", None);
+    assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
+    server.write_config_text(|text| format!("{text}mfa = \"challenge\"\n"));
+    let stderr = server.reload(RELOAD_FAILED);
+    assert!(stderr.contains("mfa needs rradius-enterprise"), "{stderr}");
+    assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
+    Ok(())
+}
+
 /// The settings RadSec, and only it, uses, as the program without it takes them: at a start and
 /// in a check (the table of the radsec spec, this program's column).
 #[test]

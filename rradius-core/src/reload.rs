@@ -112,14 +112,16 @@ pub fn build(config: &ServerConfig, shared: &Shared) -> Result<Generation, Strin
         Some(_) => shared.extensions.forwarder(&crate::forwarding::ForwardingContext { config, dictionary: &shared.dictionary, metrics: &shared.metrics })?,
         None => None,
     };
+    let second_factor = shared.extensions.second_factor(&crate::second_factor::SecondFactorContext { config, db: &shared.db });
     Ok(Generation {
         radius: config.radius.as_ref().map(|radius| RadiusState::new(radius.clients.clone(), engine.clone(), chains.clone())
                 .with_radsec_network_names(config.extension::<RadsecClients>().is_some_and(|radsec| radsec.network_clients_need_tls_name))
                 .with_forwarder(forwarder.clone())
                 .with_pre_chain(shared.extensions.pre_chain(&crate::pre_chain::PreChainContext { config, db: &shared.db }))
+                .with_second_factor(second_factor.clone())
                 .with_client_source(shared.extensions.client_source(&crate::client_source::ClientSourceContext { config, db: &shared.db, metrics: &shared.metrics }))
                 .with_trace(config.trace.as_ref())),
-        tacacs: config.tacacs.as_ref().map(|tacacs| TacacsState { enable: tacacs.enable, clients: tacacs.clients.clone(), engine: engine.clone(), chains: chains.clone(), tls_only: config.extension::<crate::tacacs_transport::TacacsTlsServed>().is_some_and(|served| served.tls_only) }),
+        tacacs: config.tacacs.as_ref().map(|tacacs| TacacsState { enable: tacacs.enable, clients: tacacs.clients.clone(), engine: engine.clone(), chains: chains.clone(), tls_only: config.extension::<crate::tacacs_transport::TacacsTlsServed>().is_some_and(|served| served.tls_only), second_factor: second_factor.clone() }),
     })
 }
 

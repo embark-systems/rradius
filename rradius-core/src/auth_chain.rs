@@ -1249,7 +1249,7 @@ mod tests {
     }
 
     fn client(name: &str, auth: Option<&str>) -> Client {
-        Client { max_radsec_connections: None, radsec_subject: None, authorize_group: None, coa_sender: false, eap_methods: None, name: name.to_string(), secret: b"k".to_vec(), auth: auth.map(str::to_string), require_message_authenticator: Default::default(), limit_proxy_state: Default::default(), coa_port: 3799, tls_name: None }
+        Client { max_radsec_connections: None, radsec_subject: None, authorize_group: None, coa_sender: false, mfa: None, eap_methods: None, name: name.to_string(), secret: b"k".to_vec(), auth: auth.map(str::to_string), require_message_authenticator: Default::default(), limit_proxy_state: Default::default(), coa_port: 3799, tls_name: None }
     }
 
     #[tokio::test]

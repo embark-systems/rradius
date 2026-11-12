@@ -4,7 +4,7 @@ pub fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-pub(crate) fn decode_hex_vec(text: &str) -> Option<Vec<u8>> {
+pub fn decode_hex_vec(text: &str) -> Option<Vec<u8>> {
     // Not `from_str_radix` alone: that takes a leading `+`.
     if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;

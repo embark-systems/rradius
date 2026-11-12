@@ -15,6 +15,15 @@ pub enum MessageAuthenticatorPolicy {
     Auto,
 }
 
+/// How the users of a client give a second factor, which rradius-enterprise asks for: in answer
+/// to an Access-Challenge (or a second question over TACACS+ ASCII), or appended to the password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SecondFactorMode {
+    Challenge,
+    Append,
+}
+
 /// Where a NAS listens for dynamic authorization requests unless configured otherwise (RFC 5176).
 pub const DEFAULT_COA_PORT: u16 = 3799;
 
@@ -43,6 +52,8 @@ pub struct Client {
     /// RADIUS only: may send Disconnect-Request and CoA-Request on its RadSec connection, for
     /// the CoA relay to pass on.
     pub coa_sender: bool,
+    /// How its users give a second factor; `None` asks for none.
+    pub mfa: Option<SecondFactorMode>,
 }
 
 /// The settings of a client other than its address, name and secret.
@@ -59,6 +70,8 @@ pub struct ClientOptions {
     /// RADIUS only: may send Disconnect-Request and CoA-Request on its RadSec connection, for
     /// the CoA relay to pass on.
     pub coa_sender: bool,
+    /// How its users give a second factor; `None` asks for none.
+    pub mfa: Option<SecondFactorMode>,
 }
 
 impl Default for ClientOptions {
@@ -73,6 +86,7 @@ impl Default for ClientOptions {
             eap_methods: None,
             authorize_group: None,
             coa_sender: false,
+            mfa: None,
         }
     }
 }
@@ -129,7 +143,7 @@ impl ClientTable {
     /// Adds a client. `auto` remembers how one device behaves, so it takes a single
     /// host: a network can hold devices that differ.
     pub fn add(&mut self, address: &str, name: Option<String>, secret: Vec<u8>, options: ClientOptions) -> Result<(), ClientTableError> {
-        let ClientOptions { auth, require_message_authenticator, limit_proxy_state, coa_port, tls_name, eap_methods, max_radsec_connections, authorize_group, coa_sender } = options;
+        let ClientOptions { auth, require_message_authenticator, limit_proxy_state, coa_port, tls_name, eap_methods, max_radsec_connections, authorize_group, coa_sender, mfa } = options;
         let net = parse_network(address)?;
         if self.entries.iter().any(|(existing, _)| *existing == net) {
             return Err(ClientTableError(format!("duplicate client network '{}'", net)));
@@ -140,19 +154,19 @@ impl ClientTable {
             }
         }
         let name = name.unwrap_or_else(|| address.to_string());
-        self.entries.push((net, Client { name, secret, auth, require_message_authenticator, limit_proxy_state, coa_port, eap_methods, tls_name, max_radsec_connections, radsec_subject: None, authorize_group, coa_sender }));
+        self.entries.push((net, Client { name, secret, auth, require_message_authenticator, limit_proxy_state, coa_port, eap_methods, tls_name, max_radsec_connections, radsec_subject: None, authorize_group, coa_sender, mfa }));
         Ok(())
     }
 
     /// Adds a client known by the name in its RadSec certificate, from any address.
     pub fn add_without_address(&mut self, name: Option<String>, secret: Vec<u8>, options: ClientOptions) -> Result<(), ClientTableError> {
-        let ClientOptions { auth, require_message_authenticator, limit_proxy_state, coa_port, tls_name, eap_methods, max_radsec_connections, authorize_group, coa_sender } = options;
+        let ClientOptions { auth, require_message_authenticator, limit_proxy_state, coa_port, tls_name, eap_methods, max_radsec_connections, authorize_group, coa_sender, mfa } = options;
         let tls_name = tls_name.ok_or_else(|| ClientTableError("a client without an address needs a tls_name".to_string()))?;
         if self.without_address.iter().any(|client| client.tls_name.as_deref().is_some_and(|other| other.eq_ignore_ascii_case(&tls_name))) {
             return Err(ClientTableError(format!("tls_name '{tls_name}' is used by two clients without an address")));
         }
         let name = name.unwrap_or_else(|| tls_name.clone());
-        self.without_address.push(Client { name, secret, auth, require_message_authenticator, limit_proxy_state, coa_port, eap_methods, tls_name: Some(tls_name), max_radsec_connections, radsec_subject: None, authorize_group, coa_sender });
+        self.without_address.push(Client { name, secret, auth, require_message_authenticator, limit_proxy_state, coa_port, eap_methods, tls_name: Some(tls_name), max_radsec_connections, radsec_subject: None, authorize_group, coa_sender, mfa });
         Ok(())
     }
 

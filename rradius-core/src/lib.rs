@@ -25,6 +25,7 @@ pub mod reload;
 pub mod revocation;
 pub mod runtime;
 pub mod schema;
+pub mod second_factor;
 pub mod script_http;
 pub mod session_resumption;
 pub mod spool;

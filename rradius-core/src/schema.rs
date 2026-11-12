@@ -180,6 +180,20 @@ mod tests {
         Ok(())
     }
 
+    /// In the core's schema `[mfa]` is unknown, and a client's `mfa` takes only the two ways,
+    /// which the core program then refuses as needing rradius-enterprise.
+    #[test]
+    fn test_mfa_in_the_core_schema() -> Result<(), String> {
+        let core = build("rradius-server", &crate::extensions::builtin())?;
+        let client = "[radius]\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n";
+        let section = validate(&core, &toml_text(&format!("{BASE}{client}[mfa]\nkey_file = \"mfa.key\"\n"))?);
+        assert!(section.as_ref().is_err_and(|e| e.contains("unknown property `mfa`")), "{section:?}");
+        validate(&core, &toml_text(&format!("{BASE}{client}mfa = \"challenge\"\n"))?)?;
+        let other = validate(&core, &toml_text(&format!("{BASE}{client}mfa = \"sms\"\n"))?);
+        assert!(other.is_err(), "{other:?}");
+        Ok(())
+    }
+
     #[test]
     fn test_a_path_with_no_parent() -> Result<(), String> {
         let extensions = Extensions::new(vec![Arc::new(ProbeExtension("nowhere.probe"))])?;

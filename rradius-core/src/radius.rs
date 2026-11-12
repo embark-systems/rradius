@@ -1344,6 +1344,8 @@ pub struct RadiusState {
     pub client_source: Option<Arc<dyn crate::client_source::ClientSource>>,
     /// What proves the identity of requests before the chain runs, such as `[radius.dpsk]`.
     pub pre_chain: Option<Arc<dyn crate::pre_chain::PreChainAuthenticator>>,
+    /// The second factor of the clients with `mfa`, such as `[mfa]`.
+    pub second_factor: Option<Arc<dyn crate::second_factor::SecondFactor>>,
 }
 
 /// `[log.trace]`, from when it was loaded.
@@ -1423,7 +1425,7 @@ fn trace_exchange(dictionary: &Dictionary, client: &Client, source: IpAddr, pack
 impl RadiusState {
     pub fn new(clients: Arc<ClientTable>, engine: Arc<LuaAuthEngine>, chains: Option<Arc<AuthChains>>) -> Self {
         let radsec_clients = clients.for_radsec();
-        Self { clients, radsec_clients, engine, chains, trace: None, forwarder: None, client_source: None, pre_chain: None }
+        Self { clients, radsec_clients, engine, chains, trace: None, forwarder: None, client_source: None, pre_chain: None, second_factor: None }
     }
 
     /// `[radius.tls] network_clients_need_tls_name`.
@@ -1435,6 +1437,11 @@ impl RadiusState {
 
     pub fn with_pre_chain(mut self, pre_chain: Option<Arc<dyn crate::pre_chain::PreChainAuthenticator>>) -> Self {
         self.pre_chain = pre_chain;
+        self
+    }
+
+    pub fn with_second_factor(mut self, second_factor: Option<Arc<dyn crate::second_factor::SecondFactor>>) -> Self {
+        self.second_factor = second_factor;
         self
     }
 
@@ -2041,7 +2048,7 @@ impl RadiusServer {
             }
         }
         let secret = client.secret.as_slice();
-        let attributes = request_attributes(packet, &self.dictionary, secret);
+        let mut attributes = request_attributes(packet, &self.dictionary, secret);
         if let Some(authenticator) = &state.pre_chain {
             let user = String::from_utf8_lossy(packet.attribute(1).unwrap_or_default()).into_owned();
             let request = crate::pre_chain::PreChainRequest { client, attributes: &attributes, user: &user };
@@ -2051,6 +2058,35 @@ impl RadiusServer {
                 return self.process_pre_chain(state, client, packet, source, authenticator.name(), &user, identified).await;
             }
         }
+        // A client with `mfa`: the second factor sees the request first, and may take a code off
+        // the password the chain is given, or answer a challenge without the chain.
+        let factor = client.mfa.zip(state.second_factor.clone());
+        let factor_user = String::from_utf8_lossy(packet.attribute(1).unwrap_or_default()).into_owned();
+        let factor_password = match factor {
+            Some(_) => packet.attribute(USER_PASSWORD).map(|cipher| Zeroizing::new(decrypt_user_password(cipher, secret, &packet.authenticator))),
+            None => None,
+        };
+        // The password the chain is given in place of the request's, such as without the code.
+        let mut chain_password = None;
+        if let Some((mode, factor)) = &factor {
+            let request = crate::second_factor::SecondFactorRequest { protocol: "radius", client, mode: *mode, user: &factor_user, password: factor_password.as_deref().map(Vec::as_slice), state: packet.attribute(STATE) };
+            let before = factor.before_chain(&request).await;
+            let chain = client.auth.as_deref().unwrap_or("default");
+            match before {
+                crate::second_factor::Before::Continue { password: Some(password) } => {
+                    for (name, value) in &mut attributes {
+                        if name == "User-Password" {
+                            *value = AttrValue::Bytes(password.to_vec());
+                        }
+                    }
+                    chain_password = Some(password);
+                }
+                crate::second_factor::Before::Continue { password: None } => {}
+                crate::second_factor::Before::Answer(decision) => return self.second_factor_answer(client, packet, source, &factor_user, &factor_user, chain, decision),
+                crate::second_factor::Before::Reject { log } => return self.second_factor_answer(client, packet, source, &factor_user, "", chain, crate::second_factor::Decision::Reject { log }),
+                crate::second_factor::Before::Unavailable { log } => return self.second_factor_answer(client, packet, source, &factor_user, "", chain, crate::second_factor::Decision::Unavailable { log }),
+            }
+        }
 
         let mut request = LuaRequest::new("radius", "authentication", attributes);
         request.client = client.name.clone();
@@ -2058,7 +2094,13 @@ impl RadiusServer {
         let dictionary = self.dictionary.clone();
         request.validator = Some(Arc::new(move |name: &str, value: &AttrValue| encode_response_attributes(&dictionary, [(name, value)], b"", &[0; 16], &mut Vec::new()).map(|_| ())));
         let chain = state.chains.as_deref().and_then(|chains| chains.for_client(client));
-        let credentials = chain.map(|_| request_credentials(packet, secret));
+        let credentials = chain.map(|_| {
+            let mut credentials = request_credentials(packet, secret);
+            if let (Some(password), Secret::Pap(_)) = (&chain_password, &credentials.secret) {
+                credentials.secret = Secret::pap(password.to_vec());
+            }
+            credentials
+        });
         let user = String::from_utf8_lossy(packet.attribute(1).unwrap_or_default());
         let (decision, mut response_attributes, chain_name, handler, account, unavailable) = match (chain, &credentials) {
             (Some(chain), Some(credentials)) => {
@@ -2076,6 +2118,15 @@ impl RadiusServer {
             self.metrics.radius_discarded_database.inc();
             log_line(tracing::Level::WARN, format!("RADIUS Access-Request from client {} not answered: the cluster database could not be used", client.name));
             return None;
+        }
+        // The chain accepted the password: the second factor asks for the code, or checks one.
+        if let (Outcome::Accept, Some((mode, factor))) = (decision, &factor) {
+            let request = crate::second_factor::SecondFactorRequest { protocol: "radius", client, mode: *mode, user: &factor_user, password: factor_password.as_deref().map(Vec::as_slice), state: packet.attribute(STATE) };
+            let accepted = crate::second_factor::Accepted { attributes: std::mem::take(&mut response_attributes), account: account.clone() };
+            match factor.after_accept(&request, accepted).await {
+                crate::second_factor::Decision::Accept(attributes) => response_attributes = attributes,
+                other => return self.second_factor_answer(client, packet, source, &factor_user, account.as_deref().unwrap_or(""), chain_name, other),
+            }
         }
         // What the client gets, which is a rejection if the decision cannot be sent.
         let record = |code: u8| {
@@ -2129,6 +2180,63 @@ impl RadiusServer {
         record(ACCESS_REJECT);
         let rejection = RadiusPacket::create_response(ACCESS_REJECT, packet, Vec::new(), secret);
         (rejection.len() <= MAX_PACKET_LEN).then_some(rejection)
+    }
+
+    /// The answer the second factor of a client with `mfa` decided on, recorded with the handler
+    /// `mfa`.
+    #[allow(clippy::too_many_arguments)]
+    fn second_factor_answer(&self, client: &Client, packet: &RadiusPacket, source: IpAddr, user: &str, account: &str, chain: &str, decision: crate::second_factor::Decision) -> Option<Vec<u8>> {
+        use crate::second_factor::Decision;
+        let secret = client.secret.as_slice();
+        let (code, mut attributes) = match decision {
+            Decision::Accept(attributes) => (ACCESS_ACCEPT, attributes),
+            Decision::Challenge { state, reply_message } => (ACCESS_CHALLENGE, vec![("Reply-Message".to_string(), AttrValue::Bytes(reply_message.into_bytes())), ("State".to_string(), AttrValue::Bytes(state))]),
+            Decision::Reject { log } => {
+                if let Some(log) = log {
+                    log_line(tracing::Level::WARN, log);
+                }
+                (ACCESS_REJECT, Vec::new())
+            }
+            // The NAS asks again.
+            Decision::Unavailable { log } => {
+                self.metrics.radius_discarded_database.inc();
+                log_line(tracing::Level::WARN, log);
+                return None;
+            }
+        };
+        let (code, encoded) = match code {
+            ACCESS_REJECT => (code, Vec::new()),
+            _ => match self.encode_reply(&mut attributes, secret, &packet.authenticator, &mut Vec::new()) {
+                Ok(encoded) => (code, encoded),
+                Err(e) => {
+                    tracing::error!("RADIUS response attribute error: {e}");
+                    (ACCESS_REJECT, Vec::new())
+                }
+            },
+        };
+        let response = RadiusPacket::create_response(code, packet, encoded, secret);
+        let (code, response) = if response.len() <= MAX_PACKET_LEN {
+            (code, Some(response))
+        } else {
+            tracing::error!("RADIUS response to {} is longer than {MAX_PACKET_LEN} octets", client.name);
+            let rejection = RadiusPacket::create_response(ACCESS_REJECT, packet, Vec::new(), secret);
+            (ACCESS_REJECT, (rejection.len() <= MAX_PACKET_LEN).then_some(rejection))
+        };
+        crate::logging::auth_record(&crate::logging::AuthRecord {
+            protocol: "radius",
+            client: &client.name,
+            source,
+            user,
+            account,
+            chain,
+            handler: "mfa",
+            decision: match code {
+                ACCESS_ACCEPT => "accept",
+                ACCESS_CHALLENGE => "challenge",
+                _ => "reject",
+            },
+        });
+        response
     }
 
     /// An Access-Request a pre-chain authenticator took, such as one carrying the 4-way handshake
@@ -7280,6 +7388,142 @@ pub(crate) mod tests {
         let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'reject'").unwrap());
         RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine, share_dictionary())
             .with_auth_chains(Arc::new(AuthChains::new(Some(chain), Vec::new())))
+    }
+
+    /// A second factor for tests. An answer carrying the State `fake-state` is accepted with the
+    /// code 123456; `append` clients give the code after the password; the User-Names
+    /// `sf-refused` and `sf-unavailable` are refused and not answered before the chain.
+    struct FakeSecondFactor;
+
+    impl crate::second_factor::SecondFactor for FakeSecondFactor {
+        fn before_chain<'a>(&'a self, request: &'a crate::second_factor::SecondFactorRequest<'a>) -> BoxFuture<'a, crate::second_factor::Before> {
+            use crate::second_factor::{Before, Decision};
+            Box::pin(async move {
+                let password = request.password.unwrap_or_default();
+                if request.state == Some(b"fake-state".as_slice()) {
+                    return Before::Answer(match password {
+                        b"123456" => Decision::Accept(vec![("Reply-Message".to_string(), AttrValue::Bytes(b"welcome".to_vec()))]),
+                        _ => Decision::Reject { log: Some(format!("wrong code for {}", request.user)) },
+                    });
+                }
+                match request.user {
+                    "sf-refused" => Before::Reject { log: Some("sf refused the request".to_string()) },
+                    "sf-unavailable" => Before::Unavailable { log: "sf could not read its table".to_string() },
+                    _ if request.mode == crate::clients::SecondFactorMode::Append && password.len() > 6 => Before::Continue { password: Some(Zeroizing::new(password[..password.len() - 6].to_vec())) },
+                    _ => Before::Continue { password: None },
+                }
+            })
+        }
+
+        fn after_accept<'a>(&'a self, request: &'a crate::second_factor::SecondFactorRequest<'a>, accepted: crate::second_factor::Accepted) -> BoxFuture<'a, crate::second_factor::Decision> {
+            use crate::second_factor::Decision;
+            Box::pin(async move {
+                match request.mode {
+                    crate::clients::SecondFactorMode::Challenge => Decision::Challenge { state: b"fake-state".to_vec(), reply_message: "Enter the code".to_string() },
+                    crate::clients::SecondFactorMode::Append if request.password.unwrap_or_default().ends_with(b"123456") => {
+                        let mut attributes = accepted.attributes;
+                        attributes.push(("Reply-Message".to_string(), AttrValue::Bytes(format!("appended for {}", accepted.account.unwrap_or_default()).into_bytes())));
+                        Decision::Accept(attributes)
+                    }
+                    crate::clients::SecondFactorMode::Append => Decision::Reject { log: None },
+                }
+            })
+        }
+
+        fn verify_code<'a>(&'a self, _request: &'a crate::second_factor::SecondFactorRequest<'a>, _code: &'a [u8]) -> BoxFuture<'a, crate::second_factor::Decision> {
+            Box::pin(async move { crate::second_factor::Decision::Reject { log: None } })
+        }
+    }
+
+    /// nas-a (127.0.0.1) has `mfa = "append"`, nas-b (127.0.0.2) `mfa = "challenge"`, nas-c
+    /// (127.0.0.3) none.
+    fn second_factor_clients() -> Result<Arc<ClientTable>, String> {
+        let mut clients = ClientTable::default();
+        for (address, name, mfa) in [("127.0.0.1", "nas-a", Some(crate::clients::SecondFactorMode::Append)), ("127.0.0.2", "nas-b", Some(crate::clients::SecondFactorMode::Challenge)), ("127.0.0.3", "nas-c", None)] {
+            let options = crate::clients::ClientOptions { require_message_authenticator: Policy::No, mfa, ..crate::clients::ClientOptions::default() };
+            clients.add(address, Some(name.to_string()), SECRET.to_vec(), options).map_err(|e| format!("{e:?}"))?;
+        }
+        Ok(Arc::new(clients))
+    }
+
+    fn reply_message(packet: &RadiusPacket) -> Option<String> {
+        packet.attribute(18).map(|message| String::from_utf8_lossy(message).into_owned())
+    }
+
+    /// The second factor of clients with `mfa`, with a script that accepts the password `pw`.
+    #[tokio::test]
+    async fn test_second_factor_outcomes() -> Result<(), String> {
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return get_attr('User-Password') == 'pw' and 'accept' or 'reject'")?);
+        let state = RadiusState::new(second_factor_clients()?, engine.clone(), None).with_second_factor(Some(Arc::new(FakeSecondFactor)));
+        let server = RadiusServer::from_state(any_addr(), any_addr(), state, share_dictionary());
+        let ask = |identifier: u8, address: &'static str, user: &'static str, password: &'static str, state: Option<&'static [u8]>| {
+            let server = &server;
+            async move {
+                let ra = [identifier; 16];
+                let mut attributes = vec![(1, user.as_bytes().to_vec()), (USER_PASSWORD, encrypt_password(password, &ra))];
+                attributes.extend(state.map(|state| (STATE, state.to_vec())));
+                let request = RadiusPacket::create_access_request(identifier, ra, attributes, SECRET);
+                let answer = server.receive(PacketKind::Auth, &request, from(address)).await;
+                answer.map(|answer| RadiusPacket::parse(&answer).map_err(|e| format!("{e:?}"))).transpose()
+            }
+        };
+
+        // Continue with another password: the script sees `pw`, and the code is checked after.
+        let appended = ask(1, "127.0.0.1", "sf-append", "pw123456", None).await?.ok_or("no answer to an appended code")?;
+        assert_eq!((appended.code, reply_message(&appended).as_deref()), (ACCESS_ACCEPT, Some("appended for sf-append")));
+        let wrong = ask(2, "127.0.0.1", "sf-append-wrong", "pw654321", None).await?.ok_or("no answer to a wrong appended code")?;
+        assert_eq!(wrong.code, ACCESS_REJECT);
+        let record = crate::logging::records_for("sf-append-wrong");
+        assert_eq!((record[0].handler.as_str(), record[0].decision.as_str()), ("mfa", "reject"));
+
+        // Challenge after the password, then the answer without the chain.
+        let challenged = ask(3, "127.0.0.2", "sf-challenge", "pw", None).await?.ok_or("no challenge")?;
+        assert_eq!((challenged.code, challenged.attribute(STATE), reply_message(&challenged).as_deref()), (ACCESS_CHALLENGE, Some(b"fake-state".as_slice()), Some("Enter the code")));
+        let record = crate::logging::records_for("sf-challenge");
+        assert_eq!((record[0].handler.as_str(), record[0].decision.as_str()), ("mfa", "challenge"));
+        let answered = ask(4, "127.0.0.2", "sf-answer", "123456", Some(b"fake-state")).await?.ok_or("no answer to the code")?;
+        assert_eq!((answered.code, reply_message(&answered).as_deref()), (ACCESS_ACCEPT, Some("welcome")));
+        assert_eq!(crate::logging::records_for("sf-answer")[0].handler, "mfa");
+
+        // Rejected before the chain, logged; unavailable: not answered, counted.
+        let discarded = server.metrics.radius_discarded_database.get();
+        let mut rejected = (None, None);
+        let log = logged_during(async {
+            rejected.0 = ask(5, "127.0.0.2", "sf-answer-wrong", "000000", Some(b"fake-state")).await.ok().flatten();
+            rejected.1 = ask(6, "127.0.0.1", "sf-refused", "pw123456", None).await.ok().flatten();
+            assert!(matches!(ask(7, "127.0.0.1", "sf-unavailable", "pw123456", None).await, Ok(None)));
+        })
+        .await;
+        assert_eq!(rejected.0.ok_or("no answer to a wrong code")?.code, ACCESS_REJECT);
+        assert_eq!(rejected.1.ok_or("no answer to sf-refused")?.code, ACCESS_REJECT);
+        assert!(log.contains("wrong code for sf-answer-wrong") && log.contains("sf refused the request") && log.contains("sf could not read its table"), "{log}");
+        assert_eq!(server.metrics.radius_discarded_database.get(), discarded + 1);
+
+        // A client without `mfa`: as before, the whole password goes to the script.
+        let plain = ask(8, "127.0.0.3", "sf-none", "pw", None).await?.ok_or("no answer without mfa")?;
+        assert_eq!((plain.code, reply_message(&plain)), (ACCESS_ACCEPT, None));
+        assert_eq!(ask(9, "127.0.0.3", "sf-none", "pw123456", None).await?.ok_or("no answer without mfa")?.code, ACCESS_REJECT);
+
+        // A program without a second factor: clients with `mfa` are authenticated as before.
+        server.replace_state(RadiusState::new(second_factor_clients()?, engine, None));
+        let unchanged = ask(10, "127.0.0.2", "sf-unchanged", "pw", None).await?.ok_or("no answer without a second factor")?;
+        assert_eq!((unchanged.code, reply_message(&unchanged)), (ACCESS_ACCEPT, None));
+        Ok(())
+    }
+
+    /// The password a chain handler checks is the one the second factor gives.
+    #[tokio::test]
+    async fn test_second_factor_password_for_the_chain() -> Result<(), String> {
+        let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![chain_sql_handler().await]);
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'reject'")?);
+        let state = RadiusState::new(second_factor_clients()?, engine, Some(Arc::new(AuthChains::new(Some(chain), Vec::new())))).with_second_factor(Some(Arc::new(FakeSecondFactor)));
+        let server = RadiusServer::from_state(any_addr(), any_addr(), state, share_dictionary());
+        let ra = [11u8; 16];
+        let request = RadiusPacket::create_access_request(11, ra, vec![(1, b"alice".to_vec()), (USER_PASSWORD, encrypt_password("secret123456", &ra))], SECRET);
+        let answer = server.receive(PacketKind::Auth, &request, from("127.0.0.1")).await.ok_or("no answer")?;
+        let answer = RadiusPacket::parse(&answer).map_err(|e| format!("{e:?}"))?;
+        assert_eq!((answer.code, reply_message(&answer).as_deref()), (ACCESS_ACCEPT, Some("appended for alice")));
+        Ok(())
     }
 
     /// A PAP Access-Request for `alice` with password `secret`.

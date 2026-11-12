@@ -662,4 +662,82 @@ pub(crate) mod tests {
             assert!(url_encode(text).is_err(), "{text:?}");
         }
     }
+
+    /// A stand-in for the push service `examples/push-approval.lua` assumes: alice approves, bob
+    /// denies, carol never answers, each push asked about with its `wait`.
+    async fn push_service() -> std::io::Result<String> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?.to_string();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 4096];
+                    // The headers, then the short body of a POST.
+                    loop {
+                        match socket.read(&mut buffer).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => request.extend_from_slice(&buffer[..n]),
+                        }
+                        let text = String::from_utf8_lossy(&request);
+                        if text.split_once("\r\n\r\n").is_some_and(|(head, body)| !head.starts_with("POST") || !body.is_empty()) {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&request).into_owned();
+                    let keyed = text.to_ascii_lowercase().contains("authorization: bearer push-api-key-change-me");
+                    let path = text.split(' ').nth(1).unwrap_or_default().to_string();
+                    let answer = |status: &str, headers: &str| format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n{headers}\r\n");
+                    let response = match (text.starts_with("POST "), path.split_once('?')) {
+                        _ if !keyed => answer("403 Forbidden", ""),
+                        (true, None) if path == "/v1/push" => match text.rsplit_once("\r\n\r\n").map(|(_, body)| body) {
+                            Some(body) if body.starts_with("username=") => answer("201 Created", &format!("X-Push-Id: id-{}\r\n", &body[9..])),
+                            _ => answer("400 Bad Request", ""),
+                        },
+                        (false, Some((push, wait))) => match push {
+                            "/v1/push/id-alice" => answer("200 OK", "X-Push-Result: approved\r\n"),
+                            "/v1/push/id-bob" => answer("200 OK", "X-Push-Result: denied\r\n"),
+                            _ => {
+                                let seconds = wait.strip_prefix("wait=").and_then(|value| value.parse().ok()).unwrap_or(0);
+                                tokio::time::sleep(Duration::from_secs(seconds)).await;
+                                answer("200 OK", "X-Push-Result: pending\r\n")
+                            }
+                        },
+                        _ => answer("404 Not Found", ""),
+                    };
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        Ok(address)
+    }
+
+    /// `examples/push-approval.lua` against a stand-in service: approved, denied, and not answered
+    /// in time, with its waits shortened.
+    #[tokio::test]
+    async fn test_push_approval_example() -> Result<(), Box<dyn std::error::Error>> {
+        let address = push_service().await?;
+        let mut script = include_str!("../../rradius-server/examples/push-approval.lua").to_string();
+        for (from, to) in [
+            ("local API = 'https://push.example.com/v1/push'", format!("local API = 'http://{address}/v1/push'")),
+            ("local WAIT_SECONDS = 30 ", "local WAIT_SECONDS = 2 ".to_string()),
+            ("local POLL_SECONDS = 5 ", "local POLL_SECONDS = 1 ".to_string()),
+        ] {
+            assert!(script.contains(from), "{from}");
+            script = script.replace(from, &to);
+        }
+        let allowed = AllowedHost::parse(&format!("http://{address}")).map_err(|e| e.to_string())?;
+        let settings = ScriptHttpSettings { timeout: Duration::from_secs(3), ..settings(vec![allowed]) };
+        let http = Arc::new(ScriptHttp::new(&settings, Arc::new(Metrics::default()))?);
+        let engine = LuaAuthEngine::new(test_vms(), test_db(), &script)?.with_script_http(Some(http));
+        let login = |user: &str| LuaRequest::new("radius", "authentication", vec![("User-Name".to_string(), crate::common::AttrValue::Bytes(user.as_bytes().to_vec()))]);
+
+        assert!(engine.authenticate(login("alice")).await.accepted(), "approved");
+        assert!(!engine.authenticate(login("bob")).await.accepted(), "denied");
+        let started = std::time::Instant::now();
+        assert!(!engine.authenticate(login("carol")).await.accepted(), "not answered");
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(1500) && waited < Duration::from_secs(4), "{waited:?}");
+        Ok(())
+    }
 }

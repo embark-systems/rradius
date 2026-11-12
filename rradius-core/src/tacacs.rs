@@ -27,6 +27,8 @@ pub const TYPE_AUTHOR: u8 = 0x02;
 pub const TYPE_ACCT: u8 = 0x03;
 pub const AUTHEN_STATUS_PASS: u8 = 0x01;
 pub const AUTHEN_STATUS_FAIL: u8 = 0x02;
+/// Asks for more, such as a one-time code after the password.
+pub const AUTHEN_STATUS_GETDATA: u8 = 0x03;
 pub const AUTHEN_STATUS_GETUSER: u8 = 0x04;
 pub const AUTHEN_STATUS_GETPASS: u8 = 0x05;
 /// The authentication type is not accepted; the client may start over with another.
@@ -424,6 +426,15 @@ struct AsciiLogin {
     next_seq: u8,
     empty_usernames: u8,
     started: Instant,
+    /// After the password, waiting for the code the second factor asked for.
+    code_for: Option<CodeFor>,
+}
+
+/// Whose code an ASCII login waits for, and what the chain replied: the password is not kept.
+struct CodeFor {
+    user: String,
+    account: String,
+    replies: Vec<(String, AttrValue)>,
 }
 
 /// What to do with an authentication packet.
@@ -437,6 +448,8 @@ enum AuthenStep {
     NoReply,
     /// An ASCII login has what it needs.
     Finished { attributes: Vec<(String, AttrValue)>, credentials: Credentials },
+    /// The code an ASCII login was asked for after its password.
+    Code { code_for: CodeFor, code: zeroize::Zeroizing<Vec<u8>> },
 }
 
 /// The unfinished ASCII logins of one connection (RFC 8907 section 5.4.2.1). They stay
@@ -468,6 +481,13 @@ impl AsciiLogins {
             return AuthenStep::NoReply;
         }
         login.next_seq = login.next_seq.wrapping_add(2);
+        if login.code_for.is_some() {
+            let code = zeroize::Zeroizing::new(user_msg.to_vec());
+            return match self.0.remove(&packet.session_id).and_then(|login| login.code_for) {
+                Some(code_for) => AuthenStep::Code { code_for, code },
+                None => AuthenStep::Reply(authen_reply(AUTHEN_STATUS_ERROR, 0, b"")),
+            };
+        }
         if login.user.is_none() {
             if !user_msg.is_empty() {
                 login.user = Some(user_msg.to_vec());
@@ -511,9 +531,30 @@ impl AsciiLogins {
             _ => None,
         });
         let reply = if user.is_some() { ask_password() } else { ask_username() };
-        self.0.insert(session_id, AsciiLogin { attributes, user, next_seq: 3, empty_usernames: 0, started: now });
+        self.0.insert(session_id, AsciiLogin { attributes, user, next_seq: 3, empty_usernames: 0, started: now, code_for: None });
         AuthenStep::Reply(reply)
     }
+
+    /// After the password of an ASCII login, waits for the code its reply asked for, from the
+    /// CONTINUE numbered `next_seq`, with a new time limit.
+    fn wait_for_code(&mut self, session_id: u32, next_seq: u8, code_for: CodeFor, now: Instant) {
+        self.0.insert(session_id, AsciiLogin { attributes: Vec::new(), user: None, next_seq, empty_usernames: 0, started: now, code_for: Some(code_for) });
+    }
+}
+
+/// How a login is decided.
+enum Login {
+    Reply(Vec<u8>),
+    /// The password was accepted and the second factor asks for a code: `reply` asks for it.
+    AskCode { code_for: CodeFor, reply: Vec<u8> },
+}
+
+/// The second factor of a client with `mfa`, for one login.
+struct Factor<'a> {
+    mode: crate::clients::SecondFactorMode,
+    factor: &'a dyn crate::second_factor::SecondFactor,
+    /// Only an ASCII login can be asked for more.
+    can_ask: bool,
 }
 
 fn ask_username() -> Vec<u8> {
@@ -548,6 +589,11 @@ pub fn parse_continue(body: &[u8]) -> Option<(&[u8], u8)> {
     Some((&body[5..5 + user_msg_len], body[4]))
 }
 
+/// The authentication record of a TACACS+ login.
+fn record_login(client: &Client, source: IpAddr, user: &str, account: &str, chain: &str, handler: &str, decision: &str) {
+    crate::logging::auth_record(&crate::logging::AuthRecord { protocol: "tacacs", client: &client.name, source, user, account, chain, handler, decision });
+}
+
 /// What a reload replaces. A request reads this once and keeps it until it is done.
 pub struct TacacsState {
     pub clients: Arc<ClientTable>,
@@ -559,6 +605,8 @@ pub struct TacacsState {
     /// `[tacacs.tls] tls_only`, from the extension that serves TACACS+ over TLS: obfuscated sessions get nothing, also on a plain port a reload
     /// turned it on for, which stays open until a restart.
     pub tls_only: bool,
+    /// The second factor of the clients with `mfa`, such as `[mfa]`.
+    pub second_factor: Option<Arc<dyn crate::second_factor::SecondFactor>>,
 }
 
 /// How packets travel on a connection: obfuscated with the client's secret (RFC 8907), or in
@@ -643,7 +691,7 @@ pub struct TacacsServer {
 
 impl TacacsServer {
     pub fn new(addr: SocketAddr, clients: Arc<ClientTable>, engine: Arc<LuaAuthEngine>, max_body_len: usize) -> Self {
-        Self::from_state(addr, TacacsState { clients, engine, chains: None, enable: EnableMode::default(), tls_only: false }, max_body_len)
+        Self::from_state(addr, TacacsState { clients, engine, chains: None, enable: EnableMode::default(), tls_only: false, second_factor: None }, max_body_len)
     }
 
     pub fn from_state(addr: SocketAddr, state: TacacsState, max_body_len: usize) -> Self {
@@ -745,7 +793,7 @@ impl TacacsServer {
 
     pub fn with_auth_chains(self, chains: Arc<AuthChains>) -> Self {
         let state = self.state.get();
-        self.state.set(TacacsState { clients: state.clients.clone(), engine: state.engine.clone(), chains: Some(chains), enable: state.enable, tls_only: state.tls_only });
+        self.state.set(TacacsState { clients: state.clients.clone(), engine: state.engine.clone(), chains: Some(chains), enable: state.enable, tls_only: state.tls_only, second_factor: state.second_factor.clone() });
         self
     }
 
@@ -842,6 +890,7 @@ impl TacacsServer {
                 Transport::Obfuscated => {}
             }
             let (engine, secret) = (&state.engine, client.secret.as_slice());
+            let mfa = client.mfa.zip(state.second_factor.as_deref());
             let chain = state.chains.as_deref().and_then(|chains| chains.for_client(client));
             // Clients send odd numbers. Answering an even one would use the pad of the client's next
             // packet on a body the sender can predict, and 255 has no number left for the answer.
@@ -888,11 +937,23 @@ impl TacacsServer {
                 None => AuthenStep::Decide,
             };
             let (response_body, undecodable) = match step {
-                AuthenStep::Decide => Self::reply_body(packet.type_, &body, engine, chain, client, source, metrics).await,
+                // A PAP login gives its code after the password; CHAP and MS-CHAPv2 cannot carry one.
+                AuthenStep::Decide => Self::reply_body(packet.type_, &body, engine, chain, client, source, metrics, mfa.map(|(_, factor)| Factor { mode: crate::clients::SecondFactorMode::Append, factor, can_ask: false })).await,
                 AuthenStep::Reply(reply) => (reply, false),
                 AuthenStep::Undecodable(reply) => (reply, true),
                 AuthenStep::NoReply => continue,
-                AuthenStep::Finished { attributes, credentials } => (Self::decide_login(&credentials, attributes, engine, chain, client, source).await, false),
+                AuthenStep::Finished { attributes, credentials } => match Self::decide_login(credentials, attributes, engine, chain, client, source, mfa.map(|(mode, factor)| Factor { mode, factor, can_ask: true })).await {
+                    Login::Reply(reply) => (reply, false),
+                    Login::AskCode { code_for, reply } => {
+                        logins.wait_for_code(packet.session_id, packet.seq_num.wrapping_add(2), code_for, Instant::now());
+                        (reply, false)
+                    }
+                },
+                AuthenStep::Code { code_for, code } => match mfa {
+                    Some((mode, factor)) => (Self::check_code(&code_for, &code, client, source, chain.is_some(), mode, factor).await, false),
+                    // A reload took the second factor away while the login waited.
+                    None => (authen_reply(AUTHEN_STATUS_FAIL, 0, &[]), false),
+                },
             };
             let seq_num = packet.seq_num.wrapping_add(1);
             let response = TacacsPacket {
@@ -920,12 +981,42 @@ impl TacacsServer {
         }
     }
 
-    /// Decides an authentication and builds its reply body.
-    async fn decide_login(credentials: &Credentials, attributes: Vec<(String, AttrValue)>, engine: &Arc<LuaAuthEngine>, chain: Option<&AuthChain>, client: &Client, source: IpAddr) -> Vec<u8> {
+    /// Decides an authentication and builds its reply body; with `factor`, the second factor
+    /// sees the login before the chain and after it accepts.
+    #[allow(clippy::too_many_arguments)]
+    async fn decide_login(mut credentials: Credentials, mut attributes: Vec<(String, AttrValue)>, engine: &Arc<LuaAuthEngine>, chain: Option<&AuthChain>, client: &Client, source: IpAddr, factor: Option<Factor<'_>>) -> Login {
+        let factor_user = credentials.user.clone().unwrap_or_default();
+        let factor_chain = if chain.is_some() { client.auth.as_deref().unwrap_or("default") } else { "script" };
+        let factor_password = match (&factor, &credentials.secret) {
+            (Some(_), Secret::Pap(password)) => Some(password.clone()),
+            _ => None,
+        };
+        if let Some(Factor { mode, factor, .. }) = &factor {
+            let request = crate::second_factor::SecondFactorRequest { protocol: "tacacs", client, mode: *mode, user: &factor_user, password: factor_password.as_deref().map(Vec::as_slice), state: None };
+            let decision = match factor.before_chain(&request).await {
+                crate::second_factor::Before::Continue { password: Some(password) } => {
+                    for (name, value) in &mut attributes {
+                        if name == "data" {
+                            *value = bytes(&password);
+                        }
+                    }
+                    credentials.secret = Secret::pap(password.to_vec());
+                    None
+                }
+                crate::second_factor::Before::Continue { password: None } => None,
+                crate::second_factor::Before::Answer(decision) => Some(decision),
+                crate::second_factor::Before::Reject { log } => Some(crate::second_factor::Decision::Reject { log }),
+                crate::second_factor::Before::Unavailable { log } => Some(crate::second_factor::Decision::Unavailable { log }),
+            };
+            if let Some(decision) = decision {
+                return Login::Reply(Self::second_factor_reply(client, source, &factor_user, "", factor_chain, decision));
+            }
+        }
         let mut request = LuaRequest::new("tacacs", "authentication", attributes);
         request.client = client.name.clone();
+        let credentials = &credentials;
         let user = credentials.user.as_deref().unwrap_or("");
-        let (accepted, chain_name, handler, account, replies, unavailable) = match chain {
+        let (accepted, chain_name, handler, account, mut replies, unavailable) = match chain {
             Some(chain) => {
                 let result = chain.authenticate(credentials, &request).await;
                 let unavailable = result.unavailable;
@@ -951,7 +1042,27 @@ impl TacacsServer {
         // Not a refusal: ERROR sends the device to its next server (RFC 8907 section 5.2).
         if unavailable {
             crate::lua_engine::log_line(tracing::Level::WARN, format!("TACACS+ authentication for client {} answered ERROR: the cluster database could not be used", client.name));
-            return authen_reply(AUTHEN_STATUS_ERROR, 0, &[]);
+            return Login::Reply(authen_reply(AUTHEN_STATUS_ERROR, 0, &[]));
+        }
+        // The password was accepted: the second factor asks for the code, or checks one.
+        if let (true, Some(Factor { mode, factor, can_ask })) = (accepted, &factor) {
+            let request = crate::second_factor::SecondFactorRequest { protocol: "tacacs", client, mode: *mode, user: &factor_user, password: factor_password.as_deref().map(Vec::as_slice), state: None };
+            let accepted = crate::second_factor::Accepted { attributes: replies.clone(), account: account.clone() };
+            let account = account.as_deref().unwrap_or("");
+            match factor.after_accept(&request, accepted).await {
+                crate::second_factor::Decision::Accept(attributes) => replies = attributes,
+                crate::second_factor::Decision::Challenge { reply_message, .. } if *can_ask => {
+                    record_login(client, source, user, account, chain_name, "mfa", "challenge");
+                    let code_for = CodeFor { user: factor_user.clone(), account: account.to_string(), replies };
+                    return Login::AskCode { code_for, reply: authen_reply(AUTHEN_STATUS_GETDATA, REPLY_FLAG_NOECHO, reply_message.as_bytes()) };
+                }
+                // A PAP login cannot be asked for more.
+                crate::second_factor::Decision::Challenge { .. } => {
+                    let log = format!("TACACS+ client {}: a second factor asked {user} for a code a PAP login cannot be asked for, refused", client.name);
+                    return Login::Reply(Self::second_factor_reply(client, source, user, account, chain_name, crate::second_factor::Decision::Reject { log: Some(log) }));
+                }
+                other => return Login::Reply(Self::second_factor_reply(client, source, user, account, chain_name, other)),
+            }
         }
         crate::logging::auth_record(&crate::logging::AuthRecord {
             protocol: "tacacs",
@@ -963,12 +1074,53 @@ impl TacacsServer {
             handler,
             decision: if accepted { "accept" } else { "reject" },
         });
-        authen_reply(if accepted { AUTHEN_STATUS_PASS } else { AUTHEN_STATUS_FAIL }, 0, &server_msg(&replies, client))
+        Login::Reply(authen_reply(if accepted { AUTHEN_STATUS_PASS } else { AUTHEN_STATUS_FAIL }, 0, &server_msg(&replies, client)))
+    }
+
+    /// Checks the code an ASCII login was asked for after its password.
+    async fn check_code(code_for: &CodeFor, code: &[u8], client: &Client, source: IpAddr, chained: bool, mode: crate::clients::SecondFactorMode, factor: &dyn crate::second_factor::SecondFactor) -> Vec<u8> {
+        let request = crate::second_factor::SecondFactorRequest { protocol: "tacacs", client, mode, user: &code_for.user, password: None, state: None };
+        // The chain's replies go out with the second factor's, once the code is right.
+        let decision = match factor.verify_code(&request, code).await {
+            crate::second_factor::Decision::Accept(more) => crate::second_factor::Decision::Accept(code_for.replies.iter().cloned().chain(more).collect()),
+            other => other,
+        };
+        let chain = if chained { client.auth.as_deref().unwrap_or("default") } else { "script" };
+        Self::second_factor_reply(client, source, &code_for.user, &code_for.account, chain, decision)
+    }
+
+    /// The reply for what the second factor decided, recorded with the handler `mfa`.
+    fn second_factor_reply(client: &Client, source: IpAddr, user: &str, account: &str, chain: &str, decision: crate::second_factor::Decision) -> Vec<u8> {
+        use crate::second_factor::Decision;
+        match decision {
+            Decision::Accept(attributes) => {
+                record_login(client, source, user, account, chain, "mfa", "accept");
+                authen_reply(AUTHEN_STATUS_PASS, 0, &server_msg(&attributes, client))
+            }
+            // Nothing more can be asked here.
+            Decision::Challenge { .. } => {
+                record_login(client, source, user, account, chain, "mfa", "reject");
+                authen_reply(AUTHEN_STATUS_FAIL, 0, &[])
+            }
+            Decision::Reject { log } => {
+                if let Some(log) = log {
+                    crate::lua_engine::log_line(tracing::Level::WARN, log);
+                }
+                record_login(client, source, user, account, chain, "mfa", "reject");
+                authen_reply(AUTHEN_STATUS_FAIL, 0, &[])
+            }
+            // ERROR sends the device to its next server, as when the database is unavailable.
+            Decision::Unavailable { log } => {
+                crate::lua_engine::log_line(tracing::Level::WARN, log);
+                authen_reply(AUTHEN_STATUS_ERROR, 0, &[])
+            }
+        }
     }
 
     /// Builds the plaintext reply body for the packet type (RFC 8907 sections 5.2, 6.2, 7.2),
     /// and whether it is the ERROR for a body that did not decode.
-    async fn reply_body(type_: u8, body: &[u8], engine: &Arc<LuaAuthEngine>, chain: Option<&AuthChain>, client: &Client, source: IpAddr, metrics: &Metrics) -> (Vec<u8>, bool) {
+    #[allow(clippy::too_many_arguments)]
+    async fn reply_body(type_: u8, body: &[u8], engine: &Arc<LuaAuthEngine>, chain: Option<&AuthChain>, client: &Client, source: IpAddr, metrics: &Metrics, factor: Option<Factor<'_>>) -> (Vec<u8>, bool) {
         let request = |phase: &'static str, attributes| {
             let mut request = LuaRequest::new("tacacs", phase, attributes);
             request.client = client.name.clone();
@@ -989,7 +1141,11 @@ impl TacacsServer {
                     return (vec![AUTHEN_STATUS_ERROR, 0, 0, 0, 0, 0], true);
                 };
                 let credentials = start_credentials(&attributes);
-                (Self::decide_login(&credentials, attributes, engine, chain, client, source).await, false)
+                match Self::decide_login(credentials, attributes, engine, chain, client, source, factor).await {
+                    Login::Reply(reply) => (reply, false),
+                    // Only an ASCII login is asked for more, and it does not come here.
+                    Login::AskCode { .. } => (authen_reply(AUTHEN_STATUS_FAIL, 0, &[]), false),
+                }
             }
             TYPE_AUTHOR => {
                 let Some(fields) = args_body_fields(body, 0) else {
@@ -1066,7 +1222,7 @@ pub(crate) mod tests {
         let mut clients = ClientTable::default();
         let options = ClientOptions { auth: client.auth.clone(), authorize_group: client.authorize_group.clone(), ..ClientOptions::default() };
         clients.add("127.0.0.1", Some(client.name.clone()), client.secret.clone(), options).unwrap();
-        let live = Live::new(TacacsState { clients: Arc::new(clients), engine: engine.clone(), chains: chains.cloned(), enable: EnableMode::default(), tls_only: false });
+        let live = Live::new(TacacsState { clients: Arc::new(clients), engine: engine.clone(), chains: chains.cloned(), enable: EnableMode::default(), tls_only: false, second_factor: None });
         TacacsServer::handle_connection(socket, "127.0.0.1".parse().unwrap(), &live, &Metrics::default(), max_body_len, Timeouts::default()).await
     }
 
@@ -1074,7 +1230,7 @@ pub(crate) mod tests {
     const VERSION: u8 = 0xc0;
 
     pub(crate) fn test_client() -> Client {
-        Client { max_radsec_connections: None, radsec_subject: None, authorize_group: None, coa_sender: false, eap_methods: None, name: "local".to_string(), secret: SECRET.to_vec(), auth: None, require_message_authenticator: Default::default(), limit_proxy_state: Default::default(), coa_port: 3799, tls_name: None }
+        Client { max_radsec_connections: None, radsec_subject: None, authorize_group: None, coa_sender: false, mfa: None, eap_methods: None, name: "local".to_string(), secret: SECRET.to_vec(), auth: None, require_message_authenticator: Default::default(), limit_proxy_state: Default::default(), coa_port: 3799, tls_name: None }
     }
 
     fn md5(parts: &[&[u8]]) -> [u8; 16] {
@@ -1141,7 +1297,7 @@ pub(crate) mod tests {
         } else {
             clients.add("10.0.0.1", None, b"k".to_vec(), ClientOptions::default()).unwrap();
         }
-        TacacsState { clients: Arc::new(clients), engine: engine.clone(), chains: None, enable: EnableMode::default(), tls_only: false }
+        TacacsState { clients: Arc::new(clients), engine: engine.clone(), chains: None, enable: EnableMode::default(), tls_only: false, second_factor: None }
     }
 
     /// A connection served from 127.0.0.1 under a state a test can replace.
@@ -1247,6 +1403,21 @@ pub(crate) mod tests {
             Self { stream, metrics }
         }
 
+        /// A connection from a client with `mfa = mode` and `FakeTacacsFactor`, whose script
+        /// accepts the password `secret`.
+        async fn with_factor(mode: crate::clients::SecondFactorMode) -> Result<Self, String> {
+            let engine = script_engine("return get_attr('data') == 'secret' and 'accept' or 'reject'").await;
+            let mut clients = ClientTable::default();
+            clients.add("127.0.0.1", Some("nas-mfa".to_string()), SECRET.to_vec(), ClientOptions { mfa: Some(mode), ..ClientOptions::default() }).map_err(|e| format!("{e:?}"))?;
+            let state = TacacsState { clients: Arc::new(clients), engine, chains: None, enable: EnableMode::default(), tls_only: false, second_factor: Some(Arc::new(FakeTacacsFactor)) };
+            let live = Live::new(state);
+            let metrics = Arc::new(Metrics::default());
+            let (stream, server) = duplex(4096);
+            let counting = metrics.clone();
+            tokio::spawn(async move { TacacsServer::handle_connection(server, IpAddr::from([127, 0, 0, 1]), &live, &counting, MAX_BODY_LEN, Timeouts::default()).await });
+            Ok(Self { stream, metrics })
+        }
+
         async fn send(&mut self, session_id: u32, seq_num: u8, body: &[u8]) {
             self.stream.write_all(&authen_packet(session_id, seq_num, body)).await.unwrap();
         }
@@ -1264,6 +1435,89 @@ pub(crate) mod tests {
             }
             status
         }
+    }
+
+    /// A second factor for tests: `append` logins give the code 123456 after the password,
+    /// `challenge` logins are asked for it; the code 999999 finds the database unavailable and the
+    /// User-Name `tf-refused` is refused before the chain.
+    struct FakeTacacsFactor;
+
+    impl crate::second_factor::SecondFactor for FakeTacacsFactor {
+        fn before_chain<'a>(&'a self, request: &'a crate::second_factor::SecondFactorRequest<'a>) -> futures::future::BoxFuture<'a, crate::second_factor::Before> {
+            use crate::second_factor::Before;
+            Box::pin(async move {
+                let password = request.password.unwrap_or_default();
+                match request.user {
+                    "tf-refused" => Before::Reject { log: Some("tf refused the login".to_string()) },
+                    _ if request.mode == crate::clients::SecondFactorMode::Append && password.len() > 6 => Before::Continue { password: Some(zeroize::Zeroizing::new(password[..password.len() - 6].to_vec())) },
+                    _ => Before::Continue { password: None },
+                }
+            })
+        }
+
+        fn after_accept<'a>(&'a self, request: &'a crate::second_factor::SecondFactorRequest<'a>, accepted: crate::second_factor::Accepted) -> futures::future::BoxFuture<'a, crate::second_factor::Decision> {
+            use crate::second_factor::Decision;
+            Box::pin(async move {
+                match request.mode {
+                    crate::clients::SecondFactorMode::Challenge => Decision::Challenge { state: Vec::new(), reply_message: "Code: ".to_string() },
+                    crate::clients::SecondFactorMode::Append if request.password.unwrap_or_default().ends_with(b"123456") => Decision::Accept(accepted.attributes),
+                    crate::clients::SecondFactorMode::Append => Decision::Reject { log: None },
+                }
+            })
+        }
+
+        fn verify_code<'a>(&'a self, request: &'a crate::second_factor::SecondFactorRequest<'a>, code: &'a [u8]) -> futures::future::BoxFuture<'a, crate::second_factor::Decision> {
+            use crate::second_factor::Decision;
+            Box::pin(async move {
+                match code {
+                    b"123456" => Decision::Accept(Vec::new()),
+                    b"999999" => Decision::Unavailable { log: "tf could not read its table".to_string() },
+                    _ => Decision::Reject { log: Some(format!("wrong code for {}", request.user)) },
+                }
+            })
+        }
+    }
+
+    /// An ASCII login of a `challenge` client: GETPASS, then GETDATA for the code, then PASS;
+    /// a wrong code fails, and an unavailable database answers ERROR.
+    #[tokio::test]
+    async fn test_second_factor_ascii_challenge() -> Result<(), String> {
+        let mut connection = AsciiConnection::with_factor(crate::clients::SecondFactorMode::Challenge).await?;
+        let (seq, status, flags, _) = connection.ask(ASCII_SESSION, 1, &ascii_start_body(b"tf-ascii")).await;
+        assert_eq!((seq, status, flags), (2, AUTHEN_STATUS_GETPASS, REPLY_FLAG_NOECHO));
+        let (seq, status, flags, prompt) = connection.ask(ASCII_SESSION, 3, &continue_body(b"secret", 0)).await;
+        assert_eq!((seq, status, flags, prompt.as_slice()), (4, AUTHEN_STATUS_GETDATA, REPLY_FLAG_NOECHO, b"Code: ".as_slice()));
+        let (seq, status, ..) = connection.ask(ASCII_SESSION, 5, &continue_body(b"123456", 0)).await;
+        assert_eq!((seq, status), (6, AUTHEN_STATUS_PASS));
+        let records = crate::logging::records_for("tf-ascii");
+        let decisions: Vec<(&str, &str)> = records.iter().map(|record| (record.handler.as_str(), record.decision.as_str())).collect();
+        assert_eq!(decisions, [("mfa", "challenge"), ("mfa", "accept")]);
+
+        let log = crate::test_support::radius::logged_during(async {
+            assert_eq!(connection.login(b"tf-wrong", &[b"secret", b"000000"]).await, AUTHEN_STATUS_FAIL);
+            assert_eq!(connection.login(b"tf-unavailable", &[b"secret", b"999999"]).await, AUTHEN_STATUS_ERROR);
+        })
+        .await;
+        assert!(log.contains("wrong code for tf-wrong") && log.contains("tf could not read its table"), "{log}");
+        // A wrong password is refused before any code is asked for.
+        assert_eq!(connection.login(b"tf-bad-password", &[b"wrong"]).await, AUTHEN_STATUS_FAIL);
+        assert_eq!(crate::logging::records_for("tf-bad-password")[0].handler, "script");
+        Ok(())
+    }
+
+    /// The code after the password: an ASCII login of an `append` client, and a PAP login, which
+    /// gives it that way whatever the client's `mfa`.
+    #[tokio::test]
+    async fn test_second_factor_appended() -> Result<(), String> {
+        let mut connection = AsciiConnection::with_factor(crate::clients::SecondFactorMode::Append).await?;
+        assert_eq!(connection.login(b"tf-append", &[b"secret123456"]).await, AUTHEN_STATUS_PASS);
+        assert_eq!(connection.login(b"tf-append-wrong", &[b"secret000000"]).await, AUTHEN_STATUS_FAIL);
+        let mut connection = AsciiConnection::with_factor(crate::clients::SecondFactorMode::Challenge).await?;
+        assert_eq!(connection.ask(ASCII_SESSION, 1, &start_body(b"tf-pap", b"secret123456")).await.1, AUTHEN_STATUS_PASS);
+        assert_eq!(connection.ask(ASCII_SESSION, 1, &start_body(b"tf-pap-no-code", b"secret")).await.1, AUTHEN_STATUS_FAIL);
+        assert_eq!(connection.ask(ASCII_SESSION, 1, &start_body(b"tf-refused", b"secret123456")).await.1, AUTHEN_STATUS_FAIL);
+        assert_eq!(crate::logging::records_for("tf-pap-no-code")[0].handler, "mfa");
+        Ok(())
     }
 
     #[tokio::test]
@@ -2051,7 +2305,7 @@ pub(crate) mod tests {
         stream.write_all(&request_with_key(SECRET, &start_body(b"alice", b"secret"))).await?;
         assert!(read_packet(&mut stream, MAX_BODY_LEN).await?.is_some(), "served before");
         let old = live.get();
-        live.set(TacacsState { clients: old.clients.clone(), engine: old.engine.clone(), chains: None, enable: old.enable, tls_only: true });
+        live.set(TacacsState { clients: old.clients.clone(), engine: old.engine.clone(), chains: None, enable: old.enable, tls_only: true, second_factor: None });
         stream.write_all(&request_with_key(SECRET, &start_body(b"alice", b"secret"))).await?;
         assert!(!matches!(read_packet(&mut stream, MAX_BODY_LEN).await, Ok(Some(_))), "no reply once tls_only is on");
         task.await.map_err(io::Error::other)??;
@@ -2079,7 +2333,7 @@ pub(crate) mod tests {
         let engine = script_engine("return 'accept'").await;
         let mut clients = ClientTable::default();
         clients.add("127.0.0.1", None, SECRET.to_vec(), ClientOptions { tls_name: Some("device.example.com".to_string()), ..ClientOptions::default() }).map_err(|e| io::Error::other(e.to_string()))?;
-        let live = Live::new(TacacsState { clients: Arc::new(clients), engine, chains: None, enable: EnableMode::default(), tls_only: false });
+        let live = Live::new(TacacsState { clients: Arc::new(clients), engine, chains: None, enable: EnableMode::default(), tls_only: false, second_factor: None });
         let (mut near, far) = duplex(65536);
         let task = tokio::spawn(async move { TacacsServer::handle_connection(far, "127.0.0.1".parse().map_err(io::Error::other)?, &live, &Metrics::default(), MAX_BODY_LEN, Timeouts::default()).await });
         near.write_all(&encrypted_request(TYPE_AUTHEN, 1, 0, &start_body(b"alice", b"secret"))).await?;
@@ -2329,7 +2583,7 @@ pub(crate) mod tests {
     async fn test_per_client_key() {
         let engine = test_engine().await;
         for (name, key) in [("router-5", &b"k1"[..]), ("router-6", &b"k2"[..])] {
-            let client = Client { max_radsec_connections: None, radsec_subject: None, authorize_group: None, coa_sender: false, eap_methods: None, name: name.to_string(), secret: key.to_vec(), auth: None, require_message_authenticator: Default::default(), limit_proxy_state: Default::default(), coa_port: 3799, tls_name: None };
+            let client = Client { max_radsec_connections: None, radsec_subject: None, authorize_group: None, coa_sender: false, mfa: None, eap_methods: None, name: name.to_string(), secret: key.to_vec(), auth: None, require_message_authenticator: Default::default(), limit_proxy_state: Default::default(), coa_port: 3799, tls_name: None };
             let (mut stream, server) = duplex(4096);
             let engine = engine.clone();
             let task = tokio::spawn(async move { serve_as(server, &client, &engine, None, MAX_BODY_LEN).await });
