@@ -32,18 +32,25 @@ const SCHEMA_USAGE: &str = "usage: rradius-server schema";
 
 /// The `schema` command: prints the JSON Schema of the configuration file; the exit status.
 fn print_schema(program: &str, extensions: &crate::extension::Extensions, rest: &[String]) -> i32 {
+    write_schema(program, extensions, rest, &mut std::io::stdout().lock(), &mut std::io::stderr().lock())
+}
+
+/// Writes what the `schema` command prints to `out` and `err`. A failed write, such as a
+/// closed pipe after `| head`, ends it with status 1 instead of a panic.
+fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: &[String], out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
     if !rest.is_empty() {
-        eprintln!("{SCHEMA_USAGE}");
+        let _ = writeln!(err, "{SCHEMA_USAGE}");
         return 2;
     }
     let text = crate::schema::build(program, extensions).and_then(|schema| serde_json::to_string_pretty(&schema).map_err(|e| e.to_string()));
-    match text {
-        Ok(text) => {
-            println!("{text}");
-            0
-        }
+    let written = match text {
+        Ok(text) => writeln!(out, "{text}").and_then(|()| out.flush()).map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    match written {
+        Ok(()) => 0,
         Err(e) => {
-            eprintln!("schema: {e}");
+            let _ = writeln!(err, "schema: {e}");
             1
         }
     }
@@ -465,4 +472,53 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extension::{Extension, Extensions};
+    use std::sync::Arc;
+
+    /// An extension whose section has no place to go.
+    struct Misplaced;
+
+    impl Extension for Misplaced {
+        fn name(&self) -> &'static str {
+            "misplaced"
+        }
+        fn schemas(&self) -> Vec<(&'static str, schemars::Schema)> {
+            vec![("nowhere.section", schemars::json_schema!({"type": "object"}))]
+        }
+    }
+
+    /// A writer whose reader has gone, as after `| head`.
+    struct ClosedPipe;
+
+    impl std::io::Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_a_schema_that_cannot_be_built() -> Result<(), String> {
+        let extensions = Extensions::new(vec![Arc::new(Misplaced)])?;
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(write_schema("probe", &extensions, &[], &mut out, &mut err), 1);
+        assert!(out.is_empty());
+        let message = String::from_utf8_lossy(&err);
+        assert!(message.starts_with("schema: extension misplaced: `nowhere.section`"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_a_closed_output() {
+        let mut err = Vec::new();
+        assert_eq!(write_schema("probe", &crate::extensions::builtin(), &[], &mut ClosedPipe, &mut err), 1);
+        assert!(String::from_utf8_lossy(&err).starts_with("schema: "));
+    }
 }
