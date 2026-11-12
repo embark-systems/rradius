@@ -2072,6 +2072,25 @@ fn test_ocsp_needs_the_enterprise_program() -> Result<(), String> {
     Ok(())
 }
 
+/// Backups are only in rradius-enterprise: this program refuses `[cluster.backup]` at a start and
+/// in a check, as it refuses the other sections of that program.
+#[test]
+fn test_backups_need_the_enterprise_program() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let mut text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    text.push_str("\n[cluster.backup]\ninterval_minutes = 60\n");
+    std::fs::write(&config, text).map_err(|e| e.to_string())?;
+    let config = config.to_str().ok_or("a path that is not UTF-8")?;
+    for args in [vec!["--config", config], vec!["--config", config, "--check"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("cluster.backup: not supported by this program (backups need rradius-enterprise)"), "{args:?}: {stderr}");
+    }
+    Ok(())
+}
+
 /// The settings RadSec, and only it, uses, as the program without it takes them: at a start and
 /// in a check (the table of the radsec spec, this program's column).
 #[test]

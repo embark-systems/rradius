@@ -142,6 +142,9 @@ pub struct Db {
     writes: tokio::sync::mpsc::Sender<PendingWrite>,
     /// What `track_cluster` last read of this node's Raft state.
     cluster: Arc<ClusterState>,
+    /// The node's data directory, under which hiqlite keeps its backups.
+    #[cfg(feature = "backup")]
+    data_dir: std::path::PathBuf,
 }
 
 /// Writes that may wait for the cluster at once; one more fails as the cluster being unavailable.
@@ -478,7 +481,14 @@ impl Db {
     /// once it has joined the cluster, however long that takes; use `wait_healthy`
     /// to wait until it can serve requests.
     pub async fn start(settings: &ClusterSettings) -> Result<Self, String> {
-        let config = hiqlite::NodeConfig {
+        Self::start_with(settings, &crate::extension::ExtensionSettings::default()).await
+    }
+
+    /// Like `start`, with what extensions made of their sections: with the `backup` feature,
+    /// the `ClusterBackup` of `[cluster.backup]`, if there is one.
+    pub async fn start_with(settings: &ClusterSettings, extensions: &crate::extension::ExtensionSettings) -> Result<Self, String> {
+        #[cfg_attr(not(feature = "backup"), allow(unused_mut))]
+        let mut config = hiqlite::NodeConfig {
             node_id: settings.node_id,
             nodes: settings
                 .nodes
@@ -494,6 +504,10 @@ impl Db {
             read_pool_size: settings.read_connections,
             ..Default::default()
         };
+        #[cfg(feature = "backup")]
+        crate::backup::configure(&mut config, extensions.get::<crate::backup::ClusterBackup>()).await?;
+        #[cfg(not(feature = "backup"))]
+        let _ = extensions;
         let client = hiqlite::start_node(config).await.map_err(|e| e.to_string())?;
         let (writes, pending) = tokio::sync::mpsc::channel(WAITING_WRITES);
         tokio::spawn(write_batches(client.clone(), pending, BATCH_DEADLINE));
@@ -502,7 +516,26 @@ impl Db {
         let cluster = Arc::new(ClusterState::default());
         cluster.note(true, false, None);
         tokio::spawn(track_cluster(client.clone(), cluster.clone()));
-        Ok(Self { client, writes, cluster })
+        Ok(Self {
+            client,
+            writes,
+            cluster,
+            #[cfg(feature = "backup")]
+            data_dir: settings.data_dir.clone(),
+        })
+    }
+
+    /// Asks the cluster for a backup: every node writes a copy of the database, at the same point
+    /// of the log, into its `backup_dir`. Returns before the copies are made.
+    #[cfg(feature = "backup")]
+    pub async fn backup(&self) -> Result<(), String> {
+        self.client.backup().await.map_err(|e| e.to_string())
+    }
+
+    /// Where hiqlite keeps this node's backups, named `backup_node_<id>_<unix time>.sqlite`.
+    #[cfg(feature = "backup")]
+    pub fn backup_dir(&self) -> std::path::PathBuf {
+        self.data_dir.join("state_machine").join("backups")
     }
 
     /// Makes this node the one `cluster_status` and `stopped_without_leader` speak of.
