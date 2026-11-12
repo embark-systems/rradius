@@ -1686,7 +1686,7 @@ cargo build --release --locked --manifest-path rradius-server/Cargo.toml
 
 ### 範例設定
 
-`rradius-bench/examples/` 的伺服器設定都只綁 `127.0.0.1`，密語是 `bench-secret`，指標埠是 9812。另外兩組 `aka.toml`（EAP-AKA'）和 `radsec.toml`（RadSec）需要 rradius-enterprise。
+`rradius-server/benchmarks/` 是量測用的伺服器設定，都只綁 `127.0.0.1`，密語是 `bench-secret`，指標埠是 9812。工具只負責送請求，伺服器要另外啟動。EAP-AKA' 和 RadSec 的設定（`aka.toml`、`radsec.toml`）在 rradius-enterprise 的 `benchmarks/`。
 
 | 設定 | 計費腳本做的事 |
 | --- | --- |
@@ -1696,10 +1696,10 @@ cargo build --release --locked --manifest-path rradius-server/Cargo.toml
 | `eap.toml` | 一律接受計費；EAP-TLS、PEAP 和 TTLS 給帳號 `bench`（密碼 `bench`），見下方〈EAP 登入〉 |
 | `tacacs.toml` | 只開 TACACS+，埠 4949，認證、授權、計費一律接受，見下方〈TACACS+〉 |
 
-在 `rradius-bench/examples/` 目錄啟動伺服器，資料會放在該目錄的 `data/`（已被 gitignore）：
+在 `rradius-server/benchmarks/` 目錄啟動伺服器，資料會放在該目錄的 `data/`（已被 gitignore）：
 
 ```bash
-cd rradius-bench/examples && ../../rradius-server/target/release/rradius-server --config accept.toml
+cd rradius-server/benchmarks && ../../target/release/rradius-server --config accept.toml
 ```
 
 換一組設定前請先停掉伺服器。下面的命令在專案根目錄的另一個終端機執行。
@@ -1707,33 +1707,33 @@ cd rradius-bench/examples && ../../rradius-server/target/release/rradius-server 
 量最大吞吐，搭配 `accept.toml`。這個量測的延遲大多是排隊，不要拿來看延遲：
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load pap,concurrency=64,window=1
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load pap,concurrency=64,window=1
 ```
 
 [計費負載表](#24-過載與重送)的五列依序如下。無計費負載，搭配 `accept.toml`：
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load pap,rate=100
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load pap,rate=100
 ```
 
 每次寫一筆資料庫，併發 256 和 4096，搭配 `acct-sql.toml`：
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=256 --load pap,rate=100
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=256 --load pap,rate=100
 ```
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=4096 --load pap,rate=100
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=4096 --load pap,rate=100
 ```
 
 每次約 30 ms 的純運算，併發 256 和 4096，搭配 `acct-cpu.toml`。這個負載排隊久，所以預熱和逾時都要拉長：
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=256 --load pap,rate=100 --warmup 15 --duration 20 --timeout 60
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=256 --load pap,rate=100 --warmup 15 --duration 20 --timeout 60
 ```
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=4096 --load pap,rate=100 --warmup 15 --duration 20 --timeout 60
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=4096 --load pap,rate=100 --warmup 15 --duration 20 --timeout 60
 ```
 
 ### EAP 登入
@@ -1748,7 +1748,7 @@ rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench
 先在專案根目錄做 `eap.toml` 要的憑證（`eap-certs/` 已被 gitignore）：
 
 ```bash
-mkdir -p rradius-bench/examples/eap-certs && cd rradius-bench/examples/eap-certs
+mkdir -p rradius-server/benchmarks/eap-certs && cd rradius-server/benchmarks/eap-certs
 openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=bench-ca -keyout ca.key -out ca.pem
 openssl req -newkey rsa:2048 -nodes -subj /CN=localhost -keyout server.key -out server.csr
 printf 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n' > server.ext
@@ -1759,18 +1759,18 @@ openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 
 cd ../../..
 ```
 
-用戶端憑證的名稱 `bench` 要和登入的名稱相同（`match_identity`）。然後在 `rradius-bench/examples/` 以 `eap.toml` 啟動伺服器，再從專案根目錄分別跑三種負載：
+用戶端憑證的名稱 `bench` 要和登入的名稱相同（`match_identity`）。然後在 `rradius-server/benchmarks/` 以 `eap.toml` 啟動伺服器，再從專案根目錄分別跑三種負載：
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load eap-tls,concurrency=64,window=8 --cert-file rradius-bench/examples/eap-certs/client.pem --key-file rradius-bench/examples/eap-certs/client.key
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load eap-tls,concurrency=64,window=8 --cert-file rradius-server/benchmarks/eap-certs/client.pem --key-file rradius-server/benchmarks/eap-certs/client.key
 ```
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load peap,concurrency=64,window=8
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load peap,concurrency=64,window=8
 ```
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load ttls,concurrency=64,window=8
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load ttls,concurrency=64,window=8
 ```
 
 2026-11-08 在同一台 Apple M4 Max 上 Docker 的 Linux（arm64）量測，伺服器限定 CPU 0–6、工具限定 7–13（`threads=7`），`eap.toml`，TLS 1.2，各兩次。先是 RSA 2048 的憑證（上面的指令）：
@@ -1834,28 +1834,28 @@ UDP 的接收迴圈也用和 RadSec 相同的方式：收到一個封包後，�
 - **`concurrency` 不能超過伺服器的 `max_connections`**（預設 1024）。伺服器先完成 TCP 連線再立刻關閉多的連線，所以工具在量測前看不出來，兩種模式都表現為 `socket_errors`；`keep` 還會一直重連（`reconnects` 增加，還沒收到任何回覆就被關閉的連線每 100 ms 才重試一次）。`tacacs.toml` 把它調到 8192。
 - **`per-request` 會在工具這端留下 TIME_WAIT。** 由工具關閉的連線，在工具端停留一段時間（Linux 約 60 秒）才放掉連接埠。Linux 預設可用的連接埠約 28,000 個（`net.ipv4.ip_local_port_range` 是 32768–60999），所以持續每秒新開超過約 470 條連線，連接埠就會用完，出現連不上的 `socket_errors`。Linux 的 `net.ipv4.tcp_tw_reuse` 預設是 2，只在 loopback 重用 TIME_WAIT 的連接埠，所以工具和伺服器在同一台時不受這個限制，連到別台才會碰到。量更高的速率要放寬範圍（例如 `sysctl -w net.ipv4.ip_local_port_range="1024 65535"`）並把 `net.ipv4.tcp_tw_reuse` 設成 1，或用 `--bind` 分到多個來源位址；`ss -s` 的 `timewait` 可以看目前有多少。macOS 的範圍是 49152–65535（約 16,000 個），TIME_WAIT 約 30 秒，上限約每秒 540 條，超過時錯誤是 `Can't assign requested address`。
 
-在 `rradius-bench/examples/` 以 `tacacs.toml` 啟動伺服器，再從專案根目錄分別跑四種負載：
+在 `rradius-server/benchmarks/` 以 `tacacs.toml` 啟動伺服器，再從專案根目錄分別跑四種負載：
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-pap,concurrency=64
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-pap,concurrency=64
 ```
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-ascii,concurrency=64
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-ascii,concurrency=64
 ```
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-author,concurrency=64
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-author,concurrency=64
 ```
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-acct,concurrency=64
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-acct,concurrency=64
 ```
 
 每個請求開新連線。連到別台或在 macOS 上，用固定速率並低於上面 TIME_WAIT 的限制；固定併發會盡快開連線，幾秒內就把連接埠用完：
 
 ```bash
-rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --tacacs-connect per-request --load tacacs-pap,rate=300
+target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --tacacs-connect per-request --load tacacs-pap,rate=300
 ```
 
 2026-11-08 在同一台 Apple M4 Max 上 OrbStack 的 Linux（arm64）量測，伺服器限定 CPU 0–6、工具限定 7–13（`threads=7`），`tacacs.toml`，每列三次，都沒有逾時、`invalid`、socket 錯誤和重連：
@@ -1908,7 +1908,7 @@ rradius-bench/target/release/rradius-bench run --server 127.0.0.1 --secret bench
 ### 工具自身的上限
 
 ```bash
-rradius-bench/target/release/rradius-bench calibrate
+target/release/rradius-bench calibrate
 ```
 
 `calibrate` 對程序內建的回應器跑四種組合，量出工具本身的上限和這台機器的延遲底線。伺服器的吞吐接近這個上限，或延遲接近這個底線時，要改到另一台機器量。
