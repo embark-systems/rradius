@@ -190,7 +190,7 @@ impl std::fmt::Debug for ExtensionSettings {
 
 /// Sections that only `rradius-enterprise` reads, with what the message of a program without
 /// them says.
-const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 12] = [
+const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 13] = [
     ("radius.eap.aka", "EAP-AKA' needs rradius-enterprise"),
     ("accounts.aka", "EAP-AKA' needs rradius-enterprise"),
     ("radius.tls", "RadSec needs rradius-enterprise"),
@@ -203,10 +203,11 @@ const SECTIONS_NEEDING_ENTERPRISE: [(&str, &str); 12] = [
     ("tacacs.tls", "TACACS+ over TLS needs rradius-enterprise"),
     ("cluster.backup", "backups need rradius-enterprise"),
     ("accounting_export", "accounting export needs rradius-enterprise"),
+    ("mfa", "two-factor login needs rradius-enterprise"),
 ];
 
 /// Commands that only `rradius-enterprise` has, likewise.
-const COMMANDS_NEEDING_ENTERPRISE: [(&str, &str); 7] = [
+const COMMANDS_NEEDING_ENTERPRISE: [(&str, &str); 8] = [
     ("aka", "EAP-AKA' needs rradius-enterprise"),
     ("aka-seal", "EAP-AKA' needs rradius-enterprise"),
     ("client", "dynamic clients need rradius-enterprise"),
@@ -214,6 +215,7 @@ const COMMANDS_NEEDING_ENTERPRISE: [(&str, &str); 7] = [
     ("dpsk-seal", "DPSK needs rradius-enterprise"),
     ("disconnect", "CoA needs rradius-enterprise"),
     ("coa", "CoA needs rradius-enterprise"),
+    ("otp", "two-factor login needs rradius-enterprise"),
 ];
 
 /// EAP methods that only `rradius-enterprise` offers, likewise.
@@ -330,6 +332,13 @@ pub trait Extension: Send + Sync {
     /// What proves the identity of requests before the chain runs, such as per-user pre-shared
     /// keys; asked at the start and at each reload, whose authenticator replaces the last.
     fn pre_chain(&self, context: &crate::pre_chain::PreChainContext<'_>) -> Option<Arc<dyn crate::pre_chain::PreChainAuthenticator>> {
+        let _ = context;
+        None
+    }
+
+    /// The second factor of the clients with `mfa`, such as a one-time code; asked at the start
+    /// and at each reload, whose second factor replaces the last.
+    fn second_factor(&self, context: &crate::second_factor::SecondFactorContext<'_>) -> Option<Arc<dyn crate::second_factor::SecondFactor>> {
         let _ = context;
         None
     }
@@ -555,6 +564,11 @@ impl Extensions {
     /// The pre-chain authenticator of the first extension that has one.
     pub fn pre_chain(&self, context: &crate::pre_chain::PreChainContext<'_>) -> Option<Arc<dyn crate::pre_chain::PreChainAuthenticator>> {
         self.list.iter().find_map(|extension| extension.pre_chain(context))
+    }
+
+    /// The second factor of the first extension that has one.
+    pub fn second_factor(&self, context: &crate::second_factor::SecondFactorContext<'_>) -> Option<Arc<dyn crate::second_factor::SecondFactor>> {
+        self.list.iter().find_map(|extension| extension.second_factor(context))
     }
 
     /// The EAP methods of all of them, made from `config`.

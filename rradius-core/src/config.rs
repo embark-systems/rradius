@@ -436,6 +436,9 @@ struct RawConfig {
     /// `[accounting_export]`, which an extension reads.
     #[schemars(skip)]
     accounting_export: Option<toml::Value>,
+    /// `[mfa]`, which an extension reads.
+    #[schemars(skip)]
+    mfa: Option<toml::Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -994,6 +997,8 @@ pub struct RawClient {
     authorize_group: Option<String>,
     /// RADIUS only: may send CoA on its RadSec connection, for the CoA relay.
     coa_sender: Option<bool>,
+    /// How this client's users give a second factor, with rradius-enterprise.
+    mfa: Option<crate::clients::SecondFactorMode>,
 }
 
 /// The JSON Schema of the sections the core reads, from the structures that read them.
@@ -1035,7 +1040,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
     let aka = raw.radius.as_mut().and_then(|radius| radius.eap.as_mut()).and_then(|eap| eap.aka.take());
     let tacacs_tls = raw.tacacs.as_mut().and_then(|tacacs| tacacs.tls.take());
     let cluster_backup = raw.cluster.as_mut().and_then(|cluster| cluster.backup.take());
-    let found = [("radius.eap.aka", aka), ("accounts.aka", raw.accounts.as_mut().and_then(|accounts| accounts.aka.take())), ("radius.dpsk", dpsk), ("accounts.dpsk", dpsk_statements), ("radius.tls", radsec_section), ("radius.dynamic_clients", dynamic_clients), ("accounts.clients", client_statements), ("radius.coa", coa_relay), ("proxy", raw.proxy.take()), ("tacacs.tls", tacacs_tls), ("cluster.backup", cluster_backup), ("accounting_export", raw.accounting_export.take())];
+    let found = [("radius.eap.aka", aka), ("accounts.aka", raw.accounts.as_mut().and_then(|accounts| accounts.aka.take())), ("radius.dpsk", dpsk), ("accounts.dpsk", dpsk_statements), ("radius.tls", radsec_section), ("radius.dynamic_clients", dynamic_clients), ("accounts.clients", client_statements), ("radius.coa", coa_relay), ("proxy", raw.proxy.take()), ("tacacs.tls", tacacs_tls), ("cluster.backup", cluster_backup), ("accounting_export", raw.accounting_export.take()), ("mfa", raw.mfa.take())];
     let shared_text: Arc<str> = Arc::from(text.as_str());
     let found = found.into_iter().filter_map(|(section, value)| value.map(|value| crate::extension::Section::new(section, value, shared_text.clone()))).collect();
     let extension_settings = crate::extension::settings(extensions, found, base).map_err(fail)?;
@@ -1150,6 +1155,16 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
             if let Some(client) = tacacs.clients.clients().find(|client| client.tls_name.is_some()) {
                 return Err(fail(format!("tacacs client '{}': tls_name needs [tacacs.tls]", client.name)));
             }
+        }
+    }
+
+    // A second factor is asked for by the extension that reads `[mfa]`.
+    if extensions.owner("mfa").is_none() {
+        let with_mfa = [("radius", radius.as_ref().map(|radius| &radius.clients)), ("tacacs", tacacs.as_ref().map(|tacacs| &tacacs.clients))]
+            .into_iter()
+            .find_map(|(protocol, clients)| clients.and_then(|clients| clients.clients().find(|client| client.mfa.is_some())).map(|client| (protocol, client.name.clone())));
+        if let Some((protocol, name)) = with_mfa {
+            return Err(fail(format!("{protocol} client '{name}': mfa needs rradius-enterprise")));
         }
     }
 
@@ -1918,6 +1933,7 @@ pub fn client_table(
             max_radsec_connections: client.max_radsec_connections,
             authorize_group,
             coa_sender: client.coa_sender.unwrap_or(false),
+            mfa: client.mfa,
         };
         match &client.address {
             Some(address) => table.add(address, client.name, secret, options),
@@ -2961,6 +2977,25 @@ mod tests {
         let (_dir, result) = load_str(&body);
         let error = result.err().ok_or_else(|| format!("loaded: {body}"))?;
         assert!(error.to_string().contains("coa_sender applies only to RADIUS clients"), "{error}");
+        Ok(())
+    }
+
+    /// A second factor needs rradius-enterprise: `mfa` on a RADIUS or TACACS+ client, and the
+    /// `[mfa]` section, are refused by this program; a value other than the two is refused first.
+    #[test]
+    fn test_mfa_needs_enterprise() -> Result<(), String> {
+        let radius = |client: &str, more: &str| base(&format!("\n[radius]\n[[radius.clients]]\nname = \"vpn\"\naddress = \"127.0.0.1\"\nsecret = \"s\"\n{client}{more}"));
+        for (body, expected) in [
+            (radius("mfa = \"challenge\"\n", ""), "radius client 'vpn': mfa needs rradius-enterprise".to_string()),
+            (base("\n[tacacs]\n[[tacacs.clients]]\nname = \"switches\"\naddress = \"127.0.0.1\"\nsecret = \"s\"\nmfa = \"append\"\n"), "tacacs client 'switches': mfa needs rradius-enterprise".to_string()),
+            (radius("", "[mfa]\nkey_file = \"mfa.key\"\n"), "mfa: not supported by this program (two-factor login needs rradius-enterprise)".to_string()),
+            (radius("mfa = \"sms\"\n", ""), "`mfa`: unknown variant, expected `challenge` or `append`".to_string()),
+        ] {
+            let (_dir, result) = load_str(&body);
+            let error = result.err().ok_or_else(|| format!("loaded: {body}"))?.to_string();
+            assert!(error.contains(&expected), "{body}: {error}");
+            assert!(error.contains("mfa"), "{error}");
+        }
         Ok(())
     }
 
