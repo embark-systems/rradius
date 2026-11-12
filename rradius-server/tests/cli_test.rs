@@ -16,11 +16,27 @@ fn run(args: &[&str]) -> (Option<i32>, String) {
     (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
+/// Without `--config`, the server and `--check` read the default configuration, which is not
+/// there when the tests run unless a prefix pointed it at one.
 #[test]
 fn test_missing_config_argument() {
+    let default = rradius_core::config::default_config_path();
+    if Path::new(default).exists() {
+        return;
+    }
     let (code, stderr) = run(&[]);
     assert_eq!(code, Some(2));
-    assert!(stderr.contains("usage: rradius-server --config <path>"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains(default) && stderr.contains("give --config <path> for another"), "unexpected stderr: {stderr}");
+    let (code, stderr) = run(&["--check"]);
+    assert_eq!(code, Some(2));
+    assert!(stderr.contains(default), "unexpected stderr: {stderr}");
+    // So does a user command.
+    let (code, stderr) = run(&["user", "show", "alice"]);
+    assert_ne!(code, Some(0));
+    assert!(stderr.contains(default), "unexpected stderr: {stderr}");
+    let (code, stderr) = run(&["--confg", "x"]);
+    assert_eq!(code, Some(2));
+    assert!(stderr.contains("usage: rradius-server [--config <path>]") && stderr.contains(&format!("without --config, the configuration is {default}")), "unexpected stderr: {stderr}");
 }
 
 #[test]
@@ -1784,7 +1800,8 @@ fn test_version() {
     let dir = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).arg("--version").current_dir(dir.path()).output().unwrap();
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(String::from_utf8_lossy(&output.stdout), format!("rradius-server {}\n", env!("CARGO_PKG_VERSION")));
+    let expected = format!("rradius-server {}\ndefault config: {}\n", env!("CARGO_PKG_VERSION"), rradius_core::config::default_config_path());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was created");
     let (code, stderr) = run(&["--version", "extra"]);
     assert_eq!(code, Some(2), "{stderr}");
@@ -2174,7 +2191,7 @@ fn test_coa_commands_need_the_enterprise_program() -> Result<(), String> {
         assert_eq!(output.status.code(), Some(2), "{command}: {stderr}");
         assert!(stderr.contains(&format!("{command}: not supported by this program (CoA needs rradius-enterprise)")) && !stderr.contains("nonexistent"), "{command}: {stderr}");
     }
-    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).output().map_err(|e| e.to_string())?.stderr).into_owned();
+    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stderr).into_owned();
     assert!(!usage.contains("disconnect|coa"), "{usage}");
     Ok(())
 }
@@ -2203,7 +2220,7 @@ fn test_dpsk_needs_the_enterprise_program() -> Result<(), String> {
         assert_eq!(status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains(&format!("{}: not supported by this program (DPSK needs rradius-enterprise)", args[0])) && !stderr.contains("nonexistent"), "{args:?}: {stderr}");
     }
-    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).output().map_err(|e| e.to_string())?.stderr).into_owned();
+    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stderr).into_owned();
     assert!(usage.contains("usage: rradius-server user") && !usage.contains("dpsk"), "{usage}");
     Ok(())
 }
@@ -2232,7 +2249,7 @@ fn test_aka_needs_the_enterprise_program() -> Result<(), String> {
         assert_eq!(status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains(&format!("{}: not supported by this program (EAP-AKA' needs rradius-enterprise)", args[0])) && !stderr.contains("nonexistent"), "{args:?}: {stderr}");
     }
-    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).output().map_err(|e| e.to_string())?.stderr).into_owned();
+    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stderr).into_owned();
     assert!(usage.contains("usage: rradius-server user") && !usage.contains("aka"), "{usage}");
     Ok(())
 }
@@ -2265,7 +2282,7 @@ fn test_client_command_needs_the_enterprise_program() -> Result<(), String> {
     assert_eq!(output.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("client: not supported by this program (dynamic clients need rradius-enterprise)") && !stderr.contains("nonexistent"), "{stderr}");
     // Nor does its usage list it.
-    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).output().map_err(|e| e.to_string())?.stderr).into_owned();
+    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stderr).into_owned();
     assert!(usage.contains("usage: rradius-server user") && !usage.contains("client add"), "{usage}");
     // A section that needs it is no command: the usage, not its message.
     let section = String::from_utf8_lossy(&Command::new(PROGRAM).arg("radius.tls").output().map_err(|e| e.to_string())?.stderr).into_owned();

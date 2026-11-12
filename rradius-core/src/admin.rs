@@ -8,7 +8,7 @@ use crate::metrics::Metrics;
 use std::path::Path;
 use std::sync::Arc;
 
-pub const CHECK_USAGE: &str = "usage: rradius-server --check --config <path>";
+pub const CHECK_USAGE: &str = "usage: rradius-server --check [--config <path>]";
 
 /// The exit status of a mistake in a command.
 pub const STATUS_MISTAKE: i32 = 2;

@@ -27,7 +27,7 @@ pub struct Program {
     pub extensions: crate::extension::Extensions,
 }
 
-const USAGE: &str = "usage: rradius-server --config <path>";
+const USAGE: &str = "usage: rradius-server [--config <path>]";
 const SCHEMA_USAGE: &str = "usage: rradius-server schema";
 
 /// The `schema` command: prints the JSON Schema of the configuration file; the exit status.
@@ -124,6 +124,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 2 && args[1] == "--version" {
         println!("{} {}", program.name, program.version);
+        println!("default config: {}", config::default_config_path());
         return Ok(());
     }
     if args.get(1).is_some_and(|command| command == "schema") {
@@ -139,17 +140,27 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(hint) = args.get(1).and_then(|name| crate::extension::command_needs_enterprise(name)) {
         exit_with(format!("{}: not supported by this program ({hint})", args[1]));
     }
+    let default = config::default_config_path();
     let config_path = match args.as_slice() {
-        [_, flag, path] if flag == "--config" => path,
+        [_] => default,
+        [_, flag, path] if flag == "--config" => path.as_str(),
+        [_, check] if check == "--check" => std::process::exit(admin::check(default)),
         [_, check, flag, path] | [_, flag, path, check] if check == "--check" && flag == "--config" => std::process::exit(admin::check(path)),
-        _ => exit_with(format!("{USAGE}\nusage: rradius-server --version\n{}\n{SCHEMA_USAGE}\n{}", admin::CHECK_USAGE, accounts::USAGE) + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()),
+        _ => exit_with(
+            format!("{USAGE}\nusage: rradius-server --version\n{}\n{SCHEMA_USAGE}\n{}", admin::CHECK_USAGE, accounts::USAGE)
+                + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()
+                + &format!("\nwithout --config, the configuration is {default}"),
+        ),
     };
     // Only now: the commands above do not listen for these, and must end on them. As PID 1 the
     // server would ignore them until the end of startup, and be killed.
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
 
-    let config = config::load(Path::new(config_path)).unwrap_or_else(|e| exit_with(e));
+    let config = config::load(Path::new(config_path)).unwrap_or_else(|e| match args.len() {
+        1 => exit_with(format!("{e}\n(the default configuration; give --config <path> for another)")),
+        _ => exit_with(e),
+    });
     logging::init(&config.log);
     let mut dictionary = Dictionary::new();
     if let Err(e) = dictionary.load_from_file(&config.dictionary) {
