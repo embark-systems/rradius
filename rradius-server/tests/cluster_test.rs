@@ -724,6 +724,18 @@ fn test_restart_without_majority_and_migrations() {
 
     cluster.add_cluster_option(0, "stop_without_leader_ms = 10000");
     cluster.spawn(0);
-    assert_eq!(cluster.exit_code(0, Duration::from_secs(90)), Some(1), "with stop_without_leader_ms");
-    assert!(cluster.last_log(0).contains("stop_without_leader_ms"), "{}", cluster.last_log(0));
+    // Asked all the while it starts: it must not answer before it exits.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let code = loop {
+        assert!(send(cluster.auth[0], &status_server(4), Duration::from_millis(300)).is_none(), "answered before exiting: {}", cluster.last_log(0));
+        if let Some(code) = cluster.exit_code(0, Duration::from_millis(200)) {
+            break Some(code);
+        }
+        if Instant::now() > deadline {
+            break None;
+        }
+    };
+    assert_eq!(code, Some(1), "with stop_without_leader_ms");
+    let log = cluster.last_log(0);
+    assert!(log.contains("stop_without_leader_ms") && !log.contains("apply migrations"), "{log}");
 }

@@ -241,23 +241,44 @@ async fn track_cluster(client: hiqlite::Client, state: Arc<ClusterState>) {
     let mut every = tokio::time::interval(Duration::from_secs(1));
     loop {
         every.tick().await;
-        let Ok(metrics) = client.metrics_db().await else {
+        let Some(reading) = read_raft(&client).await else {
             state.note(false, false, None);
             continue;
         };
         // A core that stopped on an error leaves the node answering from a replica that no longer
         // follows the cluster. Seen when a follower that fell behind the leader's snapshot came
         // back: its log could not be read.
-        if let Err(fatal) = &metrics.running_state {
+        if let Some(fatal) = reading.fatal {
             let mut failed = state.failed.lock();
             if failed.is_none() {
-                *failed = Some(fatal.to_string());
+                *failed = Some(fatal);
             }
         }
-        let (is_leader, follows) = (metrics.state.is_leader(), metrics.state.is_follower() || metrics.state.is_learner());
-        let usable = metrics.running_state.is_ok() && has_usable_leader(is_leader, follows, metrics.current_leader, metrics.millis_since_quorum_ack);
-        state.note(usable, is_leader, metrics.last_applied.map(|log| log.index));
+        state.note(reading.usable_leader, reading.is_leader, reading.applied);
     }
+}
+
+/// One reading of a node's Raft state.
+struct RaftReading {
+    /// A leader to write through, as `has_usable_leader` takes it.
+    usable_leader: bool,
+    is_leader: bool,
+    applied: Option<u64>,
+    /// Why the Raft core stopped, if it has.
+    fatal: Option<String>,
+}
+
+/// Reads `client`'s Raft state: what both `track_cluster` and `Db::wait_usable_leader` go by, so
+/// that they agree on what a usable leader is.
+async fn read_raft(client: &hiqlite::Client) -> Option<RaftReading> {
+    let metrics = client.metrics_db().await.ok()?;
+    let (is_leader, follows) = (metrics.state.is_leader(), metrics.state.is_follower() || metrics.state.is_learner());
+    Some(RaftReading {
+        usable_leader: metrics.running_state.is_ok() && has_usable_leader(is_leader, follows, metrics.current_leader, metrics.millis_since_quorum_ack),
+        is_leader,
+        applied: metrics.last_applied.map(|log| log.index),
+        fatal: metrics.running_state.as_ref().err().map(|fatal| fatal.to_string()),
+    })
 }
 
 /// `[cluster] stop_without_leader_ms` in milliseconds, or 0 when it is not set. Set once at start,
@@ -563,11 +584,8 @@ impl Db {
     pub async fn wait_usable_leader(&self, limit: Duration) -> bool {
         let usable = async {
             loop {
-                if let Ok(metrics) = self.client.metrics_db().await {
-                    let (is_leader, follows) = (metrics.state.is_leader(), metrics.state.is_follower() || metrics.state.is_learner());
-                    if metrics.running_state.is_ok() && has_usable_leader(is_leader, follows, metrics.current_leader, metrics.millis_since_quorum_ack) {
-                        return;
-                    }
+                if read_raft(&self.client).await.is_some_and(|reading| reading.usable_leader) {
+                    return;
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -581,13 +599,16 @@ impl Db {
     }
 
     /// For a node that serves before catching up: keeps waiting for a leader and writing its
-    /// marker until the replica has it, then notes and logs that it has caught up.
+    /// marker until the replica has it, then notes and logs that it has caught up. After a
+    /// failed try it waits `limit` before the next, so that a leader that cannot reach a quorum
+    /// does not get a write every second.
     pub fn catch_up_in_background(&self, node_id: u64, limit: Duration) {
         let db = self.clone();
         tokio::spawn(async move {
             let mut warned = false;
             loop {
                 if !db.wait_usable_leader(limit).await {
+                    tracing::debug!("cluster node {node_id} has no usable leader yet to catch up with");
                     continue;
                 }
                 match db.catch_up(node_id, limit).await {
@@ -602,7 +623,7 @@ impl Db {
                     }
                     Err(e) => tracing::debug!("cluster node {node_id} has not caught up yet: {e}"),
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(limit).await;
             }
         });
     }
@@ -843,6 +864,9 @@ pub enum MigrationError {
     Failed(String),
     /// The cluster could not be reached, or an error from it interrupted applying the files.
     Cluster(String),
+    /// The node has no leader, or could not catch up through one, and must not serve without:
+    /// no migration is involved.
+    Unavailable(String),
 }
 
 impl std::fmt::Display for MigrationError {
@@ -850,6 +874,7 @@ impl std::fmt::Display for MigrationError {
         match self {
             Self::Invalid(message) | Self::Failed(message) => f.write_str(message),
             Self::Cluster(message) => write!(f, "cluster was not ready to apply migrations: {message} (the limit is migrations_wait_ms; raise it if a migration file takes longer)"),
+            Self::Unavailable(message) => write!(f, "cluster was not ready: {message}"),
         }
     }
 }
@@ -859,7 +884,7 @@ impl MigrationError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Invalid(_) | Self::Failed(_) => 2,
-            Self::Cluster(_) => 1,
+            Self::Cluster(_) | Self::Unavailable(_) => 1,
         }
     }
 }
@@ -3595,6 +3620,9 @@ pub(crate) mod tests {
         assert_eq!(MigrationError::Invalid(String::new()).exit_code(), 2);
         assert_eq!(MigrationError::Failed(String::new()).exit_code(), 2);
         assert_eq!(MigrationError::Cluster(String::new()).exit_code(), 1);
+        assert_eq!(MigrationError::Unavailable(String::new()).exit_code(), 1);
+        let unavailable = MigrationError::Unavailable("no usable leader".to_string()).to_string();
+        assert!(unavailable.contains("not ready") && !unavailable.contains("migration"), "{unavailable}");
     }
 
     /// A file's SQL failed: that stays the error when the record cannot be read either,
