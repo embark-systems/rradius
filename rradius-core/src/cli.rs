@@ -178,49 +178,88 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     db.serve_for();
 
     let migrations_dir_set = migrations.is_some();
-    // Before anything can be served: scripts and handlers rely on these tables.
-    if let Some(migrations) = migrations {
-        let applying = async {
-            match db.wait_healthy(deadline.saturating_duration_since(Instant::now())).await {
-                Ok(()) => db.migrate(migrations, deadline.saturating_duration_since(Instant::now()), cluster.migrations_wait).await,
-                Err(e) => Err(MigrationError::Cluster(e)),
-            }
-        };
-        let applied = tokio::select! {
-            applied = applying => applied,
-            _ = stop_asked(&mut terminate, &mut interrupt) => {
-                let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
-                stopped_during_startup()
-            }
-        };
-        if let Err(e) = applied {
-            // A node that exits without this has its local database rebuilt on the next start.
-            let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
-            stop(e);
-        }
-    }
-
-    // Not a request before this node has what the cluster committed while it was away: a leader
-    // alone says nothing of how far behind its replica is.
-    let catching_up = async {
-        db.wait_healthy(cluster.migrations_wait).await?;
-        db.catch_up(cluster.node_id, cluster.migrations_wait).await
-    };
-    let caught_up = tokio::select! {
-        caught_up = catching_up => caught_up,
+    // A leader this node can write through. hiqlite's health is not enough: a node restarted
+    // without a majority takes itself for the leader.
+    let leader_wait = if migrations_dir_set { deadline.saturating_duration_since(Instant::now()) } else { cluster.migrations_wait };
+    let leader_found = tokio::select! {
+        found = db.wait_usable_leader(leader_wait) => found,
         _ = stop_asked(&mut terminate, &mut interrupt) => {
             let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
             stopped_during_startup()
         }
     };
-    match caught_up {
-        Ok(()) => tracing::info!("cluster node {} has caught up with the cluster", cluster.node_id),
-        // As with migrations: a node that exits without this has its local database rebuilt.
-        Err(e) if migrations_dir_set => {
+    if !leader_found {
+        // Without a majority: serve from this node's replica, unless told not to serve without a
+        // leader, or the directory has files this replica has not applied.
+        let refused = if cluster.stop_without_leader.is_some() {
+            Some(MigrationError::Cluster(format!("no usable leader within {:?}, and stop_without_leader_ms is set", cluster.migrations_wait)))
+        } else if let Some(migrations) = &migrations {
+            db.check_local_migrations(migrations).await.err()
+        } else {
+            None
+        };
+        if let Some(e) = refused {
+            // A node that exits without this has its local database rebuilt on the next start.
             let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
-            stop(MigrationError::Cluster(e));
+            stop(e);
         }
-        Err(e) => tracing::warn!("cluster node {}: {e}; serving before catching up, so answers may come from old data", cluster.node_id),
+        tracing::warn!(
+            "cluster node {}: no usable leader within {:?}; serving without a leader before catching up, so answers come from this node's replica, which may be behind",
+            cluster.node_id,
+            leader_wait
+        );
+        db.catch_up_in_background(cluster.node_id, cluster.migrations_wait);
+    } else {
+        // Before anything can be served: scripts and handlers rely on these tables.
+        if let Some(migrations) = migrations {
+            let applying = async {
+                match db.wait_healthy(deadline.saturating_duration_since(Instant::now())).await {
+                    Ok(()) => db.migrate(migrations, deadline.saturating_duration_since(Instant::now()), cluster.migrations_wait).await,
+                    Err(e) => Err(MigrationError::Cluster(e)),
+                }
+            };
+            let applied = tokio::select! {
+                applied = applying => applied,
+                _ = stop_asked(&mut terminate, &mut interrupt) => {
+                    let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
+                    stopped_during_startup()
+                }
+            };
+            if let Err(e) = applied {
+                // A node that exits without this has its local database rebuilt on the next start.
+                let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
+                stop(e);
+            }
+        }
+
+        // Not a request before this node has what the cluster committed while it was away: a
+        // leader alone says nothing of how far behind its replica is.
+        let catching_up = async {
+            db.wait_healthy(cluster.migrations_wait).await?;
+            db.catch_up(cluster.node_id, cluster.migrations_wait).await
+        };
+        let caught_up = tokio::select! {
+            caught_up = catching_up => caught_up,
+            _ = stop_asked(&mut terminate, &mut interrupt) => {
+                let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
+                stopped_during_startup()
+            }
+        };
+        match caught_up {
+            Ok(()) => {
+                db.note_caught_up();
+                tracing::info!("cluster node {} has caught up with the cluster", cluster.node_id);
+            }
+            // As with migrations: a node that exits without this has its local database rebuilt.
+            Err(e) if migrations_dir_set || cluster.stop_without_leader.is_some() => {
+                let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
+                stop(MigrationError::Cluster(e));
+            }
+            Err(e) => {
+                tracing::warn!("cluster node {}: {e}; serving before catching up, so answers may come from old data", cluster.node_id);
+                db.catch_up_in_background(cluster.node_id, cluster.migrations_wait);
+            }
+        }
     }
 
     // A core that stopped while the node started does not start again: no serving from it.
