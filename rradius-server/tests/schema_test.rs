@@ -80,7 +80,7 @@ fn test_mistakes_are_found() -> Result<(), String> {
     let cases = [
         ("[radius]\nauth_prot = 1812\n", "unknown property `auth_prot`"),
         ("[radius]\nauth_port = \"1812\"\n", "/radius/auth_port"),
-        ("[[auth.handlers]]\ntype = \"nis\"\n", "/auth/handlers/0"),
+        ("[[auth.handlers]]\ntype = \"nis\"\n", "/auth/handlers/0/type: \"nis\" is not"),
     ];
     for (extra, expected) in cases {
         let result = check(&schema, extra);
