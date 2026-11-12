@@ -2091,6 +2091,25 @@ fn test_backups_need_the_enterprise_program() -> Result<(), String> {
     Ok(())
 }
 
+/// Accounting export is only in rradius-enterprise: this program refuses `[accounting_export]`
+/// at a start and in a check (the Accounting Export Needs the Enterprise Program requirement).
+#[test]
+fn test_accounting_export_needs_enterprise() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let mut text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    text.push_str("\n[accounting_export]\ndirectory = \"exports\"\n[accounting_export.table]\nquery = \"SELECT 1\"\n");
+    std::fs::write(&config, text).map_err(|e| e.to_string())?;
+    let config = config.to_str().ok_or("a path that is not UTF-8")?;
+    for args in [vec!["--config", config], vec!["--config", config, "--check"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("accounting_export: not supported by this program (accounting export needs rradius-enterprise)"), "{args:?}: {stderr}");
+    }
+    Ok(())
+}
+
 /// The settings RadSec, and only it, uses, as the program without it takes them: at a start and
 /// in a check (the table of the radsec spec, this program's column).
 #[test]

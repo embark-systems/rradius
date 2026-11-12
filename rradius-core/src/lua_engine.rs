@@ -643,6 +643,11 @@ impl Db {
         self.query_bound(sql, params.iter().map(|p| hiqlite::Param::Text(p.to_string())).collect()).await.map_err(|failure| failure.message)
     }
 
+    /// Like `query`, binding `?`, `?1` and the like to `params` of any type.
+    pub async fn query_values(&self, sql: &str, params: Vec<hiqlite::Param>) -> Result<Vec<DbRow>, String> {
+        self.query_bound(sql, params).await.map_err(|failure| failure.message)
+    }
+
     /// Like `query`, with values of any type. hiqlite treats a `?` that has no value as NULL.
     async fn query_bound(&self, sql: &str, params: Vec<hiqlite::Param>) -> Result<Vec<DbRow>, DbFailure> {
         let rows = self.client.query_try_map::<GenericRow, _>(sql.to_string(), params).await.map_err(DbFailure::from)?;

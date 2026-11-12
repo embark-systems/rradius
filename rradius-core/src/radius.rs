@@ -358,6 +358,12 @@ fn encode_address(data_type: &str, text: &str) -> Option<Vec<u8>> {
 /// out, and so is all of one that is invalid (RFC 6929 section 2.8), with the rest of the request
 /// going on.
 pub fn request_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_secret: &[u8]) -> Vec<(String, AttrValue)> {
+    decoded_attributes(packet, dictionary, shared_secret, false)
+}
+
+/// `request_attributes`, with `unknown` also an attribute the dictionary does not name, as
+/// `Attr-<type>` with its octets.
+fn decoded_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_secret: &[u8], unknown: bool) -> Vec<(String, AttrValue)> {
     let mut result = Vec::new();
     let attributes = &packet.attributes;
     let mut at = 0;
@@ -384,11 +390,37 @@ pub fn request_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared
                         read_extended(dictionary, number, extended, &data, &mut result);
                     }
                 }
+                None if unknown => result.push((format!("Attr-{number}"), AttrValue::Bytes(value.clone()))),
                 _ => read_attribute(dictionary, 0, vec![number], value, &mut result),
             },
         }
     }
     result
+}
+
+/// The attributes of an accounting request as an `AccountingRecord` has them.
+fn accounting_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_secret: &[u8]) -> Vec<(String, String)> {
+    let hex = |bytes: &[u8]| format!("0x{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+    decoded_attributes(packet, dictionary, shared_secret, true)
+        .into_iter()
+        .map(|(name, value)| {
+            let text = match value {
+                AttrValue::Bytes(bytes) if name.starts_with("Attr-") && dictionary.get_by_name(&name).is_none() => hex(&bytes),
+                AttrValue::Bytes(bytes) => match String::from_utf8(bytes) {
+                    Ok(text) if !text.chars().any(char::is_control) => text,
+                    Ok(text) => hex(text.as_bytes()),
+                    Err(e) => hex(e.as_bytes()),
+                },
+                AttrValue::Number(number) if number.fract() == 0.0 && number >= 0.0 => match dictionary.value_name(&name, number as u64) {
+                    Some(named) => named.to_string(),
+                    None => format!("{}", number as u64),
+                },
+                AttrValue::Number(number) if number.fract() == 0.0 => format!("{}", number as i64),
+                AttrValue::Number(number) => number.to_string(),
+            };
+            (name, text)
+        })
+        .collect()
 }
 
 /// Adds what an attribute holds to `result`, or nothing at all if a TLV in it is invalid.
@@ -1418,6 +1450,8 @@ pub struct RadiusServer {
     learned: Mutex<HashMap<IpAddr, Learned>>,
     /// Where accounting goes while the database cannot take it.
     spool: Option<Arc<Spool>>,
+    /// What is told of each accounting request answered.
+    accounting_observer: Option<Arc<dyn crate::extension::AccountingObserver>>,
     eap: EapService,
     policy_discards: Mutex<DiscardLog>,
     /// EAP conversations refused for overload, logged a line a second at most, for each reason.
@@ -1454,6 +1488,7 @@ impl RadiusServer {
             status_server: true,
             learned: Mutex::default(),
             spool: None,
+            accounting_observer: None,
             eap: EapService::default(),
             policy_discards: Mutex::default(),
             eap_overload_lines: Mutex::default(),
@@ -1512,6 +1547,12 @@ impl RadiusServer {
 
     pub fn replace_eap(&self, settings: Option<Arc<EapSettings>>) {
         self.eap.set_settings(settings);
+    }
+
+    /// Tells `observer` of each accounting request answered from now on.
+    pub fn with_accounting_observer(mut self, observer: Option<Arc<dyn crate::extension::AccountingObserver>>) -> Self {
+        self.accounting_observer = observer;
+        self
     }
 
     pub fn with_spool(mut self, spool: Arc<Spool>) -> Self {
@@ -1815,9 +1856,14 @@ impl RadiusServer {
             Some(forwarder) => forwarder.route(&crate::forwarding::ForwardRequest { kind, client, packet: &packet, data, source: source.ip() }).await,
             None => crate::forwarding::Route::Local,
         };
+        // What answered an accounting request, for its observer.
+        let mut handling = "script";
         let response = match (route, kind) {
             (crate::forwarding::Route::Local, PacketKind::Auth) => self.process_auth(state, client, &packet, source.ip()).await,
-            (crate::forwarding::Route::Local, PacketKind::Acct) => self.process_acct(state, client, &packet, data, source.ip()).await,
+            (crate::forwarding::Route::Local, PacketKind::Acct) => self.process_acct(state, client, &packet, data, source.ip()).await.map(|(response, how)| {
+                handling = how;
+                response
+            }),
             // Where it goes cannot be told now: the NAS sends it again, rather than it being
             // handled here or by `*` when it belongs elsewhere.
             (crate::forwarding::Route::Discard(reason), _) => {
@@ -1828,9 +1874,14 @@ impl RadiusServer {
             }
             (crate::forwarding::Route::Answered { response, account, realm }, _) => {
                 record_forwarded(client, source.ip(), &packet, &response, &account, &realm);
+                handling = "proxy";
                 Some(response)
             }
-            (crate::forwarding::Route::Replied(response), _) => Some(response),
+            // Accounting written down to send on later.
+            (crate::forwarding::Route::Replied(response), _) => {
+                handling = "spool";
+                Some(response)
+            }
             (crate::forwarding::Route::Unanswered, _) => None,
         };
         match response.as_ref().and_then(|response| response.first()) {
@@ -1845,6 +1896,16 @@ impl RadiusServer {
         }
         if state.trace.as_ref().is_some_and(|trace| trace.covers(&client.name, packet.attribute(1).unwrap_or_default())) {
             trace_exchange(&self.dictionary, client, source.ip(), &packet, response.as_deref());
+        }
+        if let Some(observer) = self.accounting_observer.as_ref().filter(|_| kind == PacketKind::Acct && response.as_ref().and_then(|response| response.first()) == Some(&ACCOUNTING_RESPONSE)) {
+            observer.observe(&crate::extension::AccountingRecord {
+                time: std::time::SystemTime::now(),
+                client: client.name.clone(),
+                source: source.ip(),
+                transport: if client.secret == crate::clients::RADSEC_SECRET { "radsec" } else { "udp" },
+                handling,
+                attributes: accounting_attributes(&packet, &self.dictionary, &client.secret),
+            });
         }
         // Without a response the ticket is dropped, so a retransmission runs again.
         if let (Some(ticket), Some(response)) = (ticket, &response) {
@@ -2386,7 +2447,7 @@ impl RadiusServer {
     pub async fn handle_acct(&self, data: &[u8], source: IpAddr) -> Option<Vec<u8>> {
         let state = self.state.get();
         let (client, packet) = self.check_acct(&state.clients, data, source)?;
-        self.process_acct(&state, client, &packet, data, source).await
+        self.process_acct(&state, client, &packet, data, source).await.map(|(response, _)| response)
     }
 
     /// The client and packet of a valid Accounting-Request; anything else gets `None`.
@@ -2400,7 +2461,9 @@ impl RadiusServer {
         Some((client, packet))
     }
 
-    async fn process_acct(&self, state: &RadiusState, client: &Client, packet: &RadiusPacket, data: &[u8], source: IpAddr) -> Option<Vec<u8>> {
+    /// The Accounting-Response, if any, and what answered: `script`, or `spool` when the request
+    /// was written down to replay.
+    async fn process_acct(&self, state: &RadiusState, client: &Client, packet: &RadiusPacket, data: &[u8], source: IpAddr) -> Option<(Vec<u8>, &'static str)> {
         let secret = client.secret.as_slice();
         let mut request = LuaRequest::new("radius", "accounting", request_attributes(packet, &self.dictionary, secret));
         request.client = client.name.clone();
@@ -2409,11 +2472,14 @@ impl RadiusServer {
         // A failure that says the database could not be used, caught by the script or not, may
         // have kept the record from being written: on disk first, whatever the script then said.
         // Other failures of uncertain cause are not spooled here, while a replay tries them again.
-        let acknowledged = match decision.database_failed {
-            true => self.spooled(client, data, source).await || (decision.accepted() && self.spool.is_none()),
-            false => decision.accepted(),
+        let (acknowledged, handling) = match decision.database_failed {
+            true => match self.spooled(client, data, source).await {
+                true => (true, "spool"),
+                false => (decision.accepted() && self.spool.is_none(), "script"),
+            },
+            false => (decision.accepted(), "script"),
         };
-        acknowledged.then(|| RadiusPacket::create_response(ACCOUNTING_RESPONSE, packet, vec![], secret))
+        acknowledged.then(|| (RadiusPacket::create_response(ACCOUNTING_RESPONSE, packet, vec![], secret), handling))
     }
 
     /// Whether the request is now on disk, to replay when the database works again. Without
@@ -7787,6 +7853,87 @@ pub(crate) mod tests {
         let silent = forwarding_server(|| Route::Unanswered).await;
         assert!(silent.receive(PacketKind::Auth, &pap(5, "fwd-silent", "pw"), from("127.0.0.1")).await.is_none());
         Ok(())
+    }
+
+    /// An accounting observer that keeps what it is told.
+    #[derive(Default)]
+    struct Observed(Mutex<Vec<crate::extension::AccountingRecord>>);
+
+    impl crate::extension::AccountingObserver for Observed {
+        fn observe(&self, record: &crate::extension::AccountingRecord) {
+            self.0.lock().unwrap_or_else(PoisonError::into_inner).push(record.clone());
+        }
+    }
+
+    impl Observed {
+        fn taken(&self) -> Vec<crate::extension::AccountingRecord> {
+            std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
+        }
+    }
+
+    /// One record for each accounting request answered, not for its retransmission, nor for
+    /// one not answered; what answered it; its attributes by name, with values by name, and one
+    /// the dictionary does not name in hexadecimal.
+    #[tokio::test]
+    async fn test_accounting_observer_sees_each_answer_once() -> Result<(), String> {
+        let observed = Arc::new(Observed::default());
+        let server = script_server("xyzzy5461", "if get_attr('Acct-Session-Id') == 'refused' then return 'reject' end return 'accept'").await.with_accounting_observer(Some(observed.clone()));
+        let unnamed = (1..=255u8).find(|number| share_dictionary().get(0, &[u32::from(*number)]).is_none()).ok_or("the dictionary names every attribute")?;
+        let start = RadiusPacket::create_accounting_request(1, vec![(40, vec![0, 0, 0, 1]), (1, b"alice".to_vec()), (44, b"s1".to_vec()), (unnamed, vec![0xde, 0xad]), (4, vec![192, 0, 2, 1])], b"xyzzy5461");
+        let stop = RadiusPacket::create_accounting_request(2, vec![(40, vec![0, 0, 0, 2]), (1, b"alice".to_vec()), (44, b"s1".to_vec()), (46, 3600u32.to_be_bytes().to_vec())], b"xyzzy5461");
+        let refused = RadiusPacket::create_accounting_request(3, vec![(40, vec![0, 0, 0, 3]), (44, b"refused".to_vec())], b"xyzzy5461");
+        for packet in [&start, &start, &stop, &refused] {
+            let _ = server.receive(PacketKind::Acct, packet, from("127.0.0.1")).await;
+        }
+        let records = observed.taken();
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert_eq!((records[0].client.as_str(), records[0].source, records[0].transport, records[0].handling), ("local", LOCALHOST, "udp", "script"));
+        fn named(record: &crate::extension::AccountingRecord) -> Vec<(&str, &str)> {
+            record.attributes.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect()
+        }
+        assert_eq!(named(&records[0]), vec![("Acct-Status-Type", "Start"), ("User-Name", "alice"), ("Acct-Session-Id", "s1"), (format!("Attr-{unnamed}").as_str(), "0xdead"), ("NAS-IP-Address", "192.0.2.1")]);
+        assert_eq!(named(&records[1]), vec![("Acct-Status-Type", "Stop"), ("User-Name", "alice"), ("Acct-Session-Id", "s1"), ("Acct-Session-Time", "3600")]);
+        // Authentication is not told.
+        let _ = server.receive(PacketKind::Auth, &pap(4, "alice", "pw"), from("127.0.0.1")).await;
+        assert!(observed.taken().is_empty());
+        Ok(())
+    }
+
+    /// What answered: the spool while the database is out, another server, or written down to
+    /// send on later.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_accounting_observer_handling() -> Result<(), String> {
+        use crate::forwarding::Route;
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let spooling = spooling_server(dir.path(), "return 'accept'").await;
+        replace_engine(&spooling, engine_with(OUTAGE, Duration::from_millis(1)));
+        let observed = Arc::new(Observed::default());
+        let spooling = Arc::try_unwrap(spooling).map_err(|_| "shared")?.with_accounting_observer(Some(observed.clone()));
+        spooling.receive(PacketKind::Acct, &acct_request(1, None), from("127.0.0.1")).await.ok_or("not answered")?;
+        assert_eq!(observed.taken().iter().map(|record| record.handling).collect::<Vec<_>>(), vec!["spool"]);
+        for (route, handling) in [(Route::Answered { response: vec![ACCOUNTING_RESPONSE, 5, 0, 20], account: "a".to_string(), realm: "hq.test".to_string() }, "proxy"), (Route::Replied(vec![ACCOUNTING_RESPONSE, 5, 0, 20]), "spool")] {
+            let server = script_server("xyzzy5461", "return 'accept'").await.with_accounting_observer(Some(observed.clone()));
+            let state = server.state();
+            server.replace_state(RadiusState::new(state.clients.clone(), state.engine.clone(), None).with_forwarder(Some(Arc::new(SaysOnce(Mutex::new(Some(route)))))));
+            let packet = RadiusPacket::create_accounting_request(5, vec![(40, vec![0, 0, 0, 1])], b"xyzzy5461");
+            server.receive(PacketKind::Acct, &packet, from("127.0.0.1")).await.ok_or("not answered")?;
+            assert_eq!(observed.taken().iter().map(|record| record.handling).collect::<Vec<_>>(), vec![handling]);
+        }
+        Ok(())
+    }
+
+    /// A forwarder that says `route` once, and then that a request is local.
+    struct SaysOnce(Mutex<Option<crate::forwarding::Route>>);
+
+    impl crate::forwarding::Forwarder for SaysOnce {
+        fn route<'a>(&'a self, _request: &'a crate::forwarding::ForwardRequest<'a>) -> BoxFuture<'a, crate::forwarding::Route> {
+            let route = self.0.lock().unwrap_or_else(PoisonError::into_inner).take().unwrap_or(crate::forwarding::Route::Local);
+            Box::pin(async move { route })
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     /// An EAP method of an extension, for the tests of the hook: its first Response asks for a
