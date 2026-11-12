@@ -103,8 +103,7 @@ pub(crate) async fn configure(config: &mut hiqlite::NodeConfig, backup: Option<&
     if let Some(backup) = backup {
         config.backup_keep_for_local = std::time::Duration::from_secs(backup.keep_days.saturating_mul(24 * 3600));
         if let Some(s3) = &backup.s3 {
-            let bucket = hiqlite::s3::S3Config::new(&s3.endpoint, s3.bucket.clone(), s3.region.clone(), s3.access_key.clone(), s3.secret_key.clone(), s3.path_style).await.map_err(|e| format!("[cluster.backup.s3]: {e}"))?;
-            config.s3_config = Some(bucket);
+            config.s3_config = Some(bucket(s3).await?);
         }
     }
     Ok(())
