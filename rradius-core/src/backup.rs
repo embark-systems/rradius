@@ -50,6 +50,13 @@ impl std::fmt::Debug for S3Backup {
 /// makes a backup.
 const NEVER: &str = "0 0 0 30 2 * *";
 
+/// The names of the variables of the environment that hiqlite or its encryption read, sorted.
+fn hiqlite_variables() -> Vec<String> {
+    let mut names: Vec<String> = std::env::vars_os().map(|(name, _)| name.to_string_lossy().into_owned()).filter(|name| name.starts_with("HQL_") || name.starts_with("ENC_")).collect();
+    names.sort();
+    names
+}
+
 /// Reads an encryption key, `<id>/<32 bytes in base64>`.
 pub fn encryption_key(text: &str) -> Result<cryptr::EncKeys, String> {
     let text = text.trim();
@@ -83,7 +90,14 @@ pub(crate) async fn configure(config: &mut hiqlite::NodeConfig, backup: Option<&
     table.insert("backup_cron".into(), NEVER.into());
     table.insert("secret_raft".into(), config.secret_raft.clone().into());
     table.insert("secret_api".into(), config.secret_api.clone().into());
+    // hiqlite reads a `.env` file into the environment here, where its own variables would
+    // bring back its schedule or restore a backup at the start: refused.
+    let before = hiqlite_variables();
     let scheduled = hiqlite::NodeConfig::from_toml_table(table, "hiqlite", None, Some(keys)).await.map_err(|e| format!("backup settings: {e}"))?;
+    let added: Vec<String> = hiqlite_variables().into_iter().filter(|name| !before.contains(name)).collect();
+    if !added.is_empty() {
+        return Err(format!("a .env file set {}: remove it from the .env file, or set it in the environment if it is meant", added.join(", ")));
+    }
     config.backup_config = scheduled.backup_config;
     config.enc_keys = scheduled.enc_keys;
     if let Some(backup) = backup {
