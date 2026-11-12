@@ -171,6 +171,9 @@ pub struct ClusterStatus {
     pub applied: u64,
     /// How long there has been no usable leader; `None` while there is one.
     pub without_leader: Option<Duration>,
+    /// Whether the node has read back its own startup marker: false while it serves from a
+    /// replica that may be behind the cluster.
+    pub caught_up: bool,
 }
 
 /// What `track_cluster` read of one node's Raft state.
@@ -182,6 +185,7 @@ struct ClusterState {
     /// Milliseconds after `cluster_epoch()` since when there has been no usable leader, plus one;
     /// zero while there is one.
     leaderless_since: AtomicU64,
+    caught_up: AtomicBool,
     /// Why this node's Raft core stopped, once it has: it does not start again by itself.
     failed: parking_lot::Mutex<Option<String>>,
 }
@@ -190,7 +194,7 @@ impl ClusterState {
     fn status(&self) -> ClusterStatus {
         let since = self.leaderless_since.load(Ordering::Relaxed);
         let without_leader = (since != 0).then(|| cluster_epoch().elapsed().saturating_sub(Duration::from_millis(since - 1)));
-        ClusterStatus { leader: self.leader.load(Ordering::Relaxed), is_leader: self.is_leader.load(Ordering::Relaxed), applied: self.applied.load(Ordering::Relaxed), without_leader }
+        ClusterStatus { leader: self.leader.load(Ordering::Relaxed), is_leader: self.is_leader.load(Ordering::Relaxed), applied: self.applied.load(Ordering::Relaxed), without_leader, caught_up: self.caught_up.load(Ordering::Relaxed) }
     }
 
     fn note(&self, leader: bool, is_leader: bool, applied: Option<u64>) {
@@ -219,7 +223,7 @@ static SERVING_NODE: std::sync::OnceLock<Arc<ClusterState>> = std::sync::OnceLoc
 /// The view of the cluster of the node this process serves for, at most a second old; that of
 /// a node with a leader before one is set.
 pub fn cluster_status() -> ClusterStatus {
-    SERVING_NODE.get().map_or(ClusterStatus { leader: true, ..Default::default() }, |state| state.status())
+    SERVING_NODE.get().map_or(ClusterStatus { leader: true, caught_up: true, ..Default::default() }, |state| state.status())
 }
 
 /// Whether Raft metrics show a leader to write through: a follower that knows one, or a leader
@@ -553,6 +557,56 @@ impl Db {
         self.cluster.status()
     }
 
+    /// Waits up to `limit` for a leader this node can write through, as `has_usable_leader` takes
+    /// it: hiqlite's own health is not enough, since a node restarted alone takes itself for the
+    /// leader. Read from Raft's state each time, not from `track_cluster`'s last reading.
+    pub async fn wait_usable_leader(&self, limit: Duration) -> bool {
+        let usable = async {
+            loop {
+                if let Ok(metrics) = self.client.metrics_db().await {
+                    let (is_leader, follows) = (metrics.state.is_leader(), metrics.state.is_follower() || metrics.state.is_learner());
+                    if metrics.running_state.is_ok() && has_usable_leader(is_leader, follows, metrics.current_leader, metrics.millis_since_quorum_ack) {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        };
+        tokio::time::timeout(limit, usable).await.is_ok()
+    }
+
+    /// Notes that this node has caught up with the cluster, for `rradius_cluster_caught_up`.
+    pub fn note_caught_up(&self) {
+        self.cluster.caught_up.store(true, Ordering::Relaxed);
+    }
+
+    /// For a node that serves before catching up: keeps waiting for a leader and writing its
+    /// marker until the replica has it, then notes and logs that it has caught up.
+    pub fn catch_up_in_background(&self, node_id: u64, limit: Duration) {
+        let db = self.clone();
+        tokio::spawn(async move {
+            let mut warned = false;
+            loop {
+                if !db.wait_usable_leader(limit).await {
+                    continue;
+                }
+                match db.catch_up(node_id, limit).await {
+                    Ok(()) => {
+                        db.note_caught_up();
+                        tracing::info!("cluster node {node_id} has caught up with the cluster");
+                        return;
+                    }
+                    Err(e) if !warned => {
+                        warned = true;
+                        tracing::warn!("cluster node {node_id} has a leader but has not caught up yet, trying again: {e}");
+                    }
+                    Err(e) => tracing::debug!("cluster node {node_id} has not caught up yet: {e}"),
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+    }
+
     pub async fn wait_healthy(&self, timeout: Duration) -> Result<(), String> {
         self.client.wait_until_healthy_db_timeout(timeout).await.map_err(|e| e.to_string())
     }
@@ -679,15 +733,7 @@ impl Db {
         let Migrations { dir, files } = migrations;
         let applied = self.applied_migrations(wait).await?;
         // Before hiqlite sees them: it panics on these rather than returning an error.
-        for record in &applied {
-            let Some(file) = files.iter().find(|f| f.id == record.id) else { continue };
-            if file.name != record.name {
-                return Err(MigrationError::Invalid(format!("migration file '{}' was applied under the name '{}'", file.file_name, record.name)));
-            }
-            if file.hash() != record.hash {
-                return Err(MigrationError::Invalid(format!("migration file '{}' changed after it was applied", file.file_name)));
-            }
-        }
+        check_applied(&files, &applied)?;
         let last_applied = applied.last().map_or(0, |record| record.id);
         if files.last().is_none_or(|file| file.id <= last_applied) {
             if files.len() < applied.len() {
@@ -730,6 +776,25 @@ impl Db {
         tokio::time::timeout(limit, reached)
             .await
             .map_err(|_| MigrationError::Cluster(format!("this node's replica did not catch up to migration {target} within {limit:?}")))
+    }
+
+    /// Whether this node's replica alone has every file of `migrations` applied, for a node that
+    /// has no leader to ask: `Invalid` when a file is recorded under another name or content, as
+    /// with a leader, and `Cluster` when a file is not recorded here, since applying it takes one.
+    pub async fn check_local_migrations(&self, migrations: &Migrations) -> Result<(), MigrationError> {
+        let Some(newest) = migrations.files.last() else { return Ok(()) };
+        let read = self.client.query_map::<hiqlite::AppliedMigration, _>("SELECT id, name, ts, hash FROM _migrations ORDER BY id", vec![]).await;
+        let applied = match read {
+            Ok(applied) => applied,
+            // hiqlite creates the table with the first migration.
+            Err(e) if e.to_string().contains("no such table") => Vec::new(),
+            Err(e) => return Err(MigrationError::Cluster(format!("cannot read the migrations applied on this node: {e}"))),
+        };
+        check_applied(&migrations.files, &applied)?;
+        match migrations.files.iter().find(|file| !applied.iter().any(|record| record.id == file.id)) {
+            Some(missing) => Err(MigrationError::Cluster(format!("no leader to apply migration file '{}', which this node has not applied (newest file '{}')", missing.file_name, newest.file_name))),
+            None => Ok(()),
+        }
     }
 
     /// What the cluster has applied, in order, asked of the leader: this node's
@@ -797,6 +862,20 @@ impl MigrationError {
             Self::Cluster(_) => 1,
         }
     }
+}
+
+/// Refuses files that are recorded as applied under another name or with other content.
+fn check_applied(files: &[MigrationFile], applied: &[hiqlite::AppliedMigration]) -> Result<(), MigrationError> {
+    for record in applied {
+        let Some(file) = files.iter().find(|f| f.id == record.id) else { continue };
+        if file.name != record.name {
+            return Err(MigrationError::Invalid(format!("migration file '{}' was applied under the name '{}'", file.file_name, record.name)));
+        }
+        if file.hash() != record.hash {
+            return Err(MigrationError::Invalid(format!("migration file '{}' changed after it was applied", file.file_name)));
+        }
+    }
+    Ok(())
 }
 
 /// A file in `[cluster].migrations_dir`, as read at startup.
@@ -3445,6 +3524,39 @@ pub(crate) mod tests {
         let error = error.expect("migrate_dir did not return").unwrap_err();
         assert!(matches!(&error, MigrationError::Cluster(m) if !m.contains("1_users.sql")), "{error:?}");
         assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_check_local_migrations() {
+        let db = start_cluster(1).remove(0);
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing applied: an empty directory needs nothing, a file needs a leader.
+        assert_eq!(db.check_local_migrations(&read_migrations(dir.path()).unwrap()).await, Ok(()));
+        write_migrations(dir.path(), &[("1_users.sql", USERS)]);
+        let error = db.check_local_migrations(&read_migrations(dir.path()).unwrap()).await.unwrap_err();
+        assert!(matches!(&error, MigrationError::Cluster(m) if m.contains("1_users.sql")), "{error:?}");
+
+        write_migrations(dir.path(), &[("2_reply.sql", REPLY)]);
+        db.migrate_dir(dir.path(), WAIT).await.unwrap();
+        assert_eq!(db.check_local_migrations(&read_migrations(dir.path()).unwrap()).await, Ok(()));
+
+        // Fewer files than applied is fine, as with a leader.
+        std::fs::remove_file(dir.path().join("2_reply.sql")).unwrap();
+        assert_eq!(db.check_local_migrations(&read_migrations(dir.path()).unwrap()).await, Ok(()));
+
+        write_migrations(dir.path(), &[("2_reply.sql", REPLY), ("3_acct.sql", "CREATE TABLE acct (id INTEGER);")]);
+        let error = db.check_local_migrations(&read_migrations(dir.path()).unwrap()).await.unwrap_err();
+        assert!(matches!(&error, MigrationError::Cluster(m) if m.contains("3_acct.sql")), "{error:?}");
+        std::fs::remove_file(dir.path().join("3_acct.sql")).unwrap();
+
+        write_migrations(dir.path(), &[("1_users.sql", "CREATE TABLE users (id INTEGER, name TEXT);")]);
+        let error = db.check_local_migrations(&read_migrations(dir.path()).unwrap()).await.unwrap_err();
+        assert!(matches!(&error, MigrationError::Invalid(m) if m.contains("1_users.sql")), "{error:?}");
+
+        write_migrations(dir.path(), &[("1_users.sql", USERS)]);
+        std::fs::rename(dir.path().join("1_users.sql"), dir.path().join("1_accounts.sql")).unwrap();
+        let error = db.check_local_migrations(&read_migrations(dir.path()).unwrap()).await.unwrap_err();
+        assert!(matches!(&error, MigrationError::Invalid(m) if m.contains("1_accounts.sql")), "{error:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

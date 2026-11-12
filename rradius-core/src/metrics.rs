@@ -275,6 +275,7 @@ impl Metrics {
         family("rradius_cluster_is_leader", "gauge", "1 while this node is the cluster's leader.", &[("", u64::from(cluster.is_leader))]);
         family("rradius_cluster_applied_index", "gauge", "The last log entry applied to this node's replica.", &[("", cluster.applied)]);
         family("rradius_cluster_seconds_without_leader", "gauge", "How long this node has had no leader to write through; 0 while it has one.", &[("", cluster.without_leader.map_or(0, |lasted| lasted.as_secs()))]);
+        family("rradius_cluster_caught_up", "gauge", "1 once this node's replica has caught up with the cluster after it started; 0 while it serves from a replica that may be behind.", &[("", u64::from(cluster.caught_up))]);
         family("rradius_db_batched_writes_total", "counter", "Script writes committed in one transaction together with others.", &[("", batched)]);
         family("rradius_db_split_batches_total", "counter", "Transactions of script writes that failed and were split to find the statement that failed.", &[("", split)]);
         family("rradius_script_http_requests_total", "counter", "http_request calls by result.", &[

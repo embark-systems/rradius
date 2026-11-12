@@ -332,7 +332,7 @@ api = "10.0.0.3:8200"
 
 節點啟動後，不論有沒有 `migrations_dir`，都先等到有 leader，再經 leader 寫一個自己的標記（資料表 `rradius_nodes`），等本機副本讀到它才開始監聽。寫入依序套用，所以讀到標記就代表停機期間叢集寫入的帳號、NAS、金鑰都已經在本機，第一個回應就看得到。完成時記錄 `cluster node N has caught up with the cluster`。
 
-- 兩段等待各自以 `migrations_wait_ms` 為上限。有 `migrations_dir` 時等不到就以狀態碼 1 結束，和 migration 失敗相同；沒有時記一行 WARN（`serving before catching up`）後照常服務，這時答案可能來自舊資料。
+- 兩段等待各自以 `migrations_wait_ms` 為上限。等不到可用的 leader 時，見下方〈沒有多數節點時重新啟動〉；有 leader 卻追不上時，有 `migrations_dir` 就以狀態碼 1 結束，和 migration 失敗相同，沒有時記一行 WARN（`serving before catching up`）後照常服務，這時答案可能來自舊資料。先服務的節點會在背景繼續追上，完成時同樣記錄 `has caught up with the cluster`。
 - 停機很久、要補的資料很多時，追上要比較久。
 
 #### 資料庫不能用時
@@ -342,7 +342,12 @@ api = "10.0.0.3:8200"
 - **交給叢集的寫入等到結果才回報。** 合併提交的 `sql_execute`（不回傳資料列的 INSERT、UPDATE、DELETE、REPLACE）還在排隊時，請求的資料庫時限一到就放棄，之後也不會交出去；一旦交給叢集（leader 在做快照、換 leader 時可能要等），就等叢集回覆結果，不再中途放棄，最多等 30 秒。所以「回報失敗、之後卻寫進去」只剩 30 秒內都沒有結果這種情況，這時呼叫回報結果不明（記錄寫 `may have been committed`），不算資料庫不能用：計費不進暫存也不回覆，由 NAS 重送，重送時可能重複一次，所以計費腳本仍要能重複執行。登入沒回應時，腳本已經做的寫入（配出的 IP、用掉的驗證碼）在這種情況下也可能留下來。代價是 leader 很慢時，一個請求最多多等 30 秒，占著它的名額；等待的時間照樣算進這個請求的資料庫時限，所以同一個請求之後的呼叫可能立刻逾時，計費可能因此進暫存、重放時再跑一次。帶 `RETURNING` 和其他不合併提交的語句照舊以時限為準，逾時後仍可能寫入。
 - **被隔開的節點讀的是舊資料。** 讀取用本機副本，不需要多數節點，所以只讀的登入照常回應；但在另一側停用的帳號、刪掉的 NAS、撤掉的金鑰，在它這裡都還有效，SIGHUP 也沒用，直到網路恢復。
 - **`stop_without_leader_ms`：** 設了之後，節點沒有可用的 leader 超過這段時間，就不回應任何 Access-Request 和送到認證埠的 Status-Server（`reason="no_leader"`），TACACS+ 的認證和授權回 ERROR，讓 NAS 和負載平衡器把它當成故障、改問其他節點。計費照常（有暫存時進暫存）。代價是叢集只剩這一台時，它也不再服務只讀的登入，所以預設不設。
-- **沒有多數節點時不能重新啟動。** 三台剩一台時，正在跑的那台照常服務只讀的登入；但它一旦重新啟動，就要等到有 leader 才起得來：hiqlite 重新啟動叢集成員時，會等到知道 leader 是誰才把資料庫交給 rradius。有 `migrations_dir` 時等 `migrations_wait_ms` 後以狀態碼 1 結束，沒有時一直等。所以叢集失去多數時，不要重啟剩下的節點，先把其他節點救回來。
+- **沒有多數節點時重新啟動。** 三台剩一台時，正在跑的那台照常服務只讀的登入。它重新啟動時，hiqlite 先等 leader 約 6 秒，rradius 再等可用的 leader 到 `migrations_wait_ms`；都等不到時：
+  - 沒設 `stop_without_leader_ms`、本機副本已經套用 `migrations_dir` 裡的每個檔案（編號、名稱、內容都相符），或沒有 `migrations_dir`：記一行 WARN（`serving without a leader before catching up`）後用本機副本服務，`rradius_cluster_caught_up` 為 0；其他節點回來、選出 leader 後在背景追上，記錄 `has caught up with the cluster`，指標變 1。
+  - 目錄有本機沒套用的檔案：以狀態碼 1 結束（`not ready`，訊息點名檔案），因為沒有 leader 套用不了；已套用的檔案被改過或改名：以狀態碼 2 結束。
+  - 設了 `stop_without_leader_ms`：以狀態碼 1 結束，有沒有 `migrations_dir` 都一樣。
+  - 有 `migrations_dir` 時，啟動節點本身也受 `migrations_wait_ms` 限制，所以它要大於約 6 秒（預設 60 秒），否則在 hiqlite 返回前就逾時結束。
+  - 代價：停機很久的節點在網路分割時重新啟動，會用停機前的資料服務，例如這段期間停用的帳號還能登入。在意這點時設 `stop_without_leader_ms`。
 - **落後太多的 follower 會壞掉，要重新啟動。** follower 停住或斷線期間，叢集寫入超過 `snapshot_every`（預設 10 萬筆）、leader 做了快照並丟掉舊日誌時，follower 回來後 hiqlite 0.16 讀不到自己的日誌，Raft 核心停止（記錄 `quit RaftCore ... Integrity: Attempt to read non-existent data`）。2026-11-10 在三節點上用預設設定、暫停一台時寫入 13 萬筆重現；`snapshot_every = 50` 時每次都重現。這時節點會用不再跟隨叢集的副本回答，所以 rradius 偵測到後會乾淨關閉並以狀態碼 1 結束（見 1. 節〈停止〉），重新啟動後它會追上、恢復正常。沒有自動重啟時，要手動啟動它。
 - **停掉 leader 時不會先交出 leader。** hiqlite 0.16 在關閉前先等 9.5 秒（仍是 leader），之後其他節點要 1.5 到 3 秒選出新的，這幾秒寫入逾時。所以升級時最後才停 leader（`rradius_cluster_is_leader` 為 1 的那台）。
 - **錯誤怎麼分類。** 逾時、找不到 leader、連不到節點、內部通道關閉、快照失敗都算資料庫不能用；SQL 寫錯、違反限制（例如 UNIQUE）算語句的錯，照樣拒絕或回錯誤。管理指令 `user` 遇到前者以狀態碼 3 結束。
@@ -358,6 +363,7 @@ api = "10.0.0.3:8200"
 | `rradius_cluster_is_leader` | 這台是 leader 時 1 |
 | `rradius_cluster_applied_index` | 本機副本最後套用的紀錄編號；和其他節點比，看出落後多少 |
 | `rradius_cluster_seconds_without_leader` | 沒有可用 leader 的秒數，有時是 0 |
+| `rradius_cluster_caught_up` | 啟動後本機副本已追上叢集時 1；沒有 leader 而先用本機副本服務、還沒追上時 0 |
 
 升級時最後才停 `rradius_cluster_is_leader` 為 1 的那台：停掉 leader 要重新選舉，那幾秒的寫入會逾時。
 

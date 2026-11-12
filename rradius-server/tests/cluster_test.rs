@@ -285,6 +285,7 @@ struct MigratingCluster {
     dir: tempfile::TempDir,
     configs: Vec<PathBuf>,
     auth: Vec<u16>,
+    metrics: Vec<u16>,
     env: Vec<(&'static str, PathBuf)>,
 }
 
@@ -303,6 +304,7 @@ impl MigratingCluster {
         let raft: Vec<u16> = (0..3).map(|_| free_port()).collect();
         let api: Vec<u16> = (0..3).map(|_| free_port()).collect();
         let auth: Vec<u16> = (0..3).map(|_| free_port()).collect();
+        let metrics: Vec<u16> = (0..3).map(|_| free_port()).collect();
         let node_list: String = (0..3)
             .map(|i| format!("[[cluster.nodes]]\nid = {}\nraft = \"127.0.0.1:{}\"\napi = \"127.0.0.1:{}\"\n", i + 1, raft[i], api[i]))
             .collect();
@@ -315,10 +317,12 @@ impl MigratingCluster {
                      [cluster]\nnode_id = {id}\ndata_dir = \"data{id}\"\nlisten = \"127.0.0.1\"\n\
                      secret_raft = \"cluster-raft-secret-01\"\nsecret_api = \"cluster-api-secret-012\"\nmigrations_dir = \"migrations\"\n{node_list}\
                      [radius]\nbind = \"127.0.0.1\"\nauth_port = {auth}\nacct_port = {acct}\n\
-                     [[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"cluster-secret\"\n",
+                     [[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"cluster-secret\"\n\
+                     [metrics]\nbind = \"127.0.0.1\"\nport = {metrics}\n",
                     dictionary = root.join("../share/dictionary").display(),
                     id = i + 1,
                     acct = free_port(),
+                    metrics = metrics[i],
                 );
                 let path = dir.path().join(format!("node{}.toml", i + 1));
                 std::fs::write(&path, config).unwrap();
@@ -326,7 +330,7 @@ impl MigratingCluster {
             })
             .collect();
         let env = env(dir.path());
-        let mut cluster = Self { dir, nodes: Nodes(vec![None, None, None], Vec::new()), configs, auth, env };
+        let mut cluster = Self { dir, nodes: Nodes(vec![None, None, None], Vec::new()), configs, auth, metrics, env };
         cluster.write_migrations(files);
         for i in 0..3 {
             cluster.spawn(i);
@@ -356,6 +360,44 @@ impl MigratingCluster {
             .spawn()
             .unwrap();
         self.nodes.0[index] = Some(child);
+    }
+
+    /// Stops a node as `docker stop` does and waits for it to exit.
+    fn terminate(&mut self, index: usize) {
+        if let Some(mut child) = self.nodes.0[index].take() {
+            let _ = Command::new("kill").args(["-TERM", &child.id().to_string()]).status();
+            let _ = child.wait();
+        }
+    }
+
+    /// Changes node `index + 1`'s configuration for its next start.
+    fn edit_config(&self, index: usize, edit: impl FnOnce(String) -> String) {
+        let text = std::fs::read_to_string(&self.configs[index]).unwrap();
+        std::fs::write(&self.configs[index], edit(text)).unwrap();
+    }
+
+    /// Adds `line` to node `index + 1`'s `[cluster]` for its next start.
+    fn add_cluster_option(&self, index: usize, line: &str) {
+        self.edit_config(index, |text| text.replacen("[cluster]\n", &format!("[cluster]\n{line}\n"), 1));
+    }
+
+    /// The status node `index + 1` exits with, if it does within `limit`.
+    fn exit_code(&mut self, index: usize, limit: Duration) -> Option<i32> {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if let Some(status) = self.nodes.0[index].as_mut().and_then(|child| child.try_wait().ok().flatten()) {
+                self.nodes.0[index] = None;
+                return status.code();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        None
+    }
+
+    /// What node `index + 1` logged since it was last spawned.
+    fn last_log(&self, index: usize) -> String {
+        let prefix = format!("node{}-", index + 1);
+        self.nodes.1.iter().rev().find(|log| log.file_name().is_some_and(|name| name.to_string_lossy().starts_with(&prefix))).map(|log| std::fs::read_to_string(log).unwrap_or_default()).unwrap_or_default()
     }
 
     /// What the node answers first. Scripts run only once the node serves, so
@@ -604,4 +646,84 @@ async fn test_returning_from_any_node_gives_distinct_values() {
     for db in &dbs {
         db.shutdown().await.unwrap();
     }
+}
+
+
+/// A cluster whose three nodes applied a file with one account, then lost two nodes, with node
+/// 1 stopped cleanly as `docker stop` does: what is left of a cluster without a majority.
+fn cluster_without_majority() -> MigratingCluster {
+    let mut cluster = MigratingCluster::start(
+        &[("1_users.sql", USERS_WITH_ALICE)],
+        "if #sql_query(\"SELECT name FROM users WHERE name = 'alice'\") == 1 then return 'accept' end return 'reject'",
+    );
+    for i in 0..3 {
+        assert_eq!(cluster.first_answer(i), radius::ACCESS_ACCEPT, "node {} at the first start", i + 1);
+    }
+    cluster.nodes.kill(1);
+    cluster.nodes.kill(2);
+    cluster.terminate(0);
+    cluster.add_cluster_option(0, "migrations_wait_ms = 10000");
+    cluster
+}
+
+const USERS_WITH_ALICE: &str = "CREATE TABLE users (name TEXT); INSERT INTO users VALUES ('alice');";
+
+/// Restarted without a majority, a node that has every file applied serves from its replica,
+/// and catches up once the others are back.
+#[test]
+fn test_restart_without_majority_serves_from_replica() {
+    let mut cluster = cluster_without_majority();
+    cluster.spawn(0);
+    assert_eq!(cluster.first_answer(0), radius::ACCESS_ACCEPT, "node 1 without a majority");
+    assert!(cluster.last_log(0).contains("serving without a leader"), "{}", cluster.last_log(0));
+    assert_eq!(metric(cluster.metrics[0], "rradius_cluster_caught_up"), Some(0.0));
+
+    cluster.spawn(1);
+    cluster.spawn(2);
+    let caught_up = eventually(Duration::from_secs(60), || metric(cluster.metrics[0], "rradius_cluster_caught_up") == Some(1.0));
+    assert!(caught_up, "node 1 did not catch up: {}", cluster.last_log(0));
+    assert!(cluster.last_log(0).contains("has caught up with the cluster"), "{}", cluster.last_log(0));
+}
+
+/// Restarted without a majority, a node does not serve when it cannot know the tables are
+/// right, or is told not to serve without a leader.
+#[test]
+fn test_restart_without_majority_refused() {
+    let mut cluster = cluster_without_majority();
+
+    cluster.write_migrations(&[("2_reply.sql", "CREATE TABLE user_reply (id INTEGER);")]);
+    cluster.spawn(0);
+    assert_eq!(cluster.exit_code(0, Duration::from_secs(90)), Some(1), "with a file not applied here");
+    let log = cluster.last_log(0);
+    assert!(log.contains("not ready") && log.contains("2_reply.sql"), "{log}");
+    std::fs::remove_file(cluster.dir.path().join("migrations/2_reply.sql")).unwrap();
+
+    cluster.write_migrations(&[("1_users.sql", "CREATE TABLE users (name TEXT, realm TEXT);")]);
+    cluster.spawn(0);
+    assert_eq!(cluster.exit_code(0, Duration::from_secs(90)), Some(2), "with an applied file changed");
+    assert!(cluster.last_log(0).contains("1_users.sql"), "{}", cluster.last_log(0));
+    cluster.write_migrations(&[("1_users.sql", USERS_WITH_ALICE)]);
+
+    cluster.add_cluster_option(0, "stop_without_leader_ms = 10000");
+    cluster.spawn(0);
+    assert_eq!(cluster.exit_code(0, Duration::from_secs(90)), Some(1), "with stop_without_leader_ms");
+    assert!(cluster.last_log(0).contains("stop_without_leader_ms"), "{}", cluster.last_log(0));
+}
+
+/// Without `migrations_dir`, a node restarted without a majority serves as before, unless
+/// told not to serve without a leader.
+#[test]
+fn test_restart_without_majority_and_migrations() {
+    let mut cluster = cluster_without_majority();
+    cluster.edit_config(0, |text| text.replace("migrations_dir = \"migrations\"\n", ""));
+    cluster.spawn(0);
+    let answered = eventually(Duration::from_secs(60), || send(cluster.auth[0], &status_server(3), Duration::from_millis(500)).is_some());
+    assert!(answered, "no answer to Status-Server: {}", cluster.last_log(0));
+    assert!(cluster.last_log(0).contains("before catching up"), "{}", cluster.last_log(0));
+    cluster.terminate(0);
+
+    cluster.add_cluster_option(0, "stop_without_leader_ms = 10000");
+    cluster.spawn(0);
+    assert_eq!(cluster.exit_code(0, Duration::from_secs(90)), Some(1), "with stop_without_leader_ms");
+    assert!(cluster.last_log(0).contains("stop_without_leader_ms"), "{}", cluster.last_log(0));
 }
