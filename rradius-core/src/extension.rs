@@ -76,6 +76,13 @@ impl Section {
         Section { name, value, text }
     }
 
+    /// The line, from 1, that a byte offset of the file is on: for a `toml::Spanned` setting that
+    /// `parse` read, so that a mistake found after parsing, such as a file that cannot be read, is
+    /// named with its line too.
+    pub fn line_at(&self, offset: usize) -> usize {
+        self.text.as_bytes()[..offset.min(self.text.len())].iter().filter(|byte| **byte == b'\n').count() + 1
+    }
+
     /// Reads it as a `T`. A setting `T` refuses is named with the line it is on, as the core
     /// names its own.
     pub fn parse<T: serde::de::DeserializeOwned>(&self) -> Result<T, String> {
