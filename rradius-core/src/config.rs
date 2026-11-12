@@ -1006,6 +1006,26 @@ pub(crate) fn core_schema() -> schemars::Schema {
     schemars::schema_for!(RawConfig)
 }
 
+/// The configuration file without a prefix.
+const DEFAULT_CONFIG_FILE: &str = "/etc/rradius/rradius.toml";
+
+/// Where the commands read the configuration without `--config`: under the `RRADIUS_PREFIX` set
+/// when rradius-core was built, else `/etc/rradius/rradius.toml`. Fixed at build time; the
+/// environment at run time does not change it.
+pub fn default_config_path() -> &'static str {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| with_prefix(option_env!("RRADIUS_PREFIX")))
+}
+
+/// The configuration file under `prefix`, whose trailing `/` are dropped; none, an empty one or
+/// `/` alone mean no prefix.
+fn with_prefix(prefix: Option<&str>) -> String {
+    match prefix.map(|prefix| prefix.trim_end_matches('/')).filter(|prefix| !prefix.is_empty()) {
+        Some(prefix) => format!("{prefix}{DEFAULT_CONFIG_FILE}"),
+        None => DEFAULT_CONFIG_FILE.to_string(),
+    }
+}
+
 /// Loads and validates the TOML configuration at `path`. Errors name the file
 /// and the offending setting.
 pub fn load(path: &Path) -> Result<ServerConfig, ConfigError> {
@@ -3550,5 +3570,20 @@ mod tests {
         }
         let err = error(&ldap_config(&format!("{pw}{filter}")).replace("ldaps://dc1", "http://dc1"));
         assert!(err.contains("auth.handlers[0].urls") && err.contains("http://dc1"), "unexpected error: {err}");
+    }
+
+    /// The prefixes example of the Default Configuration Path requirement.
+    #[test]
+    fn test_default_config_path_prefixes() {
+        for (prefix, path) in [
+            (None, "/etc/rradius/rradius.toml"),
+            (Some(""), "/etc/rradius/rradius.toml"),
+            (Some("/"), "/etc/rradius/rradius.toml"),
+            (Some("/usr/local"), "/usr/local/etc/rradius/rradius.toml"),
+            (Some("/opt/rradius/"), "/opt/rradius/etc/rradius/rradius.toml"),
+        ] {
+            assert_eq!(with_prefix(prefix), path, "{prefix:?}");
+        }
+        assert_eq!(default_config_path(), with_prefix(option_env!("RRADIUS_PREFIX")));
     }
 }

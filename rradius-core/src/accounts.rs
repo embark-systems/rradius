@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 use zeroize::Zeroizing;
 
-pub const USAGE: &str = "usage: rradius-server user add|passwd|enable|disable|delete|show --config <path> <name>\n  add and passwd read the password from standard input";
+pub const USAGE: &str = "usage: rradius-server user add|passwd|enable|disable|delete|show [--config <path>] <name>\n  add and passwd read the password from standard input";
 
 pub(crate) const STATUS_NO_MATCH: i32 = 1;
 pub(crate) const STATUS_MISTAKE: i32 = 2;
@@ -159,9 +159,10 @@ fn prepare(args: &[String], input: &mut impl BufRead, terminal: bool) -> Result<
             _ => return Err(format!("unexpected argument '{arg}'\n{USAGE}")),
         }
     }
-    let (Some(config_path), Some(name)) = (config_path, name) else {
-        return Err(format!("--config and a name are required\n{USAGE}"));
+    let Some(name) = name else {
+        return Err(format!("a name is required\n{USAGE}"));
     };
+    let config_path = config_path.map_or(config::default_config_path(), String::as_str);
     let config = config::load(Path::new(config_path)).map_err(|e| e.to_string())?;
     let sql = config.accounts.as_ref().and_then(|accounts| action.statement(accounts)).ok_or_else(|| format!("accounts.{} is not set in {config_path}", action.setting()))?.to_string();
     let name = account_name(&config, name)?;

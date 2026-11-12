@@ -7,8 +7,8 @@ use crate::config::{self, ServerConfig};
 use std::io::IsTerminal;
 use std::path::Path;
 
-/// The words of a command line: the action, `--config`, the options it may take and one
-/// positional argument.
+/// The words of a command line: the action, `--config` (or the default configuration), the
+/// options it may take and one positional argument.
 pub struct Words<'a> {
     pub action: &'a str,
     pub config: &'a str,
@@ -39,9 +39,10 @@ pub fn words<'a>(args: &'a [String], options: &[&str], usage: &str) -> Result<Wo
             return Err(format!("unexpected argument '{arg}'\n{usage}"));
         }
     }
-    let (Some(config), Some(subject)) = (config, subject) else {
-        return Err(format!("--config and {} are required\n{usage}", if options.is_empty() { "one argument" } else { "the last argument" }));
+    let Some(subject) = subject else {
+        return Err(format!("{} is required\n{usage}", if options.is_empty() { "one argument" } else { "the last argument" }));
     };
+    let config = config.unwrap_or(config::default_config_path());
     Ok(Words { action, config, options: found, subject })
 }
 
@@ -77,7 +78,9 @@ mod tests {
         let given = args("add --name ap-5 10.20.1.5 --config c.toml");
         let read = words(&given, &["--name"], "usage")?;
         assert_eq!((read.action, read.config, read.subject, read.option("--name")), ("add", "c.toml", "10.20.1.5", Some("ap-5")));
-        for wrong in ["add --config c.toml", "add 10.20.1.5", "add --config c.toml a b", "add --config c.toml --name x --name y a", "add --config c.toml --other x a", "add --config"] {
+        let without = args("add --name ap-5 10.20.1.5");
+        assert_eq!(words(&without, &["--name"], "usage")?.config, config::default_config_path());
+        for wrong in ["add --config c.toml", "add", "add --config c.toml a b", "add --config c.toml --name x --name y a", "add --config c.toml --other x a", "add --config"] {
             assert!(words(&args(wrong), &["--name"], "usage").is_err(), "{wrong}");
         }
         Ok(())

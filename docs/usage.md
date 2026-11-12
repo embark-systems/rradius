@@ -12,7 +12,21 @@ cargo build --release
 ./target/release/rradius-server --config /etc/rradius/rradius.toml
 ```
 
-`rradius-server --version` 印出版本，例如 `rradius-server 0.1.0`。
+`rradius-server --version` 印出版本和預設設定檔，例如：
+
+```
+rradius-server 0.1.0
+default config: /etc/rradius/rradius.toml
+```
+
+**預設設定檔：** 沒有給 `--config` 時，啟動、`--check` 和所有管理指令（`user`，以及企業版的指令）都讀預設設定檔。它在建置時決定：建置時設了環境變數 `RRADIUS_PREFIX` 就是 `$RRADIUS_PREFIX/etc/rradius/rradius.toml`，沒有設（或是空字串、`/`）就是 `/etc/rradius/rradius.toml`。前綴要給絕對路徑，結尾的 `/` 會去掉。執行時的環境變數不影響它，要確認建出來的是哪一個，看 `--version` 的第二行。例如裝在 `/usr/local`：
+
+```bash
+RRADIUS_PREFIX=/usr/local cargo build --release
+./target/release/rradius-server        # 讀 /usr/local/etc/rradius/rradius.toml
+```
+
+用 cargo 建置時，改了 `RRADIUS_PREFIX` 會自動重新編譯；企業版建置時設的值一樣有效。
 
 **發行檔：** `rradius-<版本>-<平台>.tar.gz`，平台是 `macos-aarch64`、`linux-x86_64` 或 `linux-aarch64`，旁邊的 `.sha256` 可以用 `shasum -a 256 -c` 檢查。解開後的目錄結構和 repo 相同，所以範例設定和文件裡的相對路徑都照樣成立：
 
@@ -28,8 +42,8 @@ cargo build --release
 - **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡；執行檔放到 `PATH` 裡。
 - **自己產生發行檔：** `packaging/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `--check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
 
-- 啟動只接受 `--config <path>` 一個參數；沒有給時印出 `usage: rradius-server --config <path>` 並以狀態碼 2 結束。
-- `rradius-server --check --config <path>` 只檢查設定，見下方。`[radius.accounting_spool] dir` 也會檢查：要是目錄且寫得進去，還不存在時最近的上層目錄要寫得進去。只寫一個暫時檔再刪除，不會建立目錄或動到暫存內容。這是用執行 `--check` 的帳號判斷，和實際執行服務的帳號不同時結果可能不同。
+- 啟動只接受 `--config <path>` 一個參數，也可以不給，這時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。參數不對時印出用法，最後一行寫出預設設定檔，狀態碼 2。
+- `rradius-server --check [--config <path>]` 只檢查設定，見下方。`[radius.accounting_spool] dir` 也會檢查：要是目錄且寫得進去，還不存在時最近的上層目錄要寫得進去。只寫一個暫時檔再刪除，不會建立目錄或動到暫存內容。這是用執行 `--check` 的帳號判斷，和實際執行服務的帳號不同時結果可能不同。
 - 設定檔錯誤（欄位拼錯、缺少必填項、腳本語法錯誤等）一律在啟動時失敗，狀態碼 2，錯誤訊息會指出設定檔路徑與出錯的欄位或檔案。
 - 設定檔中的相對路徑都以設定檔所在目錄為準，與啟動時的工作目錄無關。
 - 建置不需要另外安裝 Lua 或 LuaJIT：Luau 會隨程式一起編譯。
@@ -1001,6 +1015,8 @@ rradius-server user passwd --config /etc/rradius/rradius.toml alice
 rradius-server user disable --config /etc/rradius/rradius.toml alice
 rradius-server user show --config /etc/rradius/rradius.toml alice
 ```
+
+設定檔就是預設設定檔（第 1 節）時可以省略 `--config`，例如 `rradius-server user show alice`。
 
 - **密碼只從標準輸入讀，** 不放在命令列（會留在 shell 歷史和程序列表）。在終端機上會問兩次、不顯示輸入；兩次不同或空的密碼都會拒絕，什麼都不寫。從管線讀時用第一行，例如批次匯入：`printf '%s\n' "$PW" | rradius-server user add --config c.toml alice`。
 - **名稱和登入時一樣正規化：** 套用預設串接的 `[auth.username]`（去掉 realm、轉小寫、`allowed` 檢查），所以 `user add Alice@Corp` 在 `strip_realm = "suffix"`、`lowercase = true` 時存成 `alice`。具名串接自己的 `[auth.chains.<name>.username]` 不套用。
