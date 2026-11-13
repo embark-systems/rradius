@@ -385,7 +385,7 @@ fn sockets_check(platform: Platform, sockets: usize) -> Check {
                 current: Ok(sockets.to_string()),
                 suggested: Some("1".to_string()),
                 ok,
-                why: "only Linux shares the packets of one port out over several sockets, so it must be 1 here; --check refuses another value".to_string(),
+                why: "only Linux shares the packets of one port out over several sockets, so it must be 1 here; check refuses another value".to_string(),
                 now: None,
                 persist: (!ok).then(|| "the configuration file: remove sockets from [radius]".to_string()),
             }

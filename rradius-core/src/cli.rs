@@ -180,9 +180,12 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         [_, check] if check == "check" => std::process::exit(admin::check(default)),
         [_, check, flag, path] if check == "check" && flag == "--config" => std::process::exit(admin::check(path)),
         [_, check, ..] if check == "check" => exit_with(admin::CHECK_USAGE),
-        // Starting and checking are subcommands: the old flags say which.
+        // Starting and checking are subcommands: the old flags say which. With `--check` anywhere
+        // the old command only checked, so it is never told to start the server.
+        [_, flag, ..] if (flag == "--config" || flag == "--check") && args.iter().any(|arg| arg == "--check") => {
+            exit_with(full_usage(extensions, default) + &format!("\nto check a configuration: {} check [--config <path>]", program.name))
+        }
         [_, flag, ..] if flag == "--config" => exit_with(full_usage(extensions, default) + &format!("\nto start the server: {} server --config <path>", program.name)),
-        [_, flag, ..] if flag == "--check" => exit_with(full_usage(extensions, default) + &format!("\nto check a configuration: {} check [--config <path>]", program.name)),
         _ => exit_with(full_usage(extensions, default)),
     };
     // Only now: the commands above do not listen for these, and must end on them. As PID 1 the
