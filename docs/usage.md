@@ -412,7 +412,7 @@ api = "10.0.0.3:8200"
 
 #### 增減節點：`cluster` 指令
 
-執行中加節點不需要指令：新節點的 `[[cluster.nodes]]` 列出所有節點（包含自己）、`data/` 是空的，啟動後會自己加入。移除節點和查看成員用 `cluster` 指令，步驟和注意事項見[手冊第 7 章](manual/07-ha-cluster.md#增加節點)。
+執行中加節點不需要指令：新節點的 `[[cluster.nodes]]` 列出目前所有成員（包含自己）、`data/` 是空的，啟動後會自己加入。清單裡一定要有現在的 leader，否則加不進去（見手冊第 7 章）。移除節點和查看成員用 `cluster` 指令，步驟和注意事項見[手冊第 7 章](manual/07-ha-cluster.md#增加節點)。
 
 ```sh
 rradius-server cluster members --config /etc/rradius/rradius.toml
