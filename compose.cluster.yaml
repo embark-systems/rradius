@@ -6,7 +6,7 @@ services:
     build: .
     restart: unless-stopped
     stop_grace_period: 30s
-    command: ["--config", "/etc/rradius/cluster/node1.toml"]
+    command: ["server", "--config", "/etc/rradius/cluster/node1.toml"]
     ports:
       - "1812:1812/udp"
       - "1813:1813/udp"
@@ -23,7 +23,7 @@ services:
     build: .
     restart: unless-stopped
     stop_grace_period: 30s
-    command: ["--config", "/etc/rradius/cluster/node2.toml"]
+    command: ["server", "--config", "/etc/rradius/cluster/node2.toml"]
     ports:
       - "2812:1812/udp"
       - "2813:1813/udp"
@@ -40,7 +40,7 @@ services:
     build: .
     restart: unless-stopped
     stop_grace_period: 30s
-    command: ["--config", "/etc/rradius/cluster/node3.toml"]
+    command: ["server", "--config", "/etc/rradius/cluster/node3.toml"]
     ports:
       - "3812:1812/udp"
       - "3813:1813/udp"

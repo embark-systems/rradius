@@ -114,7 +114,7 @@ fn test_init_passes_the_check() -> Result<(), String> {
     let file = dir.path().join("rradius.toml");
     std::fs::write(&file, first.replacen("/usr/share/rradius/dictionary", path(&dictionary)?, 1)).map_err(|e| e.to_string())?;
     std::fs::write(dir.path().join("auth.lua"), "return 'accept'").map_err(|e| e.to_string())?;
-    let output = Command::new(PROGRAM).args(["--check", "--config", path(&file)?]).output().map_err(|e| e.to_string())?;
+    let output = Command::new(PROGRAM).args(["check", "--config", path(&file)?]).output().map_err(|e| e.to_string())?;
     assert_eq!(String::from_utf8_lossy(&output.stdout), "configuration ok\n", "{}", String::from_utf8_lossy(&output.stderr));
     Ok(())
 }

@@ -36,7 +36,7 @@ cd rradius-server/examples/scenarios/enterprise-wifi
 
 ```bash
 cd ../../..   # 回到 rradius-server
-./target/release/rradius-server --config examples/scenarios/enterprise-wifi/rradius.toml
+./target/release/rradius-server server --config examples/scenarios/enterprise-wifi/rradius.toml
 ```
 
 ### 3. 用 eapol_test 測試

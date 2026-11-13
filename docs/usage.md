@@ -9,7 +9,7 @@ rradius-server 是一個 AAA（認證、授權、計費）伺服器，支援 RAD
 ```bash
 cd rradius-server
 cargo build --release
-./target/release/rradius-server --config /etc/rradius/rradius.toml
+./target/release/rradius-server server --config /etc/rradius/rradius.toml
 ```
 
 `rradius-server --version` 印出版本和預設設定檔，例如：
@@ -19,7 +19,7 @@ rradius-server 0.1.0
 default config: /etc/rradius/rradius.toml
 ```
 
-**預設設定檔：** 沒有給 `--config` 時，啟動、`--check` 和所有管理指令（`user`，以及企業版的指令）都讀預設設定檔。它在建置時決定：建置時設了環境變數 `RRADIUS_PREFIX` 就是 `$RRADIUS_PREFIX/etc/rradius/rradius.toml`，沒有設（或是空字串、`/`）就是 `/etc/rradius/rradius.toml`。前綴要給絕對路徑，結尾的 `/` 會去掉。執行時的環境變數不影響它，要確認建出來的是哪一個，看 `--version` 的第二行。例如裝在 `/usr/local`：
+**預設設定檔：** 沒有給 `--config` 時，`server`、`check` 和所有管理指令（`user`，以及企業版的指令）都讀預設設定檔。它在建置時決定：建置時設了環境變數 `RRADIUS_PREFIX` 就是 `$RRADIUS_PREFIX/etc/rradius/rradius.toml`，沒有設（或是空字串、`/`）就是 `/etc/rradius/rradius.toml`。前綴要給絕對路徑，結尾的 `/` 會去掉。執行時的環境變數不影響它，要確認建出來的是哪一個，看 `--version` 的第二行。例如裝在 `/usr/local`：
 
 ```bash
 RRADIUS_PREFIX=/usr/local cargo build --release
@@ -40,10 +40,11 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 
 - **Linux 版的 glibc：** 它在 Debian 12（bookworm）建置，需要的版本寫在壓縮檔的 `VERSION` 和 `README.md`。0.1.0 需要 glibc 2.34 以上，2026-11-08 在 Debian 12、Ubuntu 22.04（2.35）和 Rocky Linux 9（2.34）上確認過可以執行。更舊的發行版請用 Docker 映像（1.1 節）或自己建置。
 - **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡；執行檔放到 `PATH` 裡。
-- **自己產生發行檔：** `packaging/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `--check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
+- **自己產生發行檔：** `packaging/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
 
-- 啟動只接受 `--config <path>` 一個參數，也可以不給，這時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。參數不對時印出用法，最後一行寫出預設設定檔，狀態碼 2。
-- `rradius-server --check [--config <path>]` 只檢查設定，見下方。`[radius.accounting_spool] dir` 也會檢查：要是目錄且寫得進去，還不存在時最近的上層目錄要寫得進去。只寫一個暫時檔再刪除，不會建立目錄或動到暫存內容。這是用執行 `--check` 的帳號判斷，和實際執行服務的帳號不同時結果可能不同。
+- **啟動服務要用 `server` 子命令：** `rradius-server server [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`server` 後面接其他參數時印出它的用法，狀態碼 2。
+- **不帶參數只印用法：** `rradius-server`、`rradius-server help`（或 `-h`、`--help`）把所有子命令的用法印到 stdout，最後一行寫出預設設定檔，狀態碼 0，不讀設定檔也不啟動任何東西。參數不對時印出同樣的用法到 stderr，狀態碼 2；第一個參數是 `--config` 或 `--check` 時（舊的寫法）多一行提示改用 `server --config <path>` 或 `check --config <path>`，不會啟動也不會檢查。
+- `rradius-server check [--config <path>]` 只檢查設定，見下方。`[radius.accounting_spool] dir` 也會檢查：要是目錄且寫得進去，還不存在時最近的上層目錄要寫得進去。只寫一個暫時檔再刪除，不會建立目錄或動到暫存內容。這是用執行 `check` 的帳號判斷，和實際執行服務的帳號不同時結果可能不同。
 - 設定檔錯誤（欄位拼錯、缺少必填項、腳本語法錯誤等）一律在啟動時失敗，狀態碼 2，錯誤訊息會指出設定檔路徑與出錯的欄位或檔案。
 - 設定檔中的相對路徑都以設定檔所在目錄為準，與啟動時的工作目錄無關。
 - 建置不需要另外安裝 Lua 或 LuaJIT：Luau 會隨程式一起編譯。
@@ -52,7 +53,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 **只檢查設定：**
 
 ```bash
-./target/release/rradius-server --check --config /etc/rradius/rradius.toml
+./target/release/rradius-server check --config /etc/rradius/rradius.toml
 ```
 
 做和啟動相同的檢查：設定檔、字典、migration 目錄、腳本語法、LDAP 的 `ca_file`。全部通過時 stdout 印 `configuration ok`，狀態碼 0；有問題時錯誤寫到 stderr，狀態碼 2。不開埠、不建立資料目錄，也不連線到 LDAP 或其他節點，所以 LDAP 帳號密碼錯誤、SQL 查詢寫錯這類問題查不出來。
@@ -61,7 +62,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 
 ```bash
 cd rradius-server
-cargo run -- --config examples/rradius.toml
+cargo run -- server --config examples/rradius.toml
 ```
 
 ### 1.1 Docker
@@ -122,7 +123,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 
 `[radius]` 與 `[tacacs]` 至少要有一個。所有區段都拒絕不認得的欄位，拼錯的欄位會讓啟動失敗並指出欄位名稱。
 
-**企業版功能：** 下列功能需要 rradius-enterprise，說明在 rradius-enterprise 使用文件。設定檔用到這些區段或欄位時，rradius-server 啟動、SIGHUP 和 `--check` 都會失敗，訊息寫明需要 rradius-enterprise。
+**企業版功能：** 下列功能需要 rradius-enterprise，說明在 rradius-enterprise 使用文件。設定檔用到這些區段或欄位時，rradius-server 啟動、SIGHUP 和 `check` 都會失敗，訊息寫明需要 rradius-enterprise。
 
 | 功能 | 設定或指令 | 用途 |
 | --- | --- | --- |
@@ -166,8 +167,8 @@ rradius-server schema --lang zh-TW > rradius.schema.json     # 欄位說明用�
 在 `rradius.toml` 第一行寫 `#:schema ./rradius.schema.json`，支援 TOML schema 的編輯器（例如 Taplo，以及 VS Code 的 Even Better TOML）就會在編輯時補全區段和欄位，並標出拼錯的欄位、型別錯誤和不在列舉裡的值。
 
 - **schema 由讀設定的程式產生，** 和程式的規則一致；換版本後重新產生一次。
-- **企業版的區段不在 rradius-server 的 schema 裡，** 寫了會標成不認得的欄位；`rradius-enterprise schema` 的 schema 包含它們。上表列的幾個欄位（例如 `[radius.eap]` 的 `resumption_ms`、`[[radius.clients]]` 的 `tls_name`）在兩邊的 schema 裡都有，用 rradius-server 時由 `--check` 指出需要 rradius-enterprise。
-- **schema 不能取代 `--check`。** 它只看結構和型別；SQL 的參數規則（2.14 節）、檔案是否存在和權限、欄位之間的條件（例如 `secret` 和 `secret_file` 只能有一個）、憑證和金鑰的內容、數值的上下限等，仍然只有 `--check` 和啟動時檢查。
+- **企業版的區段不在 rradius-server 的 schema 裡，** 寫了會標成不認得的欄位；`rradius-enterprise schema` 的 schema 包含它們。上表列的幾個欄位（例如 `[radius.eap]` 的 `resumption_ms`、`[[radius.clients]]` 的 `tls_name`）在兩邊的 schema 裡都有，用 rradius-server 時由 `check` 指出需要 rradius-enterprise。
+- **schema 不能取代 `check`。** 它只看結構和型別；SQL 的參數規則（2.14 節）、檔案是否存在和權限、欄位之間的條件（例如 `secret` 和 `secret_file` 只能有一個）、憑證和金鑰的內容、數值的上下限等，仍然只有 `check` 和啟動時檢查。
 - **每個欄位都有一句說明，** 編輯器在補全和滑過欄位時顯示。預設是英文，`--lang zh-TW` 改用繁體中文，其他值以狀態 2 結束。說明只講用途和單位，細節和限制仍以這份文件為準；每個最上層區段的說明是連到這份文件對應章節的網址。
 
 **看生效的設定、比較節點、產生起始設定：** `config` 的三個子指令都依同一份 schema 運作，不啟動任何東西、不寫檔案，rradius-enterprise 也有，並包含企業版的區段。
@@ -178,10 +179,10 @@ rradius-server config diff node1.toml node2.toml                 # 比較兩個�
 rradius-server config init --lang zh-TW > rradius.toml           # 起始設定檔，說明用繁體中文
 ```
 
-- **`config show`：** 先和 `--check` 一樣載入設定（有錯時印出相同訊息，狀態 2），再把檔案裡已有的區段中省略的欄位補上預設值，以 TOML 印出。檔案沒寫的區段（例如沒有 `[tacacs]`）不會加上。啟動時才算出的預設值（`[radius] sockets`、`[cluster] read_connections`）用執行這個指令的機器算出的值，並在第一行註明。沒有 `--config` 時讀預設的設定檔。
+- **`config show`：** 先和 `check` 一樣載入設定（有錯時印出相同訊息，狀態 2），再把檔案裡已有的區段中省略的欄位補上預設值，以 TOML 印出。檔案沒寫的區段（例如沒有 `[tacacs]`）不會加上。啟動時才算出的預設值（`[radius] sockets`、`[cluster] read_connections`）用執行這個指令的機器算出的值，並在第一行註明。沒有 `--config` 時讀預設的設定檔。
 - **密碼一律顯示成 `<hidden>`，** 例如用戶端的 `secret`、`secret_raft`、`secret_api`、LDAP 的 `bind_password`。輸出可以貼給別人看，但檔案路徑（例如 `secret_file`）照樣顯示。
 - **`config diff`：** 兩個檔案都先補上預設值再比，所以一邊寫出預設值、另一邊省略不算差異。每行一個不同的欄位：`radius.max_auth_inflight: 4096 | 8192`，只有一邊有時寫 `(absent)`。`radius.clients`、`tacacs.clients` 依 `name`（沒有時依 `address`）配對，順序不同不算差異，路徑寫成 `radius.clients[core-switches].secret`；其他清單（例如 `auth.handlers`）依位置比較，因為順序有意義。密碼不同時只寫 `differs (hidden)`。`cluster.node_id` 和 `cluster.listen` 列在最後的 `node-specific:`，不算差異。相同時印 `no differences`，狀態 0；有差異時狀態 1；設定有錯或參數不對時狀態 2。它不讀設定檔引用的檔案（Lua 腳本、密碼檔、憑證），只比路徑。
-- **`config init`：** 印出一份起始設定檔，可以直接存檔使用：`dictionary`、`[lua] script`、`[cluster]`（含一個節點）、`[radius]` 和一個範例用戶端。`secret_raft`、`secret_api` 和範例用戶端的 `secret` 是每次不同的 32 個隨機英數字元；叢集的其他節點要用同樣的叢集密碼，用戶端的 `secret` 也要設在 NAS 上。其他欄位都以註解列出，附預設值和說明（`--lang` 選英文或繁體中文），拿掉 `#` 就能設定。存檔後把 `dictionary` 指向實際安裝的字典檔、建立 `auth.lua`，`--check` 就會通過。
+- **`config init`：** 印出一份起始設定檔，可以直接存檔使用：`dictionary`、`[lua] script`、`[cluster]`（含一個節點）、`[radius]` 和一個範例用戶端。`secret_raft`、`secret_api` 和範例用戶端的 `secret` 是每次不同的 32 個隨機英數字元；叢集的其他節點要用同樣的叢集密碼，用戶端的 `secret` 也要設在 NAS 上。其他欄位都以註解列出，附預設值和說明（`--lang` 選英文或繁體中文），拿掉 `#` 就能設定。存檔後把 `dictionary` 指向實際安裝的字典檔、建立 `auth.lua`，`check` 就會通過。
 
 ### 2.1 `[lua]`
 
@@ -503,7 +504,7 @@ authorize_group = "group15"
 - **第一條成立的規則決定：** `permit` 回 PASS_ADD，`deny` 回 FAIL。全部都不成立時回 FAIL，空的群組（`[]`）所有授權都 FAIL。要排除特定指令，把 `deny` 放在較寬的 `permit` 之前。
 - **設了 `authorize_group` 的設備不執行腳本授權。** 認證和計費照舊。同一群組的設備，每個使用者得到的授權都一樣；要依使用者或角色決定時，那些設備不要設 `authorize_group`，改用腳本（4.6 節）。
 - **限制：** 沒有「值含空白但不送引號」的寫法，也沒有跳脫字元；只回 PASS_ADD，沒有 PASS_REPL 和 `server_msg`。
-- **檢查：** 啟動、SIGHUP 和 `--check` 時，規則開頭不是 `permit`/`deny`、正規表示式寫錯、`{}` 不成對或 `}` 後還有內容、`{}` 裡的雙引號不成對、AV pair 沒有 `=`/`*` 或名稱為空、超過 255 octets 或超過 255 個、群組名稱為空、`authorize_group` 指向不存在的群組、在 `[[radius.clients]]` 設 `authorize_group`，都會失敗，訊息指出 `tacacs.authorize_groups.<名稱>` 和第幾條規則。
+- **檢查：** 啟動、SIGHUP 和 `check` 時，規則開頭不是 `permit`/`deny`、正規表示式寫錯、`{}` 不成對或 `}` 後還有內容、`{}` 裡的雙引號不成對、AV pair 沒有 `=`/`*` 或名稱為空、超過 255 octets 或超過 255 個、群組名稱為空、`authorize_group` 指向不存在的群組、在 `[[radius.clients]]` 設 `authorize_group`，都會失敗，訊息指出 `tacacs.authorize_groups.<名稱>` 和第幾條規則。
 - 規則隨 SIGHUP 套用，已開啟的連線下一個請求就用新規則（2.9 節）。
 - **量測：規則比腳本快。** 2026-11-09 在 Apple M4 Max 上 OrbStack 的 Linux（arm64）量測，`main` `5ef8248`，伺服器限定 CPU 0–6、`rradius-bench` 7–13，`tacacs-author,concurrency=64,threads=7`（`service=shell`、`cmd=show`、`cmd-arg=version`），每列三次，都沒有逾時和 `invalid`：
 
@@ -679,7 +680,7 @@ secret_file = "old-switch.secret"
 require_message_authenticator = "no"   # 覆寫 [radius] 的值
 ```
 
-**短共用密碼：** RADIUS 或 TACACS+ client的密碼少於 16 octets 時，啟動、SIGHUP 和 `--check` 都會記錄警告（`has a shared secret shorter than 16 octets`），但不會拒絕啟動。16 是 RFC 8907 第 10.5.1 節和 RFC 2865 建議的下限；以前的門檻是 12 octets，所以 13–15 octets 的密碼升級後開始出現警告。建議至少 24 個隨機 octets。TACACS+ 的封包內容完全靠這個密碼保護。
+**短共用密碼：** RADIUS 或 TACACS+ client的密碼少於 16 octets 時，啟動、SIGHUP 和 `check` 都會記錄警告（`has a shared secret shorter than 16 octets`），但不會拒絕啟動。16 是 RFC 8907 第 10.5.1 節和 RFC 2865 建議的下限；以前的門檻是 12 octets，所以 13–15 octets 的密碼升級後開始出現警告。建議至少 24 個隨機 octets。TACACS+ 的封包內容完全靠這個密碼保護。
 
 **升級注意：預設會丟棄不帶 Message-Authenticator 的 Access-Request。** 不會送這個屬性的舊設備，升級後要設定 `no` 或 `auto`，否則認證會失敗，記錄中會出現 `lacking a Message-Authenticator`。
 
@@ -1026,7 +1027,7 @@ delete = "DELETE FROM users WHERE username = ?1"
 show = "SELECT username, enabled FROM users WHERE username = ?1"
 ```
 
-- **`?1` 是帳號名稱，`?2` 是存放用的密碼值。** 只能用這兩個有編號的參數，不能用沒有編號的 `?`，以免順序寫錯把密碼存進帳號欄位。每條都一定要用 `?1`：少了它，例如 `UPDATE users SET password = ?2` 漏了 `WHERE`，會改到所有帳號。`add` 和 `passwd` 一定要用 `?2`，其他動作不能用。字串和註解裡的 `?` 不算。違反時啟動、`--check` 和指令都會失敗並指出設定名稱。
+- **`?1` 是帳號名稱，`?2` 是存放用的密碼值。** 只能用這兩個有編號的參數，不能用沒有編號的 `?`，以免順序寫錯把密碼存進帳號欄位。每條都一定要用 `?1`：少了它，例如 `UPDATE users SET password = ?2` 漏了 `WHERE`，會改到所有帳號。`add` 和 `passwd` 一定要用 `?2`，其他動作不能用。字串和註解裡的 `?` 不算。違反時啟動、`check` 和指令都會失敗並指出設定名稱。
 - 每個動作都可以省略；省略的動作執行時以狀態 2 結束，說明缺哪個設定。
 - `disable` 要搭配 `user_query` 一起設計：例如 `user_query` 只查 `enabled = 1` 的帳號，停用才會擋下登入。
 - `show` 選哪些欄位由你決定，會原樣印出，所以不要選密碼欄。
@@ -1227,7 +1228,7 @@ attributes = { "Filter-Id" = "staff" }
 - AD 要展開巢狀群組時，可以寫 `group_filter = "(member:1.2.840.113556.1.4.1941:={dn})"`。`group_attribute` 只看項目上的直接成員關係。這個寫法沒有在 AD 上測過。
 - **DN 比對不分大小寫（只處理 ASCII），也忽略逗號旁的空白，** 除此之外要和目錄回傳的寫法相同。寫法不同時比對不到，結果是拒絕或沒有加上屬性，不會多給權限。
 - 群組搜尋失敗視為伺服器錯誤，拒絕並記錄。
-- `group_reply` 依設定順序加在 `reply_attributes` 之後，可以同時符合多個。屬性名稱或值不正確時，該次認證會被拒絕並記錄 `RADIUS response attribute error`；`--check` 會提早發現這類錯誤。
+- `group_reply` 依設定順序加在 `reply_attributes` 之後，可以同時符合多個。屬性名稱或值不正確時，該次認證會被拒絕並記錄 `RADIUS response attribute error`；`check` 會提早發現這類錯誤。
 
 ### 3.6 使用者名稱正規化 `username`
 
@@ -1757,7 +1758,7 @@ rradius-server tuning            # 讀預設的設定檔；沒有時用預設設
 - **建議值怎麼算：** 檔案描述元需求是 256（資料庫檔、記錄、叢集與連線池的估計量）加上 TACACS+ 的 `max_connections`、`read_connections`、每個叢集節點 2 條，以及 rradius-enterprise RadSec 的 2 倍 `max_connections`；建議上限是需求的兩倍，至少 65536。每個 UDP socket 的接收緩衝是 `max_auth_inflight` 平分到 `sockets` 個 socket、每個封包以 4096 位元組計，至少 4 MiB，取整到 MiB。TCP 等待佇列至少 1024，和程式要求的長度相同。
 - **這些建議值沒有經過量測，** 是起點：套用後用上面的丟包數確認。
 - **FreeBSD 不是發行的平台，** 那裡的建議依官方文件寫成、沒有在 FreeBSD 上實測過，報告開頭也會寫明。
-- 有 `--config` 但檔案讀不到或有錯時，以狀態 2 結束並印出原因，和 `--check` 相同。
+- 有 `--config` 但檔案讀不到或有錯時，以狀態 2 結束並印出原因，和 `check` 相同。
 
 ## 9. 效能量測
 
@@ -1792,7 +1793,7 @@ cargo build --release --locked --manifest-path rradius-server/Cargo.toml
 在 `rradius-server/benchmarks/` 目錄啟動伺服器，資料會放在該目錄的 `data/`（已被 gitignore）：
 
 ```bash
-cd rradius-server/benchmarks && ../../target/release/rradius-server --config accept.toml
+cd rradius-server/benchmarks && ../../target/release/rradius-server server --config accept.toml
 ```
 
 換一組設定前請先停掉伺服器。下面的命令在專案根目錄的另一個終端機執行。

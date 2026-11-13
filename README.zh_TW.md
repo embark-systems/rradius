@@ -8,7 +8,7 @@ RADIUS 與 TACACS+ 的 AAA 伺服器，用 Rust 寫成。認證和計費的邏�
 - **TACACS+：** 認證、授權（依設備分組的允許與拒絕規則）、計費。
 - **帳號來源：** 內建資料表（多種密碼雜湊格式）、LDAP／Active Directory、HTTP API，可以串接。
 - **叢集：** 三台以上組成叢集，任何一台停機不中斷服務；設定檔改了送 SIGHUP 重讀。
-- **維運：** Prometheus 指標、結構化記錄、`--check` 檢查設定、管理指令。
+- **維運：** Prometheus 指標、結構化記錄、`check` 檢查設定、管理指令。
 
 ## 建置與啟動
 
@@ -17,7 +17,7 @@ RADIUS 與 TACACS+ 的 AAA 伺服器，用 Rust 寫成。認證和計費的邏�
 ```bash
 cargo build --release
 cd rradius-server
-../target/release/rradius-server --config examples/scenarios/quick-start/rradius.toml
+../target/release/rradius-server server --config examples/scenarios/quick-start/rradius.toml
 ```
 
 也可以用 Docker：先執行 `docker/init-secrets.sh`，再 `docker compose up --build`（單機）或用 `compose.cluster.yaml`（三台），見[使用文件 1.1 節](docs/usage.md#11-docker)。發行檔用 `packaging/release.sh` 產生，見 [`packaging/README.md`](packaging/README.md)。

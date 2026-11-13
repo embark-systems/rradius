@@ -61,9 +61,9 @@
 三台各自啟動自己的設定，順序不拘：
 
 ```bash
-rradius-server --config /etc/rradius/ha-cluster/node1.toml   # 在 node1
-rradius-server --config /etc/rradius/ha-cluster/node2.toml   # 在 node2
-rradius-server --config /etc/rradius/ha-cluster/node3.toml   # 在 node3
+rradius-server server --config /etc/rradius/ha-cluster/node1.toml   # 在 node1
+rradius-server server --config /etc/rradius/ha-cluster/node2.toml   # 在 node2
+rradius-server server --config /etc/rradius/ha-cluster/node3.toml   # 在 node3
 ```
 
 - 第一次啟動時，每台都等叢集組成（多數節點上線），再套用 migration，最多等 `migrations_wait_ms`（範例 120 秒）。一台先起來、其他的還沒起來時，它會等待，不是故障。

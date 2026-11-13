@@ -36,7 +36,7 @@ TACACS+ 用 49 埠，一般帳號不能綁 1024 以下的埠。本機測試可�
 
 ```bash
 cd rradius-server
-./target/release/rradius-server --config examples/scenarios/device-admin/rradius.toml
+./target/release/rradius-server server --config examples/scenarios/device-admin/rradius.toml
 ```
 
 ### 2. 用 `tacacs_client` 測試

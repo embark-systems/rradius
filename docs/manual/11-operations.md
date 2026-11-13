@@ -10,7 +10,7 @@
 - [ ] `[[radius.clients]]` 只列真的會來問的設備，不要用 `0.0.0.0/0`。
 - [ ] `[metrics]` 只綁內部位址；多節點時 `[cluster] listen` 綁 WireGuard 或內部網路的位址。
 - [ ] 防火牆只開用到的埠，並限制來源：1812、1813（UDP）和 49（TACACS+）。
-- [ ] `rradius-server --check --config ...` 通過。
+- [ ] `rradius-server check --config ...` 通過。
 - [ ] 跑一次 `rradius-server tuning --config ...`，照建議調好接收緩衝和檔案描述元上限（接收緩衝建議用 `[radius] recv_buffer_bytes` 設定，只需調高系統上限，使用文件 2.3 節）；它只讀取不修改，建議值是起點，上線後看報告開頭的丟包數確認（使用文件 8.1 節）。
 - [ ] 用 systemd 之類的服務管理器啟動，停止時送 SIGTERM（不要 SIGKILL）並給 30 秒以上，資料目錄和計費暫存的目錄放在持久的本機磁碟。
 - [ ] 設好自動重新啟動（systemd `Restart=on-failure`、Docker `restart: unless-stopped`）：節點的資料庫壞掉時，rradius 會以狀態碼 1 結束，等重新啟動來恢復（[第 7 章](07-ha-cluster.md)）。
@@ -105,7 +105,7 @@ end
 
 ## 重新載入（SIGHUP）
 
-**改設定檔之前：** 用 `rradius-server schema` 產生 schema 給編輯器用，寫錯的欄位在編輯時就會標出來（使用文件第 2 節）；改完仍要跑 `--check`。用 `rradius-server config show` 看省略的欄位實際用了什麼預設值；叢集各節點的設定用 `rradius-server config diff` 兩兩比較，除了 `node_id` 之外應該沒有差異。
+**改設定檔之前：** 用 `rradius-server schema` 產生 schema 給編輯器用，寫錯的欄位在編輯時就會標出來（使用文件第 2 節）；改完仍要跑 `check`。用 `rradius-server config show` 看省略的欄位實際用了什麼預設值；叢集各節點的設定用 `rradius-server config diff` 兩兩比較，除了 `node_id` 之外應該沒有差異。
 
 大部分的設定改完送 SIGHUP 就生效，不必重啟：
 
@@ -149,7 +149,7 @@ systemctl reload rradius        # 服務檔有 ExecReload=/bin/kill -HUP $MAINPI
 (umask 077; openssl rand -base64 24 > nas.secret)
 ```
 
-共用密碼少於 16 個字元時，啟動、重新載入和 `--check` 都會有警告（`has a shared secret shorter than 16 octets`），但不會拒絕啟動。有些舊設備限制長度或字元，產生後先確認設備接受。
+共用密碼少於 16 個字元時，啟動、重新載入和 `check` 都會有警告（`has a shared secret shorter than 16 octets`），但不會拒絕啟動。有些舊設備限制長度或字元，產生後先確認設備接受。
 
 ## 監控
 
@@ -234,7 +234,7 @@ minutes = 30
 ## 升級
 
 1. 看新版本的變更說明，特別是標了「升級注意」的項目。
-2. 用新版本對現有設定跑 `--check`。
+2. 用新版本對現有設定跑 `check`。
 3. 單機：停止 → 換執行檔 → 啟動。叢集：一次一台，見[第 7 章](07-ha-cluster.md#升級或重開機)。
 
 ## 備份

@@ -423,7 +423,7 @@ pub trait Extension: Send + Sync {
 }
 
 /// The commands of the program itself, which no extension can take.
-const PROGRAM_COMMANDS: [&str; 4] = ["--version", "--config", "--check", "user"];
+const PROGRAM_COMMANDS: [&str; 10] = ["--version", "--help", "-h", "help", "server", "check", "schema", "config", "tuning", "user"];
 
 /// The extensions of one program.
 #[derive(Clone, Default)]
@@ -658,6 +658,8 @@ mod tests {
         assert!(both_read.err().is_some_and(|e| e.contains("[accounts.x]")));
         let both_have = Extensions::new(vec![probe(&[], vec![command("x")]), probe(&[], vec![command("x")])]);
         assert!(both_have.err().is_some_and(|e| e.contains("`x`")));
+        // The subcommands of the program, `server` and `check` among them.
+        assert!(PROGRAM_COMMANDS.contains(&"server") && PROGRAM_COMMANDS.contains(&"check"));
         for name in PROGRAM_COMMANDS {
             let taken = Extensions::new(vec![probe(&[], vec![command(name)])]);
             assert!(taken.err().is_some_and(|e| e.contains("of the program itself")), "{name}");

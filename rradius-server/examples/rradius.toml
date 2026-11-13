@@ -1,7 +1,7 @@
 # Example rradius-server configuration.
 # Relative paths are resolved against the directory of this file.
 #
-#   cargo run -- --config examples/rradius.toml
+#   cargo run -- server --config examples/rradius.toml
 #
 # Commented-out blocks are complete: remove the leading "# " from a block's
 # setting lines to enable it. Lines starting with "# # " are optional settings

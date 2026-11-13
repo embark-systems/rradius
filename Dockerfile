@@ -35,4 +35,4 @@ VOLUME /var/lib/rradius
 # [[cluster.nodes]] or `listen` the cluster ports only bind 127.0.0.1.
 EXPOSE 1812/udp 1813/udp 49/tcp 8100/tcp 8200/tcp
 ENTRYPOINT ["/usr/local/bin/rradius-server"]
-CMD ["--config", "/etc/rradius/rradius.toml"]
+CMD ["server", "--config", "/etc/rradius/rradius.toml"]

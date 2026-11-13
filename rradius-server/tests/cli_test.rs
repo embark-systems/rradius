@@ -16,7 +16,7 @@ fn run(args: &[&str]) -> (Option<i32>, String) {
     (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
-/// Without `--config`, the server and `--check` read the default configuration, which is not
+/// Without `--config`, `server` and `check` read the default configuration, which is not
 /// there when the tests run unless a prefix pointed it at one.
 #[test]
 fn test_missing_config_argument() {
@@ -24,10 +24,10 @@ fn test_missing_config_argument() {
     if Path::new(default).exists() {
         return;
     }
-    let (code, stderr) = run(&[]);
+    let (code, stderr) = run(&["server"]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains(default) && stderr.contains("give --config <path> for another"), "unexpected stderr: {stderr}");
-    let (code, stderr) = run(&["--check"]);
+    let (code, stderr) = run(&["check"]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains(default), "unexpected stderr: {stderr}");
     // So does a user command.
@@ -36,12 +36,112 @@ fn test_missing_config_argument() {
     assert!(stderr.contains(default), "unexpected stderr: {stderr}");
     let (code, stderr) = run(&["--confg", "x"]);
     assert_eq!(code, Some(2));
-    assert!(stderr.contains("usage: rradius-server [--config <path>]") && stderr.contains(&format!("without --config, the configuration is {default}")), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("usage: rradius-server server [--config <path>]") && stderr.contains(&format!("without --config, the configuration is {default}")), "unexpected stderr: {stderr}");
+}
+
+/// The exit status, standard output and standard error of the program run with `args`.
+fn output_of(args: &[&str]) -> Result<(Option<i32>, String, String), String> {
+    let output = Command::new(PROGRAM).args(args).output().map_err(|e| e.to_string())?;
+    Ok((output.status.code(), String::from_utf8_lossy(&output.stdout).into_owned(), String::from_utf8_lossy(&output.stderr).into_owned()))
+}
+
+/// `help`, `--help` and `-h` print every command on standard output, read nothing and succeed.
+#[test]
+fn test_help_prints_the_usage() -> Result<(), String> {
+    let default = rradius_core::config::default_config_path();
+    for help in ["help", "--help", "-h"] {
+        let (code, stdout, stderr) = output_of(&[help])?;
+        assert_eq!(code, Some(0), "{help}: {stderr}");
+        for line in ["usage: rradius-server server [--config <path>]", "usage: rradius-server check [--config <path>]", "usage: rradius-server --version", "usage: rradius-server config show", "usage: rradius-server tuning", "usage: rradius-server user"] {
+            assert!(stdout.contains(line), "{help}: {line} missing from {stdout}");
+        }
+        assert!(stdout.ends_with(&format!("without --config, the configuration is {default}\n")), "{help}: {stdout}");
+        assert!(stderr.is_empty(), "{help}: {stderr}");
+    }
+    Ok(())
+}
+
+/// Without arguments the program prints its usage and reads nothing.
+#[test]
+fn test_no_arguments_print_the_usage() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let output = Command::new(PROGRAM).current_dir(dir.path()).output().map_err(|e| e.to_string())?;
+    let (stdout, stderr) = (String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(stdout.starts_with("usage: rradius-server server [--config <path>]\nusage: rradius-server check [--config <path>]\n"), "{stdout}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let (_, help, _) = output_of(&["--help"])?;
+    assert_eq!(stdout, help);
+    assert_eq!(std::fs::read_dir(dir.path()).map_err(|e| e.to_string())?.count(), 0, "it created something");
+    Ok(())
+}
+
+/// The flags that started and checked before the subcommands now print the usage and the
+/// subcommand to use, and start nothing.
+#[test]
+fn test_old_flags_name_the_subcommands() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let config = config.to_str().ok_or("path not UTF-8")?;
+    let start = "to start the server: rradius-server server --config <path>";
+    let check = "to check a configuration: rradius-server check [--config <path>]";
+    for (args, hint) in [
+        (&["--config", config][..], Some(start)),
+        (&["--config", config, "--check"], Some(start)),
+        (&["--check"], Some(check)),
+        (&["--check", "--config", config], Some(check)),
+        (&["--confg", config], None),
+    ] {
+        let (code, stdout, stderr) = output_of(args)?;
+        assert_eq!(code, Some(2), "{args:?}");
+        assert!(stdout.is_empty() && stderr.contains("usage: rradius-server server [--config <path>]"), "{args:?}: {stderr}");
+        match hint {
+            Some(hint) => assert!(stderr.trim_end().ends_with(hint), "{args:?}: {stderr}"),
+            None => assert!(!stderr.contains("to start the server") && !stderr.contains("to check a configuration"), "{args:?}: {stderr}"),
+        }
+    }
+    assert!(!dir.path().join("data").exists(), "the server started");
+    Ok(())
+}
+
+/// After `server` and `check` only `--config <path>` is taken.
+#[test]
+fn test_server_and_check_arguments() -> Result<(), String> {
+    for (args, usage) in [
+        (&["server", "extra"][..], "usage: rradius-server server [--config <path>]"),
+        (&["server", "--config"], "usage: rradius-server server [--config <path>]"),
+        (&["server", "--config", "a.toml", "extra"], "usage: rradius-server server [--config <path>]"),
+        (&["check", "extra"], "usage: rradius-server check [--config <path>]"),
+        (&["check", "--config", "a.toml", "extra"], "usage: rradius-server check [--config <path>]"),
+    ] {
+        let (code, stdout, stderr) = output_of(args)?;
+        assert_eq!(code, Some(2), "{args:?}");
+        assert!(stdout.is_empty() && stderr.trim_end() == usage, "{args:?}: {stderr}");
+    }
+    Ok(())
+}
+
+/// `check --config <path>` checks the file, and `server` without `--config` reads the default
+/// configuration.
+#[test]
+fn test_check_and_server_subcommands() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let (code, stdout, stderr) = output_of(&["check", "--config", config.to_str().ok_or("path not UTF-8")?])?;
+    assert_eq!((code, stdout.as_str()), (Some(0), "configuration ok\n"), "{stderr}");
+    assert!(!dir.path().join("data").exists());
+    let default = rradius_core::config::default_config_path();
+    if !Path::new(default).exists() {
+        let (code, _, stderr) = output_of(&["server"])?;
+        assert_eq!(code, Some(2));
+        assert!(stderr.contains(default) && stderr.contains("give --config <path> for another"), "{stderr}");
+    }
+    Ok(())
 }
 
 #[test]
 fn test_nonexistent_config_file() {
-    let (code, stderr) = run(&["--config", "/nonexistent.toml"]);
+    let (code, stderr) = run(&["server", "--config", "/nonexistent.toml"]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("/nonexistent.toml"), "unexpected stderr: {stderr}");
 }
@@ -58,7 +158,7 @@ fn test_unknown_auth_handler_type() {
          [radius]\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n",
     )
     .unwrap();
-    let (code, stderr) = run(&["--config", path.to_str().unwrap()]);
+    let (code, stderr) = run(&["server", "--config", path.to_str().unwrap()]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("unknown variant") && stderr.contains("expected") && !stderr.contains("kerberos"), "unexpected stderr: {stderr}");
 }
@@ -85,7 +185,7 @@ fn test_missing_auth_handler_script() {
         ),
     )
     .unwrap();
-    let (code, stderr) = run(&["--config", path.to_str().unwrap()]);
+    let (code, stderr) = run(&["server", "--config", path.to_str().unwrap()]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("missing.lua"), "unexpected stderr: {stderr}");
 }
@@ -93,7 +193,7 @@ fn test_missing_auth_handler_script() {
 fn run_with_scripts(script: &str, handler: Option<&str>) -> (Option<i32>, String) {
     let dir = tempfile::tempdir().unwrap();
     let (path, _) = write_config(dir.path(), script, handler);
-    run(&["--config", path.to_str().unwrap()])
+    run(&["server", "--config", path.to_str().unwrap()])
 }
 
 /// The outcome end to end, on a real server with a real file. mlua also refuses
@@ -169,7 +269,7 @@ fn test_migrations_survive_restart() {
 fn exit_with_migrations(files: &[(&str, &str)]) -> (Option<i32>, String) {
     let dir = dir_with_migrations(files);
     let (path, _) = write_config_with(dir.path(), "return 'accept'", None, WITH_MIGRATIONS);
-    run(&["--config", path.to_str().unwrap()])
+    run(&["server", "--config", path.to_str().unwrap()])
 }
 
 #[test]
@@ -190,7 +290,7 @@ fn test_failing_migration_stops_startup() {
 fn test_missing_migrations_directory_stops_startup() {
     let dir = tempfile::tempdir().unwrap();
     let (path, _) = write_config_with(dir.path(), "return 'accept'", None, WITH_MIGRATIONS);
-    let (code, stderr) = run(&["--config", path.to_str().unwrap()]);
+    let (code, stderr) = run(&["server", "--config", path.to_str().unwrap()]);
     assert_eq!(code, Some(2), "unexpected stderr: {stderr}");
     assert!(stderr.contains(&dir.path().join("migrations").display().to_string()), "unexpected stderr: {stderr}");
 }
@@ -281,7 +381,7 @@ fn lone_node_config(dir: &Path) -> PathBuf {
 fn run_within(limit: Duration, config: &Path) -> (Option<i32>, String) {
     let stderr_path = config.with_extension("stderr");
     let mut child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
-        .args(["--config", config.to_str().unwrap()])
+        .args(["server", "--config", config.to_str().unwrap()])
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&stderr_path).unwrap())
         .spawn()
@@ -689,7 +789,7 @@ fn test_invalid_log_settings_stop_startup() {
         let (config, _) = write_config(dir.path(), "return 'accept'", None);
         let text = std::fs::read_to_string(&config).unwrap();
         std::fs::write(&config, format!("{text}[log]\n{setting}\n")).unwrap();
-        let (code, stderr) = run(&["--config", config.to_str().unwrap()]);
+        let (code, stderr) = run(&["server", "--config", config.to_str().unwrap()]);
         assert_eq!(code, Some(2), "{stderr}");
         assert!(stderr.contains(expected), "{setting}: {stderr}");
     }
@@ -813,7 +913,7 @@ fn piped_server(script: &str) -> (Server, u16) {
     std::fs::write(&config, format!("{text}[metrics]\nport = {port}\n")).unwrap();
     let stdout = std::fs::File::create(dir.path().join("stdout.log")).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
-        .args(["--config", config.to_str().unwrap()])
+        .args(["server", "--config", config.to_str().unwrap()])
         .current_dir(dir.path())
         .stdout(stdout)
         .stderr(Stdio::piped())
@@ -1049,7 +1149,7 @@ fn test_check_passes_without_touching_anything() {
     assert_eq!((code, stdout.as_str()), (Some(0), "configuration ok"), "{stderr}");
     assert!(!dir.path().join("data").exists(), "the data directory was created");
 
-    let (code, stdout, stderr) = admin(PROGRAM, &["--config", config.to_str().unwrap(), "--check"]);
+    let (code, stdout, stderr) = admin(PROGRAM, &["check", "--config", config.to_str().unwrap()]);
     assert_eq!((code, stdout.as_str()), (Some(0), "configuration ok"), "{stderr}");
 }
 
@@ -1156,7 +1256,7 @@ fn check_spool(dir: &Path, spool: &Path) -> (Option<i32>, String) {
     let (config, _) = write_config(dir, "return 'accept'", None);
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(&config, format!("{text}\n[radius.accounting_spool]\ndir = \"{}\"\n", spool.display())).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(["--check", "--config", config.to_str().unwrap()]).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(["check", "--config", config.to_str().unwrap()]).output().unwrap();
     (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
@@ -1325,7 +1425,7 @@ fn test_out_of_file_descriptors() {
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(&config, format!("{text}[metrics]\nport = {metrics_port}\n[tacacs]\nport = {tacacs_port}\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n")).unwrap();
     let child = Command::new("sh")
-        .args(["-c", "ulimit -n 128 && exec \"$0\" --config \"$1\"", env!("CARGO_BIN_EXE_rradius-server"), config.to_str().unwrap()])
+        .args(["-c", "ulimit -n 128 && exec \"$0\" server --config \"$1\"", env!("CARGO_BIN_EXE_rradius-server"), config.to_str().unwrap()])
         .current_dir(dir.path())
         .stdout(std::fs::File::create(dir.path().join("stdout.log")).unwrap())
         .stderr(std::fs::File::create(dir.path().join("stderr.log")).unwrap())
@@ -1558,7 +1658,7 @@ fn test_spool_directory_that_cannot_be_used() {
     let (config, _) = write_config(dir.path(), "return 'accept'", None);
     let text = std::fs::read_to_string(&config).unwrap().replace("[[radius.clients]]", "[radius.accounting_spool]\ndir = \"a-file/spool\"\n[[radius.clients]]");
     std::fs::write(&config, text).unwrap();
-    let (code, stderr) = run(&["--config", config.to_str().unwrap()]);
+    let (code, stderr) = run(&["server", "--config", config.to_str().unwrap()]);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(stderr.contains("accounting_spool.dir"), "{stderr}");
     assert!(!dir.path().join("spool").exists());
@@ -1572,7 +1672,7 @@ fn test_check_covers_script_http() {
     let with_http = |extra: &str| {
         let text = base.replace("[lua]\n", &format!("[lua.http]\nallowed_hosts = [\"api.example.com\"]\n{extra}\n[lua]\n"));
         std::fs::write(&config, text).unwrap();
-        run(&["--check", "--config", config.to_str().unwrap()])
+        run(&["check", "--config", config.to_str().unwrap()])
     };
     let (code, stderr) = with_http("ca_file = \"missing.pem\"");
     assert_eq!(code, Some(2), "{stderr}");
@@ -2079,7 +2179,7 @@ fn test_ocsp_needs_the_enterprise_program() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let config = write_tls_config(dir.path(), &section)?;
         let config = config.to_str().ok_or("a path that is not UTF-8")?;
-        for args in [vec!["--config", config], vec!["--config", config, "--check"]] {
+        for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
             let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
@@ -2099,7 +2199,7 @@ fn test_backups_need_the_enterprise_program() -> Result<(), String> {
     text.push_str("\n[cluster.backup]\ninterval_minutes = 60\n");
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     let config = config.to_str().ok_or("a path that is not UTF-8")?;
-    for args in [vec!["--config", config], vec!["--config", config, "--check"]] {
+    for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
         let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
@@ -2118,7 +2218,7 @@ fn test_accounting_export_needs_enterprise() -> Result<(), String> {
     text.push_str("\n[accounting_export]\ndirectory = \"exports\"\n[accounting_export.table]\nquery = \"SELECT 1\"\n");
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     let config = config.to_str().ok_or("a path that is not UTF-8")?;
-    for args in [vec!["--config", config], vec!["--config", config, "--check"]] {
+    for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
         let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
@@ -2149,7 +2249,7 @@ fn test_mfa_needs_the_enterprise_program() -> Result<(), String> {
     let (config, _) = write_config(dir.path(), "return 'accept'", None);
     let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
     std::fs::write(&config, format!("{text}mfa = \"challenge\"\n")).map_err(|e| e.to_string())?;
-    let output = Command::new(PROGRAM).arg("--check").arg("--config").arg(&config).output().map_err(|e| e.to_string())?;
+    let output = Command::new(PROGRAM).arg("check").arg("--config").arg(&config).output().map_err(|e| e.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("mfa needs rradius-enterprise"), "{stderr}");
@@ -2191,7 +2291,7 @@ fn test_coa_commands_need_the_enterprise_program() -> Result<(), String> {
         assert_eq!(output.status.code(), Some(2), "{command}: {stderr}");
         assert!(stderr.contains(&format!("{command}: not supported by this program (CoA needs rradius-enterprise)")) && !stderr.contains("nonexistent"), "{command}: {stderr}");
     }
-    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stderr).into_owned();
+    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stdout).into_owned();
     assert!(!usage.contains("disconnect|coa"), "{usage}");
     Ok(())
 }
@@ -2220,7 +2320,7 @@ fn test_dpsk_needs_the_enterprise_program() -> Result<(), String> {
         assert_eq!(status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains(&format!("{}: not supported by this program (DPSK needs rradius-enterprise)", args[0])) && !stderr.contains("nonexistent"), "{args:?}: {stderr}");
     }
-    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stderr).into_owned();
+    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stdout).into_owned();
     assert!(usage.contains("usage: rradius-server user") && !usage.contains("dpsk"), "{usage}");
     Ok(())
 }
@@ -2249,7 +2349,7 @@ fn test_aka_needs_the_enterprise_program() -> Result<(), String> {
         assert_eq!(status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains(&format!("{}: not supported by this program (EAP-AKA' needs rradius-enterprise)", args[0])) && !stderr.contains("nonexistent"), "{args:?}: {stderr}");
     }
-    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stderr).into_owned();
+    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stdout).into_owned();
     assert!(usage.contains("usage: rradius-server user") && !usage.contains("aka"), "{usage}");
     Ok(())
 }
@@ -2282,7 +2382,7 @@ fn test_client_command_needs_the_enterprise_program() -> Result<(), String> {
     assert_eq!(output.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("client: not supported by this program (dynamic clients need rradius-enterprise)") && !stderr.contains("nonexistent"), "{stderr}");
     // Nor does its usage list it.
-    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stderr).into_owned();
+    let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stdout).into_owned();
     assert!(usage.contains("usage: rradius-server user") && !usage.contains("client add"), "{usage}");
     // A section that needs it is no command: the usage, not its message.
     let section = String::from_utf8_lossy(&Command::new(PROGRAM).arg("radius.tls").output().map_err(|e| e.to_string())?.stderr).into_owned();
@@ -2298,7 +2398,7 @@ fn core_column(table: Vec<(String, Said)>) -> Result<(), String> {
         let config = config.to_str().ok_or("a path that is not UTF-8")?;
         match expected.in_core {
             Some(message) => {
-                for args in [vec!["--config", config], vec!["--config", config, "--check"]] {
+                for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
                     let output = Command::new(PROGRAM).args(&args).output().map_err(|e| e.to_string())?;
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     assert_eq!(output.status.code(), Some(2), "{section}: {args:?}: {stderr}");
@@ -2306,7 +2406,7 @@ fn core_column(table: Vec<(String, Said)>) -> Result<(), String> {
                 }
             }
             None => {
-                let output = Command::new(PROGRAM).args(["--config", config, "--check"]).output().map_err(|e| e.to_string())?;
+                let output = Command::new(PROGRAM).args(["check", "--config", config]).output().map_err(|e| e.to_string())?;
                 assert_eq!(output.status.code(), Some(0), "{section}: {}", String::from_utf8_lossy(&output.stderr));
             }
         }

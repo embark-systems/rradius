@@ -54,14 +54,14 @@
   ```bash
   cd rradius-server
   cargo build --release
-  ./target/release/rradius-server --config examples/scenarios/quick-start/rradius.toml
+  ./target/release/rradius-server server --config examples/scenarios/quick-start/rradius.toml
   ```
 
 - **用發行檔時，** 解開 `rradius-<版本>-<平台>.tar.gz`，裡面的目錄結構和 repo 相同。進到其中的 `rradius-server/` 目錄，把各章的 `./target/release/rradius-server` 換成 `../bin/rradius-server`，其他指令和路徑都一樣，也不用 `cargo build`：
 
   ```bash
   cd rradius-0.1.0-linux-x86_64/rradius-server
-  ../bin/rradius-server --config examples/scenarios/quick-start/rradius.toml
+  ../bin/rradius-server server --config examples/scenarios/quick-start/rradius.toml
   ```
 
 - **有些情境要先執行一個腳本才能啟動，** 因為憑證和金鑰不該放在 repo 裡：

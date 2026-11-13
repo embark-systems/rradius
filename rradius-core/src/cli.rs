@@ -27,7 +27,7 @@ pub struct Program {
     pub extensions: crate::extension::Extensions,
 }
 
-const USAGE: &str = "usage: rradius-server [--config <path>]";
+const USAGE: &str = "usage: rradius-server server [--config <path>]";
 const SCHEMA_USAGE: &str = "usage: rradius-server schema [--lang en|zh-TW]";
 
 /// The `schema` command: prints the JSON Schema of the configuration file; the exit status.
@@ -59,6 +59,19 @@ fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
             1
         }
     }
+}
+
+/// Every command of the program, one per line, and where the configuration is read from without
+/// `--config`: what no arguments and `help` print, and what a mistake prints.
+fn full_usage(extensions: &crate::extension::Extensions, default: &str) -> String {
+    format!(
+        "{USAGE}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}",
+        admin::CHECK_USAGE,
+        crate::config_tools::USAGE,
+        crate::tuning::USAGE,
+        accounts::USAGE
+    ) + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()
+        + &format!("\nwithout --config, the configuration is {default}")
 }
 
 /// Prints `message` and exits with status 2, the status for usage and configuration errors.
@@ -153,24 +166,33 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     }
     let default = config::default_config_path();
     let config_path = match args.as_slice() {
-        [_] => default,
-        [_, flag, path] if flag == "--config" => path.as_str(),
-        [_, check] if check == "--check" => std::process::exit(admin::check(default)),
-        [_, check, flag, path] | [_, flag, path, check] if check == "--check" && flag == "--config" => std::process::exit(admin::check(path)),
-        _ => exit_with(
-            format!("{USAGE}\nusage: rradius-server --version\n{}\n{SCHEMA_USAGE}\n{}\n{}\n{}", admin::CHECK_USAGE, crate::config_tools::USAGE, crate::tuning::USAGE, accounts::USAGE)
-                + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()
-                + &format!("\nwithout --config, the configuration is {default}"),
-        ),
+        [_] => {
+            println!("{}", full_usage(extensions, default));
+            return Ok(());
+        }
+        [_, help] if help == "help" || help == "--help" || help == "-h" => {
+            println!("{}", full_usage(extensions, default));
+            return Ok(());
+        }
+        [_, server] if server == "server" => default,
+        [_, server, flag, path] if server == "server" && flag == "--config" => path.as_str(),
+        [_, server, ..] if server == "server" => exit_with(USAGE),
+        [_, check] if check == "check" => std::process::exit(admin::check(default)),
+        [_, check, flag, path] if check == "check" && flag == "--config" => std::process::exit(admin::check(path)),
+        [_, check, ..] if check == "check" => exit_with(admin::CHECK_USAGE),
+        // Starting and checking are subcommands: the old flags say which.
+        [_, flag, ..] if flag == "--config" => exit_with(full_usage(extensions, default) + &format!("\nto start the server: {} server --config <path>", program.name)),
+        [_, flag, ..] if flag == "--check" => exit_with(full_usage(extensions, default) + &format!("\nto check a configuration: {} check [--config <path>]", program.name)),
+        _ => exit_with(full_usage(extensions, default)),
     };
     // Only now: the commands above do not listen for these, and must end on them. As PID 1 the
     // server would ignore them until the end of startup, and be killed.
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
 
-    let config = config::load(Path::new(config_path)).unwrap_or_else(|e| match args.len() {
-        1 => exit_with(format!("{e}\n(the default configuration; give --config <path> for another)")),
-        _ => exit_with(e),
+    let config = config::load(Path::new(config_path)).unwrap_or_else(|e| match args.iter().any(|arg| arg == "--config") {
+        false => exit_with(format!("{e}\n(the default configuration; give --config <path> for another)")),
+        true => exit_with(e),
     });
     logging::init(&config.log);
     let mut dictionary = Dictionary::new();

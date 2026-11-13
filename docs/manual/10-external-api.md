@@ -24,8 +24,8 @@
 
    ```bash
    cd rradius-server
-   ./target/release/rradius-server --check --config examples/scenarios/external-api/rradius.toml
-   ./target/release/rradius-server --config examples/scenarios/external-api/rradius.toml
+   ./target/release/rradius-server check --config examples/scenarios/external-api/rradius.toml
+   ./target/release/rradius-server server --config examples/scenarios/external-api/rradius.toml
    ```
 
 4. 本機測試時把 `hotspot` 的 `address` 改成 `127.0.0.1`：
