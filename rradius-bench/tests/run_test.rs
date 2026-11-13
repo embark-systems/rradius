@@ -372,10 +372,13 @@ fn test_stall_delays_later_requests() {
     assert!(json["loads"][0]["worker_busy_max"].is_null());
 }
 
+/// One request at a time, so that the rate is out of reach without the responder falling
+/// behind: unlimited, a CI runner's responder dropped 84 of 9953 requests, and the timeouts
+/// rightly made the exit code 2.
 #[test]
 fn test_rate_not_met() {
     let responder = Responder::answering();
-    let output = run_against(responder.address, &["--load", "pap,rate=100000000", "--warmup", "0", "--duration", "0.2"]);
+    let output = run_against(responder.address, &["--load", "pap,rate=100000000,concurrency=1", "--warmup", "0", "--duration", "0.2"]);
     assert_eq!(output.code, 0, "warnings do not change the exit code: {}", output.stdout);
     let json = output.json();
     assert_eq!(json["trustworthy"], false);
