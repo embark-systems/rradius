@@ -301,7 +301,7 @@ pub fn session_resumption_settings_table(seal_file: &str) -> Vec<(String, Said)>
 }
 
 /// The table of the tacacs-aaa spec ("TACACS+ over TLS Only in the Enterprise Program"):
-/// sections for `write_tls_config`, and what each program says of them. Only `--check` reads
+/// sections for `write_tls_config`, and what each program says of them. Only `check` reads
 /// them, so the port without TLS can be 49.
 pub fn tacacs_tls_settings_table() -> Vec<(String, Said)> {
     let tacacs = |client: &str, tls: &str| format!("[tacacs]\nport = 49\n[[tacacs.clients]]\nname = \"core1\"\naddress = \"127.0.0.1\"\nsecret = \"s\"\n{client}{tls}");

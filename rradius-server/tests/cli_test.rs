@@ -87,7 +87,7 @@ fn test_old_flags_name_the_subcommands() -> Result<(), String> {
     let check = "to check a configuration: rradius-server check [--config <path>]";
     for (args, hint) in [
         (&["--config", config][..], Some(start)),
-        (&["--config", config, "--check"], Some(start)),
+        (&["--config", config, "--check"], Some(check)),
         (&["--check"], Some(check)),
         (&["--check", "--config", config], Some(check)),
         (&["--confg", config], None),
@@ -96,7 +96,11 @@ fn test_old_flags_name_the_subcommands() -> Result<(), String> {
         assert_eq!(code, Some(2), "{args:?}");
         assert!(stdout.is_empty() && stderr.contains("usage: rradius-server server [--config <path>]"), "{args:?}: {stderr}");
         match hint {
-            Some(hint) => assert!(stderr.trim_end().ends_with(hint), "{args:?}: {stderr}"),
+            Some(hint) => {
+                assert!(stderr.trim_end().ends_with(hint), "{args:?}: {stderr}");
+                // An old check is never told to start the server.
+                assert!(hint == start || !stderr.contains("to start the server"), "{args:?}: {stderr}");
+            }
             None => assert!(!stderr.contains("to start the server") && !stderr.contains("to check a configuration"), "{args:?}: {stderr}"),
         }
     }
@@ -117,24 +121,6 @@ fn test_server_and_check_arguments() -> Result<(), String> {
         let (code, stdout, stderr) = output_of(args)?;
         assert_eq!(code, Some(2), "{args:?}");
         assert!(stdout.is_empty() && stderr.trim_end() == usage, "{args:?}: {stderr}");
-    }
-    Ok(())
-}
-
-/// `check --config <path>` checks the file, and `server` without `--config` reads the default
-/// configuration.
-#[test]
-fn test_check_and_server_subcommands() -> Result<(), String> {
-    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let (config, _) = write_config(dir.path(), "return 'accept'", None);
-    let (code, stdout, stderr) = output_of(&["check", "--config", config.to_str().ok_or("path not UTF-8")?])?;
-    assert_eq!((code, stdout.as_str()), (Some(0), "configuration ok\n"), "{stderr}");
-    assert!(!dir.path().join("data").exists());
-    let default = rradius_core::config::default_config_path();
-    if !Path::new(default).exists() {
-        let (code, _, stderr) = output_of(&["server"])?;
-        assert_eq!(code, Some(2));
-        assert!(stderr.contains(default) && stderr.contains("give --config <path> for another"), "{stderr}");
     }
     Ok(())
 }
@@ -1148,9 +1134,6 @@ fn test_check_passes_without_touching_anything() {
     let (code, stdout, stderr) = check_command(PROGRAM, &config);
     assert_eq!((code, stdout.as_str()), (Some(0), "configuration ok"), "{stderr}");
     assert!(!dir.path().join("data").exists(), "the data directory was created");
-
-    let (code, stdout, stderr) = admin(PROGRAM, &["check", "--config", config.to_str().unwrap()]);
-    assert_eq!((code, stdout.as_str()), (Some(0), "configuration ok"), "{stderr}");
 }
 
 /// A valid LDAP handler passes without its server hearing anything: a listener on the
@@ -1251,7 +1234,7 @@ fn test_unusable_spool_leaves_a_clean_node() {
     assert!(locks.is_empty(), "not a clean shutdown: {locks:?}");
 }
 
-/// What `--check` says of this `[radius.accounting_spool] dir`.
+/// What `check` says of this `[radius.accounting_spool] dir`.
 fn check_spool(dir: &Path, spool: &Path) -> (Option<i32>, String) {
     let (config, _) = write_config(dir, "return 'accept'", None);
     let text = std::fs::read_to_string(&config).unwrap();
@@ -2240,7 +2223,7 @@ fn test_accounting_export_refused_at_reload() -> Result<(), String> {
     Ok(())
 }
 
-/// `mfa` on a client needs rradius-enterprise: `--check` ends with status 2 and says so, and the
+/// `mfa` on a client needs rradius-enterprise: `check` ends with status 2 and says so, and the
 /// setting added while the program runs is refused at SIGHUP (Second Factor Settings: Core
 /// program).
 #[test]

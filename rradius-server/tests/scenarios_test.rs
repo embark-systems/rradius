@@ -206,7 +206,7 @@ fn totp(secret: &str) -> String {
 }
 
 /// Chapter 5: the jump host's two steps. The VPN chain needs a directory, which the LDAP
-/// tests cover; here its settings only have to pass --check and start.
+/// tests cover; here its settings only have to pass check and start.
 #[test]
 fn test_remote_access() {
     let mut server = Server::start(SCENARIOS, "remote-access", "rradius.toml", |text| text.replacen("address = \"10.60.0.20\"", "address = \"127.0.0.1\"", 1));

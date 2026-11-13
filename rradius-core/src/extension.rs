@@ -383,7 +383,7 @@ pub trait Extension: Send + Sync {
         Ok(())
     }
 
-    /// Checks what `--check` checks on disk without changing it, such as whether a directory it
+    /// Checks what `check` checks on disk without changing it, such as whether a directory it
     /// would write to can be used.
     fn check_files(&self, config: &ServerConfig) -> Result<(), String> {
         let _ = config;
@@ -391,7 +391,7 @@ pub trait Extension: Send + Sync {
     }
 
     /// Logs what is weak in its settings, such as short secrets, where the server warns about
-    /// its own: at the start, at each reload and in `--check`.
+    /// its own: at the start, at each reload and in `check`.
     fn warn_about(&self, config: &ServerConfig) {
         let _ = config;
     }
@@ -423,7 +423,9 @@ pub trait Extension: Send + Sync {
 }
 
 /// The commands of the program itself, which no extension can take.
-const PROGRAM_COMMANDS: [&str; 10] = ["--version", "--help", "-h", "help", "server", "check", "schema", "config", "tuning", "user"];
+/// The old `--config` and `--check` stay reserved, so that they always reach the line naming the
+/// subcommand to use.
+const PROGRAM_COMMANDS: [&str; 12] = ["--version", "--help", "-h", "help", "--config", "--check", "server", "check", "schema", "config", "tuning", "user"];
 
 /// The extensions of one program.
 #[derive(Clone, Default)]
@@ -549,7 +551,7 @@ impl Extensions {
         self.list.iter().try_for_each(|extension| extension.check(config))
     }
 
-    /// What `--check` checks on disk for each extension, stopping at the first error.
+    /// What `check` checks on disk for each extension, stopping at the first error.
     pub fn check_files(&self, config: &ServerConfig) -> Result<(), String> {
         self.list.iter().try_for_each(|extension| extension.check_files(config))
     }
