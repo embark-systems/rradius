@@ -5529,7 +5529,7 @@ pub(crate) mod tests {
     /// refuses gets its Access-Reject.
     #[tokio::test]
     async fn test_unavailable_database_leaves_login_unanswered() -> Result<(), String> {
-        let slow = "local ok = pcall(sql_query, [[WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000000) SELECT max(x) FROM c]]) return 'reject'";
+        let slow = "local ok = pcall(sql_query, [[WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500000) SELECT max(x) FROM c]]) return 'reject'";
         let server = RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine_with(slow, Duration::from_millis(5)), share_dictionary());
         let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec())], b"xyzzy5461");
         assert!(server.handle_auth(&request, LOCALHOST).await.is_none(), "not answered");
@@ -6126,7 +6126,7 @@ pub(crate) mod tests {
 
         // Found, but the chain could not use the database: not answered, counted, and logged under
         // the authenticator's name.
-        let slow = "local ok = pcall(sql_query, [[WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000000) SELECT max(x) FROM c]]) return 'reject'";
+        let slow = "local ok = pcall(sql_query, [[WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500000) SELECT max(x) FROM c]]) return 'reject'";
         server.replace_state(RadiusState::new(state.clients.clone(), engine_with(slow, Duration::from_millis(5)), None).with_pre_chain(Some(Arc::new(FakePreChain))));
         let discarded = server.metrics.radius_discarded_database.get();
         let log = logged_during(async {
