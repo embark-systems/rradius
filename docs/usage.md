@@ -159,7 +159,8 @@ secret_file = "local.secret"
 **在編輯器裡檢查設定檔：** `rradius-server schema` 把設定檔的 JSON Schema 印到標準輸出，不讀設定檔、不啟動任何東西。
 
 ```bash
-rradius-server schema > rradius.schema.json
+rradius-server schema > rradius.schema.json                  # 欄位說明用英文
+rradius-server schema --lang zh-TW > rradius.schema.json     # 欄位說明用繁體中文
 ```
 
 在 `rradius.toml` 第一行寫 `#:schema ./rradius.schema.json`，支援 TOML schema 的編輯器（例如 Taplo，以及 VS Code 的 Even Better TOML）就會在編輯時補全區段和欄位，並標出拼錯的欄位、型別錯誤和不在列舉裡的值。
@@ -167,7 +168,7 @@ rradius-server schema > rradius.schema.json
 - **schema 由讀設定的程式產生，** 和程式的規則一致；換版本後重新產生一次。
 - **企業版的區段不在 rradius-server 的 schema 裡，** 寫了會標成不認得的欄位；`rradius-enterprise schema` 的 schema 包含它們。上表列的幾個欄位（例如 `[radius.eap]` 的 `resumption_ms`、`[[radius.clients]]` 的 `tls_name`）在兩邊的 schema 裡都有，用 rradius-server 時由 `--check` 指出需要 rradius-enterprise。
 - **schema 不能取代 `--check`。** 它只看結構和型別；SQL 的參數規則（2.14 節）、檔案是否存在和權限、欄位之間的條件（例如 `secret` 和 `secret_file` 只能有一個）、憑證和金鑰的內容、數值的上下限等，仍然只有 `--check` 和啟動時檢查。
-- **欄位說明目前沒有放進 schema。** 每個最上層區段附了一個連到這份文件對應章節的網址。
+- **每個欄位都有一句說明，** 編輯器在補全和滑過欄位時顯示。預設是英文，`--lang zh-TW` 改用繁體中文，其他值以狀態 2 結束。說明只講用途和單位，細節和限制仍以這份文件為準；每個最上層區段的說明是連到這份文件對應章節的網址。
 
 ### 2.1 `[lua]`
 
