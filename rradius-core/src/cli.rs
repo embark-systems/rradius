@@ -78,11 +78,12 @@ fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
 /// `--config`: what no arguments and `help` print, and what a mistake prints.
 fn full_usage(extensions: &crate::extension::Extensions, default: &str) -> String {
     named(&format!(
-        "{USAGE}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}",
+        "{USAGE}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}\n{}",
         admin::CHECK_USAGE,
         crate::config_tools::USAGE,
         crate::tuning::USAGE,
-        accounts::USAGE
+        accounts::USAGE,
+        crate::cluster_commands::USAGE
     )) + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()
         + &format!("\nwithout --config, the configuration is {default}")
 }
@@ -170,6 +171,9 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     }
     if args.get(1).is_some_and(|command| command == "user") {
         std::process::exit(accounts::run(&args[2..]).await);
+    }
+    if args.get(1).is_some_and(|command| command == "cluster") {
+        std::process::exit(crate::cluster_commands::run(&args[2..]).await);
     }
     if let Some(command) = args.get(1).and_then(|name| extensions.command(name)) {
         std::process::exit((command.run)(args[2..].to_vec()).await);

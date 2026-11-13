@@ -2409,3 +2409,64 @@ fn core_column(table: Vec<(String, Said)>) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn test_cluster_command_usage() -> Result<(), String> {
+    for args in [&["cluster"][..], &["cluster", "join"], &["cluster", "remove"], &["cluster", "remove", "abc"]] {
+        let (code, stdout, stderr) = output_of(args)?;
+        assert_eq!((code, stdout.as_str()), (Some(2), ""), "{args:?}: {stderr}");
+        assert!(stderr.contains("usage: rradius-server cluster members|remove") || stderr.contains("positive integer"), "{args:?}: {stderr}");
+    }
+    let (_, stdout, _) = output_of(&["help"])?;
+    assert!(stdout.contains("usage: rradius-server cluster members|remove"), "{stdout}");
+    Ok(())
+}
+
+/// With no node running, the command gives up after its 30 s with status 3.
+#[test]
+fn test_cluster_command_without_the_cluster() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'reject'", None);
+    let config = config.to_str().ok_or("config path")?;
+    let started = Instant::now();
+    let (code, stdout, stderr) = output_of(&["cluster", "members", "--config", config])?;
+    assert_eq!((code, stdout.as_str()), (Some(3), ""), "{stderr}");
+    assert!(stderr.contains("did not answer within 30 s"), "{stderr}");
+    assert!(started.elapsed() < Duration::from_secs(40), "took {:?}", started.elapsed());
+    assert!(!dir.path().join("data").exists(), "the data directory was created");
+    Ok(())
+}
+
+/// A single node: listed as the leader, never removed while it runs, and a wrong api secret
+/// ends the command at once.
+#[test]
+fn test_cluster_command_on_one_node() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let server = Server::start(PROGRAM, dir, "return 'reject'", None);
+    let config = server.config.to_str().ok_or("config path")?.to_string();
+    let mut members = (None, String::new(), String::new());
+    let up = (0..60).any(|_| {
+        members = output_of(&["cluster", "members", "--config", &config]).unwrap_or_default();
+        let listed = members.0 == Some(0);
+        if !listed {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        listed
+    });
+    assert!(up, "{members:?}");
+    assert!(members.1.trim_end().starts_with("node 1  voter    leader  raft 127.0.0.1:") && members.1.trim_end().lines().count() == 1, "{members:?}");
+
+    let (code, stdout, stderr) = output_of(&["cluster", "remove", "--config", &config, "1"])?;
+    assert_eq!((code, stdout.as_str()), (Some(2), ""), "{stderr}");
+    assert!(stderr.contains("node 1 still answers"), "{stderr}");
+
+    let text = std::fs::read_to_string(&server.config).map_err(|e| e.to_string())?;
+    let wrong = server.dir.path().join("wrong-secret.toml");
+    std::fs::write(&wrong, text.replace("test-api-secret-01234", "another-api-secret-99")).map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    let (code, stdout, stderr) = output_of(&["cluster", "members", "--config", wrong.to_str().ok_or("path")?])?;
+    assert_eq!((code, stdout.as_str()), (Some(2), ""), "{stderr}");
+    assert!(stderr.contains("refused the api secret") && !stderr.contains("api-secret-"), "{stderr}");
+    assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    Ok(())
+}

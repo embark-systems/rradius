@@ -161,7 +161,56 @@ api = "10.99.0.1:8200"
 - **leader 已經做過快照、丟掉舊紀錄也沒關係，** 新節點會直接收到快照。
 - **管理指令會等久一點。** leader 剛停止的那段時間，`rradius-server user` 這類指令會先連到舊 leader，等連線逾時才改連新的，可能要十幾秒才完成（上限 30 秒）。
 - **測過的範圍：** 2026-11-13 用 `compose.cluster.yaml` 的三節點，在一台主機的 Docker 上模擬主機壞掉（強制停止，刪掉容器和資料 volume）。換掉 follower 約 2 秒追上；設 `snapshot_every = 50`、寫入約 200 筆讓 leader 做過快照後換掉 leader，約 5 秒追上，三台的 applied index 相同，期間新增的帳號在每台都能登入。沒有在多台實體主機或經過 WireGuard 的環境測過。
-- **節點數量不能在執行中增減，** 只能一台換一台。
+
+### 增加節點
+
+叢集在執行中就能加一台，其他節點不必停：
+
+1. 新主機用一個沒用過的 `node_id`，設定檔的 `[[cluster.nodes]]` 列出**所有節點，包含它自己**；`raft.secret`、`api.secret`、`migrations/` 和其他台相同。
+2. `data/` 是空的，啟動。它會自己向叢集申請加入，先複製資料，再成為投票成員，記錄出現 `cluster node N has caught up with the cluster` 後才開始回應。
+3. 確認：`rradius-server cluster members --config /etc/rradius/rradius.toml` 列出它是 `voter`；用一個既有帳號在它上面登入一次。
+4. 把它加進其他每台的 `[[cluster.nodes]]`（還有 WireGuard 的 peer 和防火牆，見 [usage 2.2 節](../usage.md#22-cluster)），之後重啟時生效。不急著改：其他節點不改設定也能照常運作和重啟，但 `user`、`cluster` 這些指令只問設定裡列的節點。
+
+```
+$ rradius-server cluster members --config /etc/rradius/rradius.toml
+node 1  voter    leader  raft 10.0.0.1:8100  api 10.0.0.1:8200
+node 2  voter            raft 10.0.0.2:8100  api 10.0.0.2:8200
+node 3  voter            raft 10.0.0.3:8100  api 10.0.0.3:8200
+node 4  voter            raft 10.0.0.4:8100  api 10.0.0.4:8200  (not in this configuration)
+```
+
+`(not in this configuration)` 表示這份設定還沒列它，提醒你做第 4 步。
+
+### 移除節點
+
+要淘汰一台時，順序是**先停機、再移除、最後改設定**：
+
+1. 停掉那台（停止服務或關機），並且之後不再用原來的設定和資料啟動它。
+2. 在任何一台還在叢集裡的節點上執行 `rradius-server cluster remove --config /etc/rradius/rradius.toml 4`，印出 `removed node 4` 就完成。指令會自己找到 leader。
+3. 從其他每台的 `[[cluster.nodes]]` 刪掉它，之後重啟時生效。
+
+指令會擋下這些情況，什麼都不送：
+
+| 情況 | 結果 |
+| --- | --- |
+| 那台還在回應 | 拒絕，要你先停機（結束碼 2）；沒有旗標可以跳過 |
+| 編號不在叢集裡 | `no node 9 in the cluster`（結束碼 1） |
+| 移除後只剩 1 或 2 台投票成員 | 拒絕並說明風險，要加 `--force`（結束碼 2） |
+| 它是最後一台投票成員 | 一律拒絕（結束碼 2） |
+
+為什麼一定要先停機（2026-11-13 實測）：
+
+- **被移除但還在執行的節點會用舊資料回答。** 它不再收到新的寫入，移除後新增的帳號在它上面登入會被拒絕，停用的帳號還能登入。NAS 還把它列為 RADIUS 伺服器時，就會得到錯的答案。
+- **帶著舊資料重新啟動會卡住，** 登入沒有回應。
+- **清空資料、設定還列著自己時重新啟動，會自動加回叢集。** 所以淘汰的主機要把 rradius 的服務關掉，不只是刪資料。
+- **管理指令可能卡住。** 設定裡排第一的節點如果「已移除但還在執行」，`user` 這類指令會等到 30 秒逾時；先停機就不會發生。
+
+其他注意事項：
+
+- **維持奇數台（3 或 5）。** 3 台可以壞 1 台，5 台可以壞 2 台；4 台和 3 台一樣只能壞 1 台。只剩 2 台時任何一台停掉都不能寫入，所以指令要求 `--force`。
+- **要移除的是 leader 也一樣，** 先停掉它：剩下的節點會選出新 leader（選舉那幾秒的寫入會逾時），再移除。
+- **只停一台不必移除。** 升級、重開機、換硬體後用同一個 `node_id` 回來，見〈升級或重開機〉和〈換掉壞掉的節點〉；移除是給不會再回來的節點。
+- **測過的範圍：** 2026-11-13 用 `compose.cluster.yaml` 的三節點，在一台主機的 Docker 上：加第 4 台約 3 秒成為投票成員；移除 follower、移除停掉的 leader、移除後再用空資料的 node 1 重新加入都正常；舊節點不改設定也能重啟。沒有在多台實體主機或經過 WireGuard 的環境測過。
 
 ## 常見問題
 
