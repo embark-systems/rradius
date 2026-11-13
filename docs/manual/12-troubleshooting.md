@@ -9,7 +9,7 @@
 | **認證紀錄** | 每次登入的結果，和是誰做的決定 | 記錄裡 `authentication protocol=...` 開頭的行，預設就有 |
 | **指標** | 沒有留下紀錄的事：被丟棄的封包、過載、上游狀態 | `curl -s http://127.0.0.1:9812/metrics`，要有 `[metrics]` |
 | **追蹤** | 一個使用者或一台 NAS 的完整請求和回應 | `[log.trace]` 加 SIGHUP，見[第 11 章](11-operations.md#排查某個使用者的問題) |
-| **`--check`** | 設定檔、憑證、腳本語法有沒有問題 | `rradius-server --check --config ...`，不影響執行中的服務 |
+| **`check`** | 設定檔、憑證、腳本語法有沒有問題 | `rradius-server check --config ...`，不影響執行中的服務 |
 
 **認證紀錄只記「做了決定」的請求。** 被丟棄的封包（來源不認得、簽章不對、過載、重送）不會有紀錄，要看指標。這是最常見的誤會：記錄裡什麼都沒有，不代表封包沒到。
 
@@ -147,7 +147,7 @@ authentication protocol="radius" client="wlc" source=10.30.0.10 user="Staff1@cor
 - **`migration file '...' changed after it was applied`：** 改了套用過的檔案。改回原本的內容，要變更就新增下一個編號的檔案。開發環境可以停掉伺服器、刪掉 `data/` 重來。
 - **節點反覆以狀態碼 1 結束，記錄有 `cluster was not ready to apply migrations`：** 多數節點還沒上線；或 `migrations_wait_ms` 比最慢的 SQL 檔執行時間短。
 - **一直出現 `Raft node has not been initialized`：** 節點還沒加入叢集。其他節點啟動了嗎？彼此連得到 raft 和 api 的埠嗎？`raft.secret` 相同嗎？
-- **啟動前先用 `--check`** 可以抓到狀態碼 2 的大部分問題，但它不連資料庫和目錄，SQL 寫錯、LDAP 密碼錯誤要啟動後才知道。
+- **啟動前先用 `check`** 可以抓到狀態碼 2 的大部分問題，但它不連資料庫和目錄，SQL 寫錯、LDAP 密碼錯誤要啟動後才知道。
 
 ## 重新載入沒有生效
 

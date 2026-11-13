@@ -21,7 +21,7 @@
 
 ```bash
 cd rradius-server
-./target/release/rradius-server --config examples/scenarios/wired-mab/rradius.toml
+./target/release/rradius-server server --config examples/scenarios/wired-mab/rradius.toml
 ```
 
 ### 2. 模擬交換器的請求

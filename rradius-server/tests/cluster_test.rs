@@ -19,7 +19,7 @@ impl Nodes {
     fn start(&mut self, index: usize, dir: &Path) -> std::io::Result<()> {
         let path = dir.join(format!("node{}.toml", index + 1));
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&self.1[index])?;
-        let child = Command::new(env!("CARGO_BIN_EXE_rradius-server")).arg("--config").arg(path).stdout(Stdio::null()).stderr(log).spawn()?;
+        let child = Command::new(env!("CARGO_BIN_EXE_rradius-server")).arg("server").arg("--config").arg(path).stdout(Stdio::null()).stderr(log).spawn()?;
         self.0[index] = Some(child);
         Ok(())
     }
@@ -353,7 +353,7 @@ impl MigratingCluster {
         let log_file = std::fs::File::create(&log).unwrap();
         self.nodes.1.push(log);
         let child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
-            .args(["--config", self.configs[index].to_str().unwrap()])
+            .args(["server", "--config", self.configs[index].to_str().unwrap()])
             .envs(self.env.iter().map(|(name, value)| (*name, value)))
             .stdout(Stdio::null())
             .stderr(log_file)
@@ -545,7 +545,7 @@ fn test_spool_across_a_lost_quorum() {
         let path = dir.path().join(format!("node{}.toml", i + 1));
         let log_file = std::fs::OpenOptions::new().create(true).append(true).open(dir.path().join(format!("node{}.log", i + 1))).unwrap();
         let child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
-            .args(["--config", path.to_str().unwrap()])
+            .args(["server", "--config", path.to_str().unwrap()])
             .stdout(Stdio::null())
             .stderr(log_file)
             .spawn()

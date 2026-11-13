@@ -125,11 +125,11 @@ impl Server {
         let (text, ports) = rewrite(&scenario, file, nodes);
         let config = dir.path().join("rradius.toml");
         std::fs::write(&config, change(text)).unwrap();
-        let check = Command::new(scenarios.program).args(["--check", "--config", config.to_str().unwrap()]).output().unwrap();
+        let check = Command::new(scenarios.program).args(["check", "--config", config.to_str().unwrap()]).output().unwrap();
         assert!(check.status.success(), "{name}/{file}: {}", String::from_utf8_lossy(&check.stderr));
         let stderr = std::fs::File::create(dir.path().join("stderr.log")).unwrap();
         let child = Command::new(scenarios.program)
-            .args(["--config", config.to_str().unwrap()])
+            .args(["server", "--config", config.to_str().unwrap()])
             .current_dir(dir.path())
             .stdout(Stdio::null())
             .stderr(stderr)

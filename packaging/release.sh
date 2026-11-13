@@ -173,7 +173,7 @@ for root in $roots; do
         seen=1
         scenario=\$(dirname \"\$config\")
         if [ -e \"\$scenario/make-certs.sh\" ] || [ -e \"\$scenario/setup.sh\" ]; then continue; fi
-        bin/$program --check --config \"\$config\" >/dev/null || { echo \"\$config failed --check\" >&2; exit 1; }
+        bin/$program check --config \"\$config\" >/dev/null || { echo \"\$config failed check\" >&2; exit 1; }
         checked=\$((checked + 1))
     done
     test \$seen = 1 || { echo \"no scenarios in \$root\" >&2; exit 1; }
@@ -192,7 +192,7 @@ $own_license"
             local platform=linux/amd64 base image="rradius-release-check:$target"
             [ "$target" = linux-aarch64 ] && platform=linux/arm64
             # The system the Docker image runs on: its base and the CA certificates it installs,
-            # which scenarios with [lua.http] need to pass --check.
+            # which scenarios with [lua.http] need to pass check.
             base=$(sed -n 's/^FROM \(debian:[^ ]*\)$/\1/p' "$work/src/Dockerfile" | tail -n 1)
             [ -n "$base" ] || fail "cannot find the Debian image the Dockerfile runs on"
             printf 'FROM %s\nRUN apt-get update \\\n    && apt-get install --yes --no-install-recommends ca-certificates \\\n    && rm -rf /var/lib/apt/lists/*\n' "$base" |

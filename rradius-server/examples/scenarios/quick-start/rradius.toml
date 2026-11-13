@@ -2,7 +2,7 @@
 # 說明：docs/manual/02-quick-start.md
 #
 #   cd rradius-server
-#   cargo run --release -- --config examples/scenarios/quick-start/rradius.toml
+#   cargo run --release -- server --config examples/scenarios/quick-start/rradius.toml
 #
 # 相對路徑都以這個檔案所在的目錄為準。
 

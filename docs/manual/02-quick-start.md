@@ -19,14 +19,14 @@
 ```bash
 cd rradius-server
 cargo build --release
-./target/release/rradius-server --check --config examples/scenarios/quick-start/rradius.toml
+./target/release/rradius-server check --config examples/scenarios/quick-start/rradius.toml
 ```
 
 用發行檔時不必建置：解開壓縮檔，進到裡面的 `rradius-server/` 目錄，以下的 `./target/release/rradius-server` 都換成 `../bin/rradius-server`（見[範例的共同約定](README.md#範例的共同約定)）。
 
 ```bash
 cd rradius-0.1.0-macos-aarch64/rradius-server
-../bin/rradius-server --check --config examples/scenarios/quick-start/rradius.toml
+../bin/rradius-server check --config examples/scenarios/quick-start/rradius.toml
 ```
 
 印出 `configuration ok` 就可以啟動。
@@ -34,7 +34,7 @@ cd rradius-0.1.0-macos-aarch64/rradius-server
 ### 2. 啟動
 
 ```bash
-./target/release/rradius-server --config examples/scenarios/quick-start/rradius.toml
+./target/release/rradius-server server --config examples/scenarios/quick-start/rradius.toml
 ```
 
 第一次啟動會在 `examples/scenarios/quick-start/data/` 建立資料庫並套用兩個 migration 檔。看到 `RADIUS Server listening on 127.0.0.1:1812 and 127.0.0.1:1813` 就可以接受請求。

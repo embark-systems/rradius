@@ -8,7 +8,7 @@ An AAA server for RADIUS and TACACS+, written in Rust. Authentication and accoun
 - **TACACS+:** authentication, authorization (permit and deny rules by device group), accounting.
 - **Account sources:** built-in tables (many password hash formats), LDAP / Active Directory, HTTP APIs, which can be chained.
 - **Clustering:** three or more nodes form a cluster that keeps serving when any one node is down; send SIGHUP to reload a changed configuration.
-- **Operations:** Prometheus metrics, structured logs, `--check` to validate the configuration, admin commands.
+- **Operations:** Prometheus metrics, structured logs, `check` to validate the configuration, admin commands.
 
 ## Building and running
 
@@ -17,7 +17,7 @@ Requires Rust (stable).
 ```bash
 cargo build --release
 cd rradius-server
-../target/release/rradius-server --config examples/scenarios/quick-start/rradius.toml
+../target/release/rradius-server server --config examples/scenarios/quick-start/rradius.toml
 ```
 
 Docker works too: run `docker/init-secrets.sh` first, then `docker compose up --build` (single node) or use `compose.cluster.yaml` (three nodes); see [section 1.1 of the usage guide](docs/usage.md#11-docker). Release archives are made with `packaging/release.sh`; see [`packaging/README.md`](packaging/README.md).

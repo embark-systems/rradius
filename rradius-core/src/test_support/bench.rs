@@ -157,7 +157,7 @@ impl Server {
         let path = dir.path().join("rradius.toml");
         std::fs::write(&path, config).map_err(|e| e.to_string())?;
         let stderr = std::fs::File::create(dir.path().join("server.stderr")).map_err(|e| e.to_string())?;
-        let child = Command::new(program).arg("--config").arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(stderr).spawn().map_err(|e| format!("starting the server: {e}"))?;
+        let child = Command::new(program).arg("server").arg("--config").arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(stderr).spawn().map_err(|e| format!("starting the server: {e}"))?;
         Ok(Server { child, dir, program: program.to_path_buf(), bench: bench.to_path_buf(), auth: SocketAddr::from(([127, 0, 0, 1], 0)), acct_port: 0, metrics_port, radsec_port: None, tacacs_port: None })
     }
 

@@ -32,7 +32,7 @@
 
 ```bash
 cd rradius-server
-./target/release/rradius-server --config examples/scenarios/migrate-users/rradius.toml
+./target/release/rradius-server server --config examples/scenarios/migrate-users/rradius.toml
 ```
 
 本機測試時把 `nas` 的 `address` 改成 `127.0.0.1`。示範帳號的密碼都是「帳號-password」：
@@ -147,7 +147,7 @@ rradius-server user passwd --config rradius.toml mail1    # 問兩次新密碼
 ## 上線前
 
 - **先平行跑一陣子。** 挑幾台 NAS 指到 rradius，其他的留在舊系統，確認登入結果一致再全部切換。
-- **舊系統給的回覆屬性**（VLAN、速率、權限）也要搬，放進 `user_reply`（[第 2 章](02-quick-start.md#設定說明)）。屬性名稱要是 rradius 字典裡的名稱，值的格式不對時登入會被拒絕，所以搬完用 `--check` 以外的方式實際登入幾個帳號試。
+- **舊系統給的回覆屬性**（VLAN、速率、權限）也要搬，放進 `user_reply`（[第 2 章](02-quick-start.md#設定說明)）。屬性名稱要是 rradius 字典裡的名稱，值的格式不對時登入會被拒絕，所以搬完用 `check` 以外的方式實際登入幾個帳號試。
 - **舊系統的共用密碼** 可以沿用，NAS 那邊只要改伺服器位址。趁這次換成每台不同、夠長的更好。
 - **`{crypt}` 和 `{argon2}` 的驗證刻意很慢，** 同時登入很多時會排隊。PBKDF2 的次數很高時也一樣。
 - **沒有測過的：** 從任何一套特定的舊系統實際匯出再匯入的流程。示範的雜湊是用 Python 的 `hashlib` 和 `openssl passwd` 依各格式的定義算出來的，再由情境測試確認 rradius 驗證得過；專案另外用 OpenLDAP 實際產生的值測過 PBKDF2 這幾種格式。

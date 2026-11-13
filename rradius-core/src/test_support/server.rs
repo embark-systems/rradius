@@ -92,7 +92,7 @@ impl Server {
         let stderr = std::fs::File::create(dir.join("stderr.log")).unwrap();
         let stdout = std::fs::File::create(dir.join("stdout.log")).unwrap();
         Command::new(program)
-            .args(["--config", config.to_str().unwrap()])
+            .args(["server", "--config", config.to_str().unwrap()])
             .current_dir(dir)
             .stdout(stdout)
             .stderr(stderr)
@@ -530,7 +530,7 @@ pub fn record_command(program: &str, config: &Path, command: &str, args: &[&str]
 pub const SHORT_SECRET: &str = "short-secret";
 
 pub fn check_command(program: &str, config: &Path) -> (Option<i32>, String, String) {
-    admin(program, &["--check", "--config", config.to_str().unwrap()])
+    admin(program, &["check", "--config", config.to_str().unwrap()])
 }
 
 /// How a server that cannot go on ended, and the files named `lock` it left behind, which a next

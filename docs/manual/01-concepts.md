@@ -61,10 +61,10 @@ RadSec（`[radius.tls]`）、每人一把 Wi-Fi 密碼（`[radius.dpsk]`）、�
 
 - **相對路徑以設定檔所在目錄為準，** 和從哪裡啟動無關。
 - **密碼一律放檔案**（`secret_file`），不要寫在設定檔裡。檔案結尾的換行會去掉。
-- **設定錯誤在啟動時就失敗**（狀態碼 2），訊息會指出欄位。上線前用 `--check` 檢查：
+- **設定錯誤在啟動時就失敗**（狀態碼 2），訊息會指出欄位。上線前用 `check` 檢查：
 
   ```bash
-  rradius-server --check --config /etc/rradius/rradius.toml
+  rradius-server check --config /etc/rradius/rradius.toml
   ```
 
   它檢查設定、字典、憑證、migration 檔名和腳本語法，但不連資料庫和 LDAP，所以 SQL 寫錯、LDAP 密碼錯誤要啟動後才知道。

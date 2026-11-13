@@ -50,7 +50,7 @@ examples/scenarios/wifi-certs/setup.sh
 本機測試時把 `wlc` 的 `address` 改成 `127.0.0.1`。
 
 ```bash
-./target/release/rradius-server --config examples/scenarios/wifi-certs/rradius.toml
+./target/release/rradius-server server --config examples/scenarios/wifi-certs/rradius.toml
 ```
 
 ### 3. 測試
