@@ -1478,6 +1478,23 @@ impl RadiusState {
     }
 }
 
+/// The system limit that caps `SO_RCVBUF`.
+pub const RECEIVE_BUFFER_LIMIT: &str = if cfg!(target_os = "linux") { "net.core.rmem_max" } else { "kern.ipc.maxsockbuf" };
+
+/// Whether the receive buffer read back from a socket falls short of the one asked for. Linux
+/// stores, and reads back, twice the size asked for; the other systems the size itself.
+pub fn receive_buffer_short(asked: usize, got: usize) -> bool {
+    receive_buffer_short_on(cfg!(target_os = "linux"), asked, got)
+}
+
+fn receive_buffer_short_on(linux: bool, asked: usize, got: usize) -> bool {
+    if linux {
+        got < asked.saturating_mul(2)
+    } else {
+        got < asked
+    }
+}
+
 pub struct RadiusServer {
     pub auth_addr: SocketAddr,
     pub acct_addr: SocketAddr,
@@ -1485,6 +1502,8 @@ pub struct RadiusServer {
     more_binds: Vec<IpAddr>,
     /// Sockets on each address and port; above 1 they share it with SO_REUSEPORT.
     sockets: usize,
+    /// `SO_RCVBUF` each socket asks for; `None` keeps the system's default.
+    recv_buffer_bytes: Option<usize>,
     pub dictionary: Arc<Dictionary>,
     state: Live<RadiusState>,
     #[doc(hidden)]
@@ -1528,6 +1547,7 @@ impl RadiusServer {
             acct_addr,
             more_binds: Vec::new(),
             sockets: 1,
+            recv_buffer_bytes: None,
             dictionary,
             state: Live::new(state),
             metrics,
@@ -1573,6 +1593,12 @@ impl RadiusServer {
     /// Opens `sockets` sockets on each address and port, each with its own receive loop.
     pub fn with_sockets(mut self, sockets: usize) -> Self {
         self.sockets = sockets.max(1);
+        self
+    }
+
+    /// Has every socket ask for this receive buffer (`SO_RCVBUF`); `None` keeps the system's.
+    pub fn with_recv_buffer(mut self, bytes: Option<usize>) -> Self {
+        self.recv_buffer_bytes = bytes;
         self
     }
 
@@ -1660,6 +1686,8 @@ impl RadiusServer {
     pub async fn bind_sockets(&self) -> io::Result<Vec<(PacketKind, UdpSocket)>> {
         // Listed together, `0.0.0.0` and `::` only get along if `::` keeps to IPv6.
         let shared = self.sockets > 1;
+        // Why the system refused the receive buffer, the same for every socket.
+        let refused: std::cell::RefCell<Option<io::Error>> = std::cell::RefCell::default();
         let bind = |address: SocketAddr, only_v6: bool| -> io::Result<UdpSocket> {
             let socket = socket2::Socket::new(socket2::Domain::for_address(address), socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
             if address.is_ipv6() && only_v6 {
@@ -1670,13 +1698,19 @@ impl RadiusServer {
             if shared {
                 socket.set_reuse_port(true)?;
             }
+            // A refusal leaves the system's default; the server still serves.
+            if let Some(bytes) = self.recv_buffer_bytes {
+                if let Err(e) = socket.set_recv_buffer_size(bytes) {
+                    refused.borrow_mut().get_or_insert(e);
+                }
+            }
             socket.set_nonblocking(true)?;
             socket.bind(&address.into())?;
             UdpSocket::from_std(socket.into())
         };
         let named = |address: SocketAddr| move |e: io::Error| io::Error::new(e.kind(), format!("cannot listen on {address}: {e}"));
         let mut sockets = Vec::new();
-        if self.more_binds.is_empty() && !shared {
+        if self.more_binds.is_empty() && !shared && self.recv_buffer_bytes.is_none() {
             sockets.push((PacketKind::Auth, UdpSocket::bind(self.auth_addr).await.map_err(named(self.auth_addr))?));
             sockets.push((PacketKind::Acct, UdpSocket::bind(self.acct_addr).await.map_err(named(self.acct_addr))?));
         } else {
@@ -1687,6 +1721,18 @@ impl RadiusServer {
                     let address = SocketAddr::new(ip, port);
                     for _ in 0..self.sockets {
                         sockets.push((kind, bind(address, only_v6).map_err(named(address))?));
+                    }
+                }
+            }
+        }
+        if let (Some(asked), Some((_, first))) = (self.recv_buffer_bytes, sockets.first()) {
+            match (refused.into_inner(), socket2::SockRef::from(first).recv_buffer_size()) {
+                (Some(e), _) => tracing::warn!("RADIUS: the system refused a receive buffer of {asked} bytes ({e}), so the sockets keep its default; raise {RECEIVE_BUFFER_LIMIT}"),
+                (None, Err(e)) => tracing::warn!("RADIUS: asked for a receive buffer of {asked} bytes but cannot read back what each socket got: {e}"),
+                (None, Ok(got)) => {
+                    tracing::info!("RADIUS: receive buffer {got} bytes on each socket (asked {asked})");
+                    if receive_buffer_short(asked, got) {
+                        tracing::warn!("RADIUS: asked for a receive buffer of {asked} bytes and each socket got {got}; raise {RECEIVE_BUFFER_LIMIT} to at least {asked}");
                     }
                 }
             }
@@ -6380,6 +6426,32 @@ pub(crate) mod tests {
             assert_eq!(identifiers, [2, 1], "{pause:?}");
         }
         running.abort();
+        Ok(())
+    }
+
+    #[test]
+    fn test_receive_buffer_short() {
+        // Linux reads back twice the size asked for; the others the size itself.
+        assert!(!receive_buffer_short_on(true, 4194304, 8388608));
+        assert!(receive_buffer_short_on(true, 4194304, 425984));
+        assert!(!receive_buffer_short_on(false, 4194304, 4194304));
+        assert!(receive_buffer_short_on(false, 4194304, 786896));
+    }
+
+    /// Every socket, one or several on each port, asks for the receive buffer; 65536 is below
+    /// what Linux and macOS allow by default, so none is capped.
+    #[tokio::test]
+    async fn test_sockets_get_the_receive_buffer() -> Result<(), String> {
+        let counts: &[usize] = if cfg!(target_os = "linux") { &[1, 3] } else { &[1] };
+        for &count in counts {
+            let (_, _, server) = server_with_sockets(count);
+            let sockets = server.with_recv_buffer(Some(65536)).bind_sockets().await.map_err(|e| e.to_string())?;
+            assert_eq!(sockets.len(), 2 * count);
+            for (_, socket) in &sockets {
+                let got = socket2::SockRef::from(socket).recv_buffer_size().map_err(|e| e.to_string())?;
+                assert!(got >= 65536 && !receive_buffer_short(65536, got), "{count} sockets: got {got}");
+            }
+        }
         Ok(())
     }
 

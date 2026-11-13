@@ -63,6 +63,21 @@ fn radius_sockets(value: Option<usize>) -> Result<usize, String> {
     }
 }
 
+/// The smallest `[radius] recv_buffer_bytes`: one RADIUS packet of the largest size.
+pub const MIN_RECV_BUFFER_BYTES: usize = 4096;
+/// The largest `[radius] recv_buffer_bytes`, 1 GiB, well inside what `setsockopt` takes.
+pub const MAX_RECV_BUFFER_BYTES: usize = 1 << 30;
+
+/// `[radius] recv_buffer_bytes`: `None` keeps the system's default receive buffer.
+fn radius_recv_buffer(value: Option<usize>) -> Result<Option<usize>, String> {
+    match value {
+        Some(n) if !(MIN_RECV_BUFFER_BYTES..=MAX_RECV_BUFFER_BYTES).contains(&n) => {
+            Err(format!("radius.recv_buffer_bytes = {n}: it must be from {MIN_RECV_BUFFER_BYTES} to {MAX_RECV_BUFFER_BYTES}"))
+        }
+        other => Ok(other),
+    }
+}
+
 /// `[accounts]`: the statement each `user` command runs, with `?1` for the account
 /// name and `?2` for the stored password value, and how passwords are stored.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -328,6 +343,8 @@ pub struct RadiusSettings {
     pub more_binds: Vec<IpAddr>,
     /// Sockets on each address and port, each with its own receive loop.
     pub sockets: usize,
+    /// `SO_RCVBUF` each of them asks for; `None` keeps the system's default.
+    pub recv_buffer_bytes: Option<usize>,
     pub clients: Arc<ClientTable>,
     /// Whether to answer Status-Server packets.
     pub status_server: bool,
@@ -797,6 +814,7 @@ struct RawRadius {
     #[serde(default = "default_status_server")]
     status_server: bool,
     sockets: Option<usize>,
+    recv_buffer_bytes: Option<usize>,
     #[serde(default = "default_coa_timeout_ms")]
     coa_timeout_ms: u64,
     #[serde(default = "default_coa_attempts")]
@@ -1124,6 +1142,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
             acct_addr: SocketAddr::new(binds[0], r.acct_port),
             more_binds: binds[1..].to_vec(),
             sockets: radius_sockets(r.sockets).map_err(fail)?,
+            recv_buffer_bytes: radius_recv_buffer(r.recv_buffer_bytes).map_err(fail)?,
             clients: client_table("radius", r.clients, base, chains, Some((r.require_message_authenticator, r.limit_proxy_state)), None, &extension_methods).map_err(fail)?,
             status_server: r.status_server,
             max_auth_inflight: above_zero("radius.max_auth_inflight", r.max_auth_inflight).map_err(fail)?,
@@ -2512,6 +2531,22 @@ mod tests {
         }
         assert_eq!(sockets("sockets = 1"), Ok(1));
         assert!(sockets("sockets = 0").unwrap_err().contains("radius.sockets"));
+    }
+
+    #[test]
+    fn test_radius_recv_buffer_bytes() -> Result<(), String> {
+        let buffer = |line: &str| -> Result<Option<usize>, String> {
+            let config = load_str(&base(&RADIUS_CLIENT.replace("[radius]\n", &format!("[radius]\n{line}\n")))).1.map_err(|e| e.to_string())?;
+            config.radius.map(|radius| radius.recv_buffer_bytes).ok_or_else(|| "no [radius]".to_string())
+        };
+        assert_eq!(buffer("")?, None, "unset keeps the system default");
+        assert_eq!(buffer("recv_buffer_bytes = 4096")?, Some(4096));
+        assert_eq!(buffer("recv_buffer_bytes = 1073741824")?, Some(1073741824));
+        for refused in [0, 4095, 1073741825] {
+            let error = buffer(&format!("recv_buffer_bytes = {refused}")).err().ok_or_else(|| format!("{refused} accepted"))?;
+            assert!(error.contains("radius.recv_buffer_bytes"), "{error}");
+        }
+        Ok(())
     }
 
     #[test]

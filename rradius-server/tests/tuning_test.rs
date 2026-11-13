@@ -39,6 +39,23 @@ fn test_report_from_a_configuration() -> Result<(), String> {
 }
 
 #[test]
+fn test_report_with_recv_buffer_bytes() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    if !text.contains("[radius]\n") {
+        return Err(format!("no [radius] in {text}"));
+    }
+    std::fs::write(&config, text.replacen("[radius]\n", "[radius]\nrecv_buffer_bytes = 2097152\n", 1)).map_err(|e| e.to_string())?;
+    let path = config.to_str().ok_or("path not UTF-8")?;
+    let (code, stdout, stderr) = tuning(&["--config", path])?;
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("Receive buffer of each RADIUS socket ([radius] recv_buffer_bytes)\n  current:   2097152\n"), "{stdout}");
+    assert!(!stdout.contains("rmem_default") && !stdout.contains("recvspace"), "the system default is not used: {stdout}");
+    Ok(())
+}
+
+#[test]
 fn test_unreadable_configuration() -> Result<(), String> {
     let (code, stdout, stderr) = tuning(&["--config", "/nonexistent/missing.toml"])?;
     assert_eq!(code, Some(2));
