@@ -1074,7 +1074,7 @@ rradius-server user show --config /etc/rradius/rradius.toml alice
 | 沒有符合的帳號（`passwd`、`enable`、`disable`、`delete` 改到 0 列，`show` 查無資料） | `no account alice` | 1 |
 | 資料庫拒絕，例如 `add` 已存在的帳號 | 錯誤訊息（stderr） | 1 |
 | 用法、設定、名稱或密碼有誤，沒有送出任何東西 | 錯誤訊息（stderr） | 2 |
-| 連不到叢集，或 10 秒內沒有回應 | 錯誤訊息（stderr） | 3 |
+| 連不到叢集，或 30 秒內沒有回應 | 錯誤訊息（stderr） | 3 |
 
 任何輸出和錯誤訊息都不包含密碼或存放值。
 

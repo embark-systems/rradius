@@ -14,8 +14,11 @@ pub(crate) const STATUS_NO_MATCH: i32 = 1;
 pub(crate) const STATUS_MISTAKE: i32 = 2;
 pub(crate) const STATUS_UNREACHABLE: i32 = 3;
 
-/// How long the cluster has to answer, connecting included.
-const CLUSTER_WAIT: Duration = Duration::from_secs(10);
+/// How long the cluster has to answer, connecting included. Right after the leader stops,
+/// the hiqlite client first tries the old leader and gives up on each connection after 5 s
+/// before it asks for the new one, so 10 s ran out in a drill where the leader's container
+/// was killed; the client only reconnects, it never sends a request twice.
+const CLUSTER_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
