@@ -1698,7 +1698,7 @@ cd rradius-server/fuzz && mkdir -p corpus/radius_packet && cargo +nightly-2026-1
 | `reload failed, keeping the running configuration: ...` | 重新載入失敗，服務維持原狀；修正訊息指出的問題後再送一次 SIGHUP |
 | `these need a restart to apply: ...` | 列出的設定改了但沒有套用，見 2.9 節；重啟前每次重新載入都會列出 |
 | 結尾是 `(N since the last line)` | 未知來源的 RADIUS 封包和 TACACS+ 連線，這些任何人都能觸發，所以每種每秒最多一行。這行只寫當下那一筆的來源，N 是上一行以來的總數，其他來源要看指標或抓封包 |
-| `accepting a connection failed N times` | 通常是檔案描述元用完；程序會自動重試，不必重啟。請調高 `ulimit -n`，或調低 `max_connections`（預設 1024） |
+| `accepting a connection failed N times` | 通常是檔案描述元用完；程序會自動重試，不必重啟。`rradius-server tuning` 會依設定算出建議的上限和設定方式（8.1 節），或調低 `max_connections`（預設 1024） |
 | `auth chain: rejecting a request from client ...` | 名稱處理後是空的，或不符合 `allowed`，見 3.6 節 |
 | `script ... : ...` | 腳本用 `log()` 寫的記錄，不是錯誤 |
 | `RADIUS response attribute error: ...` | 回應屬性的值不符合字典型別，例如 `reply_query` 查到 `2001:db8::1/64` 當前綴。該次認證會被拒絕，即使密碼正確；修正資料表的值 |
@@ -1708,6 +1708,33 @@ cd rradius-server/fuzz && mkdir -p corpus/radius_packet && cargo +nightly-2026-1
 | `rradius_log_dropped_lines_total` 持續增加 | 記錄輸出跟不上或寫入失敗，有記錄遺失；檢查 stderr 接到哪裡，或降低 `level`、關閉 `auth` |
 | TACACS+ 設備登入一直回 ERROR | 同一個會談的封包順序不對、連線上未完成的登入超過 8 個，或登入超過 60 秒 |
 | LDAP 認證全部被拒 | 檢查記錄中 `auth ldap handler:` 開頭的訊息：連線或憑證錯誤、服務帳號登入失敗、搜尋失敗 |
+
+### 8.1 作業系統調校 `tuning`
+
+`rradius-server tuning` 依執行的作業系統（Linux、macOS、FreeBSD）和設定檔，列出該調高哪些系統上限、調到多少、怎麼設定。
+
+```bash
+rradius-server tuning --config /etc/rradius/rradius.toml
+rradius-server tuning            # 讀預設的設定檔；沒有時用預設設定估算
+```
+
+- **只讀取，不修改任何東西。** 不需要 root，不啟動叢集節點、不開任何埠。每一項列出目前值、建議值、原因、立即生效的指令（例如 `sysctl -w`）和重開機後仍保留要寫的檔案，由管理者自己執行。目前值已達建議時標 `ok`，不列指令；讀不到的值標 `unknown` 並寫出原因。
+- **先看有沒有真的丟包。** 報告開頭是開機以來 UDP 因接收緩衝滿而丟棄的數量（Linux `/proc/net/snmp` 的 `RcvbufErrors`，macOS、FreeBSD `netstat -s -p udp`）；Linux 另外列出還沒到 socket 就丟掉的數量（`/proc/net/softnet_stat`）。是 0 時接收緩衝不必調；不是 0 時調整後觀察它是否還在增加。
+- **檢查的項目：**
+
+  | 項目 | Linux | macOS | FreeBSD |
+  | --- | --- | --- | --- |
+  | UDP 接收緩衝（有 `[radius]` 時） | `net.core.rmem_default`、`net.core.rmem_max` | `kern.ipc.maxsockbuf`（要先調）、`net.inet.udp.recvspace` | 同 macOS |
+  | 檔案描述元 | 程序的 `RLIMIT_NOFILE` | 同左，加上 `kern.maxfilesperproc` | 同 macOS |
+  | TCP 等待連線佇列（有 TACACS+ 或 RadSec 時） | `net.core.somaxconn` | `kern.ipc.somaxconn` | `kern.ipc.soacceptqueue` |
+  | 網卡收包佇列 | `net.core.netdev_max_backlog`，只在 softnet 有丟包時建議 | 無 | 無 |
+  | 設定檔 | `[radius] sockets`、`[runtime] pin_threads` | `sockets` 只能是 1 | 同 macOS |
+
+- **Linux 調 `rmem_default`，不是只調 `rmem_max`。** rradius 不設定 `SO_RCVBUF`，每個 socket 拿到的是 `rmem_default`；`rmem_max` 只是程式自己要求時的上限。
+- **建議值怎麼算：** 檔案描述元需求是 256（資料庫檔、記錄、叢集與連線池的估計量）加上 TACACS+ 的 `max_connections`、`read_connections`、每個叢集節點 2 條，以及 rradius-enterprise RadSec 的 2 倍 `max_connections`；建議上限是需求的兩倍，至少 65536。每個 UDP socket 的接收緩衝是 `max_auth_inflight` 平分到 `sockets` 個 socket、每個封包以 4096 位元組計，至少 4 MiB，取整到 MiB。TCP 等待佇列至少 1024，和程式要求的長度相同。
+- **這些建議值沒有經過量測，** 是起點：套用後用上面的丟包數確認。
+- **FreeBSD 不是發行的平台，** 那裡的建議依官方文件寫成、沒有在 FreeBSD 上實測過，報告開頭也會寫明。
+- 有 `--config` 但檔案讀不到或有錯時，以狀態 2 結束並印出原因，和 `--check` 相同。
 
 ## 9. 效能量測
 

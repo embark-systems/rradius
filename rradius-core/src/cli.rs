@@ -135,6 +135,9 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     if args.get(1).is_some_and(|command| command == "schema") {
         std::process::exit(print_schema(program.name, extensions, &args[2..]));
     }
+    if args.get(1).is_some_and(|command| command == "tuning") {
+        std::process::exit(crate::tuning::run(&args[2..], extensions));
+    }
     if args.get(1).is_some_and(|command| command == "user") {
         std::process::exit(accounts::run(&args[2..]).await);
     }
@@ -152,7 +155,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         [_, check] if check == "--check" => std::process::exit(admin::check(default)),
         [_, check, flag, path] | [_, flag, path, check] if check == "--check" && flag == "--config" => std::process::exit(admin::check(path)),
         _ => exit_with(
-            format!("{USAGE}\nusage: rradius-server --version\n{}\n{SCHEMA_USAGE}\n{}", admin::CHECK_USAGE, accounts::USAGE)
+            format!("{USAGE}\nusage: rradius-server --version\n{}\n{SCHEMA_USAGE}\n{}\n{}", admin::CHECK_USAGE, crate::tuning::USAGE, accounts::USAGE)
                 + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()
                 + &format!("\nwithout --config, the configuration is {default}"),
         ),
