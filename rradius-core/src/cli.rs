@@ -30,6 +30,19 @@ pub struct Program {
 const USAGE: &str = "usage: rradius-server server [--config <path>]";
 const SCHEMA_USAGE: &str = "usage: rradius-server schema [--lang en|zh-TW]";
 
+/// The name of the program that runs, once `main` has it.
+static PROGRAM_NAME: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// The name of the program that runs: `rradius-server` until `main` says otherwise.
+pub fn program_name() -> &'static str {
+    PROGRAM_NAME.get().copied().unwrap_or("rradius-server")
+}
+
+/// A usage text of the core, written for `rradius-server`, for the program that runs.
+pub fn named(usage: &str) -> String {
+    usage.replace("rradius-server", program_name())
+}
+
 /// The `schema` command: prints the JSON Schema of the configuration file; the exit status.
 fn print_schema(program: &str, extensions: &crate::extension::Extensions, rest: &[String]) -> i32 {
     write_schema(program, extensions, rest, &mut std::io::stdout().lock(), &mut std::io::stderr().lock())
@@ -44,7 +57,7 @@ fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
         _ => None,
     };
     let Some(lang) = lang else {
-        let _ = writeln!(err, "{SCHEMA_USAGE}");
+        let _ = writeln!(err, "{}", SCHEMA_USAGE.replace("rradius-server", program));
         return 2;
     };
     let text = crate::schema::build_in(program, extensions, lang).and_then(|schema| serde_json::to_string_pretty(&schema).map_err(|e| e.to_string()));
@@ -64,13 +77,13 @@ fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
 /// Every command of the program, one per line, and where the configuration is read from without
 /// `--config`: what no arguments and `help` print, and what a mistake prints.
 fn full_usage(extensions: &crate::extension::Extensions, default: &str) -> String {
-    format!(
+    named(&format!(
         "{USAGE}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}",
         admin::CHECK_USAGE,
         crate::config_tools::USAGE,
         crate::tuning::USAGE,
         accounts::USAGE
-    ) + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()
+    )) + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()
         + &format!("\nwithout --config, the configuration is {default}")
 }
 
@@ -136,6 +149,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     // First of all: SIGHUP ends a process that has no handler. One arriving during
     // startup takes effect once serving begins.
     let mut hangup = signal(SignalKind::hangup())?;
+    let _ = PROGRAM_NAME.set(program.name);
     crate::extension::install(program.extensions)?;
     let extensions = crate::extension::installed();
 
@@ -176,10 +190,10 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         }
         [_, server] if server == "server" => default,
         [_, server, flag, path] if server == "server" && flag == "--config" => path.as_str(),
-        [_, server, ..] if server == "server" => exit_with(USAGE),
+        [_, server, ..] if server == "server" => exit_with(named(USAGE)),
         [_, check] if check == "check" => std::process::exit(admin::check(default)),
         [_, check, flag, path] if check == "check" && flag == "--config" => std::process::exit(admin::check(path)),
-        [_, check, ..] if check == "check" => exit_with(admin::CHECK_USAGE),
+        [_, check, ..] if check == "check" => exit_with(named(admin::CHECK_USAGE)),
         // Starting and checking are subcommands: the old flags say which. With `--check` anywhere
         // the old command only checked, so it is never told to start the server.
         [_, flag, ..] if (flag == "--config" || flag == "--check") && args.iter().any(|arg| arg == "--check") => {
@@ -576,6 +590,10 @@ mod tests {
                 assert!(out.is_empty() && String::from_utf8_lossy(&err).contains(SCHEMA_USAGE), "{args:?}");
             }
         }
+        // The usage names the program that runs.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(write_schema("rradius-enterprise", &extensions, &["extra".to_string()], &mut out, &mut err), 2);
+        assert_eq!(String::from_utf8_lossy(&err), "usage: rradius-enterprise schema [--lang en|zh-TW]\n");
     }
 
     #[test]

@@ -150,17 +150,17 @@ fn report(sent: Option<Result<Option<String>, hiqlite::Error>>, none: &str) -> (
 /// Reads the arguments, the configuration and the password. Nothing is sent yet.
 fn prepare(args: &[String], input: &mut impl BufRead, terminal: bool) -> Result<Prepared, String> {
     let mut args = args.iter();
-    let action = args.next().and_then(|word| Action::parse(word)).ok_or_else(|| USAGE.to_string())?;
+    let action = args.next().and_then(|word| Action::parse(word)).ok_or_else(|| crate::cli::named(USAGE))?;
     let (mut config_path, mut name) = (None, None);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--config" if config_path.is_none() => config_path = Some(args.next().ok_or_else(|| format!("--config needs a value\n{USAGE}"))?),
+            "--config" if config_path.is_none() => config_path = Some(args.next().ok_or_else(|| format!("--config needs a value\n{}", crate::cli::named(USAGE)))?),
             _ if name.is_none() && !arg.starts_with("--") => name = Some(arg.as_str()),
-            _ => return Err(format!("unexpected argument '{arg}'\n{USAGE}")),
+            _ => return Err(format!("unexpected argument '{arg}'\n{}", crate::cli::named(USAGE))),
         }
     }
     let Some(name) = name else {
-        return Err(format!("a name is required\n{USAGE}"));
+        return Err(format!("a name is required\n{}", crate::cli::named(USAGE)));
     };
     let config_path = config_path.map_or(config::default_config_path(), String::as_str);
     let config = config::load(Path::new(config_path)).map_err(|e| e.to_string())?;

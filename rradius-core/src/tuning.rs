@@ -290,7 +290,7 @@ pub fn advise(platform: Platform, readings: &Readings, needs: &Needs) -> Report 
             readings.get(OPEN_FILES),
             open_files,
             why,
-            |value| format!("ulimit -n {value} (in the shell that starts rradius-server)"),
+            |value| format!("ulimit -n {value} (in the shell that starts {})", crate::cli::program_name()),
             |value| format!("the systemd unit: LimitNOFILE={value}, or without systemd /etc/security/limits.conf: <user> soft nofile {value}"),
         ),
         Platform::MacOs => at_least(
@@ -298,7 +298,7 @@ pub fn advise(platform: Platform, readings: &Readings, needs: &Needs) -> Report 
             readings.get(OPEN_FILES),
             open_files,
             why,
-            |value| format!("ulimit -n {value} (in the shell that starts rradius-server)"),
+            |value| format!("ulimit -n {value} (in the shell that starts {})", crate::cli::program_name()),
             |value| format!("the LaunchDaemon plist: SoftResourceLimits and HardResourceLimits NumberOfFiles = {value}"),
         ),
         Platform::FreeBsd => at_least(
@@ -306,7 +306,7 @@ pub fn advise(platform: Platform, readings: &Readings, needs: &Needs) -> Report 
             readings.get(OPEN_FILES),
             open_files,
             why,
-            |value| format!("ulimit -n {value} (in the shell that starts rradius-server)"),
+            |value| format!("ulimit -n {value} (in the shell that starts {})", crate::cli::program_name()),
             |value| format!("/etc/login.conf: :openfiles={value}: in the class of the rradius user, then cap_mkdb /etc/login.conf"),
         ),
     });
@@ -451,7 +451,7 @@ pub fn run(args: &[String], extensions: &Extensions) -> i32 {
         [] => None,
         [flag, path] if flag == "--config" => Some(path.as_str()),
         _ => {
-            eprintln!("{USAGE}");
+            eprintln!("{}", crate::cli::named(USAGE));
             return 2;
         }
     };

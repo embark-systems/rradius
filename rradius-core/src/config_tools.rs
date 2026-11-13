@@ -55,7 +55,7 @@ pub fn run(args: &[String], extensions: &Extensions) -> i32 {
 }
 
 fn usage() -> Result<(String, i32), String> {
-    Err(USAGE.to_string())
+    Err(crate::cli::named(USAGE))
 }
 
 /// What `show` prints for the configuration at `path`.
@@ -114,7 +114,7 @@ fn shown(value: Option<&toml::Value>) -> String {
 
 /// The schema of the configuration, with the sections of `extensions`, and their descriptions.
 fn schema_and_descriptions(extensions: &Extensions) -> Result<(Value, Descriptions), String> {
-    let schema = crate::schema::build("rradius-server", extensions)?;
+    let schema = crate::schema::build(crate::cli::program_name(), extensions)?;
     let (descriptions, _) = crate::schema::descriptions(extensions)?;
     Ok((schema, descriptions))
 }
@@ -342,7 +342,7 @@ pub fn random_secret() -> Result<String, String> {
 /// The starting configuration in `lang`, with `secrets` for the Raft and API secrets and the
 /// example client, in that order.
 pub fn init_text(lang: Lang, extensions: &Extensions, secrets: &[String; 3]) -> Result<String, String> {
-    let schema = crate::schema::build_in("rradius-server", extensions, lang)?;
+    let schema = crate::schema::build_in(crate::cli::program_name(), extensions, lang)?;
     let working: toml::Table = format!(
         "dictionary = \"/usr/share/rradius/dictionary\"\n\
          [lua]\nscript = \"auth.lua\"\n\
