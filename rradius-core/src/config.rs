@@ -146,7 +146,8 @@ impl Default for LogSettings {
 }
 
 /// How an authentication chain combines its handlers' results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, schemars::JsonSchema)]
+// Serialize lets the schema show its default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthPolicy {
     /// The first handler that does not ignore decides.
@@ -676,7 +677,8 @@ struct RawGroupReply {
     attributes: OrderedPairs,
 }
 
-#[derive(Deserialize, Default, schemars::JsonSchema)]
+// Serialize lets the schema show its default.
+#[derive(Deserialize, serde::Serialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum RawPasswordCheck {
     #[default]
