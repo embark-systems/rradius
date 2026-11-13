@@ -1,0 +1,563 @@
+# The descriptions the `schema` command gives the fields of the configuration file, in English
+# (`en`, the default) and Traditional Chinese (`zh-TW`, with `schema --lang zh-TW`).
+#
+# A key is a configuration path: section and field names joined by `.`; the items of an array of
+# tables are not named (`radius.clients.secret`), the values of a map are `*`
+# (`auth.chains.*.policy`). `same_as` maps a prefix to another whose descriptions it shares; a
+# path of its own wins. The top-level keys keep the address of their usage chapter.
+#
+# The tests fail when a field has no description or a path here names no field.
+
+[same_as]
+"auth.chains.*" = "auth"
+"tacacs.clients" = "radius.clients"
+
+# accounts
+
+[fields."accounts.scheme"]
+en = "How `user add` and `user passwd` store passwords: bcrypt, sha512-crypt, nthash or clear."
+zh-TW = "`user add` 與 `user passwd` 存密碼的方式：bcrypt、sha512-crypt、nthash 或 clear。"
+
+[fields."accounts.add"]
+en = "SQL that `user add` runs; ?1 is the account name and ?2 the stored password."
+zh-TW = "`user add` 執行的 SQL；?1 是帳號名稱，?2 是存放用的密碼值。"
+
+[fields."accounts.passwd"]
+en = "SQL that `user passwd` runs; ?1 is the account name and ?2 the stored password."
+zh-TW = "`user passwd` 執行的 SQL；?1 是帳號名稱，?2 是存放用的密碼值。"
+
+[fields."accounts.enable"]
+en = "SQL that `user enable` runs; ?1 is the account name."
+zh-TW = "`user enable` 執行的 SQL；?1 是帳號名稱。"
+
+[fields."accounts.disable"]
+en = "SQL that `user disable` runs; ?1 is the account name. Pair it with a user_query that skips disabled accounts."
+zh-TW = "`user disable` 執行的 SQL；?1 是帳號名稱。要搭配會略過停用帳號的 user_query。"
+
+[fields."accounts.delete"]
+en = "SQL that `user delete` runs; ?1 is the account name."
+zh-TW = "`user delete` 執行的 SQL；?1 是帳號名稱。"
+
+[fields."accounts.show"]
+en = "SQL that `user show` runs and prints as is; ?1 is the account name. Do not select the password."
+zh-TW = "`user show` 執行並原樣印出的 SQL；?1 是帳號名稱。不要選密碼欄。"
+
+# auth
+
+[fields."auth.chains"]
+en = "Named authentication chains, each with the same fields as [auth]; a client picks one with `auth`."
+zh-TW = "具名的認證串接，欄位和 [auth] 相同；client 用 `auth` 指定。"
+
+[fields."auth.policy"]
+en = "How the handlers decide: first_match takes the first that answers, all_accept needs every handler to accept."
+zh-TW = "處理器怎麼決定：first_match 採用第一個有答案的，all_accept 要每個處理器都接受。"
+
+[fields."auth.handlers"]
+en = "The handlers of the chain, tried in order."
+zh-TW = "串接裡的處理器，依序嘗試。"
+
+[fields."auth.handlers.type"]
+en = "Kind of handler: sql, lua or ldap."
+zh-TW = "處理器種類：sql、lua 或 ldap。"
+
+[fields."auth.handlers.user_query"]
+en = "sql: query with exactly one ? for the user name; its first column is the stored password."
+zh-TW = "sql：查使用者的查詢，剛好一個 ?；第一欄是存放的密碼。"
+
+[fields."auth.handlers.certificate_query"]
+en = "sql: query used after an EAP-TLS certificate passes; finding the user accepts it. Without it, user_query is used."
+zh-TW = "sql：EAP-TLS 憑證通過後改用的查詢，查到就接受。沒有設定時用 user_query。"
+
+[fields."auth.handlers.reply_query"]
+en = "sql: query with exactly one ? that returns (attribute, value) pairs for the reply."
+zh-TW = "sql：取得回應屬性的查詢，剛好一個 ?，回傳 (attribute, value) 兩欄。"
+
+[fields."auth.handlers.default_user"]
+en = "sql: account whose password is checked when the user is not found. Anyone who knows it gets in."
+zh-TW = "sql：查無使用者時改用這個帳號的密碼驗證，知道該密碼的人都會通過。"
+
+[fields."auth.handlers.timeout_ms"]
+en = "sql and ldap: how long one lookup may take, in milliseconds."
+zh-TW = "sql 與 ldap：一次查詢的時限，毫秒。"
+
+[fields."auth.handlers.script"]
+en = "lua: the script file of this handler."
+zh-TW = "lua：這個處理器的腳本檔。"
+
+[fields."auth.handlers.verifies_password"]
+en = "lua: the script checks the password itself, so the handler may be the only one in the chain."
+zh-TW = "lua：腳本自己驗證密碼，所以串接可以只有這個處理器。"
+
+[fields."auth.handlers.urls"]
+en = "ldap: server addresses (ldap:// or ldaps://), tried in order."
+zh-TW = "ldap：伺服器位址（ldap:// 或 ldaps://），依序嘗試。"
+
+[fields."auth.handlers.bind_dn"]
+en = "ldap: DN the server binds as to search for users."
+zh-TW = "ldap：搜尋使用者時綁定的 DN。"
+
+[fields."auth.handlers.bind_password"]
+en = "ldap: password for bind_dn; at most one of it and bind_password_file."
+zh-TW = "ldap：bind_dn 的密碼；和 bind_password_file 最多設一個。"
+
+[fields."auth.handlers.bind_password_file"]
+en = "ldap: file holding the password for bind_dn."
+zh-TW = "ldap：存放 bind_dn 密碼的檔案。"
+
+[fields."auth.handlers.base_dn"]
+en = "ldap: where to search for users."
+zh-TW = "ldap：搜尋使用者的起點。"
+
+[fields."auth.handlers.filter"]
+en = "ldap: search filter for the user; {user} is the escaped user name."
+zh-TW = "ldap：找使用者的搜尋條件；{user} 是跳脫過的帳號名稱。"
+
+[fields."auth.handlers.certificate_filter"]
+en = "ldap: search filter used after an EAP-TLS certificate passes; finding the user accepts it."
+zh-TW = "ldap：EAP-TLS 憑證通過後改用的搜尋條件，找到就接受。"
+
+[fields."auth.handlers.password_check"]
+en = "ldap: bind checks the password by binding as the user; attribute compares it with password_attribute."
+zh-TW = "ldap：bind 以使用者身分綁定來驗證密碼；attribute 和 password_attribute 比對。"
+
+[fields."auth.handlers.password_attribute"]
+en = "ldap: attribute that holds the stored password when password_check is attribute."
+zh-TW = "ldap：password_check 為 attribute 時存放密碼的屬性。"
+
+[fields."auth.handlers.reply_attributes"]
+en = "ldap: reply attribute names mapped to the LDAP attributes of the user that give their values."
+zh-TW = "ldap：回應屬性名稱對應到提供其值的使用者 LDAP 屬性。"
+
+[fields."auth.handlers.ca_file"]
+en = "ldap: CA certificates trusted for ldaps:// and StartTLS."
+zh-TW = "ldap：ldaps:// 與 StartTLS 信任的 CA 憑證。"
+
+[fields."auth.handlers.allow_plaintext"]
+en = "ldap: allow ldap:// without StartTLS, which sends passwords in the clear."
+zh-TW = "ldap：允許不用 StartTLS 的 ldap://，密碼會以明文傳送。"
+
+[fields."auth.handlers.pool_size"]
+en = "ldap: connections kept open to the servers."
+zh-TW = "ldap：保持開啟的伺服器連線數。"
+
+[fields."auth.handlers.required_groups"]
+en = "ldap: the user must belong to one of these groups to be accepted."
+zh-TW = "ldap：使用者要屬於其中一個群組才接受。"
+
+[fields."auth.handlers.group_attribute"]
+en = "ldap: user attribute listing the groups, such as memberOf."
+zh-TW = "ldap：列出所屬群組的使用者屬性，例如 memberOf。"
+
+[fields."auth.handlers.group_base_dn"]
+en = "ldap: where to search for groups when group_filter is used."
+zh-TW = "ldap：用 group_filter 時搜尋群組的起點。"
+
+[fields."auth.handlers.group_filter"]
+en = "ldap: search filter for the groups of the user; {dn} is the user's DN."
+zh-TW = "ldap：找使用者所屬群組的搜尋條件；{dn} 是使用者的 DN。"
+
+[fields."auth.handlers.group_reply"]
+en = "ldap: reply attributes added when the user belongs to a group."
+zh-TW = "ldap：屬於某群組時加上的回應屬性。"
+
+[fields."auth.handlers.group_reply.group"]
+en = "The group that adds these attributes."
+zh-TW = "加上這些屬性的群組。"
+
+[fields."auth.handlers.group_reply.attributes"]
+en = "Reply attributes to add, by attribute name."
+zh-TW = "要加上的回應屬性，以屬性名稱為鍵。"
+
+[fields."auth.username"]
+en = "How the user name is normalised before the handlers see it."
+zh-TW = "帳號名稱交給處理器前的正規化方式。"
+
+[fields."auth.username.strip_realm"]
+en = "Realm to remove: none, suffix (@realm), prefix (REALM\\) or both."
+zh-TW = "要去掉的 realm：none、suffix（@realm）、prefix（REALM\\）或 both。"
+
+[fields."auth.username.lowercase"]
+en = "Convert the user name to lower case."
+zh-TW = "帳號名稱轉成小寫。"
+
+[fields."auth.username.allowed"]
+en = "Regular expression the whole normalised name must match; others are rejected."
+zh-TW = "正規化後的名稱要整個符合的正規表示式，不符合就拒絕。"
+
+# cluster
+
+[fields."cluster.node_id"]
+en = "This node's id; it must appear in nodes."
+zh-TW = "這個節點的 id，要在 nodes 裡。"
+
+[fields."cluster.data_dir"]
+en = "Data directory of the database and Raft log."
+zh-TW = "資料庫與 Raft 記錄的資料目錄。"
+
+[fields."cluster.listen"]
+en = "Address the cluster ports listen on; 127.0.0.1 without nodes, 0.0.0.0 with them."
+zh-TW = "叢集埠監聽的位址；沒有 nodes 時是 127.0.0.1，有時是 0.0.0.0。"
+
+[fields."cluster.nodes"]
+en = "Every node of the cluster, this one included."
+zh-TW = "叢集的每個節點，包含這一台。"
+
+[fields."cluster.nodes.id"]
+en = "Node id, 1 or more."
+zh-TW = "節點 id，至少 1。"
+
+[fields."cluster.nodes.raft"]
+en = "host:port of the node's Raft port."
+zh-TW = "節點 Raft 埠的 host:port。"
+
+[fields."cluster.nodes.api"]
+en = "host:port of the node's API port."
+zh-TW = "節點 API 埠的 host:port。"
+
+[fields."cluster.secret_raft"]
+en = "Shared secret of the Raft port, at least 16 characters; at most one of it and secret_raft_file."
+zh-TW = "Raft 埠的共用密碼，至少 16 個字元；和 secret_raft_file 最多設一個。"
+
+[fields."cluster.secret_raft_file"]
+en = "File holding the Raft secret."
+zh-TW = "存放 Raft 密碼的檔案。"
+
+[fields."cluster.secret_api"]
+en = "Shared secret of the API port, at least 16 characters; at most one of it and secret_api_file."
+zh-TW = "API 埠的共用密碼，至少 16 個字元；和 secret_api_file 最多設一個。"
+
+[fields."cluster.secret_api_file"]
+en = "File holding the API secret."
+zh-TW = "存放 API 密碼的檔案。"
+
+[fields."cluster.migrations_dir"]
+en = "Directory of SQL files applied in order at start."
+zh-TW = "啟動時依序套用的 SQL 檔目錄。"
+
+[fields."cluster.migrations_wait_ms"]
+en = "How long start-up waits for the cluster, for applying files and for catching up, each in milliseconds."
+zh-TW = "啟動時等叢集就緒、套用檔案、追上進度的時限，各自計時，毫秒。"
+
+[fields."cluster.stop_without_leader_ms"]
+en = "Stop answering logins after this long without a leader, in milliseconds; unset keeps answering."
+zh-TW = "沒有 leader 超過這段時間就不回應登入，毫秒；不設就繼續回應。"
+
+[fields."cluster.snapshot_every"]
+en = "Raft log entries between snapshots."
+zh-TW = "兩次快照之間的 Raft 記錄筆數。"
+
+[fields."cluster.read_connections"]
+en = "Connections that read the local database, 1 to 128; default twice the worker threads, at most 32."
+zh-TW = "讀本機資料庫的連線數，1 到 128；預設是工作執行緒數的兩倍，最多 32。"
+
+# log
+
+[fields."log.level"]
+en = "Lowest level written: error, warn, info or debug."
+zh-TW = "寫出的最低等級：error、warn、info 或 debug。"
+
+[fields."log.format"]
+en = "Log line format: text or json."
+zh-TW = "記錄格式：text 或 json。"
+
+[fields."log.auth"]
+en = "Write one record per authentication."
+zh-TW = "每次認證寫一筆認證紀錄。"
+
+[fields."log.trace"]
+en = "Log the requests of some users or clients in detail for a while."
+zh-TW = "在一段時間內詳細記錄部分使用者或 client 的請求。"
+
+[fields."log.trace.users"]
+en = "User-Name values to trace, matched exactly."
+zh-TW = "要追蹤的 User-Name，完全相同才算。"
+
+[fields."log.trace.clients"]
+en = "Client names to trace."
+zh-TW = "要追蹤的 client 名稱。"
+
+[fields."log.trace.minutes"]
+en = "How long tracing lasts, 1 to 1440 minutes."
+zh-TW = "追蹤持續的時間，1 到 1440 分鐘。"
+
+# lua
+
+[fields."lua.script"]
+en = "Top-level script run for every request."
+zh-TW = "每個請求都執行的最上層腳本。"
+
+[fields."lua.max_execution_ms"]
+en = "Run time a script may use per request, in milliseconds."
+zh-TW = "腳本每個請求可執行的時間，毫秒。"
+
+[fields."lua.max_memory_mb"]
+en = "Memory limit of each Lua VM, in MiB; changing it needs a restart."
+zh-TW = "每個 Lua VM 的記憶體上限，MiB；改了要重啟。"
+
+[fields."lua.query_timeout_ms"]
+en = "Total database wait a script may use per request, in milliseconds."
+zh-TW = "腳本每個請求等待資料庫的總時間，毫秒。"
+
+[fields."lua.http"]
+en = "Lets scripts call allowed HTTP APIs with http_request."
+zh-TW = "讓腳本用 http_request 呼叫白名單上的 HTTP API。"
+
+[fields."lua.http.allowed_hosts"]
+en = "Hosts scripts may call: host, host:port, or http:// URL for plain HTTP."
+zh-TW = "腳本可以呼叫的主機：host、host:port，或明文 HTTP 的 http:// 網址。"
+
+[fields."lua.http.timeout_ms"]
+en = "Time limit of one call, from connecting to reading the response, in milliseconds."
+zh-TW = "一次呼叫從連線到讀完回應的時限，毫秒。"
+
+[fields."lua.http.max_response_bytes"]
+en = "Largest response body accepted, in bytes."
+zh-TW = "接受的回應內容上限，位元組。"
+
+[fields."lua.http.max_concurrent"]
+en = "Calls in progress at once per host."
+zh-TW = "每台主機同時進行的呼叫數。"
+
+[fields."lua.http.ca_file"]
+en = "CA certificates trusted besides the system roots."
+zh-TW = "系統根憑證之外信任的 CA 憑證。"
+
+# metrics
+
+[fields."metrics.bind"]
+en = "Address of the Prometheus metrics endpoint."
+zh-TW = "Prometheus 指標端點的位址。"
+
+[fields."metrics.port"]
+en = "Port of the Prometheus metrics endpoint."
+zh-TW = "Prometheus 指標端點的埠。"
+
+# runtime
+
+[fields."runtime.pin_threads"]
+en = "Pin each worker thread to one CPU; Linux only."
+zh-TW = "把工作執行緒各綁在一顆 CPU 上；只在 Linux。"
+
+# radius
+
+[fields."radius.bind"]
+en = "Address or list of addresses the RADIUS ports listen on."
+zh-TW = "RADIUS 埠監聽的位址，可以是一個或一串。"
+
+[fields."radius.auth_port"]
+en = "Authentication port."
+zh-TW = "認證埠。"
+
+[fields."radius.acct_port"]
+en = "Accounting port."
+zh-TW = "計費埠。"
+
+[fields."radius.sockets"]
+en = "Receive sockets per address and port; Linux defaults to the worker threads, other systems allow only 1."
+zh-TW = "每個位址與埠的接收 socket 數；Linux 預設等於工作執行緒數，其他平台只能 1。"
+
+[fields."radius.max_auth_inflight"]
+en = "Authentication requests handled at once; more are dropped."
+zh-TW = "同時處理的認證請求數，超過的丟棄。"
+
+[fields."radius.max_acct_inflight"]
+en = "Accounting requests handled at once; more are dropped."
+zh-TW = "同時處理的計費請求數，超過的丟棄。"
+
+[fields."radius.require_message_authenticator"]
+en = "Require Message-Authenticator in Access-Request: yes, no or auto (learnt per client)."
+zh-TW = "Access-Request 是否要有 Message-Authenticator：yes、no 或 auto（每個 client 自己學）。"
+
+[fields."radius.limit_proxy_state"]
+en = "Drop Access-Request with Proxy-State but no Message-Authenticator: yes, no or auto."
+zh-TW = "丟棄帶 Proxy-State 但沒有 Message-Authenticator 的 Access-Request：yes、no 或 auto。"
+
+[fields."radius.status_server"]
+en = "Answer Status-Server requests."
+zh-TW = "回應 Status-Server 請求。"
+
+[fields."radius.coa_timeout_ms"]
+en = "How long each CoA or Disconnect attempt waits for an answer, in milliseconds."
+zh-TW = "每次 CoA 或 Disconnect 嘗試等待回應的時間，毫秒。"
+
+[fields."radius.coa_attempts"]
+en = "CoA or Disconnect attempts, the first included."
+zh-TW = "CoA 或 Disconnect 的嘗試次數，含第一次。"
+
+[fields."radius.clients"]
+en = "The RADIUS clients (NAS) allowed to send requests."
+zh-TW = "允許送請求的 RADIUS client（NAS）。"
+
+[fields."radius.clients.name"]
+en = "Client name used in logs and metrics; defaults to the address."
+zh-TW = "記錄與指標用的 client 名稱；預設是位址。"
+
+[fields."radius.clients.address"]
+en = "IP address or CIDR network of the client."
+zh-TW = "client 的 IP 位址或 CIDR 網段。"
+
+[fields."radius.clients.secret"]
+en = "Shared secret; at most one of it and secret_file."
+zh-TW = "共用密碼；和 secret_file 最多設一個。"
+
+[fields."radius.clients.secret_file"]
+en = "File holding the shared secret."
+zh-TW = "存放共用密碼的檔案。"
+
+[fields."radius.clients.auth"]
+en = "Named chain in auth.chains that this client's logins use."
+zh-TW = "這個 client 的登入使用的具名串接（auth.chains）。"
+
+[fields."radius.clients.authorize_group"]
+en = "TACACS+ only: group in tacacs.authorize_groups whose rules authorise this device."
+zh-TW = "只用於 TACACS+：用 tacacs.authorize_groups 裡哪個群組的規則授權這台設備。"
+
+[fields."radius.clients.eap_methods"]
+en = "EAP methods offered to this client, in order: tls, peap or ttls."
+zh-TW = "提供給這個 client 的 EAP 方法，依序：tls、peap 或 ttls。"
+
+[fields."radius.clients.require_message_authenticator"]
+en = "Overrides the [radius] setting for this client: yes, no or auto."
+zh-TW = "覆寫這個 client 的 [radius] 設定：yes、no 或 auto。"
+
+[fields."radius.clients.limit_proxy_state"]
+en = "Overrides the [radius] setting for this client: yes, no or auto."
+zh-TW = "覆寫這個 client 的 [radius] 設定：yes、no 或 auto。"
+
+[fields."radius.clients.coa_port"]
+en = "Port CoA and Disconnect requests are sent to on this client."
+zh-TW = "送 CoA 和 Disconnect 給這個 client 時用的埠。"
+
+[fields."radius.clients.mfa"]
+en = "Second factor for this client: challenge asks for the code, append expects it after the password. Needs the enterprise edition."
+zh-TW = "這個 client 的第二步驗證：challenge 另外詢問驗證碼，append 要附在密碼後面。需要企業版。"
+
+[fields."radius.clients.tls_name"]
+en = "RadSec: the client's certificate must be valid for this DNS name. Needs the enterprise edition."
+zh-TW = "RadSec：client 的憑證要對這個 DNS 名稱有效。需要企業版。"
+
+[fields."radius.clients.coa_sender"]
+en = "RadSec: forward CoA and Disconnect requests this client sends. Needs the enterprise edition."
+zh-TW = "RadSec：轉送這個 client 送來的 CoA 與 Disconnect 請求。需要企業版。"
+
+[fields."radius.clients.max_radsec_connections"]
+en = "RadSec: connections this client may have open at once. Needs the enterprise edition."
+zh-TW = "RadSec：這個 client 同時可開的連線數。需要企業版。"
+
+[fields."radius.accounting_spool"]
+en = "Keeps accounting on disk while the database cannot take it, and replays it later."
+zh-TW = "資料庫無法寫入時先把計費存在磁碟，之後再補寫。"
+
+[fields."radius.accounting_spool.dir"]
+en = "Spool directory, relative to the configuration file."
+zh-TW = "暫存目錄，相對於設定檔。"
+
+[fields."radius.accounting_spool.max_bytes"]
+en = "Largest size of the spool, in bytes."
+zh-TW = "暫存大小上限，位元組。"
+
+[fields."radius.accounting_spool.replay_interval_ms"]
+en = "Wait before replaying again after a database failure, in milliseconds."
+zh-TW = "資料庫失敗後再次補寫前的等待，毫秒。"
+
+[fields."radius.accounting_spool.replay_window"]
+en = "Spooled records replayed at once, 1 to 1024."
+zh-TW = "同時補寫的暫存筆數，1 到 1024。"
+
+[fields."radius.eap"]
+en = "EAP settings: certificates, methods and session limits."
+zh-TW = "EAP 設定：憑證、方法與對話上限。"
+
+[fields."radius.eap.methods"]
+en = "EAP methods offered: tls, peap or ttls."
+zh-TW = "提供的 EAP 方法：tls、peap 或 ttls。"
+
+[fields."radius.eap.cert_file"]
+en = "Server certificate chain, PEM."
+zh-TW = "伺服器憑證鏈，PEM。"
+
+[fields."radius.eap.key_file"]
+en = "Private key of the server certificate, PEM."
+zh-TW = "伺服器憑證的私鑰，PEM。"
+
+[fields."radius.eap.client_ca_file"]
+en = "CA certificates that sign client certificates; required with tls."
+zh-TW = "簽發用戶端憑證的 CA；使用 tls 時必填。"
+
+[fields."radius.eap.crl_file"]
+en = "Certificate revocation lists for client certificates; tls only."
+zh-TW = "用戶端憑證的撤銷清單；只用於 tls。"
+
+[fields."radius.eap.fragment_size"]
+en = "Largest EAP fragment, 256 to 1400 bytes."
+zh-TW = "EAP 分段的上限，256 到 1400 位元組。"
+
+[fields."radius.eap.session_timeout_ms"]
+en = "How long an unfinished EAP conversation is kept, in milliseconds."
+zh-TW = "未完成的 EAP 對話保留多久，毫秒。"
+
+[fields."radius.eap.max_sessions"]
+en = "Unfinished EAP conversations kept in all."
+zh-TW = "總共保留的未完成 EAP 對話數。"
+
+[fields."radius.eap.max_sessions_per_client"]
+en = "Unfinished EAP conversations kept per client."
+zh-TW = "每個 client 保留的未完成 EAP 對話數。"
+
+[fields."radius.eap.max_sessions_per_device"]
+en = "Unfinished EAP conversations kept per device (Calling-Station-Id)."
+zh-TW = "每台裝置（Calling-Station-Id）保留的未完成 EAP 對話數。"
+
+[fields."radius.eap.match_identity"]
+en = "EAP-TLS: the certificate must name the user given in the EAP identity."
+zh-TW = "EAP-TLS：憑證要對應 EAP 身分裡的使用者。"
+
+[fields."radius.eap.resumption_ms"]
+en = "How long EAP-TLS and PEAP sessions can be resumed, in milliseconds; 0 turns it off. Needs the enterprise edition."
+zh-TW = "EAP-TLS 與 PEAP 的 session 可恢復的時間，毫秒；0 為關閉。需要企業版。"
+
+[fields."radius.eap.shared_tickets"]
+en = "Resume on any node with session tickets whose keys the cluster rotates. Needs the enterprise edition."
+zh-TW = "以叢集輪替金鑰的 session ticket 在任何節點恢復。需要企業版。"
+
+[fields."radius.eap.ticket_seal_file"]
+en = "File with the 64 hex character key that seals the ticket keys; the same on every node."
+zh-TW = "加密 ticket 金鑰的 64 個 hex 字元金鑰檔，每個節點都相同。"
+
+[fields."radius.eap.previous_ticket_seal_file"]
+en = "The former ticket_seal_file while changing it; used only to open older keys."
+zh-TW = "換檔期間的舊 ticket_seal_file，只用來解開舊的金鑰。"
+
+# tacacs
+
+[fields."tacacs.bind"]
+en = "Address the TACACS+ port listens on."
+zh-TW = "TACACS+ 埠監聽的位址。"
+
+[fields."tacacs.port"]
+en = "TACACS+ port."
+zh-TW = "TACACS+ 埠。"
+
+[fields."tacacs.max_connections"]
+en = "Connections open at once; more are closed at once."
+zh-TW = "同時開啟的連線數，超過的立刻關閉。"
+
+[fields."tacacs.idle_timeout_ms"]
+en = "Close a connection that sends no whole packet for this long, in milliseconds."
+zh-TW = "這段時間內沒有收到完整封包就關閉連線，毫秒。"
+
+[fields."tacacs.max_body_len"]
+en = "Largest packet body, in bytes; a larger one closes the connection."
+zh-TW = "封包內容上限，位元組；超過就關閉連線。"
+
+[fields."tacacs.enable"]
+en = "How enable is checked: deny refuses it, login checks the login password."
+zh-TW = "enable 怎麼驗證：deny 一律拒絕，login 用登入密碼驗證。"
+
+[fields."tacacs.clients"]
+en = "The TACACS+ clients (devices) allowed to connect."
+zh-TW = "允許連線的 TACACS+ client（設備）。"
+
+[fields."tacacs.authorize_groups"]
+en = "Named lists of permit and deny rules that authorise commands and services."
+zh-TW = "具名的 permit、deny 規則清單，用來授權指令和服務。"

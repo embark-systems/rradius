@@ -28,7 +28,7 @@ pub struct Program {
 }
 
 const USAGE: &str = "usage: rradius-server [--config <path>]";
-const SCHEMA_USAGE: &str = "usage: rradius-server schema";
+const SCHEMA_USAGE: &str = "usage: rradius-server schema [--lang en|zh-TW]";
 
 /// The `schema` command: prints the JSON Schema of the configuration file; the exit status.
 fn print_schema(program: &str, extensions: &crate::extension::Extensions, rest: &[String]) -> i32 {
@@ -38,11 +38,16 @@ fn print_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
 /// Writes what the `schema` command prints to `out` and `err`. A failed write, such as a
 /// closed pipe after `| head`, ends it with status 1 instead of a panic.
 fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: &[String], out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
-    if !rest.is_empty() {
+    let lang = match rest {
+        [] => Some(crate::schema::Lang::En),
+        [flag, name] if flag == "--lang" => crate::schema::Lang::parse(name),
+        _ => None,
+    };
+    let Some(lang) = lang else {
         let _ = writeln!(err, "{SCHEMA_USAGE}");
         return 2;
-    }
-    let text = crate::schema::build(program, extensions).and_then(|schema| serde_json::to_string_pretty(&schema).map_err(|e| e.to_string()));
+    };
+    let text = crate::schema::build_in(program, extensions, lang).and_then(|schema| serde_json::to_string_pretty(&schema).map_err(|e| e.to_string()));
     let written = match text {
         Ok(text) => writeln!(out, "{text}").and_then(|()| out.flush()).map_err(|e| e.to_string()),
         Err(e) => Err(e),
@@ -525,6 +530,20 @@ mod tests {
         let message = String::from_utf8_lossy(&err);
         assert!(message.starts_with("schema: extension misplaced: `nowhere.section`"), "{message}");
         Ok(())
+    }
+
+    /// `--lang en` and `--lang zh-TW` print the schema; another language or argument the usage.
+    #[test]
+    fn test_schema_languages() {
+        let extensions = crate::extensions::builtin();
+        for (args, status) in [(&["--lang", "en"][..], 0), (&["--lang", "zh-TW"][..], 0), (&["--lang", "fr"][..], 2), (&["--lang"][..], 2), (&["extra"][..], 2)] {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            assert_eq!(write_schema("rradius-server", &extensions, &args, &mut out, &mut err), status, "{args:?}");
+            if status == 2 {
+                assert!(out.is_empty() && String::from_utf8_lossy(&err).contains(SCHEMA_USAGE), "{args:?}");
+            }
+        }
     }
 
     #[test]

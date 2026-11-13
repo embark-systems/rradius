@@ -268,6 +268,12 @@ pub trait Extension: Send + Sync {
         Vec::new()
     }
 
+    /// The descriptions of the fields of its sections, in the TOML form of the core's
+    /// `schema_descriptions.toml`, which the `schema` command adds to their properties.
+    fn schema_descriptions(&self) -> &'static str {
+        ""
+    }
+
     /// Reads its sections: those of `sections` the file has; `base` is the
     /// directory of the file, `extensions` those of the program, for the revocation check of a
     /// TLS section. What it returns goes into `ServerConfig`: settings of its own, and settings of
