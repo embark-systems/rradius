@@ -7,6 +7,7 @@ pub mod auth_chain;
 pub mod cli;
 pub mod client_source;
 pub mod clients;
+pub mod cluster_commands;
 pub mod common;
 pub mod config;
 pub mod dictionary;
