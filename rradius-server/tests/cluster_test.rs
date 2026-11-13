@@ -780,6 +780,58 @@ fn voters_and_leader(stdout: &str) -> (Vec<u64>, Option<u64>) {
     (voters, leader)
 }
 
+/// Ports of up to `n` nodes started from `node<i>.toml` in one directory.
+struct Ports {
+    raft: Vec<u16>,
+    api: Vec<u16>,
+    auth: Vec<u16>,
+    acct: Vec<u16>,
+}
+
+impl Ports {
+    fn new(n: usize) -> Self {
+        let ports = || (0..n).map(|_| free_port()).collect::<Vec<u16>>();
+        Self { raft: ports(), api: ports(), auth: ports(), acct: ports() }
+    }
+
+    /// The configuration of node `i + 1`, listing the nodes `listed` (indexes) in that order.
+    fn config(&self, i: usize, listed: &[usize]) -> String {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let nodes: String = listed.iter().map(|n| format!("[[cluster.nodes]]\nid = {}\nraft = \"127.0.0.1:{}\"\napi = \"127.0.0.1:{}\"\n", n + 1, self.raft[*n], self.api[*n])).collect();
+        format!(
+            "dictionary = \"{dictionary}\"\n[lua]\nscript = \"{script}\"\nquery_timeout_ms = 500\n\
+             [cluster]\nnode_id = {id}\ndata_dir = \"data{id}\"\nlisten = \"127.0.0.1\"\n\
+             secret_raft = \"cluster-raft-secret-01\"\nsecret_api = \"{API_SECRET}\"\n{nodes}\
+             [radius]\nbind = \"127.0.0.1\"\nauth_port = {auth}\nacct_port = {acct}\n\
+             [[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"cluster-secret\"\n",
+            dictionary = root.join("../share/dictionary").display(),
+            script = root.join("tests/fixtures/cluster.lua").display(),
+            id = i + 1,
+            auth = self.auth[i],
+            acct = self.acct[i],
+        )
+    }
+}
+
+const API_SECRET: &str = "cluster-api-secret-012";
+
+/// Removes node `node` through the management API of the node at `api`, the way an operator
+/// could by hand, without the command's checks: the HTTP status line.
+fn remove_by_hand(api: u16, node: u64) -> Result<String, String> {
+    use std::io::{Read, Write};
+    let body = format!("{{\"node_id\":{node},\"stay_as_learner\":false}}");
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", api)).map_err(|e| e.to_string())?;
+    stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
+    let request = format!(
+        "DELETE /cluster/membership/sqlite HTTP/1.1\r\nHost: localhost\r\nX-API-SECRET: {API_SECRET}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
+    Ok(response.lines().next().unwrap_or_default().to_string())
+}
+
 /// Grows a running three-node cluster to four and shrinks it to two with `cluster members` and
 /// `cluster remove`, as chapter 7 of the manual says: a node joins on its own, and is removed
 /// only once it is stopped.
@@ -787,27 +839,9 @@ fn voters_and_leader(stdout: &str) -> (Vec<u64>, Option<u64>) {
 fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {
     let started = Instant::now();
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let ports = |n: usize| (0..n).map(|_| free_port()).collect::<Vec<u16>>();
-    let (raft, api, auth, acct) = (ports(4), ports(4), ports(4), ports(4));
-    let listing = |ids: &[usize]| -> String {
-        ids.iter().map(|i| format!("[[cluster.nodes]]\nid = {}\nraft = \"127.0.0.1:{}\"\napi = \"127.0.0.1:{}\"\n", i + 1, raft[*i], api[*i])).collect()
-    };
-    let config = |i: usize, listed: &[usize]| -> String {
-        format!(
-            "dictionary = \"{dictionary}\"\n[lua]\nscript = \"{script}\"\nquery_timeout_ms = 500\n\
-             [cluster]\nnode_id = {id}\ndata_dir = \"data{id}\"\nlisten = \"127.0.0.1\"\n\
-             secret_raft = \"cluster-raft-secret-01\"\nsecret_api = \"cluster-api-secret-012\"\n{nodes}\
-             [radius]\nbind = \"127.0.0.1\"\nauth_port = {auth}\nacct_port = {acct}\n\
-             [[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"cluster-secret\"\n",
-            dictionary = root.join("../share/dictionary").display(),
-            script = root.join("tests/fixtures/cluster.lua").display(),
-            id = i + 1,
-            nodes = listing(listed),
-            auth = auth[i],
-            acct = acct[i],
-        )
-    };
+    let ports = Ports::new(4);
+    let (auth, acct) = (&ports.auth, &ports.acct);
+    let config = |i: usize, listed: &[usize]| ports.config(i, listed);
     let write = |name: &str, text: String| std::fs::write(dir.path().join(name), text).map_err(|e| e.to_string());
     let path = |name: &str| dir.path().join(name).display().to_string();
 
@@ -828,6 +862,17 @@ fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {
     nodes.start(3, dir.path()).map_err(|e| format!("node 4: {e}"))?;
     let seen = eventually(Duration::from_secs(60), || send(auth[3], &access_request(3, "lookup"), Duration::from_secs(2)).map(|r| r.code) == Some(radius::ACCESS_ACCEPT));
     assert!(seen, "node 4 did not answer from what was written before it joined");
+    // What is written after it joined reaches it too.
+    let later = RadiusPacket::create_accounting_request(4, vec![(40, vec![0, 0, 0, 1]), (44, b"later-from-node-2".to_vec())], SECRET);
+    let written = eventually(Duration::from_secs(5), || send(acct[0], &later, Duration::from_secs(2)).map(|r| r.code) == Some(radius::ACCOUNTING_RESPONSE));
+    assert!(written, "the later session was not written");
+    let seen = eventually(Duration::from_secs(10), || send(auth[3], &access_request(5, "lookup-later"), Duration::from_secs(2)).map(|r| r.code) == Some(radius::ACCESS_ACCEPT));
+    assert!(seen, "node 4 did not see what was written after it joined");
+    // Node 2, whose configuration does not list node 4, restarts with its data and comes back.
+    nodes.kill(1);
+    nodes.start(1, dir.path()).map_err(|e| format!("node 2: {e}"))?;
+    let back = eventually(Duration::from_secs(60), || send(auth[1], &access_request(6, "lookup-later"), Duration::from_secs(2)).map(|r| r.code) == Some(radius::ACCESS_ACCEPT));
+    assert!(back, "node 2 did not come back with a configuration that does not list node 4");
     let mut members = (None, String::new(), String::new());
     let four = eventually(Duration::from_secs(30), || {
         members = cluster_command(&["members", "--config", &path("node1.toml")]).unwrap_or_default();
@@ -846,6 +891,7 @@ fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {
     let refused = cluster_command(&["remove", "--config", &path("node1.toml"), "4"])?;
     assert_eq!(refused.0, Some(2), "{refused:?}");
     assert!(refused.2.contains("node 4 still answers") && refused.1.is_empty(), "{refused:?}");
+    assert_eq!(voters_and_leader(&cluster_command(&["members", "--config", &path("node1.toml")])?.1).0, [1, 2, 3, 4], "a refused removal changed the members");
 
     // Stopped, it is removed, through a configuration that names a follower first.
     nodes.kill(3);
@@ -860,6 +906,7 @@ fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {
 
     let unknown = cluster_command(&["remove", "--config", &path("node1.toml"), "9"])?;
     assert_eq!(unknown, (Some(1), "no node 9 in the cluster".to_string(), String::new()));
+    assert_eq!(voters_and_leader(&cluster_command(&["members", "--config", &path("node1.toml")])?.1).0, [1, 2, 3]);
 
     // Down to two voters only with --force, removing a stopped follower.
     let gone = [3u64, 2].into_iter().find(|id| *id != leader).unwrap_or(3);
@@ -868,6 +915,7 @@ fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {
     let refused = cluster_command(&["remove", "--config", &config_of_staying, &gone.to_string()])?;
     assert_eq!(refused.0, Some(2), "{refused:?}");
     assert!(refused.2.contains("two voters") && refused.2.contains("--force"), "{refused:?}");
+    assert_eq!(voters_and_leader(&cluster_command(&["members", "--config", &config_of_staying])?.1).0.len(), 3, "a refused removal changed the members");
     let forced = cluster_command(&["remove", "--force", "--config", &config_of_staying, &gone.to_string()])?;
     assert_eq!(forced, (Some(0), format!("removed node {gone}"), String::new()));
     let left = cluster_command(&["members", "--config", &config_of_staying])?;
@@ -877,5 +925,49 @@ fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {
 
     drop(nodes);
     assert!(started.elapsed() < Duration::from_secs(120), "the test took {:?}", started.elapsed());
+    Ok(())
+}
+
+/// A node removed by hand that still runs sees no leader. Listed first in a configuration, it
+/// is passed over: `cluster members` lists what the leader has, long before its time limit.
+#[test]
+fn test_members_passes_over_a_removed_node_still_running() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let ports = Ports::new(3);
+    let mut nodes = Nodes(vec![None, None, None], (1..=3).map(|n| dir.path().join(format!("node{n}.log"))).collect());
+    for i in 0..3 {
+        std::fs::write(dir.path().join(format!("node{}.toml", i + 1)), ports.config(i, &[0, 1, 2])).map_err(|e| e.to_string())?;
+        nodes.start(i, dir.path()).map_err(|e| format!("node {}: {e}", i + 1))?;
+    }
+    let path = |name: &str| dir.path().join(name).display().to_string();
+    let mut members = (None, String::new(), String::new());
+    let up = eventually(Duration::from_secs(60), || {
+        members = cluster_command(&["members", "--config", &path("node1.toml")]).unwrap_or_default();
+        voters_and_leader(&members.1).0.len() == 3 && voters_and_leader(&members.1).1.is_some()
+    });
+    assert!(up, "{members:?}");
+    let leader = voters_and_leader(&members.1).1.ok_or("no leader")?;
+    let removed = [1u64, 2, 3].into_iter().find(|id| *id != leader).ok_or("no follower")?;
+    let status = remove_by_hand(ports.api[(leader - 1) as usize], removed)?;
+    assert!(status.contains(" 200 "), "{status}");
+
+    // The removed node still runs, and comes first in the configuration used.
+    let kept = [1u64, 2, 3].into_iter().find(|id| *id != removed).ok_or("no kept node")?;
+    let mut order = vec![(removed - 1) as usize];
+    order.extend((0..3).filter(|i| *i as u64 + 1 != removed));
+    std::fs::write(dir.path().join("removed-first.toml"), ports.config((kept - 1) as usize, &order)).map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    let mut listed = (None, String::new(), String::new());
+    let shown = eventually(Duration::from_secs(20), || {
+        listed = cluster_command(&["members", "--config", &path("removed-first.toml")]).unwrap_or_default();
+        listed.1.contains(&format!("node {removed}  not in the cluster (listed in this configuration)"))
+    });
+    assert!(shown, "{listed:?}");
+    assert_eq!(listed.0, Some(0), "{listed:?}");
+    let remaining: Vec<u64> = [1u64, 2, 3].into_iter().filter(|id| *id != removed).collect();
+    assert_eq!(voters_and_leader(&listed.1), (remaining, Some(leader)), "{listed:?}");
+    assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+    let still_running = nodes.0[(removed - 1) as usize].as_mut().map(|child| matches!(child.try_wait(), Ok(None)));
+    assert_eq!(still_running, Some(true), "the removed node stopped");
     Ok(())
 }
