@@ -151,7 +151,7 @@ api = "10.99.0.1:8200"
 
 主機壞掉、資料救不回來時，換一台新主機頂替它：
 
-1. 新主機用**同一個 `node_id`**、同樣的位址（`[[cluster.nodes]]` 裡它的 `raft`、`api`），設定檔、`raft.secret`、`api.secret`、`migrations/` 和其他台相同。
+1. 新主機用**同一個 `node_id`**、同樣的位址（`[[cluster.nodes]]` 裡它的 `raft`、`api`），設定檔、`raft.secret`、`api.secret`、`migrations/` 和其他台相同。增減過節點時，`[[cluster.nodes]]` 要列出目前所有成員，見〈增加節點〉。
 2. `data/` 是空的。舊主機的資料還在但不能信任時，整個刪掉再啟動。
 3. 啟動。它從其他節點取得整份資料，記錄出現 `cluster node N has caught up with the cluster` 後才開始回應。
 4. 確認：`/metrics` 的 `rradius_cluster_applied_index` 和其他台相同，`rradius_cluster_leader` 是 1；用一個它停機期間新增的帳號在它上面登入一次。
@@ -166,7 +166,7 @@ api = "10.99.0.1:8200"
 
 叢集在執行中就能加一台，其他節點不必停：
 
-1. 新主機用一個沒用過的 `node_id`，設定檔的 `[[cluster.nodes]]` 列出**所有節點，包含它自己**；`raft.secret`、`api.secret`、`migrations/` 和其他台相同。
+1. 新主機用一個沒用過的 `node_id`，設定檔的 `[[cluster.nodes]]` 列出**目前所有成員，包含它自己**（用 `cluster members` 看現在有誰）；`raft.secret`、`api.secret`、`migrations/` 和其他台相同。
 2. `data/` 是空的，啟動。它會自己向叢集申請加入，先複製資料，再成為投票成員，記錄出現 `cluster node N has caught up with the cluster` 後才開始回應。
 3. 確認：`rradius-server cluster members --config /etc/rradius/rradius.toml` 列出它是 `voter`；用一個既有帳號在它上面登入一次。
 4. 把它加進其他每台的 `[[cluster.nodes]]`（還有 WireGuard 的 peer 和防火牆，見 [usage 2.2 節](../usage.md#22-cluster)），之後重啟時生效。不急著改：其他節點不改設定也能照常運作和重啟，但 `user`、`cluster` 這些指令只問設定裡列的節點。
@@ -180,6 +180,9 @@ node 4  voter            raft 10.0.0.4:8100  api 10.0.0.4:8200  (not in this con
 ```
 
 `(not in this configuration)` 表示這份設定還沒列它，提醒你做第 4 步。
+
+- **空資料加入的節點一定要列出現在的 leader。** 它只向自己設定裡列的節點申請加入，其他節點只會叫它去找 leader；leader 不在它的清單裡就加不進去。實測的設定有 `migrations_dir`，它等到 `migrations_wait_ms` 後結束（記錄 `did not join within`），被 Docker 自動重啟後一直重來。所以列出全部現有成員最保險。2026-11-13 實測：leader 換成 node 4 後，設定只列 1 到 3 的空資料 node 1 加不進去；補上 node 4 後 8 秒就加入。
+- **帶著資料重新啟動的節點不受影響。** 它從自己的資料知道成員，設定沒列 leader 也能照常回到叢集（同一次實測約 14 秒）。
 
 ### 移除節點
 
@@ -210,7 +213,7 @@ node 4  voter            raft 10.0.0.4:8100  api 10.0.0.4:8200  (not in this con
 - **維持奇數台（3 或 5）。** 3 台可以壞 1 台，5 台可以壞 2 台；4 台和 3 台一樣只能壞 1 台。只剩 2 台時任何一台停掉都不能寫入，所以指令要求 `--force`。
 - **要移除的是 leader 也一樣，** 先停掉它：剩下的節點會選出新 leader（選舉那幾秒的寫入會逾時），再移除。
 - **只停一台不必移除。** 升級、重開機、換硬體後用同一個 `node_id` 回來，見〈升級或重開機〉和〈換掉壞掉的節點〉；移除是給不會再回來的節點。
-- **測過的範圍：** 2026-11-13 用 `compose.cluster.yaml` 的三節點，在一台主機的 Docker 上：加第 4 台約 3 秒成為投票成員；移除 follower、移除停掉的 leader、移除後再用空資料的 node 1 重新加入都正常；舊節點不改設定也能重啟。沒有在多台實體主機或經過 WireGuard 的環境測過。
+- **測過的範圍：** 2026-11-13 用 `compose.cluster.yaml` 的三節點，在一台主機的 Docker 上，用 `cluster` 指令操作：加第 4 台 1 到 3 秒成為投票成員、約 4 秒開始回應登入；第 4 台還在執行時移除被拒；停機後移除立刻完成；停掉 leader（約 10 秒）後移除它，連同選出新 leader 約 4 秒完成，之後每台都看得到新帳號；被移除的 node 1 以空資料、列出全部成員的設定重新加入約 8 秒。舊節點不改設定也能帶著資料重啟。沒有在多台實體主機或經過 WireGuard 的環境測過。
 
 ## 常見問題
 
