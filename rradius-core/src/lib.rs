@@ -35,6 +35,7 @@ pub mod tacacs;
 pub mod tacacs_rules;
 pub mod tacacs_transport;
 pub mod totp;
+pub mod tuning;
 #[cfg(feature = "backup")]
 pub mod backup;
 pub mod lua_engine;

@@ -274,6 +274,13 @@ pub trait Extension: Send + Sync {
         ""
     }
 
+    /// The connections its settings in `config` may hold open at once, by name, which the
+    /// `tuning` command adds to the open files the configuration needs. A non-empty list also
+    /// means a TCP port is listened on.
+    fn tuning_connections(&self, _config: &crate::config::ServerConfig) -> Vec<(&'static str, usize)> {
+        Vec::new()
+    }
+
     /// Reads its sections: those of `sections` the file has; `base` is the
     /// directory of the file, `extensions` those of the program, for the revocation check of a
     /// TLS section. What it returns goes into `ServerConfig`: settings of its own, and settings of

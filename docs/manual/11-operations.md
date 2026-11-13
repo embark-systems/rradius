@@ -11,6 +11,7 @@
 - [ ] `[metrics]` 只綁內部位址；多節點時 `[cluster] listen` 綁 WireGuard 或內部網路的位址。
 - [ ] 防火牆只開用到的埠，並限制來源：1812、1813（UDP）和 49（TACACS+）。
 - [ ] `rradius-server --check --config ...` 通過。
+- [ ] 跑一次 `rradius-server tuning --config ...`，照建議調好接收緩衝和檔案描述元上限；它只讀取不修改，建議值是起點，上線後看報告開頭的丟包數確認（使用文件 8.1 節）。
 - [ ] 用 systemd 之類的服務管理器啟動，停止時送 SIGTERM（不要 SIGKILL）並給 30 秒以上，資料目錄和計費暫存的目錄放在持久的本機磁碟。
 - [ ] 設好自動重新啟動（systemd `Restart=on-failure`、Docker `restart: unless-stopped`）：節點的資料庫壞掉時，rradius 會以狀態碼 1 結束，等重新啟動來恢復（[第 7 章](07-ha-cluster.md)）。
 - [ ] 啟動後看記錄，每個要開的埠都有一行 `listening`。TACACS+、指標的埠綁不了時只記一行錯誤，程序不會結束。
