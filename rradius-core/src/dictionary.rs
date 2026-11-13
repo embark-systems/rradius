@@ -56,6 +56,7 @@ struct FileState {
     number_prefix: Vec<u32>,
 }
 
+#[derive(Default)]
 pub struct Dictionary {
     pub attributes: HashMap<AttributeKey, Attribute>,
     names: HashMap<String, AttributeKey>,
@@ -73,13 +74,7 @@ impl Attribute {
 
 impl Dictionary {
     pub fn new() -> Self {
-        Self {
-            attributes: HashMap::new(),
-            names: HashMap::new(),
-            vendors: HashMap::new(),
-            values: HashMap::new(),
-            vendor_formats: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn add_attribute(&mut self, name: &str, data_type: &str, vendor: u32, number: Vec<u32>, options: Option<String>) {

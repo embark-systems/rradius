@@ -1252,8 +1252,7 @@ pub(crate) mod tests {
 
     pub(crate) async fn script_engine(script: &str) -> Arc<LuaAuthEngine> {
         let db = crate::test_support::test_db();
-        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), db, script).unwrap());
-        engine
+        Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), db, script).unwrap())
     }
 
     fn encrypted_request(type_: u8, seq_num: u8, flags: u8, body: &[u8]) -> Vec<u8> {
