@@ -839,7 +839,7 @@ mod tests {
         db.execute("CREATE TABLE unavailable_users (username TEXT, password TEXT)").await?;
         db.execute("INSERT INTO unavailable_users VALUES ('alice', '{clear}secret')").await?;
         let sql = |query: &str, timeout: Duration| Handler::Sql { db: test_db(), user_query: query.to_string(), reply_query: None, certificate_query: None, default_user: None, timeout };
-        let slow = "SELECT password FROM unavailable_users, (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000000) SELECT max(x) FROM c) WHERE username = ?";
+        let slow = "SELECT password FROM unavailable_users, (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500000) SELECT max(x) FROM c) WHERE username = ?";
         let timed_out = AuthChain::new(AuthPolicy::FirstMatch, vec![sql(slow, Duration::from_millis(5))]).authenticate(&pap("alice", "secret"), &request()).await;
         assert!(!timed_out.accepted() && timed_out.unavailable, "{timed_out:?}");
         let quick = "SELECT password FROM unavailable_users WHERE username = ?";
@@ -849,7 +849,7 @@ mod tests {
         }
         // A script whose database call timed out, whether it raised the error or caught it and refused.
         let slow_script = |ending: &str| {
-            let script = format!("local ok = pcall(sql_query, \"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000000) SELECT max(x) FROM c\") {ending}");
+            let script = format!("local ok = pcall(sql_query, \"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500000) SELECT max(x) FROM c\") {ending}");
             LuaAuthEngine::new(crate::test_support::test_vms(), test_db(), &script).map(|engine| Handler::Lua(engine.with_query_timeout(Duration::from_millis(5))))
         };
         for ending in ["return 'reject'", "error('gave up')"] {

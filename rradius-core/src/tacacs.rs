@@ -2139,7 +2139,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_unavailable_database_answers_error() -> Result<(), String> {
         use crate::auth_chain::Handler;
-        let slow = "local ok = pcall(sql_query, [[WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000000) SELECT max(x) FROM c]]) return 'reject'";
+        let slow = "local ok = pcall(sql_query, [[WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500000) SELECT max(x) FROM c]]) return 'reject'";
         let engine = |script: &str| LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), script).map(|engine| engine.with_query_timeout(Duration::from_millis(5)));
         let chain = |script: &str| -> Result<Arc<AuthChains>, String> { Ok(Arc::new(AuthChains::new(Some(AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![Handler::Lua(engine(script)?)])), []))) };
         let top = Arc::new(engine("return 'reject'")?);
