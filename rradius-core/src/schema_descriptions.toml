@@ -99,6 +99,7 @@ zh-TW = "ldap：搜尋使用者時綁定的 DN。"
 [fields."auth.handlers.bind_password"]
 en = "ldap: password for bind_dn; at most one of it and bind_password_file."
 zh-TW = "ldap：bind_dn 的密碼；和 bind_password_file 最多設一個。"
+secret = true
 
 [fields."auth.handlers.bind_password_file"]
 en = "ldap: file holding the password for bind_dn."
@@ -217,6 +218,7 @@ zh-TW = "節點 API 埠的 host:port。"
 [fields."cluster.secret_raft"]
 en = "Shared secret of the Raft port, at least 16 characters; at most one of it and secret_raft_file."
 zh-TW = "Raft 埠的共用密碼，至少 16 個字元；和 secret_raft_file 最多設一個。"
+secret = true
 
 [fields."cluster.secret_raft_file"]
 en = "File holding the Raft secret."
@@ -225,6 +227,7 @@ zh-TW = "存放 Raft 密碼的檔案。"
 [fields."cluster.secret_api"]
 en = "Shared secret of the API port, at least 16 characters; at most one of it and secret_api_file."
 zh-TW = "API 埠的共用密碼，至少 16 個字元；和 secret_api_file 最多設一個。"
+secret = true
 
 [fields."cluster.secret_api_file"]
 en = "File holding the API secret."
@@ -403,6 +406,7 @@ zh-TW = "client 的 IP 位址或 CIDR 網段。"
 [fields."radius.clients.secret"]
 en = "Shared secret; at most one of it and secret_file."
 zh-TW = "共用密碼；和 secret_file 最多設一個。"
+secret = true
 
 [fields."radius.clients.secret_file"]
 en = "File holding the shared secret."

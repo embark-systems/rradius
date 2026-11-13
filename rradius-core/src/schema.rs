@@ -43,6 +43,9 @@ struct Texts {
     en: String,
     #[serde(rename = "zh-TW")]
     zh_tw: String,
+    /// Whether the setting holds a secret, which `config show` and `config diff` hide.
+    #[serde(default)]
+    secret: bool,
 }
 
 impl Descriptions {
@@ -75,14 +78,24 @@ impl Descriptions {
 
     /// The text of `path` in `lang`: its own, or through `same_as` that of the path it shares.
     fn text(&self, path: &str, lang: Lang) -> Option<&str> {
+        self.entry(path).map(|texts| match lang {
+            Lang::En => texts.en.as_str(),
+            Lang::ZhTw => texts.zh_tw.as_str(),
+        })
+    }
+
+    /// Whether the setting at `path` is marked `secret`, its own entry or the one it shares.
+    pub fn is_secret(&self, path: &str) -> bool {
+        self.entry(path).is_some_and(|texts| texts.secret)
+    }
+
+    /// The entry of `path`: its own, or through `same_as` that of the path it shares.
+    fn entry(&self, path: &str) -> Option<&Texts> {
         let mut path = path.to_string();
         // A bound on the hops, in case two prefixes point at each other.
         for _ in 0..8 {
             if let Some(texts) = self.fields.get(&path) {
-                return Some(match lang {
-                    Lang::En => &texts.en,
-                    Lang::ZhTw => &texts.zh_tw,
-                });
+                return Some(texts);
             }
             let shared = self.same_as.iter().find_map(|(from, to)| {
                 let rest = path.strip_prefix(from.as_str())?;
@@ -392,6 +405,22 @@ fn reference(property: &Value) -> Option<String> {
     found.next().is_none().then_some(first)
 }
 
+/// Settings whose names look like a secret but hold none: SQL, a switch, an attribute name.
+pub const NOT_SECRET: &[&str] = &["passwd", "verifies_password", "password_attribute", "password_check"];
+
+/// The paths of `schema` whose names look like a secret but that `table` does not mark.
+#[doc(hidden)]
+pub fn unmarked_secrets(schema: &Value, table: &Descriptions) -> Vec<String> {
+    property_paths(schema)
+        .into_iter()
+        .filter(|path| {
+            let name = path.rsplit('.').next().unwrap_or(path);
+            let looks = name.contains("secret") || name.contains("password") || name.contains("passwd") || name == "access_key";
+            looks && !name.ends_with("_file") && !NOT_SECRET.contains(&name) && !table.is_secret(path)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +546,19 @@ mod tests {
         let stale = Descriptions::parse("[fields.\"radius.nothing\"]\nen = \"x\"\nzh-TW = \"x\"\n[same_as]\n\"nowhere\" = \"radius\"\n")?;
         // `radius`, a top-level section, is known; `nowhere` is not.
         assert_eq!(stale.unknown_paths(&schema), ["radius.nothing", "nowhere"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_secret_settings_are_marked() -> Result<(), String> {
+        let extensions = crate::extensions::builtin();
+        let schema = build("rradius-server", &extensions)?;
+        let (table, _) = descriptions(&extensions)?;
+        assert_eq!(unmarked_secrets(&schema, &table), Vec::<String>::new());
+        for path in ["radius.clients.secret", "tacacs.clients.secret", "cluster.secret_raft", "cluster.secret_api", "auth.handlers.bind_password"] {
+            assert!(table.is_secret(path), "{path}");
+        }
+        assert!(!table.is_secret("radius.clients.secret_file") && !table.is_secret("radius.auth_port"));
         Ok(())
     }
 
