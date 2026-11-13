@@ -712,6 +712,17 @@ port = 9812         # 預設
 
 `GET /metrics` 回傳 Prometheus 文字格式。沒有這個區段時不開這個埠。**這個埠沒有認證也沒有 TLS**，請只綁定內部位址。
 
+同一個埠也回答兩個健康檢查，給 Kubernetes 的探針或負載平衡器用（範例見 `deploy/kubernetes/` 與手冊第 13 章）：
+
+| 路徑 | 回應 |
+| --- | --- |
+| `GET /livez` | 一律 200 `ok`：程序還在回應。不看資料庫或叢集 |
+| `GET /readyz` | 設了 `[cluster] stop_without_leader_ms`、而且沒有可用的 leader 超過這段時間時是 503 `no leader`，也就是節點故意不回應認證的時候（2.2 節〈資料庫不能用時〉）；其他時候 200 `ok` |
+
+- 內容都是 `text/plain` 的一行字。查詢字串不影響結果；GET 以外的方法回 405，其他路徑回 404。連線數、逾時和標頭大小的限制和 `/metrics` 共用。
+- 沒設 `stop_without_leader_ms` 時 `/readyz` 一直是 200：這時節點沒有 leader 也會用本機副本回應只讀的登入，算成未就緒反而會讓負載平衡器把所有節點都移出。
+- metrics 埠在節點追上叢集、協定埠開好之後才開，所以啟動中兩個路徑都連不上；Kubernetes 要用 startupProbe 等它。
+
 | 項目 | 說明 |
 | --- | --- |
 | `rradius_radius_packets_total{kind="auth\|acct"}` | 通過檢查與重送偵測、實際處理的請求 |

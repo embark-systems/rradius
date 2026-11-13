@@ -1,0 +1,23 @@
+# For clusters without a load balancer that keeps the source address: the pods use the
+# nodes' own network, so a device's packets reach rradius-server unchanged on the node's
+# address. Then only one pod fits on a node, and devices are given the nodes' addresses.
+# The metrics port (bound to 0.0.0.0 in config/) and the cluster ports then listen on every
+# address of the node, outside ones too, and a NetworkPolicy does not apply to such pods: keep
+# 9812, 8100 and 8200 to the inside network with the nodes' firewall, or bind [metrics] to the
+# node's inside address. Enable it under patches in kustomization.yaml.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rradius
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: rradius
+              topologyKey: kubernetes.io/hostname

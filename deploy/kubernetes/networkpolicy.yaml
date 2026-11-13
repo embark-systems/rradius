@@ -1,0 +1,32 @@
+# Not in kustomization.yaml by default. Lets the RADIUS ports in from anywhere, the cluster
+# ports only from the other nodes, and the metrics port only from the namespace labelled
+# below, where Prometheus runs. The kubelet's probes come from the node itself, which most
+# network plugins let through; check yours. Adjust the label to your setup.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rradius
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rradius
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: 1812
+          protocol: UDP
+        - port: 1813
+          protocol: UDP
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rradius
+      ports:
+        - port: 8100
+        - port: 8200
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9812

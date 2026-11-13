@@ -48,6 +48,7 @@ fn example_files() -> Result<Vec<PathBuf>, String> {
         Ok(())
     };
     add(&examples)?;
+    add(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../deploy/kubernetes/config"))?;
     for entry in std::fs::read_dir(examples.join("scenarios")).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
         if path.is_dir() {

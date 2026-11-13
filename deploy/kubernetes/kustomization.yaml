@@ -1,0 +1,34 @@
+# Three rradius-server nodes in one Raft cluster. Create the Secret first (see
+# secret.example.yaml), then: kubectl apply -k deploy/kubernetes
+# The manual's chapter 13 (docs/manual/13-kubernetes.md) explains each choice.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - statefulset.yaml
+  - services.yaml
+  - pdb.yaml
+  # Not applied by default: keeps the metrics port to the nodes and Prometheus.
+  # - networkpolicy.yaml
+
+# One flat ConfigMap; statefulset.yaml mounts the migrations into their own directory.
+# A change gives the ConfigMap a new name, which rolls the pods one at a time.
+configMapGenerator:
+  - name: rradius-config
+    files:
+      - config/rradius-0.toml
+      - config/rradius-1.toml
+      - config/rradius-2.toml
+      - config/auth.lua
+      - config/1_schema.sql
+
+# A registry of your own: build and push the image, then name it here.
+# images:
+#   - name: rradius-server
+#     newName: registry.example.com/rradius-server
+#     newTag: "1.0"
+
+# Without a load balancer that keeps the source address, the pods can use the nodes'
+# network instead: see hostnetwork-patch.yaml.
+# patches:
+#   - path: hostnetwork-patch.yaml

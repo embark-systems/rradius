@@ -296,7 +296,7 @@ pub fn stopped_without_leader() -> bool {
     stops_without_leader(STOP_WITHOUT_LEADER_MS.load(Ordering::Relaxed), &cluster_status())
 }
 
-fn stops_without_leader(limit_ms: u64, status: &ClusterStatus) -> bool {
+pub(crate) fn stops_without_leader(limit_ms: u64, status: &ClusterStatus) -> bool {
     limit_ms != 0 && status.without_leader.is_some_and(|lasted| lasted > Duration::from_millis(limit_ms))
 }
 
