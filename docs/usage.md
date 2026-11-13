@@ -422,7 +422,8 @@ rradius-server cluster remove --force --config /etc/rradius/rradius.toml 3
 
 - **`members`** 依編號列出每個成員：`voter`（投票成員）或 `learner`（只複製資料，加入中的節點會短暫是這個）、`leader`、Raft 和 API 位址。這份設定沒列的成員標 `(not in this configuration)`；設定有列、叢集裡沒有的編號另列一行 `not in the cluster (listed in this configuration)`。有差異時結束碼仍是 0。
 - **`remove`** 先找到 leader，確認編號是成員、那台已經停機（它的 API 位址 2 秒內沒有回應）、移除後還留夠投票成員，才請 leader 移除它，等叢集確認後印出 `removed node N`。移除後只剩 1 或 2 台投票成員時要加 `--force`；最後一台不能移除；還在回應的節點沒有辦法移除。
-- **找 leader：** 依設定的順序問每個節點，只採用自己看得到 leader 的節點的回答，所以被移除但還在執行的節點（它看不到 leader）不會誤導指令。
+- **找 leader：** 依設定的順序問每個節點，只採用自己看得到 leader 的節點的回答，所以被移除但還在執行的節點（它看不到 leader）不會誤導指令。完全沒有回應的節點（例如主機關機、封包被丟）在下一輪改到最後才問，不必每輪都等它的 5 秒。
+- **結束碼 3 不一定代表什麼都沒做。** 移除請求送出後才連不上或逾時，叢集可能已經移除那台；先用 `cluster members` 看，再決定要不要重跑。
 - 指令經 API 埠（`api` 位址）和 `secret_api` 連線，不需要 rradius 在本機執行。
 
 | 情況 | 標準輸出 | 結束碼 |
@@ -433,6 +434,7 @@ rradius-server cluster remove --force --config /etc/rradius/rradius.toml 3
 | leader 拒絕移除 | （無；錯誤在標準錯誤） | 1 |
 | 指令或設定有誤、那台還在回應、剩下太少投票成員、`secret_api` 和叢集不同 | （無；原因在標準錯誤） | 2 |
 | 30 秒內沒有節點回報 leader | （無；標準錯誤說叢集沒有回應） | 3 |
+| 移除請求送出後沒有回應，或 30 秒內還沒看到它生效 | （無；標準錯誤說移除可能已經完成，請用 `cluster members` 確認） | 3 |
 
 ### 2.3 `[radius]` 與 `[tacacs]`
 

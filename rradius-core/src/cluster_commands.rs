@@ -11,6 +11,7 @@ use crate::config::{self, ClusterNode};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -83,8 +84,31 @@ impl Outcome {
 enum Failure {
     /// The node refused the api secret: a mistake in the configuration, which waiting does not mend.
     Secret(String),
-    /// No answer, or one the command cannot use from this node; another node may do.
+    /// An answer the command cannot use from this node; another node may do.
     Unusable(String),
+    /// No answer at all: nothing connected, or nothing came back in time.
+    Silent(String),
+}
+
+/// How far a removal got, for what to say when time runs out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Progress {
+    /// Nothing sent yet.
+    Checking = 0,
+    /// The request is on its way; the leader may have made the change.
+    Sending = 1,
+    /// The leader accepted it; the members have yet to show it.
+    Sent = 2,
+}
+
+impl Progress {
+    fn load(from: &AtomicU8) -> Self {
+        match from.load(Ordering::SeqCst) {
+            0 => Self::Checking,
+            1 => Self::Sending,
+            _ => Self::Sent,
+        }
+    }
 }
 
 /// Runs `cluster` with its arguments, the word `cluster` not included. Prints the result and
@@ -92,10 +116,13 @@ enum Failure {
 pub async fn run(args: &[String]) -> i32 {
     crate::logging::init_for_command();
     let outcome = match prepare(args) {
-        Ok((parsed, cluster, api)) => match tokio::time::timeout(CLUSTER_WAIT, act(&parsed.action, &cluster.nodes, &api)).await {
-            Ok(outcome) => outcome,
-            Err(_) => Outcome::failed(STATUS_UNREACHABLE, format!("the cluster did not answer within {} s", CLUSTER_WAIT.as_secs())),
-        },
+        Ok((parsed, cluster, api)) => {
+            let progress = AtomicU8::new(Progress::Checking as u8);
+            match tokio::time::timeout(CLUSTER_WAIT, act(&parsed.action, &cluster.nodes, &api, &progress)).await {
+                Ok(outcome) => outcome,
+                Err(_) => timed_out(&parsed.action, Progress::load(&progress)),
+            }
+        }
         Err(e) => Outcome::failed(STATUS_MISTAKE, e),
     };
     if !outcome.stdout.is_empty() {
@@ -144,27 +171,49 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
     Ok(Parsed { action, config_path })
 }
 
-async fn act(action: &Action, configured: &[ClusterNode], api: &Api) -> Outcome {
+/// What to say when the time limit ends the command, by how far a removal got: once the request
+/// may have reached the leader, saying only that the cluster did not answer would send the
+/// operator to run it again, and find the node gone.
+fn timed_out(action: &Action, progress: Progress) -> Outcome {
+    let limit = CLUSTER_WAIT.as_secs();
+    let message = match (action, progress) {
+        (Action::Remove { node, .. }, Progress::Sending) => format!("the removal of node {node} may have been made, but the cluster did not answer within {limit} s; check with cluster members"),
+        (Action::Remove { node, .. }, Progress::Sent) => format!("the leader accepted the removal of node {node}, but its members did not show it within {limit} s; check with cluster members"),
+        _ => format!("the cluster did not answer within {limit} s"),
+    };
+    Outcome::failed(STATUS_UNREACHABLE, message)
+}
+
+async fn act(action: &Action, configured: &[ClusterNode], api: &Api, progress: &AtomicU8) -> Outcome {
     match action {
         Action::Members => match find_leader(api, configured).await {
             Ok((leader, metrics)) => Outcome::done(member_lines(&metrics.members, leader.id, configured)),
             Err(e) => Outcome::failed(STATUS_MISTAKE, e),
         },
-        Action::Remove { node, force } => remove(api, configured, *node, *force).await,
+        Action::Remove { node, force } => remove(api, configured, *node, *force, progress).await,
     }
 }
 
 /// The leader and its own view of the cluster. Asks the configured nodes in order, round after
-/// round, until one sees a leader and the leader confirms it. Ends only on a refused secret,
-/// returned as the message; the caller's time limit ends the rest.
+/// round, until one sees a leader and the leader confirms it. A node that gave no answer at all
+/// is asked last in the next round, so that a stopped host, whose packets may be dropped, does
+/// not cost its full wait every round. Ends only on a refused secret, returned as the message;
+/// the caller's time limit ends the rest.
 async fn find_leader(api: &Api, configured: &[ClusterNode]) -> Result<(LeaderAddress, Metrics), String> {
+    let mut order: Vec<&ClusterNode> = configured.iter().collect();
     loop {
-        for node in configured {
+        let mut silent = BTreeSet::new();
+        for node in &order {
             let seen = match api.metrics(&node.api).await {
                 Ok(metrics) => metrics,
                 Err(Failure::Secret(e)) => return Err(e),
                 Err(Failure::Unusable(e)) => {
                     tracing::debug!("{e}");
+                    continue;
+                }
+                Err(Failure::Silent(e)) => {
+                    tracing::debug!("{e}");
+                    silent.insert(node.id);
                     continue;
                 }
             };
@@ -176,11 +225,17 @@ async fn find_leader(api: &Api, configured: &[ClusterNode]) -> Result<(LeaderAdd
                 Ok(metrics) if metrics.id == address.id && metrics.leader == Some(address.id) => return Ok((address, metrics)),
                 Ok(_) => tracing::debug!("node {} is no longer the leader", address.id),
                 Err(Failure::Secret(e)) => return Err(e),
-                Err(Failure::Unusable(e)) => tracing::debug!("{e}"),
+                Err(Failure::Unusable(e) | Failure::Silent(e)) => tracing::debug!("{e}"),
             }
         }
+        quiet_last(&mut order, &silent);
         tokio::time::sleep(ROUND_PAUSE).await;
     }
+}
+
+/// Moves the nodes in `silent` to the end, keeping the order within both groups.
+fn quiet_last(order: &mut [&ClusterNode], silent: &BTreeSet<u64>) {
+    order.sort_by_key(|node| silent.contains(&node.id));
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,7 +244,7 @@ struct LeaderAddress {
     api: String,
 }
 
-async fn remove(api: &Api, configured: &[ClusterNode], node: u64, force: bool) -> Outcome {
+async fn remove(api: &Api, configured: &[ClusterNode], node: u64, force: bool, progress: &AtomicU8) -> Outcome {
     let (leader, metrics) = match find_leader(api, configured).await {
         Ok(found) => found,
         Err(e) => return Outcome::failed(STATUS_MISTAKE, e),
@@ -205,25 +260,47 @@ async fn remove(api: &Api, configured: &[ClusterNode], node: u64, force: bool) -
     }
     let mut target = leader.api;
     let mut redirected = false;
+    progress.store(Progress::Sending as u8, Ordering::SeqCst);
     loop {
         match api.leave(&target, node).await {
             Ok(()) => break,
-            Err(Answer::Secret(e)) => return Outcome::failed(STATUS_MISTAKE, e),
             Err(Answer::Leader(address)) if !redirected => {
                 redirected = true;
                 target = address;
             }
-            Err(Answer::Leader(address)) => return Outcome::failed(STATUS_NO_MATCH, format!("the leader moved twice; last to {address}; run the command again")),
-            Err(Answer::Refused(e)) => return Outcome::failed(STATUS_NO_MATCH, e),
+            Err(answer) => return failed_removal(node, answer),
         }
     }
-    // Done once the leader's members no longer include the node.
+    progress.store(Progress::Sent as u8, Ordering::SeqCst);
+    // Done once the leader's members no longer include the node. Ask the node that took the
+    // request first; only when it no longer leads, look for the leader again.
     loop {
-        match find_leader(api, configured).await {
-            Ok((_, metrics)) if !metrics.members.nodes.contains_key(&node) => return Outcome::done(format!("removed node {node}")),
-            Ok(_) => tokio::time::sleep(ROUND_PAUSE).await,
-            Err(e) => return Outcome::failed(STATUS_MISTAKE, e),
+        let members = match api.metrics(&target).await {
+            Ok(metrics) if metrics.leader == Some(metrics.id) => metrics.members,
+            Err(Failure::Secret(e)) => return Outcome::failed(STATUS_MISTAKE, e),
+            _ => match find_leader(api, configured).await {
+                Ok((leader, metrics)) => {
+                    target = leader.api;
+                    metrics.members
+                }
+                Err(e) => return Outcome::failed(STATUS_MISTAKE, e),
+            },
+        };
+        if !members.nodes.contains_key(&node) {
+            return Outcome::done(format!("removed node {node}"));
         }
+        tokio::time::sleep(ROUND_PAUSE).await;
+    }
+}
+
+/// What a removal request that did not succeed ends with. Only a refusal is status 1: a request
+/// with no answer may still have been made, which is what status 3 says.
+fn failed_removal(node: u64, answer: Answer) -> Outcome {
+    match answer {
+        Answer::Secret(e) => Outcome::failed(STATUS_MISTAKE, e),
+        Answer::Leader(address) => Outcome::failed(STATUS_NO_MATCH, format!("the leader moved twice; last to {address}; run the command again")),
+        Answer::Refused(e) => Outcome::failed(STATUS_NO_MATCH, e),
+        Answer::Unanswered(e) => Outcome::failed(STATUS_UNREACHABLE, format!("{e}; the removal of node {node} may have been made; check with cluster members")),
     }
 }
 
@@ -303,6 +380,8 @@ enum Answer {
     /// Sent to a node that is not the leader; the leader's api address.
     Leader(String),
     Refused(String),
+    /// No answer: the request may or may not have reached the leader.
+    Unanswered(String),
 }
 
 /// Requests to the nodes' management API.
@@ -339,9 +418,9 @@ impl Api {
             .timeout(REQUEST_WAIT)
             .send()
             .await
-            .map_err(|e| Failure::Unusable(format!("{address}: {e}")))?;
+            .map_err(|e| Failure::Silent(format!("{address}: {e}")))?;
         let status = response.status();
-        let body = response.bytes().await.map_err(|e| Failure::Unusable(format!("{address}: {e}")))?;
+        let body = response.bytes().await.map_err(|e| Failure::Silent(format!("{address}: {e}")))?;
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(Failure::Secret(secret_refused(address)));
         }
@@ -368,9 +447,9 @@ impl Api {
             .timeout(CLUSTER_WAIT)
             .send()
             .await
-            .map_err(|e| Answer::Refused(format!("{address}: {e}")))?;
+            .map_err(|e| Answer::Unanswered(format!("{address}: {e}")))?;
         let status = response.status();
-        let body = response.bytes().await.map_err(|e| Answer::Refused(format!("{address}: {e}")))?;
+        let body = response.bytes().await.map_err(|e| Answer::Unanswered(format!("{address}: {e}")))?;
         if status.is_success() {
             return Ok(());
         }
@@ -474,6 +553,44 @@ mod tests {
              node 3  voter            raft node3:8100  api node3:8200\n\
              node 5  learner          raft node5:8100  api node5:8200"
         );
+    }
+
+    #[test]
+    fn test_failed_removal() {
+        let status = |answer| failed_removal(4, answer).status;
+        assert_eq!(status(Answer::Refused("node1:8200: HTTP 500".to_string())), STATUS_NO_MATCH);
+        assert_eq!(status(Answer::Leader("node2:8200".to_string())), STATUS_NO_MATCH);
+        assert_eq!(status(Answer::Secret("refused".to_string())), STATUS_MISTAKE);
+        // No answer is not a refusal: the change may have been made.
+        let unanswered = failed_removal(4, Answer::Unanswered("node1:8200: connection refused".to_string()));
+        assert_eq!(unanswered.status, STATUS_UNREACHABLE);
+        assert!(unanswered.stderr.contains("may have been made") && unanswered.stderr.contains("cluster members"), "{}", unanswered.stderr);
+    }
+
+    #[test]
+    fn test_timed_out() {
+        let remove = Action::Remove { node: 4, force: false };
+        for (action, progress, says) in [
+            (&Action::Members, Progress::Checking, "the cluster did not answer within 30 s"),
+            (&remove, Progress::Checking, "the cluster did not answer within 30 s"),
+            (&remove, Progress::Sending, "the removal of node 4 may have been made"),
+            (&remove, Progress::Sent, "the leader accepted the removal of node 4"),
+        ] {
+            let outcome = timed_out(action, progress);
+            assert_eq!(outcome.status, STATUS_UNREACHABLE);
+            assert!(outcome.stderr.contains(says), "{progress:?}: {}", outcome.stderr);
+        }
+        assert_eq!(Progress::load(&AtomicU8::new(Progress::Sent as u8)), Progress::Sent);
+    }
+
+    #[test]
+    fn test_quiet_last() {
+        let nodes = configured(&[1, 2, 3, 4]);
+        let mut order: Vec<&ClusterNode> = nodes.iter().collect();
+        quiet_last(&mut order, &[1, 3].into_iter().collect());
+        assert_eq!(order.iter().map(|node| node.id).collect::<Vec<_>>(), [2, 4, 1, 3]);
+        quiet_last(&mut order, &BTreeSet::new());
+        assert_eq!(order.iter().map(|node| node.id).collect::<Vec<_>>(), [2, 4, 1, 3]);
     }
 
     #[test]

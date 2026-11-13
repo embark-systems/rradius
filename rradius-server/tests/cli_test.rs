@@ -282,13 +282,14 @@ fn test_missing_migrations_directory_stops_startup() {
 }
 
 /// The file finishes in the cluster after the node gave up on it, so the restart must
-/// find it recorded once rather than run it again.
+/// find it recorded once rather than run it again. The file counts rather than writes
+/// its rows, so it stays slower than the limit on a fast machine without filling the disk.
 #[test]
 fn test_file_slower_than_the_limit() {
     let dir = dir_with_migrations(&[(
         "1_big.sql",
         "CREATE TABLE big (id INTEGER);
-         INSERT INTO big WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 10000000) SELECT x FROM n;",
+         INSERT INTO big SELECT max(x) FROM (WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 60000000) SELECT x FROM n);",
     )]);
     let script = "sql_query('SELECT id FROM big LIMIT 1') return #sql_query('SELECT id FROM _migrations') == 1 and 'accept' or 'reject'";
     let (config, auth_port) = write_config_with(dir.path(), script, None, "migrations_dir = \"migrations\"\nmigrations_wait_ms = 3000\n");
