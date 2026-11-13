@@ -137,6 +137,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | OCSP | `[radius.eap]`、`[radius.tls]`、`[tacacs.tls]` 的 `ocsp`、`ocsp_url` | CA 只提供 OCSP、不發 CRL 時檢查撤銷 |
 | TACACS+ over TLS | `[tacacs.tls]`；`[[tacacs.clients]]` 的 `tls_name` | RFC 9887 |
 | 雙因素 | `[mfa]`；`[[radius.clients]]`、`[[tacacs.clients]]` 的 `mfa`；`otp` 指令 | 密碼之後再要驗證器 App（TOTP）或 HOTP token 的 6 位數驗證碼 |
+| Diameter 與 SWx | `[diameter]` | EAP-AKA' 的認證向量向電信商的 HSS 取得（3GPP SWx） |
 
 最小設定：
 

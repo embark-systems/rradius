@@ -2237,6 +2237,35 @@ fn test_accounting_export_refused_at_reload() -> Result<(), String> {
     Ok(())
 }
 
+/// The Diameter client is only in rradius-enterprise: this program refuses `[diameter]` at a
+/// start, in a check, and at SIGHUP, where it goes on with what it had.
+#[test]
+fn test_diameter_needs_enterprise() -> Result<(), String> {
+    const SECTION: &str = "[diameter]\norigin_host = \"aaa1.example.net\"\norigin_realm = \"example.net\"\n[[diameter.peers]]\nname = \"hss1\"\naddress = \"192.0.2.10\"\n";
+    const REFUSED: &str = "diameter: not supported by this program (Diameter needs rradius-enterprise)";
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let mut text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    text.push('\n');
+    text.push_str(SECTION);
+    std::fs::write(&config, text).map_err(|e| e.to_string())?;
+    let config = config.to_str().ok_or("a path that is not UTF-8")?;
+    for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains(REFUSED), "{args:?}: {stderr}");
+    }
+
+    let server = Server::start(PROGRAM, tempfile::tempdir().map_err(|e| e.to_string())?, "return 'accept'", None);
+    assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
+    server.write_config_text(|text| format!("{text}{SECTION}"));
+    let stderr = server.reload(RELOAD_FAILED);
+    assert!(stderr.contains("Diameter needs rradius-enterprise"), "{stderr}");
+    assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
+    Ok(())
+}
+
 /// `mfa` on a client needs rradius-enterprise: `check` ends with status 2 and says so, and the
 /// setting added while the program runs is refused at SIGHUP (Second Factor Settings: Core
 /// program).
