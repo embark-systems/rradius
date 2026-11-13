@@ -30,8 +30,9 @@ jobs:
           components: clippy
       # The workspace at the repository's root, with its target/ there.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # The library and the program built on it.
-      - run: cargo build --locked -p rradius-core -p rradius-server
+      # The library and the program built on it, and the load generator that
+      # rradius-server/tests/bench_test.rs runs against the program.
+      - run: cargo build --locked -p rradius-core -p rradius-server -p rradius-bench
       - run: cargo clippy --locked -p rradius-core -p rradius-server --all-targets
       - run: cargo test --locked -p rradius-core -p rradius-server
 
