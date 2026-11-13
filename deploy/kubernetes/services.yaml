@@ -1,0 +1,48 @@
+# The nodes find each other by name through this headless Service. A pod that is not ready,
+# such as one that has not seen a leader yet, keeps its name (publishNotReadyAddresses):
+# otherwise nodes waiting for a leader could not reach each other to elect one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rradius-cluster
+  labels:
+    app.kubernetes.io/name: rradius
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: rradius
+  ports:
+    - name: raft
+      port: 8100
+    - name: api
+      port: 8200
+---
+# RADIUS for the devices. rradius-server tells its clients apart by their source address, so
+# the address must reach the pod unchanged: externalTrafficPolicy Local does that, and only
+# nodes running a ready pod take traffic.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rradius
+  labels:
+    app.kubernetes.io/name: rradius
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: rradius
+  ports:
+    - name: radius-auth
+      port: 1812
+      targetPort: radius-auth
+      protocol: UDP
+    - name: radius-acct
+      port: 1813
+      targetPort: radius-acct
+      protocol: UDP
+    # TACACS+, with [tacacs] in the configuration and the container port added:
+    # - name: tacacs
+    #   port: 49
+    #   targetPort: 49
+    #   protocol: TCP

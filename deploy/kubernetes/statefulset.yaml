@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rradius
+  labels:
+    app.kubernetes.io/name: rradius
+spec:
+  serviceName: rradius-cluster
+  replicas: 3
+  # All three start together: a node waits for a quorum before it serves, so starting them
+  # one after another would leave the first waiting for the others forever.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rradius
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rradius
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: rradius
+          image: rradius-server:latest
+          imagePullPolicy: IfNotPresent
+          # Pod rradius-N reads rradius-N.toml, whose node_id is N+1.
+          args: ["server", "--config", "/etc/rradius/$(POD_NAME).toml"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: radius-auth
+              containerPort: 1812
+              protocol: UDP
+            - name: radius-acct
+              containerPort: 1813
+              protocol: UDP
+            - name: raft
+              containerPort: 8100
+            - name: api
+              containerPort: 8200
+            - name: metrics
+              containerPort: 9812
+          # The metrics port opens once the node has caught up with the cluster, which takes a
+          # leader: until then only the startup probe runs.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: metrics
+            periodSeconds: 10
+            failureThreshold: 3
+          # 503 once the node has been without a leader for stop_without_leader_ms.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rradius
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets/rradius
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/rradius
+      volumes:
+        - name: config
+          configMap:
+            name: rradius-config
+            items:
+              - key: rradius-0.toml
+                path: rradius-0.toml
+              - key: rradius-1.toml
+                path: rradius-1.toml
+              - key: rradius-2.toml
+                path: rradius-2.toml
+              - key: auth.lua
+                path: auth.lua
+              # Every migration file needs its line here, under migrations/.
+              - key: 1_schema.sql
+                path: migrations/1_schema.sql
+        - name: secrets
+          secret:
+            secretName: rradius-secrets
+            defaultMode: 0440
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

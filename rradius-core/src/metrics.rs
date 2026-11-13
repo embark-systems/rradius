@@ -359,7 +359,7 @@ async fn answer<S: AsyncRead + AsyncWrite + Unpin>(mut socket: S, metrics: &Metr
     let Ok(Ok(Some(head))) = tokio::time::timeout(read_timeout, read_head(&mut socket)).await else {
         return Ok(());
     };
-    let response = respond(&head, metrics);
+    let response = respond(&head, metrics, crate::lua_engine::stopped_without_leader());
     // A client that does not read must not keep its place, any more than one that does not write.
     let writing = async {
         socket.write_all(response.as_bytes()).await?;
@@ -385,7 +385,10 @@ async fn read_head<S: AsyncRead + Unpin>(socket: &mut S) -> io::Result<Option<Ve
     Ok((head.len() <= MAX_HEAD_LEN).then_some(head))
 }
 
-fn respond(head: &[u8], metrics: &Metrics) -> String {
+/// The response to one request head. `/livez` answers while the process serves at all; `/readyz`
+/// answers 503 while the node has stopped answering authentication for want of a leader
+/// (`stopped`), so that a load balancer sends requests to the other nodes meanwhile.
+fn respond(head: &[u8], metrics: &Metrics, stopped: bool) -> String {
     let line = head.split(|byte| *byte == b'\r').next().unwrap_or_default();
     let line = String::from_utf8_lossy(line);
     let mut parts = line.split(' ');
@@ -396,6 +399,9 @@ fn respond(head: &[u8], metrics: &Metrics) -> String {
     };
     match (method, path) {
         ("GET", "/metrics") => reply("200 OK", "text/plain; version=0.0.4", &metrics.render()),
+        ("GET", "/livez") => reply("200 OK", "text/plain", "ok\n"),
+        ("GET", "/readyz") if stopped => reply("503 Service Unavailable", "text/plain", "no leader\n"),
+        ("GET", "/readyz") => reply("200 OK", "text/plain", "ok\n"),
         ("GET", _) => reply("404 Not Found", "text/plain", "not found\n"),
         _ => reply("405 Method Not Allowed", "text/plain", "method not allowed\n"),
     }
@@ -452,6 +458,47 @@ mod tests {
             let response = exchange(addr, request.as_bytes()).await;
             assert!(response.starts_with(&format!("HTTP/1.1 {status}")), "{request:?}: {response}");
         }
+    }
+
+    #[tokio::test]
+    async fn test_health_over_the_listener() {
+        let (addr, _) = start(READ_TIMEOUT).await;
+        for path in ["/livez", "/readyz"] {
+            let response = exchange(addr, format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes()).await;
+            assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{path}: {response}");
+            assert!(response.contains("Content-Type: text/plain\r\n"), "{path}: {response}");
+            assert!(response.ends_with("\r\n\r\nok\n"), "{path}: {response}");
+        }
+    }
+
+    /// The health paths table of the server-metrics spec: the request, `stop_without_leader_ms`
+    /// (0 when not set), how long the node has been without a leader, and the expected status
+    /// line and body (`None` when only the status is given).
+    #[test]
+    fn test_health_paths() {
+        let metrics = Metrics::default();
+        for (request, limit_ms, without_ms, status, body) in [
+            ("GET /livez HTTP/1.1", 3000, Some(10_000), "200 OK", Some("ok\n")),
+            ("GET /readyz HTTP/1.1", 0, Some(10_000), "200 OK", None),
+            ("GET /readyz HTTP/1.1", 3000, None, "200 OK", None),
+            ("GET /readyz HTTP/1.1", 3000, Some(2_000), "200 OK", None),
+            ("GET /readyz HTTP/1.1", 3000, Some(4_000), "503 Service Unavailable", Some("no leader\n")),
+            ("GET /readyz?verbose=1 HTTP/1.1", 3000, Some(4_000), "503 Service Unavailable", None),
+            ("POST /readyz HTTP/1.1", 0, None, "405 Method Not Allowed", None),
+            ("POST /livez HTTP/1.1", 0, None, "405 Method Not Allowed", None),
+        ] {
+            let status_now = crate::lua_engine::ClusterStatus { without_leader: without_ms.map(Duration::from_millis), ..Default::default() };
+            let stopped = crate::lua_engine::stops_without_leader(limit_ms, &status_now);
+            let response = respond(format!("{request}\r\nHost: x\r\n\r\n").as_bytes(), &metrics, stopped);
+            assert!(response.starts_with(&format!("HTTP/1.1 {status}\r\n")), "{request} {limit_ms} {without_ms:?}: {response}");
+            if let Some(body) = body {
+                assert!(response.ends_with(&format!("\r\n\r\n{body}")), "{request}: {response}");
+            }
+        }
+        // The other paths are unchanged by readiness.
+        assert!(respond(b"GET /metrics HTTP/1.1\r\n\r\n", &metrics, true).starts_with("HTTP/1.1 200 OK"));
+        assert!(respond(b"GET /livez HTTP/1.1\r\n\r\n", &metrics, true).starts_with("HTTP/1.1 200 OK"));
+        assert!(respond(b"GET /ready HTTP/1.1\r\n\r\n", &metrics, false).starts_with("HTTP/1.1 404"));
     }
 
     #[tokio::test]

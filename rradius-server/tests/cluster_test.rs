@@ -81,6 +81,17 @@ fn metric(port: u16, sample: &str) -> Option<f64> {
     body.lines().find_map(|line| line.strip_prefix(sample).and_then(|rest| rest.strip_prefix(' ')).and_then(|value| value.trim().parse().ok()))
 }
 
+/// The status line of a GET of `path` on a node's metrics listener.
+fn health(port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes()).ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    response.lines().next().map(str::to_string)
+}
+
 /// Repeats `check` every 200 ms until it returns true or `limit` passes.
 fn eventually(limit: Duration, mut check: impl FnMut() -> bool) -> bool {
     let started = Instant::now();
@@ -186,6 +197,9 @@ fn test_three_node_cluster() {
     // Status-Server is answered while node 1 has a leader.
     assert_eq!(send(auth[0], &status_server(10), Duration::from_secs(2)).map(|r| r.code), Some(radius::ACCESS_ACCEPT));
     assert_eq!(metric(metrics[0], "rradius_cluster_leader"), Some(1.0));
+    // Node 1 is ready while it has a leader.
+    assert_eq!(health(metrics[0], "/readyz").as_deref(), Some("HTTP/1.1 200 OK"));
+    assert_eq!(health(metrics[0], "/livez").as_deref(), Some("HTTP/1.1 200 OK"));
 
     // With only node 1 left there is no quorum: the write in the script times out, and the
     // request goes unanswered rather than refused, so that a NAS asks another server.
@@ -203,6 +217,9 @@ fn test_three_node_cluster() {
     assert!(send(auth[0], &status_server(11), Duration::from_secs(1)).is_none(), "Status-Server answered without a leader");
     assert!(send(auth[0], &access_request(12, "lookup"), Duration::from_secs(1)).is_none(), "a login answered without a leader");
     assert!(metric(metrics[0], "rradius_radius_discarded_total{reason=\"no_leader\"}").is_some_and(|n| n >= 2.0));
+    // Not ready then, so that a load balancer leaves it out, but still live.
+    assert_eq!(health(metrics[0], "/readyz").as_deref(), Some("HTTP/1.1 503 Service Unavailable"));
+    assert_eq!(health(metrics[0], "/livez").as_deref(), Some("HTTP/1.1 200 OK"));
 
     drop(nodes);
     assert!(started.elapsed() < Duration::from_secs(90), "cluster test took {:?}", started.elapsed());

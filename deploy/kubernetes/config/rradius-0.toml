@@ -1,0 +1,61 @@
+# Node rradius-0 of the StatefulSet. The three files differ only in node_id: pod rradius-N
+# is node N+1, and node 1 is the one that starts the cluster.
+dictionary = "/usr/share/rradius/dictionary"
+
+[lua]
+script = "auth.lua"
+
+[cluster]
+node_id = 1
+data_dir = "/var/lib/rradius"
+secret_raft_file = "/run/secrets/rradius/raft"
+secret_api_file = "/run/secrets/rradius/api"
+migrations_dir = "migrations"
+# Past this long without a leader the node stops answering, so that a NAS asks another
+# server, and /readyz turns 503, so that the Service leaves the pod out meanwhile.
+stop_without_leader_ms = 10000
+
+# Names through the headless Service rradius-cluster, which keeps them while a pod is not
+# ready (publishNotReadyAddresses).
+[[cluster.nodes]]
+id = 1
+raft = "rradius-0.rradius-cluster:8100"
+api = "rradius-0.rradius-cluster:8200"
+
+[[cluster.nodes]]
+id = 2
+raft = "rradius-1.rradius-cluster:8100"
+api = "rradius-1.rradius-cluster:8200"
+
+[[cluster.nodes]]
+id = 3
+raft = "rradius-2.rradius-cluster:8100"
+api = "rradius-2.rradius-cluster:8200"
+
+[auth]
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM users WHERE username = ?"
+
+# For rradius-server user, run in a pod:
+#   kubectl exec -i rradius-0 -- rradius-server user add --config /etc/rradius/rradius-0.toml alice
+[accounts]
+add = "INSERT INTO users (username, password) VALUES (?1, ?2)"
+passwd = "UPDATE users SET password = ?2 WHERE username = ?1"
+delete = "DELETE FROM users WHERE username = ?1"
+show = "SELECT username FROM users WHERE username = ?1"
+
+[radius]
+# The devices, by the source address their packets arrive with. 192.0.2.0/24 is a documentation
+# range: replace it with your devices' own. Keep it narrow: a range that also covers the
+# Kubernetes nodes would accept packets whose source a load balancer rewrote, and every device
+# would pass as this one client. A device that cannot send a Message-Authenticator needs
+# require_message_authenticator = "no" on its entry: see docs/usage.md.
+[[radius.clients]]
+address = "192.0.2.0/24"
+secret_file = "/run/secrets/rradius/radius"
+
+# The kubelet probes /livez and /readyz on the pod's address, so this listens on all of
+# them: see networkpolicy.yaml to keep it to the nodes and Prometheus.
+[metrics]
+bind = "0.0.0.0"

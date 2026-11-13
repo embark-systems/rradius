@@ -1,0 +1,11 @@
+# Voluntary disruptions, such as draining a node, take one pod at a time: two of three keep
+# the quorum.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rradius
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rradius
