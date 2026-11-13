@@ -221,6 +221,7 @@ pub fn needs_restart(running: &ServerConfig, new: &ServerConfig, extensions: &cr
             differs("radius.max_acct_inflight", running.max_acct_inflight != new.max_acct_inflight);
             differs("radius.status_server", running.status_server != new.status_server);
             differs("radius.sockets", running.sockets != new.sockets);
+            differs("radius.recv_buffer_bytes", running.recv_buffer_bytes != new.recv_buffer_bytes);
             differs("[radius.accounting_spool]", running.accounting_spool != new.accounting_spool);
             names.extend(extensions.needs_restart(running_config, new_config));
         }
@@ -408,6 +409,7 @@ mod tests {
             (plain.clone(), radius("max_auth_inflight = 1"), "radius.max_auth_inflight"),
             (plain.clone(), radius("max_acct_inflight = 1"), "radius.max_acct_inflight"),
             (plain.clone(), radius("status_server = false"), "radius.status_server"),
+            (plain.clone(), radius("recv_buffer_bytes = 8388608"), "radius.recv_buffer_bytes"),
             (plain.clone(), tacacs(""), "[tacacs]"),
             (tacacs(""), tacacs("bind = \"127.0.0.1\""), "tacacs.bind"),
             (tacacs(""), tacacs("port = 1"), "tacacs.port"),

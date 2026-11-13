@@ -30,6 +30,9 @@ pub const NETDEV_BACKLOG: u64 = 16384;
 
 const MIB: u64 = 1024 * 1024;
 
+/// What the reason of a system default receive buffer adds.
+const SET_IT_INSTEAD: &str = "Setting [radius] recv_buffer_bytes instead leaves only the limit to raise";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
     Linux,
@@ -72,6 +75,8 @@ pub struct Inputs {
     /// What the extensions report: a name and the connections it may hold open.
     pub extension_connections: Vec<(String, usize)>,
     pub pin_threads: bool,
+    /// `[radius] recv_buffer_bytes`; `None` when unset.
+    pub recv_buffer: Option<u64>,
 }
 
 impl Inputs {
@@ -85,6 +90,7 @@ impl Inputs {
             cluster_nodes: 0,
             extension_connections: Vec::new(),
             pin_threads: false,
+            recv_buffer: None,
         }
     }
 
@@ -102,6 +108,7 @@ impl Inputs {
             cluster_nodes: config.cluster.nodes.len(),
             extension_connections,
             pin_threads: config.runtime.pin_threads,
+            recv_buffer: config.radius.as_ref().and_then(|radius| radius.recv_buffer_bytes).map(|bytes| bytes as u64),
         }
     }
 }
@@ -118,6 +125,8 @@ pub struct Needs {
     /// `[radius] sockets`; `None` without `[radius]`.
     pub sockets: Option<usize>,
     pub pin_threads: bool,
+    /// `[radius] recv_buffer_bytes`; `None` when unset or without `[radius]`.
+    pub recv_buffer: Option<u64>,
 }
 
 pub fn needs(inputs: &Inputs) -> Needs {
@@ -129,6 +138,7 @@ pub fn needs(inputs: &Inputs) -> Needs {
         tcp_listen: inputs.tacacs_connections.is_some() || !inputs.extension_connections.is_empty(),
         sockets: inputs.radius.map(|(_, sockets)| sockets),
         pin_threads: inputs.pin_threads,
+        recv_buffer: inputs.radius.and(inputs.recv_buffer),
     }
 }
 
@@ -242,18 +252,35 @@ fn sysctl_check(platform: Platform, readings: &Readings, name: &'static str, tit
 
 pub fn advise(platform: Platform, readings: &Readings, needs: &Needs) -> Report {
     let mut checks = Vec::new();
-    if let Some(buffer) = needs.receive_buffer {
-        match platform {
+    match (needs.receive_buffer, needs.recv_buffer) {
+        (Some(buffer), None) => match platform {
             Platform::Linux => {
-                checks.push(sysctl_check(platform, readings, "net.core.rmem_default", "UDP receive buffer", buffer, "rradius does not set SO_RCVBUF, so every RADIUS socket gets this size; it should hold its share of max_auth_inflight requests".to_string()));
+                checks.push(sysctl_check(platform, readings, "net.core.rmem_default", "UDP receive buffer", buffer, format!("rradius does not set SO_RCVBUF without [radius] recv_buffer_bytes, so every RADIUS socket gets this size; it should hold its share of max_auth_inflight requests. {SET_IT_INSTEAD}")));
                 checks.push(sysctl_check(platform, readings, "net.core.rmem_max", "Largest receive buffer", buffer, "the most a socket may ask for; kept at least the default so the two agree".to_string()));
             }
             Platform::MacOs | Platform::FreeBsd => {
                 // First: the system refuses a recvspace this limit does not allow.
                 checks.push(sysctl_check(platform, readings, "kern.ipc.maxsockbuf", "Largest socket buffer", 2 * buffer, "the receive buffer counts its bookkeeping against this limit too, so twice the buffer; raise it before recvspace".to_string()));
-                checks.push(sysctl_check(platform, readings, "net.inet.udp.recvspace", "UDP receive buffer", buffer, "every RADIUS socket gets this size; it should hold its share of max_auth_inflight requests".to_string()));
+                checks.push(sysctl_check(platform, readings, "net.inet.udp.recvspace", "UDP receive buffer", buffer, format!("every RADIUS socket gets this size without [radius] recv_buffer_bytes; it should hold its share of max_auth_inflight requests. {SET_IT_INSTEAD}")));
             }
+        },
+        (Some(buffer), Some(configured)) => {
+            checks.push(match platform {
+                Platform::Linux => sysctl_check(platform, readings, "net.core.rmem_max", "Largest receive buffer", configured, "every RADIUS socket asks for [radius] recv_buffer_bytes, and the system cuts it down to this limit".to_string()),
+                Platform::MacOs | Platform::FreeBsd => sysctl_check(platform, readings, "kern.ipc.maxsockbuf", "Largest socket buffer", 2 * configured, "every RADIUS socket asks for [radius] recv_buffer_bytes, and the system refuses it above this limit, which counts bookkeeping too, so twice the buffer".to_string()),
+            });
+            let ok = configured >= buffer;
+            checks.push(Check {
+                title: "Receive buffer of each RADIUS socket ([radius] recv_buffer_bytes)".to_string(),
+                current: Ok(configured.to_string()),
+                suggested: Some(buffer.to_string()),
+                ok,
+                why: "it should hold the socket's share of max_auth_inflight requests".to_string(),
+                now: None,
+                persist: (!ok).then(|| format!("the configuration file: recv_buffer_bytes = {buffer} in [radius], then restart")),
+            });
         }
+        (None, _) => {}
     }
     let open_files = suggested_open_files(needs.open_files);
     let why = format!("the configuration may hold about {} files and connections open at once; twice that, at least {MIN_OPEN_FILES}", needs.open_files);
@@ -299,12 +326,16 @@ pub fn advise(platform: Platform, readings: &Readings, needs: &Needs) -> Report 
         let name = "net.core.netdev_max_backlog";
         match &softnet_drops {
             Some(Ok(drops)) if *drops > 0 => checks.push(sysctl_check(platform, readings, name, "Network device backlog", NETDEV_BACKLOG, format!("{drops} packets were dropped before reaching a socket"))),
-            _ => checks.push(Check {
+            other => checks.push(Check {
                 title: format!("Network device backlog ({name})"),
                 current: readings.get(name).map(|value| value.to_string()),
                 suggested: None,
                 ok: true,
-                why: "no change while no packet is dropped before reaching a socket".to_string(),
+                why: if matches!(other, Some(Err(_))) {
+                    "no change suggested while the packets dropped before reaching a socket cannot be read".to_string()
+                } else {
+                    "no change while no packet is dropped before reaching a socket".to_string()
+                },
                 now: None,
                 persist: None,
             }),
@@ -372,7 +403,7 @@ impl fmt::Display for Report {
         match &self.udp_drops {
             Ok(0) => {
                 writeln!(f, "UDP packets dropped because a receive buffer was full, since the system started: 0")?;
-                writeln!(f, "  The receive buffers need no change at present.")?;
+                writeln!(f, "  The receive buffers need no change at present; the suggestions below are for a higher load.")?;
             }
             Ok(drops) => {
                 writeln!(f, "UDP packets dropped because a receive buffer was full, since the system started: {drops}")?;
@@ -519,7 +550,7 @@ mod tests {
     use super::*;
 
     fn inputs() -> Inputs {
-        Inputs { radius: Some((4096, 8)), tacacs_connections: Some(1024), read_connections: 16, cluster_nodes: 3, extension_connections: vec![("RadSec".to_string(), 2048)], pin_threads: false }
+        Inputs { radius: Some((4096, 8)), tacacs_connections: Some(1024), read_connections: 16, cluster_nodes: 3, extension_connections: vec![("RadSec".to_string(), 2048)], pin_threads: false, recv_buffer: None }
     }
 
     #[test]
@@ -602,7 +633,9 @@ mod tests {
         assert_eq!(rmem.persist.as_deref(), Some("/etc/sysctl.d/90-rradius.conf: net.core.rmem_default = 4194304"));
         let text = report.to_string();
         assert!(text.starts_with("rradius tuning advice for Linux\n\n"), "{text}");
-        assert!(text.contains("dropped because a receive buffer was full, since the system started: 0\n  The receive buffers need no change at present."), "{text}");
+        assert!(text.contains("dropped because a receive buffer was full, since the system started: 0\n  The receive buffers need no change at present; the suggestions below are for a higher load.\n"), "{text}");
+        assert!(rmem.why.contains("Setting [radius] recv_buffer_bytes instead"), "{rmem:?}");
+        assert!(check(&report, "[radius] recv_buffer_bytes").is_err(), "only when it is set");
         assert!(text.contains("Packets dropped before reaching a socket, since the system started: 0"), "{text}");
         assert!(text.contains("  now:       sysctl -w net.core.rmem_default=4194304\n"), "{text}");
         assert!(text.trim_end().ends_with("confirm with the dropped packet counts above."), "{text}");
@@ -649,6 +682,47 @@ mod tests {
         let report = advise(Platform::Linux, &readings, &needs(&inputs()));
         let backlog = check(&report, "netdev_max_backlog")?;
         assert_eq!((backlog.suggested.as_deref(), backlog.now.as_deref()), (Some("16384"), Some("sysctl -w net.core.netdev_max_backlog=16384")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_softnet_drops_unreadable() -> Result<(), String> {
+        let mut readings = linux_readings();
+        readings.set(SOFTNET_DROPS, Err("/proc/net/softnet_stat: denied".to_string()));
+        let report = advise(Platform::Linux, &readings, &needs(&inputs()));
+        let backlog = check(&report, "netdev_max_backlog")?;
+        assert_eq!((backlog.suggested.as_deref(), backlog.now.as_deref()), (None, None));
+        assert!(backlog.why.contains("cannot be read"), "{backlog:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_linux_with_recv_buffer_bytes() -> Result<(), String> {
+        let report = advise(Platform::Linux, &linux_readings(), &needs(&Inputs { recv_buffer: Some(2097152), ..inputs() }));
+        let limit = check(&report, "net.core.rmem_max")?;
+        assert_eq!((limit.suggested.as_deref(), limit.now.as_deref()), (Some("2097152"), Some("sysctl -w net.core.rmem_max=2097152")));
+        assert!(check(&report, "net.core.rmem_default").is_err(), "the default is not used");
+        let configured = check(&report, "[radius] recv_buffer_bytes")?;
+        assert_eq!((configured.current.clone(), configured.suggested.as_deref(), configured.ok), (Ok("2097152".to_string()), Some("4194304"), false));
+        assert_eq!(configured.now, None);
+        assert!(configured.persist.as_deref().is_some_and(|persist| persist.contains("recv_buffer_bytes = 4194304")), "{configured:?}");
+        // At or above the suggestion it is ok.
+        let enough = advise(Platform::Linux, &linux_readings(), &needs(&Inputs { recv_buffer: Some(8388608), ..inputs() }));
+        let configured = check(&enough, "[radius] recv_buffer_bytes")?;
+        assert!(configured.ok && configured.persist.is_none());
+        // Without [radius] there is no receive buffer to check.
+        let none = advise(Platform::Linux, &linux_readings(), &needs(&Inputs { radius: None, recv_buffer: Some(2097152), ..inputs() }));
+        assert!(check(&none, "rmem").is_err() && check(&none, "recv_buffer_bytes").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_macos_with_recv_buffer_bytes() -> Result<(), String> {
+        let report = advise(Platform::MacOs, &bsd_readings("kern.ipc.somaxconn"), &needs(&Inputs { radius: Some((4096, 1)), recv_buffer: Some(4194304), ..inputs() }));
+        let limit = check(&report, "kern.ipc.maxsockbuf")?;
+        assert_eq!((limit.suggested.as_deref(), limit.now.as_deref()), (Some("8388608"), Some("sysctl -w kern.ipc.maxsockbuf=8388608")));
+        assert!(check(&report, "net.inet.udp.recvspace").is_err(), "the default is not used");
+        assert!(check(&report, "[radius] recv_buffer_bytes").is_ok());
         Ok(())
     }
 

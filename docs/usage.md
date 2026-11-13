@@ -406,6 +406,7 @@ acct_port = 1813     # 預設 1813
 max_auth_inflight = 4096  # 預設 4096，同時處理的認證請求數
 max_acct_inflight = 4096  # 預設 4096，同時處理的計費請求數
 # sockets = 7       # 每個位址和 port 開幾個 socket；Linux 預設等於工作執行緒數，其他平台只能 1
+# recv_buffer_bytes = 4194304  # 每個 socket 的接收緩衝（SO_RCVBUF）；省略時用系統預設值
 
 [[radius.clients]]
 name = "core-switches"          # 選填；沒有時以 address 當名稱
@@ -443,6 +444,15 @@ secret_file = "router-1.secret"
 - **同一個使用者的另一個程序也能綁同一個 port。** SO_REUSEPORT 讓有效 UID 相同、也開了這個選項的程序共用 port，封包會分給兩邊。用同一份設定再啟動一個 rradius 時，它會先在叢集的 port 失敗而結束，碰不到 RADIUS port；但叢集 port 不同、RADIUS port 相同的另一份設定就會分走流量。請用專用帳號執行，需要以前的行為時設 `sockets = 1`（這時 port 被占用就啟動失敗）。
 - 改了要重新啟動，SIGHUP 時會記錄需要重啟的設定。
 - 量測見 2.4 節。
+
+**`recv_buffer_bytes`：每個 socket 的接收緩衝。**
+
+- 省略時不設定 `SO_RCVBUF`，每個 socket 拿到系統預設值（Linux `net.core.rmem_default`，macOS、FreeBSD `net.inet.udp.recvspace`），和以前相同。
+- 設定後，每個位址的認證和計費 port、每一個 `sockets`，都以這個大小設定 `SO_RCVBUF`。系統只需允許這個上限（Linux `net.core.rmem_max`，macOS、FreeBSD `kern.ipc.maxsockbuf`），不必調高影響所有程式的系統預設值。範圍 4096 到 1073741824，超出時啟動失敗。
+- 啟動時記錄 `RADIUS: receive buffer <實際大小> bytes on each socket (asked <設定值>)`。Linux 讀回的是設定值的兩倍（核心把記帳空間算在內），這是正常的。
+- **拿不到時只記警告，伺服器照常服務。** Linux 會把它截到 `rmem_max`，macOS、FreeBSD 超過上限時拒絕、socket 維持系統預設值；兩者都記一行 WARN，寫出要調的 sysctl。同一份設定部署到上限較低的機器也能啟動，`rradius-server tuning`（8.1 節）會列出上限不足。
+- 記憶體用量的上限是 `recv_buffer_bytes` × `sockets` × 位址數 × 2 個 port，例如 14 個 socket、一個位址、8 MiB 是 224 MiB。緩衝區只在封包堆積時才實際占用。
+- 改了要重新啟動，SIGHUP 時會記錄需要重啟的設定。
 
 - 用戶端以「最長前綴」比對來源位址，與列出順序無關；同一網段重複列出會啟動失敗。
 - 不在任何用戶端網段內的來源會被忽略（RADIUS 不回應，TACACS+ 直接關閉連線）。
@@ -1719,18 +1729,18 @@ rradius-server tuning            # 讀預設的設定檔；沒有時用預設設
 ```
 
 - **只讀取，不修改任何東西。** 不需要 root，不啟動叢集節點、不開任何埠。每一項列出目前值、建議值、原因、立即生效的指令（例如 `sysctl -w`）和重開機後仍保留要寫的檔案，由管理者自己執行。目前值已達建議時標 `ok`，不列指令；讀不到的值標 `unknown` 並寫出原因。
-- **先看有沒有真的丟包。** 報告開頭是開機以來 UDP 因接收緩衝滿而丟棄的數量（Linux `/proc/net/snmp` 的 `RcvbufErrors`，macOS、FreeBSD `netstat -s -p udp`）；Linux 另外列出還沒到 socket 就丟掉的數量（`/proc/net/softnet_stat`）。是 0 時接收緩衝不必調；不是 0 時調整後觀察它是否還在增加。
+- **先看有沒有真的丟包。** 報告開頭是開機以來 UDP 因接收緩衝滿而丟棄的數量（Linux `/proc/net/snmp` 的 `RcvbufErrors`，macOS、FreeBSD `netstat -s -p udp`）；Linux 另外列出還沒到 socket 就丟掉的數量（`/proc/net/softnet_stat`）。是 0 時接收緩衝目前不必調，下面的建議是給負載更高時用的；不是 0 時調整後觀察它是否還在增加。
 - **檢查的項目：**
 
   | 項目 | Linux | macOS | FreeBSD |
   | --- | --- | --- | --- |
-  | UDP 接收緩衝（有 `[radius]` 時） | `net.core.rmem_default`、`net.core.rmem_max` | `kern.ipc.maxsockbuf`（要先調）、`net.inet.udp.recvspace` | 同 macOS |
+  | UDP 接收緩衝（有 `[radius]` 時） | 沒設 `recv_buffer_bytes`：`net.core.rmem_default`、`net.core.rmem_max`；有設：`net.core.rmem_max` 和 `[radius] recv_buffer_bytes` | 沒設：`kern.ipc.maxsockbuf`（要先調）、`net.inet.udp.recvspace`；有設：`kern.ipc.maxsockbuf` 和 `[radius] recv_buffer_bytes` | 同 macOS |
   | 檔案描述元 | 程序的 `RLIMIT_NOFILE` | 同左，加上 `kern.maxfilesperproc` | 同 macOS |
   | TCP 等待連線佇列（有 TACACS+ 或 RadSec 時） | `net.core.somaxconn` | `kern.ipc.somaxconn` | `kern.ipc.soacceptqueue` |
-  | 網卡收包佇列 | `net.core.netdev_max_backlog`，只在 softnet 有丟包時建議 | 無 | 無 |
+  | 網卡收包佇列 | `net.core.netdev_max_backlog`，只在 softnet 有丟包時建議；讀不到 softnet 丟包數時不建議 | 無 | 無 |
   | 設定檔 | `[radius] sockets`、`[runtime] pin_threads` | `sockets` 只能是 1 | 同 macOS |
 
-- **Linux 調 `rmem_default`，不是只調 `rmem_max`。** rradius 不設定 `SO_RCVBUF`，每個 socket 拿到的是 `rmem_default`；`rmem_max` 只是程式自己要求時的上限。
+- **沒設 `recv_buffer_bytes` 時，Linux 要調 `rmem_default`，不是只調 `rmem_max`。** 這時 rradius 不設定 `SO_RCVBUF`，每個 socket 拿到的是 `rmem_default`，但它也會影響機器上所有程式的 UDP socket。**建議改設 `[radius] recv_buffer_bytes`（2.3 節）：** 之後只需上限 `rmem_max` 至少等於設定值（macOS、FreeBSD 的 `kern.ipc.maxsockbuf` 至少兩倍），報告也不再列系統預設值，改列一項比較 `recv_buffer_bytes` 和算出的建議值，比建議小時要改設定檔再重啟。
 - **建議值怎麼算：** 檔案描述元需求是 256（資料庫檔、記錄、叢集與連線池的估計量）加上 TACACS+ 的 `max_connections`、`read_connections`、每個叢集節點 2 條，以及 rradius-enterprise RadSec 的 2 倍 `max_connections`；建議上限是需求的兩倍，至少 65536。每個 UDP socket 的接收緩衝是 `max_auth_inflight` 平分到 `sockets` 個 socket、每個封包以 4096 位元組計，至少 4 MiB，取整到 MiB。TCP 等待佇列至少 1024，和程式要求的長度相同。
 - **這些建議值沒有經過量測，** 是起點：套用後用上面的丟包數確認。
 - **FreeBSD 不是發行的平台，** 那裡的建議依官方文件寫成、沒有在 FreeBSD 上實測過，報告開頭也會寫明。

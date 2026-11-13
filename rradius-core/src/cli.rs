@@ -365,6 +365,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         let radius_server = RadiusServer::from_state(radius.auth_addr, radius.acct_addr, state, dictionary)
             .with_more_binds(radius.more_binds.clone())
             .with_sockets(radius.sockets)
+            .with_recv_buffer(radius.recv_buffer_bytes)
             .with_limits(radius.max_auth_inflight, radius.max_acct_inflight)
             .with_status_server(radius.status_server)
             .with_eap(radius.eap.clone())

@@ -356,6 +356,10 @@ zh-TW = "計費埠。"
 en = "Receive sockets per address and port; Linux defaults to the worker threads, other systems allow only 1."
 zh-TW = "每個位址與埠的接收 socket 數；Linux 預設等於工作執行緒數，其他平台只能 1。"
 
+[fields."radius.recv_buffer_bytes"]
+en = "SO_RCVBUF in bytes for every RADIUS socket, 4096 to 1073741824; unset keeps the system default. Needs a restart."
+zh-TW = "每個 RADIUS socket 的 SO_RCVBUF（位元組），4096 到 1073741824；省略時用系統預設值。需要重啟才生效。"
+
 [fields."radius.max_auth_inflight"]
 en = "Authentication requests handled at once; more are dropped."
 zh-TW = "同時處理的認證請求數，超過的丟棄。"
