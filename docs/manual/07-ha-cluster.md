@@ -149,7 +149,19 @@ api = "10.99.0.1:8200"
 
 ### 換掉壞掉的節點
 
-新主機用同一個 `node_id`、同樣的位址和設定，空的 `data/` 啟動，從其他節點取得資料。**這個流程沒有實測過，** 請先在測試環境演練一次。目前不支援在執行中增減節點數量。
+主機壞掉、資料救不回來時，換一台新主機頂替它：
+
+1. 新主機用**同一個 `node_id`**、同樣的位址（`[[cluster.nodes]]` 裡它的 `raft`、`api`），設定檔、`raft.secret`、`api.secret`、`migrations/` 和其他台相同。
+2. `data/` 是空的。舊主機的資料還在但不能信任時，整個刪掉再啟動。
+3. 啟動。它從其他節點取得整份資料，記錄出現 `cluster node N has caught up with the cluster` 後才開始回應。
+4. 確認：`/metrics` 的 `rradius_cluster_applied_index` 和其他台相同，`rradius_cluster_leader` 是 1；用一個它停機期間新增的帳號在它上面登入一次。
+
+- **其他兩台要在線上。** 新節點要從多數節點取得資料；三台壞兩台時，見 [usage 2.2 節](../usage.md#22-cluster)〈沒有多數節點時重新啟動〉。
+- **壞掉的是 leader 也一樣。** 剩下兩台會自己選出新 leader：登入在 1 秒左右恢復，選舉那幾秒的寫入會逾時，計費進暫存後補送。
+- **leader 已經做過快照、丟掉舊紀錄也沒關係，** 新節點會直接收到快照。
+- **管理指令會等久一點。** leader 剛停止的那段時間，`rradius-server user` 這類指令會先連到舊 leader，等連線逾時才改連新的，可能要十幾秒才完成（上限 30 秒）。
+- **測過的範圍：** 2026-11-13 用 `compose.cluster.yaml` 的三節點，在一台主機的 Docker 上模擬主機壞掉（強制停止，刪掉容器和資料 volume）。換掉 follower 約 2 秒追上；設 `snapshot_every = 50`、寫入約 200 筆讓 leader 做過快照後換掉 leader，約 5 秒追上，三台的 applied index 相同，期間新增的帳號在每台都能登入。沒有在多台實體主機或經過 WireGuard 的環境測過。
+- **節點數量不能在執行中增減，** 只能一台換一台。
 
 ## 常見問題
 
