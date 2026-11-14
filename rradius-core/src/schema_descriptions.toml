@@ -174,8 +174,8 @@ en = "netlogon: NetBIOS name of the Active Directory domain."
 zh-TW = "netlogon：Active Directory 網域的 NetBIOS 名稱。"
 
 [fields."auth.handlers.servers"]
-en = "netlogon: domain controller names or addresses, tried in order."
-zh-TW = "netlogon：網域控制站的名稱或位址，依序嘗試。"
+en = "netlogon: domain controller DNS or NetBIOS names, tried in order. Not IP addresses: the logon names the controller, and Windows refuses an address."
+zh-TW = "netlogon：網域控制站的 DNS 或 NetBIOS 名稱，依序嘗試。不能用 IP 位址：登入請求要帶 DC 的名稱，Windows 不接受位址。"
 
 [fields."auth.handlers.port"]
 en = "netlogon: fixed Netlogon port of the domain controllers; without it the endpoint mapper on port 135 is asked."

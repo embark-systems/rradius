@@ -99,7 +99,7 @@ secret_api = "interop-api-secret-01234"
 [[auth.handlers]]
 type = "netlogon"
 domain = "CORP"
-servers = ["127.0.0.1"]
+servers = ["localhost"]
 computer_name = "RRADIUS1"
 machine_password_file = "machine.secret"
 connections = $1
@@ -173,6 +173,8 @@ accepted() {
 
 refused() {
     output=$(eapol "$1" "$2")
+    # A refusal is an EAP-Failure; an unanswered request also ends in FAILURE, after a timeout.
+    if echo "$output" | grep -q "timed out"; then echo "no answer (timed out)"; return 1; fi
     echo "$output" | grep -q '^FAILURE' || { echo "$output" | tail -30; return 1; }
 }
 

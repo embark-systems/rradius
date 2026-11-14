@@ -1501,16 +1501,21 @@ fn test_check_takes_a_group_reply_of_several_attributes() {
 }
 
 /// Scenario: Check does not contact a domain controller; a group reply attribute outside the
-/// dictionary still fails.
+/// dictionary still fails; and Address in servers.
 #[test]
 fn test_check_netlogon_handler() -> Result<(), String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let (config, _) = write_config(dir.path(), "return 'accept'", None);
     std::fs::write(dir.path().join("machine.pw"), "Machine-PW-1\n").map_err(|e| e.to_string())?;
     let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
-    // 192.0.2.1 is reserved for documentation: nothing answers there.
-    let handler = "[auth]\n[[auth.handlers]]\ntype = \"netlogon\"\ndomain = \"CORP\"\nservers = [\"192.0.2.1\"]\ncomputer_name = \"RRADIUS1\"\n\
-        machine_password_file = \"machine.pw\"\ntimeout_ms = 60000\n[[auth.handlers.group_reply]]\ngroup = \"S-1-5-21-1-2-3-1110\"\n";
+    // The controller's port takes connections and never answers: a check that contacted it would
+    // wait for timeout_ms.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = silent.local_addr().map_err(|e| e.to_string())?.port();
+    let handler = format!(
+        "[auth]\n[[auth.handlers]]\ntype = \"netlogon\"\ndomain = \"CORP\"\nservers = [\"localhost\"]\nport = {port}\ncomputer_name = \"RRADIUS1\"\n\
+         machine_password_file = \"machine.pw\"\ntimeout_ms = 60000\n[[auth.handlers.group_reply]]\ngroup = \"S-1-5-21-1-2-3-1110\"\n"
+    );
     std::fs::write(&config, format!("{text}{handler}attributes = {{ \"Filter-Id\" = \"staff\" }}\n")).map_err(|e| e.to_string())?;
     let started = std::time::Instant::now();
     let (code, _, stderr) = check_command(PROGRAM, &config);
@@ -1520,6 +1525,12 @@ fn test_check_netlogon_handler() -> Result<(), String> {
     let (code, _, stderr) = check_command(PROGRAM, &config);
     assert_ne!(code, Some(0));
     assert!(stderr.contains("Filter_Id"), "{stderr}");
+    let addressed = handler.replace("servers = [\"localhost\"]", "servers = [\"192.0.2.10\"]");
+    std::fs::write(&config, format!("{text}{addressed}attributes = {{ \"Filter-Id\" = \"staff\" }}\n")).map_err(|e| e.to_string())?;
+    let (code, _, stderr) = check_command(PROGRAM, &config);
+    assert_ne!(code, Some(0));
+    assert!(stderr.contains("servers") && stderr.contains("192.0.2.10"), "{stderr}");
+    drop(silent);
     Ok(())
 }
 
