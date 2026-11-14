@@ -436,7 +436,12 @@ async fn timed_query(source: &SqlSource, sql: &str, param: &str, timeout: Durati
             SqlSource::External(database) => database.query(sql, &[hiqlite::Param::Text(param.to_string())]).await,
         }
     };
-    tokio::time::timeout(timeout, rows).await.map_err(|_| crate::lua_engine::DbFailure::timed_out(timeout))?
+    tokio::time::timeout(timeout, rows).await.map_err(|_| {
+        if let SqlSource::External(database) = source {
+            database.note_timeout();
+        }
+        crate::lua_engine::DbFailure::timed_out(timeout)
+    })?
 }
 
 fn text(value: &DbValue) -> Option<String> {
@@ -1143,6 +1148,33 @@ mod tests {
         assert_eq!(outcome, Outcome::Reject);
         assert!(attributes.is_empty());
         assert!(unavailable, "a database that is down is not a wrong password");
+        assert_eq!(databases.get("billing").ok_or("not open")?.failures().unavailable, 1);
+        Ok(())
+    }
+
+    /// spec Failures by class: a login the handler's time limit cut short counts as the database
+    /// being unavailable.
+    #[tokio::test]
+    async fn test_sql_handler_external_timeout_counted() -> Result<(), String> {
+        use crate::config::{DatabaseKind, DatabaseTls};
+        use crate::external_db::test_support::{settings, silent_port};
+        let mut all = std::collections::BTreeMap::new();
+        let mut silent = settings(DatabaseKind::Postgresql, "127.0.0.1", silent_port().await?, DatabaseTls::Off);
+        silent.connect_timeout = Duration::from_secs(30);
+        all.insert("billing".to_string(), silent);
+        let databases = crate::external_db::ExternalDatabases::open(&all);
+        let database = databases.get("billing").cloned().ok_or("not open")?;
+        let handler = Handler::Sql {
+            source: SqlSource::External(database.clone()),
+            user_query: "SELECT password FROM users WHERE username = ?".to_string(),
+            certificate_query: None,
+            reply_query: None,
+            default_user: None,
+            timeout: Duration::from_millis(200),
+        };
+        let (_, _, _, unavailable) = handler.run(&pap("alice", "pw"), Some("alice"), &request()).await;
+        assert!(unavailable);
+        assert_eq!(database.failures(), crate::external_db::FailureTotals { unavailable: 1, mistake: 0, unknown: 0 });
         Ok(())
     }
 

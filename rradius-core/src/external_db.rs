@@ -6,12 +6,83 @@ use crate::lua_engine::{DbFailure, DbRow, DbValue};
 use sqlx::{Column, ConnectOptions, Row, ValueRef};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The connections of one `[databases.<name>]`.
 pub struct ExternalDatabase {
     name: String,
     kind: DatabaseKind,
     pool: Pool,
+    pool_size: usize,
+    failures: FailureCounts,
+    /// How the readiness check connects, outside the pool.
+    options: Options,
+    connect_timeout: std::time::Duration,
+    /// `required_for_ready`.
+    required: bool,
+    /// What the readiness check found last; false until it first succeeds.
+    reachable: std::sync::atomic::AtomicBool,
+}
+
+enum Options {
+    Mysql(sqlx::mysql::MySqlConnectOptions),
+    Postgres(sqlx::postgres::PgConnectOptions),
+}
+
+/// The readiness check's own connection.
+enum CheckConnection {
+    Mysql(sqlx::MySqlConnection),
+    Postgres(sqlx::PgConnection),
+}
+
+/// How often the readiness check runs, from the start of one to the start of the next.
+pub const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Failed checks in a row that make a reachable database unreachable.
+const FAILURES_TO_UNREACHABLE: u32 = 2;
+
+/// Where the readiness checks of a database stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Reachability {
+    pub(crate) reachable: bool,
+    failed_in_a_row: u32,
+}
+
+impl Reachability {
+    /// After a check that succeeded or not: one success makes the database reachable, and
+    /// `FAILURES_TO_UNREACHABLE` failures in a row unreachable.
+    pub(crate) fn after(self, ok: bool) -> Self {
+        if ok {
+            return Self { reachable: true, failed_in_a_row: 0 };
+        }
+        let failed_in_a_row = self.failed_in_a_row.saturating_add(1);
+        Self { reachable: self.reachable && failed_in_a_row < FAILURES_TO_UNREACHABLE, failed_in_a_row }
+    }
+}
+
+/// The failed calls of one database since the process started, by class.
+#[derive(Default)]
+struct FailureCounts {
+    unavailable: AtomicU64,
+    mistake: AtomicU64,
+    unknown: AtomicU64,
+}
+
+/// What `ExternalDatabase::failures` reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FailureTotals {
+    pub unavailable: u64,
+    pub mistake: u64,
+    pub unknown: u64,
+}
+
+/// What `ExternalDatabase::connections` reports: connections of the pool handed to a call, open
+/// and free, and the most it keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Connections {
+    pub in_use: usize,
+    pub idle: usize,
+    pub max: usize,
 }
 
 enum Pool {
@@ -47,6 +118,62 @@ impl ExternalDatabases {
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.0.keys().map(String::as_str)
     }
+
+    /// Every database, in name order.
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<ExternalDatabase>> {
+        self.0.values()
+    }
+}
+
+impl ExternalDatabases {
+    /// Starts the readiness check of each database with `required_for_ready`. A check stops
+    /// when its database is no longer held anywhere. Needs a Tokio runtime.
+    pub fn start_checks(&self) {
+        for database in self.iter().filter(|database| database.required) {
+            tokio::spawn(check_forever(Arc::downgrade(database)));
+        }
+    }
+}
+
+/// Checks a database every `CHECK_INTERVAL`, each check bounded by its connect timeout, and
+/// notes whether it can be reached.
+async fn check_forever(database: std::sync::Weak<ExternalDatabase>) {
+    let mut connection = None;
+    let mut state = Reachability::default();
+    let mut ticks = tokio::time::interval(CHECK_INTERVAL);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticks.tick().await;
+        let Some(database) = database.upgrade() else {
+            return;
+        };
+        let result = match tokio::time::timeout(database.connect_timeout, database.check(&mut connection)).await {
+            Ok(result) => result.map_err(|e| e.to_string()),
+            Err(_) => {
+                // Whatever the connection was doing, it cannot be trusted now.
+                connection = None;
+                Err(format!("no answer within {} ms", database.connect_timeout.as_millis()))
+            }
+        };
+        let next = state.after(result.is_ok());
+        let why = result.as_ref().err().map_or("", String::as_str);
+        let at_startup = state == Reachability::default() && next.failed_in_a_row == 1;
+        match (state.reachable, next.reachable) {
+            (true, false) => tracing::warn!("databases.{}: unreachable after {FAILURES_TO_UNREACHABLE} failed checks, the last: {why}; /readyz answers 503", database.name),
+            (false, true) => tracing::info!("databases.{}: reachable", database.name),
+            _ if at_startup => tracing::warn!("databases.{}: not reachable at startup: {why}; /readyz answers 503 until it is", database.name),
+            _ if result.is_err() => tracing::debug!("databases.{}: readiness check failed: {why}", database.name),
+            _ => {}
+        }
+        database.reachable.store(next.reachable, Ordering::Relaxed);
+        state = next;
+    }
+}
+
+impl std::fmt::Debug for ExternalDatabases {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.names()).finish()
+    }
 }
 
 /// Whether `host` is this machine, so that a connection to it without TLS stays on it.
@@ -56,7 +183,7 @@ fn is_loopback(host: &str) -> bool {
 
 impl ExternalDatabase {
     fn open(name: &str, settings: &DatabaseSettings) -> Self {
-        let pool = match settings.kind {
+        let (pool, options) = match settings.kind {
             DatabaseKind::Postgresql => {
                 // Not `new`: it reads `~/.pgpass`. The variables `new_without_pgpass` reads are
                 // overridden below wherever the configuration says something.
@@ -71,7 +198,8 @@ impl ExternalDatabase {
                 if let Some(ca_file) = &settings.ca_file {
                     options = options.ssl_root_cert(ca_file);
                 }
-                Pool::Postgres(pool_options(settings).connect_lazy_with(options.disable_statement_logging()))
+                let options = options.disable_statement_logging();
+                (Pool::Postgres(pool_options(settings).connect_lazy_with(options.clone())), Options::Postgres(options))
             }
             DatabaseKind::Mysql => {
                 let mut options = sqlx::mysql::MySqlConnectOptions::new().host(&settings.host).port(settings.port).database(&settings.database).username(&settings.user);
@@ -85,10 +213,81 @@ impl ExternalDatabase {
                 if let Some(ca_file) = &settings.ca_file {
                     options = options.ssl_ca(ca_file);
                 }
-                Pool::Mysql(pool_options(settings).connect_lazy_with(options.disable_statement_logging()))
+                let options = options.disable_statement_logging();
+                (Pool::Mysql(pool_options(settings).connect_lazy_with(options.clone())), Options::Mysql(options))
             }
         };
-        Self { name: name.to_string(), kind: settings.kind, pool }
+        Self {
+            name: name.to_string(),
+            kind: settings.kind,
+            pool,
+            pool_size: settings.pool_size,
+            failures: FailureCounts::default(),
+            options,
+            connect_timeout: settings.connect_timeout,
+            required: settings.required_for_ready,
+            reachable: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// For a database with `required_for_ready`, whether its readiness check last found it
+    /// reachable; `None` for the others, which are not checked.
+    pub fn reachable(&self) -> Option<bool> {
+        self.required.then(|| self.reachable.load(Ordering::Relaxed))
+    }
+
+    /// Runs `SELECT 1` on `connection`, connecting first when there is none. A failure leaves
+    /// none, so that the next check connects again.
+    async fn check(&self, connection: &mut Option<CheckConnection>) -> Result<(), sqlx::Error> {
+        use sqlx::ConnectOptions;
+        let result = async {
+            if connection.is_none() {
+                *connection = Some(match &self.options {
+                    Options::Mysql(options) => CheckConnection::Mysql(options.connect().await?),
+                    Options::Postgres(options) => CheckConnection::Postgres(options.connect().await?),
+                });
+            }
+            match connection {
+                Some(CheckConnection::Mysql(open)) => sqlx::query("SELECT 1").execute(&mut *open).await.map(drop),
+                Some(CheckConnection::Postgres(open)) => sqlx::query("SELECT 1").execute(&mut *open).await.map(drop),
+                None => Ok(()),
+            }
+        }
+        .await;
+        if result.is_err() {
+            *connection = None;
+        }
+        result
+    }
+
+    /// The failed calls since the process started, by class.
+    pub fn failures(&self) -> FailureTotals {
+        FailureTotals {
+            unavailable: self.failures.unavailable.load(Ordering::Relaxed),
+            mistake: self.failures.mistake.load(Ordering::Relaxed),
+            unknown: self.failures.unknown.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Counts a call its caller gave up on for want of time, which counts as the database being
+    /// unavailable.
+    pub fn note_timeout(&self) {
+        self.failures.unavailable.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts a call refused before it was sent, as the caller's mistake.
+    pub fn note_refused(&self) {
+        self.failures.mistake.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The pool's connections now. The two numbers sqlx gives are read one after the other, so a
+    /// connection handed out between them is not counted as in use rather than counted twice.
+    pub fn connections(&self) -> Connections {
+        let (size, idle) = match &self.pool {
+            Pool::Mysql(pool) => (pool.size() as usize, pool.num_idle()),
+            Pool::Postgres(pool) => (pool.size() as usize, pool.num_idle()),
+        };
+        Connections { in_use: size.saturating_sub(idle), idle, max: self.pool_size }
     }
 
     pub fn name(&self) -> &str {
@@ -103,7 +302,10 @@ impl ExternalDatabase {
     /// checks the number of values and bounds the time.
     pub async fn query(&self, sql: &str, params: &[hiqlite::Param]) -> Result<Vec<DbRow>, DbFailure> {
         // The SQL is the configuration's or the script's, as with `sql_query`; values are bound.
-        let statement = statement_for(self.kind, sql).map_err(DbFailure::mistake)?;
+        let statement = statement_for(self.kind, sql).map_err(|e| {
+            self.note_refused();
+            DbFailure::mistake(e)
+        })?;
         match &self.pool {
             Pool::Postgres(pool) => {
                 let mut connection = pool.acquire().await.map_err(|e| self.failure(&e, true))?;
@@ -121,7 +323,10 @@ impl ExternalDatabase {
     /// How many rows `sql` changed, with `params` bound as for `query`.
     pub async fn execute(&self, sql: &str, params: &[hiqlite::Param]) -> Result<u64, DbFailure> {
         // The SQL is the configuration's or the script's, as with `sql_query`; values are bound.
-        let statement = statement_for(self.kind, sql).map_err(DbFailure::mistake)?;
+        let statement = statement_for(self.kind, sql).map_err(|e| {
+            self.note_refused();
+            DbFailure::mistake(e)
+        })?;
         match &self.pool {
             Pool::Postgres(pool) => {
                 let mut connection = pool.acquire().await.map_err(|e| self.failure(&e, true))?;
@@ -140,7 +345,14 @@ impl ExternalDatabase {
     /// connection, which is never the statement's fault.
     fn failure(&self, error: &sqlx::Error, connecting: bool) -> DbFailure {
         let message = format!("database {}: {error}", self.name);
-        match classify(error, connecting) {
+        let class = classify(error, connecting);
+        let count = match class {
+            Class::Unavailable => &self.failures.unavailable,
+            Class::Mistake => &self.failures.mistake,
+            Class::Unknown => &self.failures.unknown,
+        };
+        count.fetch_add(1, Ordering::Relaxed);
+        match class {
             Class::Unavailable => DbFailure::database_unavailable(message),
             Class::Mistake => DbFailure::mistake(message),
             Class::Unknown => DbFailure::other(message),
@@ -350,6 +562,19 @@ pub(crate) mod test_support {
         DatabaseSettings { user: "rradius".to_string(), pool_size: 2, connect_timeout: Duration::from_millis(300), ..crate::test_support::database_settings(kind, host, port, "rradius", "pw", tls, None) }
     }
 
+    /// A port that accepts connections and never answers on them.
+    pub(crate) async fn silent_port() -> Result<u16, String> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        Ok(port)
+    }
+
     /// A port nothing listens on.
     pub(crate) fn closed_port() -> Result<u16, String> {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -381,7 +606,83 @@ mod tests {
             assert!(failure.to_string().contains(name), "{failure}");
             let failure = database.execute("DELETE FROM t", &[]).await.err().ok_or("it answered")?;
             assert!(failure.unavailable(), "{name}: {failure}");
+            assert_eq!(database.failures(), FailureTotals { unavailable: 2, mistake: 0, unknown: 0 }, "{name}");
         }
+        Ok(())
+    }
+
+    /// spec Failures by class: each failed call counts once under its class, a refused statement
+    /// and a call its caller gave up on included.
+    #[tokio::test]
+    async fn test_failure_counts() -> Result<(), String> {
+        let mut all = BTreeMap::new();
+        all.insert("billing".to_string(), settings(DatabaseKind::Postgresql, "127.0.0.1", closed_port()?, DatabaseTls::Off));
+        let databases = ExternalDatabases::open(&all);
+        let database = databases.get("billing").ok_or("missing")?;
+        assert_eq!(database.failures(), FailureTotals::default());
+        let refused = database.query("SELECT $1", &[]).await.err().ok_or("it was sent")?;
+        assert!(!refused.unavailable(), "{refused}");
+        assert_eq!(database.failures(), FailureTotals { unavailable: 0, mistake: 1, unknown: 0 });
+        drop(database.failure(&sqlx::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)), false));
+        drop(database.failure(&sqlx::Error::InvalidArgument("x".to_string()), false));
+        drop(database.failure(&sqlx::Error::RowNotFound, false));
+        database.note_timeout();
+        database.note_refused();
+        assert_eq!(database.failures(), FailureTotals { unavailable: 2, mistake: 3, unknown: 1 });
+        Ok(())
+    }
+
+    /// spec reachability: the example's outcomes in order.
+    #[test]
+    fn test_reachability() {
+        let after = |checks: &[bool]| checks.iter().fold(Reachability::default(), |state, ok| state.after(*ok)).reachable;
+        for (checks, reachable) in [
+            (&[][..], false),
+            (&[false][..], false),
+            (&[true][..], true),
+            (&[true, false][..], true),
+            (&[true, false, false][..], false),
+            (&[true, false, false, true][..], true),
+        ] {
+            assert_eq!(after(checks), reachable, "{checks:?}");
+        }
+    }
+
+    /// spec Not required and Check outcomes: only a required database is checked, a database
+    /// that cannot be reached stays unreachable, and the checks are not counted as failures.
+    #[tokio::test]
+    async fn test_checks() -> Result<(), String> {
+        let port = closed_port()?;
+        let mut required = settings(DatabaseKind::Postgresql, "127.0.0.1", port, DatabaseTls::Off);
+        required.required_for_ready = true;
+        let mut all = BTreeMap::new();
+        all.insert("billing".to_string(), required);
+        all.insert("legacy".to_string(), settings(DatabaseKind::Mysql, "127.0.0.1", port, DatabaseTls::Off));
+        let databases = ExternalDatabases::open(&all);
+        let (billing, legacy) = (databases.get("billing").ok_or("missing")?, databases.get("legacy").ok_or("missing")?);
+        assert_eq!((billing.reachable(), legacy.reachable()), (Some(false), None), "unreachable until a check succeeds");
+        let mut connection = None;
+        assert!(billing.check(&mut connection).await.is_err());
+        assert!(connection.is_none(), "the next check connects again");
+        let logged = crate::test_support::radius::logged_during(async {
+            databases.start_checks();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        })
+        .await;
+        assert_eq!((billing.reachable(), legacy.reachable()), (Some(false), None));
+        assert!(logged.contains("WARN") && logged.contains("databases.billing") && !logged.contains("databases.legacy"), "{logged}");
+        assert_eq!((billing.failures(), legacy.failures()), (FailureTotals::default(), FailureTotals::default()), "checks are not calls");
+        Ok(())
+    }
+
+    /// spec Before any call: nothing open or in use, and the most the pool keeps.
+    #[tokio::test]
+    async fn test_connections_before_any_call() -> Result<(), String> {
+        let mut all = BTreeMap::new();
+        all.insert("billing".to_string(), settings(DatabaseKind::Mysql, "127.0.0.1", closed_port()?, DatabaseTls::Off));
+        let databases = ExternalDatabases::open(&all);
+        let database = databases.get("billing").ok_or("missing")?;
+        assert_eq!(database.connections(), Connections { in_use: 0, idle: 0, max: 2 });
         Ok(())
     }
 

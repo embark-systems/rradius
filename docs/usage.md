@@ -747,7 +747,7 @@ port = 9812         # 預設
 | 路徑 | 回應 |
 | --- | --- |
 | `GET /livez` | 一律 200 `ok`：程序還在回應。不看資料庫或叢集 |
-| `GET /readyz` | 收到 SIGTERM 或 SIGINT、正在停止時是 503 `stopping`（2.16 節）；設了 `[cluster] stop_without_leader_ms`、而且沒有可用的 leader 超過這段時間時是 503 `no leader`，也就是節點故意不回應認證的時候（2.2 節〈資料庫不能用時〉）；其他時候 200 `ok` |
+| `GET /readyz` | 收到 SIGTERM 或 SIGINT、正在停止時是 503 `stopping`（2.16 節）；設了 `[cluster] stop_without_leader_ms`、而且沒有可用的 leader 超過這段時間時是 503 `no leader`，也就是節點故意不回應認證的時候（2.2 節〈資料庫不能用時〉）；設了 `required_for_ready` 的外部資料庫連不上時是 503 `database <名稱> unreachable`，多個時名稱依字母排序、以 `, ` 分隔（2.17 節）；其他時候 200 `ok`。三者同時成立時依序只回 `stopping`、`no leader`、資料庫 |
 
 - 內容都是 `text/plain` 的一行字。查詢字串不影響結果；GET 以外的方法回 405，其他路徑回 404。連線數、逾時和標頭大小的限制和 `/metrics` 共用。
 - 沒設 `stop_without_leader_ms` 時，除了停止中以外 `/readyz` 一直是 200：這時節點沒有 leader 也會用本機副本回應只讀的登入，算成未就緒反而會讓負載平衡器把所有節點都移出。
@@ -781,6 +781,10 @@ port = 9812         # 預設
 | `rradius_acct_spool_corrupt_total` | 損壞而改名保留的暫存檔 |
 | `rradius_acct_spool_bytes` | 等待重放的位元組數；持續大於 0 代表資料庫的資料落後 |
 | `rradius_netlogon_logons_total`、`rradius_netlogon_channel_setups_total`、`rradius_netlogon_open_connections` | `netlogon` 處理器（3.7 節） |
+| `rradius_external_db_failures_total{database="...",reason="unavailable\|mistake\|unknown"}` | 每個外部資料庫失敗的呼叫（2.17 節），`sql` 處理器和 `db_query`、`db_execute` 都算。`unavailable` 是資料庫無法使用（含逾時），`mistake` 是陳述式或值的錯（含送出前就被拒的，例如值的數量不符），`unknown` 是其他。`db_query` 寫了不存在的名稱不算；`required_for_ready` 的檢查也不算。沒有 `[databases]` 時不輸出 |
+| `rradius_external_db_connections{database="...",state="in_use\|idle"}` | 每個外部資料庫連線池的連線：`in_use` 是交給呼叫正在用的，`idle` 是開著閒置的。不含 `required_for_ready` 的檢查連線 |
+| `rradius_external_db_connections_max{database="..."}` | 連線池的上限，也就是 `pool_size`。`in_use` 一直等於它時，呼叫在排隊等連線 |
+| `rradius_external_db_reachable{database="..."}` | 只有設了 `required_for_ready` 的資料庫才有：檢查連得上是 1，否則 0（2.17 節） |
 | `rradius_reload_total{result="ok\|error"}` | 重新載入的結果 |
 | `rradius_reload_last_success_timestamp_seconds` | 上次成功重新載入的時間，還沒有時是 0 |
 | `rradius_radius_requests_in_progress{kind="auth\|acct"}` | 目前正在處理的登入、計費請求數 |
@@ -807,10 +811,11 @@ rradius-server status [--config <path>] [--watch] [--json] [--cluster]
 
 | 段落（`key`） | 內容 |
 | --- | --- |
-| Node（`node`） | `/readyz` 的回答（`ok`、`stopping`、`no leader`）、叢集狀態（是不是 leader、有沒有 leader、追上了沒、applied index、沒有 leader 的秒數）、版本、已執行秒數 |
+| Node（`node`） | `/readyz` 的回答（`ok`、`stopping`、`no leader`、`database ... unreachable`）、叢集狀態（是不是 leader、有沒有 leader、追上了沒、applied index、沒有 leader 的秒數）、版本、已執行秒數 |
 | Reload（`reload`） | 重新載入成功與失敗的次數、上次成功的時間 |
 | RADIUS（`radius`） | 登入與計費請求、四種回應、重送、五種丟棄原因的每秒量，正在處理的請求數與上限，以及這段時間登入與計費回應時間的 p50、p99（毫秒） |
 | Busiest RADIUS clients（`radius_top_clients`） | 這段時間回應最多的 5 個 client 與它們的每秒回應量 |
+| External databases（`databases`） | 有 `[databases]` 時才有。每個資料庫（依名稱）的連線使用中、閒置、上限（`<名稱>.in_use`、`.idle`、`.max`），三類失敗的每秒量（`<名稱>.failures_unavailable`、`.failures_mistake`、`.failures_unknown`），以及設了 `required_for_ready` 時連不連得上（`<名稱>.reachable`，`yes` 或 `no`） |
 | TACACS+（`tacacs`） | 開著的連線、三種請求與格式錯誤的每秒量，以及三種請求這段時間回應時間的 p50、p99（毫秒） |
 | EAP（`eap`） | 進行中的 EAP 對話 |
 | Accounting spool（`acct_spool`） | 等待重放的位元組、重放、放棄與沒寫入暫存的每秒量 |
@@ -853,7 +858,7 @@ RADIUS
 
 | 結束碼 | 意思 |
 | --- | --- |
-| 0 | 印出了結果。`/readyz` 回 503（停止中、沒有 leader）也是 0，狀態寫在輸出裡 |
+| 0 | 印出了結果。`/readyz` 回 503（停止中、沒有 leader、必要的資料庫連不上）也是 0，狀態寫在輸出裡 |
 | 2 | 參數錯誤、設定檔讀不了，或設定檔沒有 `[metrics]` |
 | 3 | 連不上 metrics 埠、2 秒內沒有回答，或回答不像 rradius 的格式。`--watch` 時不會因此結束，而是每秒重試並在 stderr 說明；恢復後第一次的每秒量是從上一次成功取樣起算的平均，開頭的秒數就是這段時間 |
 
@@ -1286,6 +1291,7 @@ tls = "verify"                   # 預設；"verify" 或 "off"
 ca_file = "db-ca.pem"            # 選填；沒有時信任系統的根憑證
 pool_size = 8                    # 預設，每個節點最多幾條連線
 connect_timeout_ms = 5000        # 預設，建立一條連線的時限
+required_for_ready = false       # 預設；true 時連不上就讓 /readyz 回 503
 ```
 
 - **名稱**只能有 ASCII 字母、數字和 `_`，例如 `billing`。不支援連線 URL。
@@ -1295,6 +1301,11 @@ connect_timeout_ms = 5000        # 預設，建立一條連線的時限
 - **連線池。** 啟動時只建立連線池、不連線，第一個用到的請求才連。所以資料庫沒開也能啟動，只有用到它的請求失敗。每個節點各有一個池，資料庫允許的連線數至少要是節點數 × `pool_size`。
 - **要重啟才套用。** 重新載入（SIGHUP）會列出 `[databases]` 需要重啟，執行中的連線池繼續用。處理器用到重啟前不存在的名稱時，重新載入失敗並說要重啟。
 - **`pool_size` 決定滿載時的吞吐，** 約為 `pool_size` ÷ 一次查詢的來回時間。量測（Apple M4 Max，PostgreSQL 17 在本機 Docker，`sql` 處理器的 PAP，明文密碼）：`pool_size = 8` 約 13300 次/秒，32 約 19900 次/秒；同一台機器用內建資料庫約 48000 次/秒。每秒 2000 次時兩者的 p99 都約 0.35 ms。網路較遠時每次來回較久，要更多連線才有同樣吞吐。
+- **`required_for_ready` 與 `/readyz`。** 設為 `true` 的資料庫，節點從啟動起在背景檢查：用一條不在連線池裡的連線，每 5 秒（從上一次開始算）執行 `SELECT 1`，沒有連線或上次失敗時先重新連線，每次以 `connect_timeout_ms` 為上限。連續 2 次失敗算連不上，1 次成功就恢復；啟動後第一次檢查成功前也算連不上，所以帳號資料庫連不上的新節點不會先收到流量。連不上時 `/readyz` 回 503 `database <名稱> unreachable`（2.8 節），`/livez` 不受影響，請求照常處理（用到它的照樣失敗）；狀態改變時記 WARN（連不上）或 INFO（恢復），其他失敗的檢查只在 debug 記錄。
+  - **多久會發現：** 最壞約 2 ×（5 秒 + `connect_timeout_ms`），預設約 20 秒；恢復最多 5 秒 + `connect_timeout_ms`。量測（OrbStack Docker 的 PostgreSQL 17，`connect_timeout_ms = 1000`，停止容器）：9.7 秒後回 503，資料庫回應後 0.4 秒回 200。資料庫主機斷線、封包被丟棄時每次檢查會用滿 `connect_timeout_ms`，接近最壞值。間隔與次數目前不能設定。
+  - **為什麼另開連線、在背景檢查：** 連線池滿了（流量大、查詢慢）不代表資料庫連不上，用池裡的連線檢查會讓所有節點在尖峰時一起變成未就緒；看請求的失敗則在負載平衡器停止送流量後就沒有機會恢復；在每次 `/readyz` 時才連線又可能超過 Kubernetes 探針預設的 1 秒。
+  - **何時該設：** 只有「沒有這個資料庫就無法正確回應」時。所有節點共用同一個資料庫，它停止時所有節點都會未就緒，負載平衡器沒有地方可送；只用在少數請求的資料庫不要設。每個節點會多佔它一條連線，資料庫允許的連線數要加上。
+  - **指標：** `rradius_external_db_failures_total`、`rradius_external_db_connections`、`rradius_external_db_connections_max` 每個資料庫都有，`rradius_external_db_reachable` 只有設了的才有（2.8 節）；`status` 的 External databases 段落也會列出。
 - **時限。** `sql` 處理器的 `timeout_ms` 包括等連線池給連線的時間。腳本的 `db_query`、`db_execute` 和 `sql_query`、`sql_execute` 共用一個請求的 `[lua] query_timeout_ms`。
 - **失敗時。** 連不上、逾時、TLS 失敗，以及表示資料庫忙的錯誤（PostgreSQL 的 SQLSTATE 08、53、57 類和 40001、40P01；MySQL 的 1040、1053、1205、1213、1317）算資料庫無法使用：登入不回應，讓設備重送或改送別台；設了計費暫存（2.11 節）時計費寫進暫存，恢復後重放。語法錯誤、約束違反（例如主鍵重複）這類陳述式本身的錯誤，登入時拒絕；計費時不回應，從暫存重放時移到 `rejected.log`。
 - **佔位符。** 只用 `?`，依序綁定；PostgreSQL 會改成 `$1`、`$2` 送出，MySQL 原樣送出。單引號字串、雙引號名稱和註解（`--`、`/* */`）裡的 `?` 不算；PostgreSQL 的 `::text` 轉型可以用。`?1`、`:name`、`$name` 啟動或呼叫時就會出錯。不支援的寫法：方括號裡的 `?`（例如 PostgreSQL 陣列的 `a[?]`，方括號會被當成名稱的引號，數量不符而出錯）、PostgreSQL 的 `$$` 字串（裡面的 `?` 會被當成佔位符）、PostgreSQL 的 `?` 運算子（jsonb 的 `?`、`?|`、`?&`，請改用 `jsonb_exists()` 這類函式）、MySQL 用反斜線跳脫的引號（`'it\'s'`，請寫成 `'it''s'`）。

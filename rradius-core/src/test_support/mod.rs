@@ -35,6 +35,7 @@ pub fn database_settings(kind: crate::config::DatabaseKind, host: &str, port: u1
         ca_file,
         pool_size: 4,
         connect_timeout: Duration::from_secs(5),
+        required_for_ready: false,
     }
 }
 

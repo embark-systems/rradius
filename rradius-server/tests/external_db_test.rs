@@ -336,6 +336,116 @@ async fn test_mysql() -> Result<(), String> {
     Ok(())
 }
 
+/// `GET path` on the metrics port: the status code and the body.
+fn http_get(port: u16, path: &str) -> Result<(u16, String), String> {
+    use std::io::{Read, Write};
+    let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
+    socket.write_all(format!("GET {path} HTTP/1.1\r\n\r\n").as_bytes()).map_err(|e| e.to_string())?;
+    let mut response = String::new();
+    socket.read_to_string(&mut response).map_err(|e| e.to_string())?;
+    let status = response.get(9..12).and_then(|code| code.parse().ok()).ok_or_else(|| format!("no status: {response}"))?;
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body).to_string();
+    Ok((status, body))
+}
+
+/// The value of `sample` in `/metrics` on `port`.
+fn metric(port: u16, sample: &str) -> Result<f64, String> {
+    let (_, body) = http_get(port, "/metrics")?;
+    let line = body.lines().find_map(|line| line.strip_prefix(sample)?.strip_prefix(' ')).ok_or_else(|| format!("no {sample}"))?;
+    line.trim().parse().map_err(|e| format!("{sample}: {e}"))
+}
+
+/// Waits up to `limit` for `/readyz` to answer `status`; how long that took.
+fn wait_readyz(port: u16, status: u16, limit: Duration) -> Result<Duration, String> {
+    let started = Instant::now();
+    loop {
+        let (now, body) = http_get(port, "/readyz")?;
+        if now == status {
+            return Ok(started.elapsed());
+        }
+        if started.elapsed() > limit {
+            return Err(format!("/readyz still {now} {body:?} after {limit:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// spec Required database stopped, Pool in use, and Failures by class against a real server:
+/// `/readyz` follows the database with `required_for_ready`, not the one without.
+#[tokio::test]
+#[ignore]
+async fn test_postgresql_readiness() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    certificates(dir.path())?;
+    let postgres = start_postgres(dir.path(), POSTGRES_INIT)?;
+    let mut all = BTreeMap::new();
+    all.insert("pg".to_string(), DatabaseSettings { pool_size: 8, ..settings(DatabaseKind::Postgresql, postgres.port, "rradius", DatabaseTls::Off, None) });
+    let databases = ExternalDatabases::open(&all);
+    wait_ready(&databases, "pg").await?;
+
+    // spec Pool in use: connections opened and freed, then two held.
+    let pg = databases.get("pg").ok_or("no pg")?.clone();
+    let sleep = move |seconds: &'static str| {
+        let pg = pg.clone();
+        async move { pg.query(&format!("SELECT 1 FROM pg_sleep({seconds})"), &[]).await.map(drop).map_err(|e| e.to_string()) }
+    };
+    let (a, b, c) = tokio::join!(sleep("0.3"), sleep("0.3"), sleep("0.3"));
+    a?;
+    b?;
+    c?;
+    let held = tokio::spawn(async move { tokio::join!(sleep("2"), sleep("2")) });
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let now = databases.get("pg").ok_or("no pg")?.connections();
+    // The pool opened what it needed before, `wait_ready`'s connection among them: those not
+    // held are idle.
+    assert!(now.in_use == 2 && now.idle >= 1 && now.in_use + now.idle <= now.max && now.max == 8, "{now:?}");
+    let (a, b) = held.await.map_err(|e| e.to_string())?;
+    a?;
+    b?;
+
+    let metrics_port = free_port();
+    let connect_timeout = Duration::from_secs(1);
+    let databases_and_auth = format!(
+        "[metrics]\nport = {metrics_port}\n\
+         [databases.billing]\nkind = \"postgresql\"\nhost = \"127.0.0.1\"\nport = {}\ndatabase = \"radius\"\nuser = \"rradius\"\npassword = \"{PASSWORD}\"\ntls = \"off\"\nconnect_timeout_ms = 1000\nrequired_for_ready = true\n\
+         [databases.legacy]\nkind = \"postgresql\"\nhost = \"127.0.0.1\"\nport = {}\ndatabase = \"radius\"\nuser = \"rradius\"\ntls = \"off\"\n\
+         [auth]\n[[auth.handlers]]\ntype = \"sql\"\ndatabase = \"billing\"\nuser_query = \"SELECT password FROM radcheck WHERE username = ?\"\ntimeout_ms = 2000\n",
+        postgres.port,
+        free_port()
+    );
+    let server = start_server(&databases_and_auth, "return 'accept'", false)?;
+    // The first check runs at once; `legacy`, which nothing listens for, is not checked.
+    wait_readyz(metrics_port, 200, Duration::from_secs(10))?;
+    assert_eq!(metric(metrics_port, "rradius_external_db_reachable{database=\"billing\"}")?, 1.0);
+    assert!(metric(metrics_port, "rradius_external_db_reachable{database=\"legacy\"}").is_err(), "legacy is not required");
+    let reply = login(&server, "alice", "secret", Duration::from_secs(10))?.ok_or("no answer")?;
+    assert_eq!(reply.code, radius::ACCESS_ACCEPT);
+
+    // spec Required database stopped.
+    let unavailable = "rradius_external_db_failures_total{database=\"billing\",reason=\"unavailable\"}";
+    let before = metric(metrics_port, unavailable)?;
+    postgres.stop()?;
+    let worst = 2 * (check_interval() + connect_timeout);
+    let took = wait_readyz(metrics_port, 503, worst)?;
+    let (_, body) = http_get(metrics_port, "/readyz")?;
+    assert_eq!(body, "database billing unreachable\n");
+    assert_eq!(http_get(metrics_port, "/livez")?.0, 200);
+    assert_eq!(metric(metrics_port, "rradius_external_db_reachable{database=\"billing\"}")?, 0.0);
+    assert!(login(&server, "alice", "secret", Duration::from_secs(4))?.is_none(), "answered without the database");
+    assert!(metric(metrics_port, unavailable)? > before, "the failed login is counted");
+    eprintln!("unreachable after {took:?} (at most {worst:?})");
+
+    postgres.start()?;
+    wait_ready(&databases, "pg").await?;
+    let took = wait_readyz(metrics_port, 200, check_interval() + connect_timeout)?;
+    eprintln!("ready again {took:?} after the database answered");
+    Ok(())
+}
+
+fn check_interval() -> Duration {
+    rradius_core::external_db::CHECK_INTERVAL
+}
+
 /// spec Database not reachable at startup: the server starts and serves; only what uses the
 /// database fails. Needs no Docker, so it is not ignored.
 #[test]

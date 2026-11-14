@@ -81,6 +81,8 @@ pub struct DatabaseSettings {
     pub ca_file: Option<PathBuf>,
     pub pool_size: usize,
     pub connect_timeout: Duration,
+    /// Whether `/readyz` answers 503 while the database cannot be reached.
+    pub required_for_ready: bool,
 }
 
 // By hand, so that a debug print of the configuration does not show the password.
@@ -97,6 +99,7 @@ impl fmt::Debug for DatabaseSettings {
             .field("ca_file", &self.ca_file)
             .field("pool_size", &self.pool_size)
             .field("connect_timeout", &self.connect_timeout)
+            .field("required_for_ready", &self.required_for_ready)
             .finish()
     }
 }
@@ -577,6 +580,8 @@ struct RawDatabase {
     pool_size: usize,
     #[serde(default = "default_database_connect_timeout_ms")]
     connect_timeout_ms: u64,
+    #[serde(default)]
+    required_for_ready: bool,
 }
 
 fn default_database_tls() -> String {
@@ -1518,6 +1523,7 @@ fn databases(raw: BTreeMap<String, RawDatabase>, base: &Path) -> Result<BTreeMap
                 ca_file,
                 pool_size,
                 connect_timeout: Duration::from_millis(raw.connect_timeout_ms),
+                required_for_ready: raw.required_for_ready,
             },
         );
     }
@@ -2410,7 +2416,7 @@ mod tests {
     fn test_databases() -> Result<(), String> {
         let body = base(&format!(
             "{RADIUS_CLIENT}[databases.billing]\nkind = \"postgresql\"\nhost = \"db.example.com\"\ndatabase = \"radius\"\nuser = \"rradius\"\npassword_file = \"db.secret\"\nca_file = \"ca.pem\"\n\
-             [databases.my_2]\nkind = \"mysql\"\nhost = \"127.0.0.1\"\ndatabase = \"radius\"\nuser = \"rradius\"\ntls = \"off\"\npool_size = 3\nconnect_timeout_ms = 900\n"
+             [databases.my_2]\nkind = \"mysql\"\nhost = \"127.0.0.1\"\ndatabase = \"radius\"\nuser = \"rradius\"\ntls = \"off\"\npool_size = 3\nconnect_timeout_ms = 900\nrequired_for_ready = true\n"
         ));
         let dir = tempdir().map_err(|e| e.to_string())?;
         fs::write(dir.path().join("db.secret"), "s3cret\n").map_err(|e| e.to_string())?;
@@ -2428,6 +2434,7 @@ mod tests {
         assert_eq!(billing.ca_file.as_deref(), Some(dir.path().join("ca.pem").as_path()));
         assert!(my.ca_file.is_none());
         assert_eq!(my.connect_timeout, Duration::from_millis(900));
+        assert_eq!((billing.required_for_ready, my.required_for_ready), (false, true));
         Ok(())
     }
 
