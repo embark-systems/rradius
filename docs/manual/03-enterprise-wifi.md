@@ -208,6 +208,7 @@ type = "sql"
 | 記錄 `cannot set up the secure channel as RRADIUS1$`，提到 `STATUS_ACCESS_DENIED` | 密碼檔和 AD 上的電腦帳號密碼不同，或 `computer_name` 打錯。在 AD 重設密碼後更新密碼檔，送 SIGHUP |
 | 同上，提到 `STATUS_NO_TRUST_SAM_ACCOUNT` | AD 沒有這個電腦帳號，或 `domain` 不是 NetBIOS 名稱 |
 | 記錄 `no domain controller of CORP could answer`，RADIUS 沒有回應 | 連不到 DC：防火牆擋了 135 或動態 RPC 埠，或 DC 名稱解析不到 |
+| 記錄 `no Netlogon endpoint registered yet` | DC 剛開機，135 埠已回應但 Netlogon 服務還沒註冊，通常一兩分鐘後自行恢復；一直出現就檢查 DC 上的 Netlogon 服務 |
 | 兩台節點輪流出現 `STATUS_ACCESS_DENIED` | 兩台用了同一個電腦帳號 |
 | Samba DC，密碼正確也被拒，記錄 `STATUS_WRONG_PASSWORD` | `smb.conf` 沒有設 `ntlm auth = mschapv2-and-ntlmv2-only` |
 | 啟動或 `check` 失敗，提到 `is an address` | `servers` 寫了 IP 位址，改成 DC 的名稱 |

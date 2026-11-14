@@ -66,7 +66,7 @@ pub fn parse_map_response(stub: &[u8]) -> Result<u16, RpcError> {
         present += u32::from(reader.pointer()?);
     }
     if present == 0 {
-        return Err(RpcError::Malformed("the endpoint mapper knows no Netlogon endpoint".to_string()));
+        return Err(RpcError::NotRegistered);
     }
     let length = reader.u32()?;
     let conformance = reader.count()?;
@@ -144,7 +144,11 @@ mod tests {
         for value in [0u32, 4, 0, 0, 0x16c9a0d6] {
             none.u32(value);
         }
-        assert!(parse_map_response(&none.into_bytes()).is_err());
+        let error = parse_map_response(&none.into_bytes()).err().map(|e| e.to_string());
+        assert_eq!(
+            error.as_deref(),
+            Some("no Netlogon endpoint registered yet; the domain controller may still be starting")
+        );
         assert!(parse_map_response(&map_response(1)[..40]).is_err());
         Ok(())
     }

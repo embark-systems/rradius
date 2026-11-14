@@ -70,6 +70,9 @@ pub enum RpcError {
     Fault(u32),
     /// The peer refused the bind, with its reason.
     BindRefused(String),
+    /// The endpoint mapper answered, but has no Netlogon endpoint: a domain controller that is
+    /// still starting answers this way until its Netlogon service registers.
+    NotRegistered,
 }
 
 impl std::fmt::Display for RpcError {
@@ -79,6 +82,7 @@ impl std::fmt::Display for RpcError {
             Self::Malformed(what) => write!(f, "malformed RPC answer: {what}"),
             Self::Fault(status) => write!(f, "RPC fault 0x{status:08x}"),
             Self::BindRefused(why) => write!(f, "RPC bind refused: {why}"),
+            Self::NotRegistered => write!(f, "no Netlogon endpoint registered yet; the domain controller may still be starting"),
         }
     }
 }
