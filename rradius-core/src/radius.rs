@@ -1658,14 +1658,27 @@ impl RadiusServer {
 
     /// Waits until no request is being handled, UDP or RadSec, or until `deadline`; returns how
     /// many were still being handled then, 0 when none were.
+    ///
+    /// It looks at the places every 10 ms instead of taking them, so that the requests in
+    /// progress the metrics report stay true while it waits; `try_slot` gives no new places once
+    /// the server is stopping.
     pub async fn drain(&self, deadline: tokio::time::Instant) -> usize {
-        let all = |slots: &Arc<Semaphore>, capacity: usize| slots.clone().acquire_many_owned(u32::try_from(capacity).unwrap_or(u32::MAX));
-        let both = async { (all(&self.auth_slots, self.auth_capacity).await, all(&self.acct_slots, self.acct_capacity).await) };
-        if tokio::time::timeout_at(deadline, both).await.is_ok() {
-            return 0;
+        let busy = || {
+            let busy = |slots: &Semaphore, capacity: usize| capacity.saturating_sub(slots.available_permits());
+            busy(&self.auth_slots, self.auth_capacity) + busy(&self.acct_slots, self.acct_capacity)
+        };
+        loop {
+            let left = busy();
+            if left == 0 || tokio::time::Instant::now() >= deadline {
+                return left;
+            }
+            tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + Duration::from_millis(10))).await;
         }
-        let busy = |slots: &Semaphore, capacity: usize| capacity.saturating_sub(slots.available_permits());
-        busy(&self.auth_slots, self.auth_capacity) + busy(&self.acct_slots, self.acct_capacity)
+    }
+
+    /// Has the metrics report the requests being handled and the limits, from now on.
+    fn report_slots(&self) {
+        self.metrics.watch_radius_slots(self.auth_slots.clone(), self.auth_capacity, self.acct_slots.clone(), self.acct_capacity);
     }
 
     pub fn with_auth_chains(self, chains: Arc<AuthChains>) -> Self {
@@ -1780,6 +1793,7 @@ impl RadiusServer {
             tracing::info!("RADIUS Server also listening on {address}");
         }
 
+        self.report_slots();
         for (kind, socket) in sockets {
             tokio::spawn(self.clone().receive_loop(kind, Arc::new(socket)));
         }
@@ -1887,8 +1901,12 @@ impl RadiusServer {
         lines.lock().unwrap_or_else(PoisonError::into_inner).record(now)
     }
 
-    /// A place among the requests of `kind` handled at once, shared by UDP and RadSec.
+    /// A place among the requests of `kind` handled at once, shared by UDP and RadSec; none once
+    /// the server is stopping.
     pub fn try_slot(&self, kind: PacketKind) -> Option<OwnedSemaphorePermit> {
+        if self.stopping.is_cancelled() {
+            return None;
+        }
         let slots = match kind {
             PacketKind::Auth => &self.auth_slots,
             PacketKind::Acct => &self.acct_slots,
@@ -7850,6 +7868,41 @@ pub(crate) mod tests {
         assert_eq!(server.metrics.radius_duplicates.get(), 0, "neither was taken for a retransmission");
     }
 
+    /// The metrics report the request being handled and the limit, and the place once it is given
+    /// back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_requests_in_progress_are_reported() -> Result<(), String> {
+        const SLOW: &str = "sql_query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 3000000) SELECT count(*) AS n FROM c')";
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}\nreturn 'accept'")).map_err(|e| e.to_string())?);
+        let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()));
+        server.report_slots();
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
+        let to = socket.local_addr().map_err(|e| e.to_string())?;
+        tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
+        let client = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
+        client.send_to(&request, to).await.map_err(|e| e.to_string())?;
+        let in_progress = |count: u32| format!("rradius_radius_requests_in_progress{{kind=\"auth\"}} {count}\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !server.metrics.render().contains(&in_progress(1)) {
+            if Instant::now() > deadline {
+                return Err(format!("the request was not reported: {}", server.metrics.render()));
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(server.metrics.render().contains(&format!("rradius_radius_requests_limit{{kind=\"auth\"}} {DEFAULT_MAX_INFLIGHT}\n")));
+        let mut buffer = [0u8; MAX_PACKET_LEN];
+        tokio::time::timeout(Duration::from_secs(10), client.recv_from(&mut buffer)).await.map_err(|_| "not answered".to_string())?.map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !server.metrics.render().contains(&in_progress(0)) {
+            if Instant::now() > deadline {
+                return Err("the place was not given back".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        Ok(())
+    }
+
     /// After `stopping` is cancelled: a request being handled is still answered, one sent later is
     /// not, and `drain` waits for the first or says it is left.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7875,7 +7928,16 @@ pub(crate) mod tests {
         stopping.cancel();
         tokio::time::timeout(Duration::from_secs(5), receiving).await.map_err(|_| "the receive loop did not end".to_string())?.map_err(|e| e.to_string())?;
         assert_eq!(server.drain(tokio::time::Instant::now()).await, 1, "still being handled");
-        assert_eq!(server.drain(tokio::time::Instant::now() + Duration::from_secs(10)).await, 0);
+        // While it waits, the metrics still say one request at most, not the whole limit.
+        server.report_slots();
+        let waiting = tokio::spawn({
+            let server = server.clone();
+            async move { server.drain(tokio::time::Instant::now() + Duration::from_secs(10)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let shown = server.metrics.render();
+        assert!(!shown.contains("rradius_radius_requests_in_progress{kind=\"auth\"} 8\n") && !shown.contains("rradius_radius_requests_in_progress{kind=\"acct\"} 8\n"), "{shown}");
+        assert_eq!(waiting.await.map_err(|e| e.to_string())?, 0);
         let mut buffer = [0u8; MAX_PACKET_LEN];
         let (size, _) = tokio::time::timeout(Duration::from_secs(1), client.recv_from(&mut buffer)).await.map_err(|_| "the request being handled was not answered".to_string())?.map_err(|e| e.to_string())?;
         assert_eq!(buffer.first().copied(), Some(ACCESS_ACCEPT), "{size} octets");

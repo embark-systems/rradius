@@ -779,8 +779,79 @@ port = 9812         # 預設
 | `rradius_netlogon_logons_total`、`rradius_netlogon_channel_setups_total`、`rradius_netlogon_open_connections` | `netlogon` 處理器（3.7 節） |
 | `rradius_reload_total{result="ok\|error"}` | 重新載入的結果 |
 | `rradius_reload_last_success_timestamp_seconds` | 上次成功重新載入的時間，還沒有時是 0 |
+| `rradius_radius_requests_in_progress{kind="auth\|acct"}` | 目前正在處理的登入、計費請求數 |
+| `rradius_radius_requests_limit{kind="auth\|acct"}` | 同時處理的上限，也就是 `max_auth_inflight`、`max_acct_inflight`（2.4 節）。正在處理的數量接近它時，再來的封包會以 `overload` 丟棄 |
+| `rradius_build_info{version="..."}` | 一律是 1，`version` 是這個程式的版本，和 `--version` 第一行相同 |
+| `rradius_start_time_seconds` | 程序啟動的時間（Unix 秒） |
 
 數值是每個節點從啟動開始計算，重新載入不會歸零，叢集的總和由 Prometheus 彙總。例外是 `rradius_radius_client_responses_total`：重新載入移除的 client 序列會消失，之後再加回來時從 0 開始。
+
+#### 看這台節點現在在做什麼：`status` 指令
+
+沒有 Prometheus 時，`status` 直接讀這台節點自己的 `/readyz` 與 `/metrics`，相隔 1 秒取兩次，列出每秒的量和目前的值：
+
+```bash
+rradius-server status [--config <path>] [--watch] [--json]
+```
+
+- **要有 `[metrics]`。** 指令照設定檔的 `bind` 與 `port` 連線；`bind` 是 `0.0.0.0` 或 `::` 時改連 `127.0.0.1` 或 `::1`。所以要在節點本機執行，用同一個設定檔。
+- **不帶參數**時取兩次樣本、印一次就結束，大約 1 秒。**`--watch`** 每秒印一次，直到 Ctrl-C；輸出到終端機時每次覆蓋前一次，導到檔案或管線時一次接一次。
+- **計數器變小**（兩次樣本之間程序重啟）時，那一項的每秒量顯示 0，輸出開頭註明計數器已重設。
+- **沒有的指標不列，** 某一段一個值都沒有時整段省略，例如還沒重新載入過時 Reload 的上次成功時間。多數功能的指標不論有沒有設定都會輸出（值是 0），所以沒用到的功能也可能出現一段 0；不要用「有沒有這一段」判斷功能有沒有開。
+
+依序列出這些段落：
+
+| 段落（`key`） | 內容 |
+| --- | --- |
+| Node（`node`） | `/readyz` 的回答（`ok`、`stopping`、`no leader`）、叢集狀態（是不是 leader、有沒有 leader、追上了沒、applied index、沒有 leader 的秒數）、版本、已執行秒數 |
+| Reload（`reload`） | 重新載入成功與失敗的次數、上次成功的時間 |
+| RADIUS（`radius`） | 登入與計費請求、四種回應、重送、五種丟棄原因的每秒量，以及正在處理的請求數與上限 |
+| Busiest RADIUS clients（`radius_top_clients`） | 這段時間回應最多的 5 個 client 與它們的每秒回應量 |
+| TACACS+（`tacacs`） | 開著的連線、三種請求與格式錯誤的每秒量 |
+| EAP（`eap`） | 進行中的 EAP 對話 |
+| Accounting spool（`acct_spool`） | 等待重放的位元組、重放、放棄與沒寫入暫存的每秒量 |
+| Netlogon（`netlogon`） | 開著的連線、四種登入結果的每秒量 |
+| Log（`log`） | 遺失記錄行的每秒量 |
+
+企業版另有自己的段落，接在最後（見企業版文件）。每秒量的後面括號是從啟動到現在的累計值。
+
+文字輸出的樣子（節錄，數字只是示意）：
+
+```text
+rradius status of 127.0.0.1:9812 over 1.0 s
+
+Node
+  Ready                     ok
+  Version                   0.1.0
+  Seconds running           3605
+
+RADIUS
+  Auth requests             1520.0/s (5480213)
+  Access-Accept             1498.0/s (5401120)
+  Access-Reject             22.0/s (79093)
+  Discarded: overload       0.0/s (0)
+  Auth in progress          37
+  Auth limit                4096
+```
+
+**`--json`** 每次印一行 JSON，給腳本或監控程式用：
+
+```json
+{"address": "127.0.0.1:9812", "interval_seconds": 1.0, "ready": {"status": 200, "text": "ok"}, "counter_reset": false,
+ "sections": [{"key": "radius", "title": "RADIUS", "items": [
+   {"key": "auth_requests", "label": "Auth requests", "rate": 1520.0, "total": 5480213},
+   {"key": "auth_limit", "label": "Auth limit", "value": 4096}]}]}
+```
+
+（實際輸出在同一行。）每一項有 `value`，或者 `rate` 與 `total`。段落與項目的順序和文字輸出相同；`key` 在之後的版本保持不變（項目被移除除外），程式請用 `key` 而不是 `label` 或 `title`。
+
+| 結束碼 | 意思 |
+| --- | --- |
+| 0 | 印出了結果。`/readyz` 回 503（停止中、沒有 leader）也是 0，狀態寫在輸出裡 |
+| 2 | 參數錯誤、設定檔讀不了，或設定檔沒有 `[metrics]` |
+| 3 | 連不上 metrics 埠、2 秒內沒有回答，或回答不像 rradius 的格式。`--watch` 時不會因此結束，而是每秒重試並在 stderr 說明；恢復後第一次的每秒量是從上一次成功取樣起算的平均，開頭的秒數就是這段時間 |
+
+`status` 只看一台節點。整個叢集的數字請用 Prometheus 彙總，或在每台執行。
 
 ### 2.9 重新載入（SIGHUP）
 

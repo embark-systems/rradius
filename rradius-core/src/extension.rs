@@ -257,6 +257,41 @@ pub(crate) fn settings(extensions: &Extensions, found: Vec<Section>, base: &Path
     Ok(ExtensionSettings(kept))
 }
 
+/// What `status` shows of an item: the current value, or how fast a counter goes up together
+/// with its total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Show {
+    /// The value now, as of a gauge.
+    Value,
+    /// The change per second of a counter, and its total.
+    Rate,
+    /// The total of a counter alone.
+    Total,
+}
+
+/// One line of a `status` section: a metric, with the values of its labels when it has some.
+#[derive(Debug, Clone, Copy)]
+pub struct StatusItem {
+    /// Shown to people.
+    pub label: &'static str,
+    /// Stays the same between versions: lowercase and `_`.
+    pub key: &'static str,
+    pub metric: &'static str,
+    /// Every label of the sample, by name and value; none for the sum of all its samples.
+    pub labels: &'static [(&'static str, &'static str)],
+    pub show: Show,
+}
+
+/// A section of `status`. An item whose metric is not reported is left out, and a section left
+/// with none is not shown.
+#[derive(Debug, Clone)]
+pub struct StatusSection {
+    pub title: &'static str,
+    /// Stays the same between versions: lowercase and `_`.
+    pub key: &'static str,
+    pub items: Vec<StatusItem>,
+}
+
 pub trait Extension: Send + Sync {
     /// Its name, in messages.
     fn name(&self) -> &'static str;
@@ -403,6 +438,12 @@ pub trait Extension: Send + Sync {
     /// Writes its metrics, in the Prometheus text format, after the server's own.
     fn render_metrics(&self, out: &mut String) {
         let _ = out;
+    }
+
+    /// The sections `status` shows of its metrics, after the server's own. Every metric they
+    /// name has to be one `render_metrics` writes.
+    fn status_sections(&self) -> Vec<StatusSection> {
+        Vec::new()
     }
 
     /// The settings of a TLS section it reads to check revocation, such as "ocsp".
@@ -603,6 +644,11 @@ impl Extensions {
         for extension in &self.list {
             extension.render_metrics(out);
         }
+    }
+
+    /// The `status` sections of the extensions, in their order.
+    pub fn status_sections(&self) -> Vec<StatusSection> {
+        self.list.iter().flat_map(|extension| extension.status_sections()).collect()
     }
 }
 

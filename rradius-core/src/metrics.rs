@@ -173,6 +173,26 @@ pub struct Metrics {
     pub reload_ok: Counter,
     pub reload_error: Counter,
     pub reload_last_success: Counter,
+    /// The places of RADIUS requests, once a RADIUS server serves.
+    radius_slots: std::sync::OnceLock<RadiusSlots>,
+    /// What `with_version` was given: the program's version and when it started.
+    started: std::sync::OnceLock<Started>,
+}
+
+/// The places RADIUS requests take while handled, over UDP or RadSec, and how many there are.
+#[derive(Debug)]
+struct RadiusSlots {
+    auth: Arc<Semaphore>,
+    auth_capacity: usize,
+    acct: Arc<Semaphore>,
+    acct_capacity: usize,
+}
+
+/// The program's version and the Unix time it started.
+#[derive(Debug)]
+struct Started {
+    version: &'static str,
+    at: u64,
 }
 
 /// A value for a label, as the Prometheus text format has it.
@@ -200,6 +220,20 @@ impl Metrics {
     /// Metrics that also count the EAP methods of `extensions`.
     pub fn for_extensions(extensions: &crate::extension::Extensions) -> Self {
         Self { eap_extra: ExtensionEapCounters::of(extensions), ..Self::default() }
+    }
+
+    /// Notes the program's version, and now as the time it started.
+    pub fn with_version(self, version: &'static str) -> Self {
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+        let _ = self.started.set(Started { version, at });
+        self
+    }
+
+    /// Reports the RADIUS requests being handled from now on: those holding a place of `auth` or
+    /// `acct`, out of their capacities. Only the first call counts; the places last as long as
+    /// the process.
+    pub fn watch_radius_slots(&self, auth: Arc<Semaphore>, auth_capacity: usize, acct: Arc<Semaphore>, acct_capacity: usize) {
+        let _ = self.radius_slots.set(RadiusSlots { auth, auth_capacity, acct, acct_capacity });
     }
 
     /// The counters of an EAP method, by its EAP type.
@@ -257,6 +291,17 @@ impl Metrics {
             ("{reason=\"database\"}", self.radius_discarded_database.get()),
             ("{reason=\"no_leader\"}", self.radius_discarded_no_leader.get()),
         ]);
+        if let Some(slots) = self.radius_slots.get() {
+            let busy = |places: &Semaphore, capacity: usize| capacity.saturating_sub(places.available_permits()) as u64;
+            family("rradius_radius_requests_in_progress", "gauge", "RADIUS requests being handled now, over UDP or RadSec.", &[
+                ("{kind=\"auth\"}", busy(&slots.auth, slots.auth_capacity)),
+                ("{kind=\"acct\"}", busy(&slots.acct, slots.acct_capacity)),
+            ]);
+            family("rradius_radius_requests_limit", "gauge", "RADIUS requests that can be handled at once: max_auth_inflight and max_acct_inflight.", &[
+                ("{kind=\"auth\"}", slots.auth_capacity as u64),
+                ("{kind=\"acct\"}", slots.acct_capacity as u64),
+            ]);
+        }
         family("rradius_tacacs_connections_total", "counter", "TACACS+ connections by what became of them.", &[
             ("{result=\"accepted\"}", self.tacacs_accepted.get()),
             ("{result=\"refused\"}", self.tacacs_refused.get()),
@@ -338,6 +383,9 @@ impl Metrics {
             ("{result=\"error\"}", self.reload_error.get()),
         ]);
         family("rradius_reload_last_success_timestamp_seconds", "gauge", "When the last successful reload happened; 0 before the first.", &[("", self.reload_last_success.get())]);
+        let (version, started) = self.started.get().map_or(("unknown", 0), |started| (started.version, started.at));
+        family("rradius_build_info", "gauge", "Always 1; the version of the program in its label.", &[(&format!("{{version=\"{}\"}}", label_value(version)), 1)]);
+        family("rradius_start_time_seconds", "gauge", "The Unix time the program started; 0 when unknown.", &[("", started)]);
         extensions.render_metrics(&mut out);
         out
     }
@@ -488,6 +536,36 @@ mod tests {
             let sample = line.rsplit_once(' ').is_some_and(|(name, value)| name.starts_with("rradius_") && value.parse::<u64>().is_ok());
             assert!(line.starts_with("# HELP rradius_") || line.starts_with("# TYPE rradius_") || sample, "{line}");
         }
+    }
+
+    #[test]
+    fn test_requests_in_progress() -> Result<(), String> {
+        let metrics = Metrics::default();
+        assert!(!metrics.render().contains("rradius_radius_requests_in_progress"), "only while RADIUS is served");
+        assert!(!metrics.render().contains("rradius_radius_requests_limit"));
+        let (auth, acct) = (Arc::new(Semaphore::new(4096)), Arc::new(Semaphore::new(512)));
+        metrics.watch_radius_slots(auth.clone(), 4096, acct.clone(), 512);
+        let held = auth.try_acquire().map_err(|e| e.to_string())?;
+        let rendered = metrics.render();
+        for line in ["rradius_radius_requests_in_progress{kind=\"auth\"} 1\n", "rradius_radius_requests_in_progress{kind=\"acct\"} 0\n", "rradius_radius_requests_limit{kind=\"auth\"} 4096\n", "rradius_radius_requests_limit{kind=\"acct\"} 512\n"] {
+            assert!(rendered.contains(line), "{line}: {rendered}");
+        }
+        drop(held);
+        assert!(metrics.render().contains("rradius_radius_requests_in_progress{kind=\"auth\"} 0\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_version_and_start_time() -> Result<(), String> {
+        let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+        let rendered = Metrics::default().with_version("1.2.3").render();
+        let after = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+        assert!(rendered.contains("rradius_build_info{version=\"1.2.3\"} 1\n"), "{rendered}");
+        let started = rendered.lines().find_map(|line| line.strip_prefix("rradius_start_time_seconds ")).ok_or("no start time")?;
+        let started: u64 = started.parse().map_err(|e| format!("{e}"))?;
+        assert!((before..=after).contains(&started), "{started} not in {before}..={after}");
+        assert!(Metrics::default().render().contains("rradius_build_info{version=\"unknown\"} 1\n"));
+        Ok(())
     }
 
     #[tokio::test]
