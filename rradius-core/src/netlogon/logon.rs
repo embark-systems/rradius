@@ -52,6 +52,16 @@ pub mod status {
             _ => return None,
         })
     }
+
+    /// Whether `status` is the account's answer: a wrong password or an account that may not log
+    /// on now. Every domain controller of the domain gives the same answer, so it is final even
+    /// when the answer is not marked authoritative, as Windows marks STATUS_ACCOUNT_DISABLED.
+    pub fn is_account_refusal(status: u32) -> bool {
+        matches!(
+            status,
+            WRONG_PASSWORD | INVALID_LOGON_HOURS | INVALID_WORKSTATION | PASSWORD_EXPIRED | ACCOUNT_DISABLED | ACCOUNT_EXPIRED | PASSWORD_MUST_CHANGE | ACCOUNT_LOCKED_OUT
+        )
+    }
 }
 
 /// One MS-CHAPv2 response to check.
@@ -461,6 +471,8 @@ pub mod test_dc {
         pub deny_once: std::sync::atomic::AtomicBool,
         /// Answers every logon as not authoritative.
         pub not_authoritative: std::sync::atomic::AtomicBool,
+        /// Leaves the next logon unanswered, as on a connection a firewall dropped.
+        pub silent_once: std::sync::atomic::AtomicBool,
     }
 
     /// A domain controller's answers, the way Active Directory gives them: alice, User (of
@@ -472,6 +484,9 @@ pub mod test_dc {
             let Ok(asked) = parse_request(stub) else {
                 return Vec::new();
             };
+            if quirks.silent_once.swap(false, Ordering::Relaxed) {
+                return Vec::new();
+            }
             let level = asked.validation_level;
             let authoritative = !quirks.not_authoritative.load(Ordering::Relaxed);
             if opnum != OPNUM_SAM_LOGON_EX || quirks.deny_once.swap(false, Ordering::Relaxed) {

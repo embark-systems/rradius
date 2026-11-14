@@ -299,7 +299,8 @@ pub mod test_dc {
         pub calls: Vec<(u16, Vec<u8>)>,
     }
 
-    /// The answer to a sealed call, given the channel, its opnum and its stub.
+    /// The answer to a sealed call, given the channel, its opnum and its stub. An empty answer
+    /// is not sent.
     pub type Answer = Arc<dyn Fn(&Session, u16, &[u8]) -> Vec<u8> + Send + Sync>;
 
     /// Listens on a local port and serves each connection; returns the port and the state.
@@ -338,6 +339,10 @@ pub mod test_dc {
                 data.truncate(data.len() - usize::from(pad));
                 state.lock().calls.push((opnum, data.clone()));
                 let reply = answer(&session, opnum, &data);
+                if reply.is_empty() {
+                    // Silence: the caller waits until it gives up on this connection.
+                    continue;
+                }
                 let reply_sequence = sequence;
                 sequence += 1;
                 let pdu = rpc::server::response(pdu.call_id, rpc::PFC_FIRST_FRAG | rpc::PFC_LAST_FRAG, &reply, Some((auth, SIGNATURE_LEN)), |data| crypto::seal(&session.key, reply_sequence, false, [7; 8], data).to_vec());

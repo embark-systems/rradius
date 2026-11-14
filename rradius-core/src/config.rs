@@ -1802,6 +1802,15 @@ fn netlogon_settings(raw: RawNetlogon, base: &Path) -> Result<NetlogonSettings, 
     if raw.servers.iter().any(String::is_empty) {
         return Err("servers must not hold an empty name".to_string());
     }
+    // A Windows domain controller refuses a logon whose LogonServer is not one of its own names
+    // (STATUS_INVALID_COMPUTER_NAME), and the configured server is that name. No DNS or NetBIOS
+    // name holds ':', '%' or '[', so an IPv6 address, a zone or a port is refused with IPv4.
+    let not_a_name = |server: &&String| server.contains([':', '%', '[']) || server.parse::<std::net::Ipv4Addr>().is_ok();
+    if let Some(server) = raw.servers.iter().find(not_a_name) {
+        return Err(format!(
+            "servers: '{server}' is an address or has a port; give the domain controller's DNS or NetBIOS name, which the logon names it by (a fixed port goes in port)"
+        ));
+    }
     if raw.port == Some(0) {
         return Err("port must be greater than 0".to_string());
     }
@@ -3618,6 +3627,12 @@ mod tests {
         for (handler, expected) in [
             (NETLOGON_HANDLER.replace("[\"dc1.corp.example\"]", "[]"), "servers"),
             (NETLOGON_HANDLER.replace("\"CORP\"", "\"\""), "domain"),
+            (NETLOGON_HANDLER.replace("[\"dc1.corp.example\"]", "[\"dc1.corp.example\", \"192.0.2.10\"]"), "servers: '192.0.2.10' is an address"),
+            (NETLOGON_HANDLER.replace("[\"dc1.corp.example\"]", "[\"[2001:db8::10]\"]"), "is an address"),
+            (NETLOGON_HANDLER.replace("[\"dc1.corp.example\"]", "[\"2001:db8::10\"]"), "is an address"),
+            (NETLOGON_HANDLER.replace("[\"dc1.corp.example\"]", "[\"fe80::1%eth0\"]"), "is an address"),
+            (NETLOGON_HANDLER.replace("[\"dc1.corp.example\"]", "[\"192.0.2.10:135\"]"), "has a port"),
+            (NETLOGON_HANDLER.replace("[\"dc1.corp.example\"]", "[\"dc1.corp.example:135\"]"), "has a port"),
             (NETLOGON_HANDLER.to_string(), "machine_password_file"),
         ] {
             fs::write(&path, base(&format!("\n[auth]\n{handler}computer_name = \"RRADIUS1\"\n{RADIUS_CLIENT}"))).map_err(|e| e.to_string())?;

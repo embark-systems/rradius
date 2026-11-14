@@ -87,6 +87,9 @@ struct DomainController {
     name: String,
     /// The Netlogon port, once known.
     port: parking_lot::Mutex<Option<u16>>,
+    /// The port comes from the endpoint mapper, and is asked again when it stops answering: a
+    /// domain controller that restarts may listen somewhere else.
+    mapped: bool,
     /// Where the endpoint mapper listens.
     mapper_port: u16,
     session: parking_lot::Mutex<Option<Arc<Session>>>,
@@ -134,6 +137,7 @@ impl NetlogonHandler {
             .map(|(name, port)| DomainController {
                 name: name.clone(),
                 port: parking_lot::Mutex::new(port),
+                mapped: port.is_none(),
                 mapper_port,
                 session: parking_lot::Mutex::new(None),
                 setup: tokio::sync::Mutex::new(()),
@@ -198,7 +202,8 @@ impl NetlogonHandler {
         (Outcome::Accept, attributes, false)
     }
 
-    /// The first authoritative answer, in the order of `servers`, and who gave it.
+    /// The first authoritative answer, in the order of `servers`, and who gave it. A refusal of
+    /// the account counts as authoritative whatever its flag says.
     async fn ask(&self, account: &str, challenge: &[u8; 8], response: &[u8; 24]) -> Option<(&str, Answer)> {
         for controller in &self.controllers {
             let request = Request {
@@ -211,8 +216,12 @@ impl NetlogonHandler {
                 nt_response: *response,
             };
             match self.ask_one(controller, &request).await {
-                Ok(answer) if answer.authoritative => return Some((&controller.name, answer)),
-                Ok(_) => tracing::warn!("auth netlogon handler: {}: the answer is not authoritative; trying the next domain controller", controller.name),
+                Ok(answer) if answer.authoritative || status::is_account_refusal(answer.status) => return Some((&controller.name, answer)),
+                Ok(answer) => tracing::warn!(
+                    "auth netlogon handler: {}: {} is not authoritative; trying the next domain controller",
+                    controller.name,
+                    status::name(answer.status).map_or_else(|| format!("status 0x{:08X}", answer.status), str::to_string)
+                ),
                 Err(reason) => tracing::warn!("auth netlogon handler: {}: {reason}", controller.name),
             }
         }
@@ -220,7 +229,9 @@ impl NetlogonHandler {
     }
 
     /// One logon with `controller`: on an idle connection, or a fresh one; once more on a fresh
-    /// connection, after setting the channel up again if it was the trouble.
+    /// connection, after setting the channel up again if it was the trouble. An idle connection
+    /// that does not answer may have been dropped by a firewall while it sat unused, so it is
+    /// closed along with the other idle ones, and the logon tried once on a fresh connection.
     async fn ask_one(&self, controller: &DomainController, request: &Request<'_>) -> Result<Answer, String> {
         let timeout = self.settings.timeout;
         let _slot = tokio::time::timeout(timeout, controller.slots.acquire())
@@ -230,6 +241,7 @@ impl NetlogonHandler {
         let mut reason = String::new();
         for fresh in [false, true] {
             let idle = if fresh { None } else { controller.idle.lock().pop() };
+            let pooled = idle.is_some();
             let mut connection = match idle {
                 Some(connection) => connection,
                 None => match tokio::time::timeout(timeout, self.connect(controller)).await {
@@ -243,6 +255,10 @@ impl NetlogonHandler {
                 },
             };
             match tokio::time::timeout(timeout, logon::logon(&mut connection.sealed, request)).await {
+                Err(_) if pooled => {
+                    controller.idle.lock().clear();
+                    reason = format!("no answer within {} ms on an idle connection", timeout.as_millis());
+                }
                 Err(_) => return Err(format!("no answer within {} ms", timeout.as_millis())),
                 Ok(Ok(answer)) if answer.status == status::ACCESS_DENIED => {
                     forget_session(controller, &connection.session);
@@ -266,8 +282,7 @@ impl NetlogonHandler {
     /// A new connection bound with the secure channel, setting the channel up if there is none.
     async fn connect(&self, controller: &DomainController) -> Result<Connection, Failure> {
         let session = self.session(controller).await?;
-        let port = self.port(controller).await.map_err(Failure::Give)?;
-        let stream = TcpStream::connect((controller.name.as_str(), port)).await.map_err(|e| Failure::Give(format!("cannot connect to port {port}: {e}")))?;
+        let stream = self.open(controller).await.map_err(Failure::Give)?;
         let _ = stream.set_nodelay(true);
         match Sealed::bind(stream, session.clone(), &self.machine).await {
             Ok(sealed) => {
@@ -292,12 +307,14 @@ impl NetlogonHandler {
         if let Some(session) = controller.session.lock().clone() {
             return Ok(session);
         }
-        let port = self.port(controller).await.map_err(Failure::Give)?;
-        let result = async {
-            let mut stream = TcpStream::connect((controller.name.as_str(), port)).await.map_err(|e| ChannelError::Rpc(e.into()))?;
-            channel::authenticate(&mut stream, &controller.name, &self.machine).await
-        }
-        .await;
+        let mut stream = match self.open(controller).await {
+            Ok(stream) => stream,
+            Err(why) => {
+                self.counters.setups_failed.inc();
+                return Err(Failure::Give(format!("cannot set up the secure channel as {}$: {why}", self.machine.computer)));
+            }
+        };
+        let result = channel::authenticate(&mut stream, &controller.name, &self.machine).await;
         match result {
             Ok(session) => {
                 self.counters.setups_ok.inc();
@@ -317,7 +334,32 @@ impl NetlogonHandler {
         }
     }
 
-    /// The Netlogon port: configured, or asked of the endpoint mapper once.
+    /// A connection to the controller's Netlogon port. When a port from the endpoint mapper
+    /// refuses the connection, the mapper is asked again and a new port tried once.
+    async fn open(&self, controller: &DomainController) -> Result<TcpStream, String> {
+        let port = self.port(controller).await?;
+        let error = match TcpStream::connect((controller.name.as_str(), port)).await {
+            Ok(stream) => return Ok(stream),
+            Err(e) => format!("cannot connect to port {port}: {e}"),
+        };
+        if !controller.mapped {
+            return Err(error);
+        }
+        {
+            let mut known = controller.port.lock();
+            if *known == Some(port) {
+                *known = None;
+            }
+        }
+        let again = self.port(controller).await?;
+        if again == port {
+            return Err(error);
+        }
+        TcpStream::connect((controller.name.as_str(), again)).await.map_err(|e| format!("cannot connect to port {again}: {e}"))
+    }
+
+    /// The Netlogon port: configured, or asked of the endpoint mapper, which is asked again once
+    /// the port it gave stops answering.
     async fn port(&self, controller: &DomainController) -> Result<u16, String> {
         if let Some(port) = *controller.port.lock() {
             return Ok(port);
@@ -535,6 +577,19 @@ mod tests {
         Ok(())
     }
 
+    /// Scenario: A refusal that is not marked authoritative. Windows answers a disabled account so:
+    /// the refusal stands, and the next domain controller is not asked.
+    #[tokio::test]
+    async fn test_refusal_not_marked_authoritative() -> Result<(), String> {
+        let (port, _, quirks) = domain_controller("Secret1").await?;
+        quirks.not_authoritative.store(true, Ordering::Relaxed);
+        let (handler, counters) = make(vec![Some(port), Some(closed_port().await?)], |_| {});
+        assert_eq!(decide(&handler, "carol", "Secret1").await, (Outcome::Reject, Vec::new(), false));
+        assert_eq!(decide(&handler, "alice", "Secret2").await, (Outcome::Reject, Vec::new(), false));
+        assert_eq!((counters.reject.get(), counters.unavailable.get(), counters.setups_failed.get()), (2, 0, 0));
+        Ok(())
+    }
+
     fn handler_with_timeout(ports: Vec<Option<u16>>) -> (NetlogonHandler, Arc<NetlogonCounters>) {
         make(ports, |settings| settings.timeout = Duration::from_millis(200))
     }
@@ -564,13 +619,45 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_mapper() -> Result<(), String> {
         let (port, _, _) = domain_controller("Secret1").await?;
+        let (mapper_port, asked) = endpoint_mapper(vec![port]).await?;
+        let counters = Arc::new(NetlogonCounters::default());
+        let handler = NetlogonHandler::with_ports(settings(1), vec![None], mapper_port, counters);
+        for _ in 0..2 {
+            assert_eq!(decide(&handler, "alice", "Secret1").await.0, Outcome::Accept);
+        }
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    /// Scenario: The domain controller restarts on another port. The port the endpoint mapper
+    /// gave first refuses connections; it is asked again, and the logon goes to the new port.
+    #[tokio::test]
+    async fn test_endpoint_mapper_asked_again() -> Result<(), String> {
+        let (port, _, _) = domain_controller("Secret1").await?;
+        let (mapper_port, asked) = endpoint_mapper(vec![closed_port().await?, port]).await?;
+        let counters = Arc::new(NetlogonCounters::default());
+        let handler = NetlogonHandler::with_ports(settings(1), vec![None], mapper_port, counters.clone());
+        for _ in 0..2 {
+            assert_eq!(decide(&handler, "alice", "Secret1").await.0, Outcome::Accept);
+        }
+        assert_eq!(asked.load(Ordering::Relaxed), 2);
+        assert_eq!((counters.setups_ok.get(), counters.setups_failed.get()), (1, 0));
+        Ok(())
+    }
+
+    /// An endpoint mapper that gives `ports` in turn, then the last one again; and how often it
+    /// was asked.
+    async fn endpoint_mapper(ports: Vec<u16>) -> Result<(u16, Arc<std::sync::atomic::AtomicUsize>), String> {
         let mapper = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
         let mapper_port = mapper.local_addr().map_err(|e| e.to_string())?.port();
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = asked.clone();
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = mapper.accept().await {
-                counted.fetch_add(1, Ordering::Relaxed);
+                let turn = counted.fetch_add(1, Ordering::Relaxed);
+                let Some(port) = ports.get(turn).or(ports.last()).copied() else {
+                    return;
+                };
                 let _ = async {
                     let bind = rpc::parse(&rpc::read_pdu(&mut stream).await?)?;
                     stream.write_all(&rpc::server::bind_ack(bind.call_id, None)).await?;
@@ -582,12 +669,26 @@ mod tests {
                 .await;
             }
         });
-        let counters = Arc::new(NetlogonCounters::default());
-        let handler = NetlogonHandler::with_ports(settings(1), vec![None], mapper_port, counters);
-        for _ in 0..2 {
-            assert_eq!(decide(&handler, "alice", "Secret1").await.0, Outcome::Accept);
-        }
-        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        Ok((mapper_port, asked))
+    }
+
+    /// Scenario: An idle connection a firewall dropped. The logon on it gets no answer; it is
+    /// tried again on a fresh connection, with the same secure channel.
+    #[tokio::test]
+    async fn test_idle_connection_without_answer() -> Result<(), String> {
+        let (port, _, quirks) = domain_controller("Secret1").await?;
+        let (handler, counters) = make(vec![Some(port)], |settings| settings.timeout = Duration::from_millis(300));
+        assert_eq!(decide(&handler, "alice", "Secret1").await.0, Outcome::Accept);
+        quirks.silent_once.store(true, Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        let (outcome, _, unavailable) = decide(&handler, "alice", "Secret1").await;
+        assert_eq!((outcome, unavailable), (Outcome::Accept, false));
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert_eq!((counters.setups_ok.get(), counters.unavailable.get()), (1, 0));
+        // A fresh connection that does not answer is not tried again.
+        quirks.silent_once.store(true, Ordering::Relaxed);
+        handler.controllers[0].idle.lock().clear();
+        assert_eq!(decide(&handler, "alice", "Secret1").await, (Outcome::Reject, Vec::new(), true));
         Ok(())
     }
 

@@ -179,6 +179,7 @@ type = "sql"
 
 - 群組用 SID，用 `Get-ADGroup wifi-staff | Select SID` 或 `samba-tool group show wifi-staff` 查。
 - 員工輸入 `CORP\staff1` 或 `staff1@corp.example.com` 時，`[auth.username]` 的 `strip_realm = "both"` 讓查帳號用 `staff1`。
+- `servers` 要寫 DC 的 DNS 或 NetBIOS 名稱，不能寫 IP 位址，節點要能解析這些名稱。
 - 節點和 DC 之間要開 TCP 135（端點對應器）和 DC 的動態 RPC 埠（預設 49152 到 65535）。DC 把 Netlogon 固定在某個埠時，設 `port` 就不必開 135。
 
 ### 3. 測試
@@ -209,4 +210,5 @@ type = "sql"
 | 記錄 `no domain controller of CORP could answer`，RADIUS 沒有回應 | 連不到 DC：防火牆擋了 135 或動態 RPC 埠，或 DC 名稱解析不到 |
 | 兩台節點輪流出現 `STATUS_ACCESS_DENIED` | 兩台用了同一個電腦帳號 |
 | Samba DC，密碼正確也被拒，記錄 `STATUS_WRONG_PASSWORD` | `smb.conf` 沒有設 `ntlm auth = mschapv2-and-ntlmv2-only` |
+| 啟動或 `check` 失敗，提到 `is an address` | `servers` 寫了 IP 位址，改成 DC 的名稱 |
 | AD 帳號被拒，記錄 `not in any of required_groups` | 使用者不在列出的群組，或 SID 抄錯 |

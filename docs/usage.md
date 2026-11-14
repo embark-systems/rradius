@@ -1330,8 +1330,8 @@ attributes = { "Filter-Id" = "staff" }
 | 欄位 | 預設 | 說明 |
 | --- | --- | --- |
 | `domain` | （必填） | 網域的 NetBIOS 名稱，例如 `CORP`，不是 DNS 名稱 |
-| `servers` | （必填） | DC 的名稱或位址，依序使用，至少一個 |
-| `port` | 無 | DC 固定的 Netlogon 埠。沒有設定時先問 135 埠的端點對應器，每台 DC 問一次 |
+| `servers` | （必填） | DC 的 DNS 或 NetBIOS 名稱，依序使用，至少一個。不能用 IP 位址：登入請求要帶 DC 自己的名稱，Windows DC 收到位址會回 `STATUS_INVALID_COMPUTER_NAME`。節點要能解析這些名稱（通常用 AD 的 DNS） |
+| `port` | 無 | DC 固定的 Netlogon 埠。沒有設定時先問 135 埠的端點對應器，問到的埠會記住；DC 重新啟動後換了埠、舊埠連不上時，再問一次 |
 | `computer_name` | （必填） | 本節點的電腦帳號，不含結尾的 `$`，最多 15 個字元 |
 | `machine_password_file` | （必填） | 電腦帳號的密碼檔，以設定檔目錄解析，結尾換行會去掉。載入後只保留 NT hash |
 | `timeout_ms` | 2000 | 連線、建立 secure channel、一次登入各自的時限，必須大於 0 |
@@ -1355,7 +1355,7 @@ DC 回覆的對應：
 - **只處理 MS-CHAPv2。** PAP、CHAP、憑證登入一律略過，不連 DC。PAP 要對 AD 驗證請用 `ldap` 處理器的 `bind` 模式。
 - **群組以 SID 表示，** 例如 `S-1-5-21-…-1110`。比對的是 DC 在登入回覆中給的群組：網域 SID 加上每個群組 RID，以及額外 SID（其他網域、通用群組）。不必另外查 LDAP。SID 可以用 PowerShell 的 `Get-ADGroup staff | Select SID` 查。不在群組和密碼錯誤的回應相同。
 - **帳號名稱：** 登入用串接處理後的名稱（3.6 節），再去掉 `網域\` 前綴，網域一律用 `domain`。challenge hash 用收到的名稱，和本機驗證相同。
-- **連線重用與換 DC：** 每台 DC 的連線共用同一組 secure channel，在請求之間重用。連線中斷，或 DC 表示 channel 已失效（`STATUS_ACCESS_DENIED`、密封或綁定被拒）時，重建 channel 並在新連線上重試一次，仍失敗就換下一台。在 `timeout_ms` 內沒有回應的連線會關閉，直接換下一台。
+- **連線重用與換 DC：** 每台 DC 的連線共用同一組 secure channel，在請求之間重用。連線中斷，或 DC 表示 channel 已失效（`STATUS_ACCESS_DENIED`、密封或綁定被拒）時，重建 channel 並在新連線上重試一次，仍失敗就換下一台。在 `timeout_ms` 內沒有回應的連線會關閉：若是閒置後重用的連線（可能已被防火牆或 NAT 悄悄丟掉），一併關掉其他閒置連線，在新連線上重試一次；新連線也沒有回應就換下一台。
 - **全部 DC 都不能用時，** 和 `sql` 處理器的資料庫不能用時相同：RADIUS 不回應，計入 `rradius_radius_discarded_total{reason="database"}`，TACACS+ 回 ERROR，讓設備重送或換伺服器（2.2 節〈資料庫不能用時〉），並記錄 ERROR。電腦帳號密碼錯誤、DC 不支援 AES 這類設定問題也記錄 ERROR。
 - **秘密不進記錄：** 電腦帳號密碼、session key、user session key、NT-Response 和 MPPE 金鑰在任何記錄層級都不會出現，用完即清除。
 - `check` 和啟動只檢查設定與密碼檔，不連 DC。channel 在第一個請求時才建立。
@@ -1373,7 +1373,7 @@ DC 回覆的對應：
 **限制：**
 - 不會自動加入網域，也不會輪替電腦帳號密碼。電腦帳號要事先建立並設定密碼（手冊第 3 章），之後若在 AD 重設密碼，要同時更新密碼檔並重新載入。
 - 只支援 AES secure channel。停用 AES 的舊 DC（Windows Server 2008 以前）不支援。
-- 在 Samba 4.17 AD DC 上以 `docker/interop-netlogon/run.sh` 實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、各種拒絕、群組、DC 重啟後重建 channel、電腦帳號密碼錯誤）。還沒有在 Windows Server 的 DC 上實測。
+- 在 Samba 4.17 AD DC 上以 `docker/interop-netlogon/run.sh` 實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、各種拒絕、群組、DC 重啟後重建 channel、電腦帳號密碼錯誤），也在 Windows Server 2022 的 DC 上實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、群組、錯誤密碼、停用帳號、不在群組、不存在的使用者）。
 
 ## 4. Lua 腳本
 
