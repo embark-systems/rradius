@@ -49,6 +49,9 @@ pub struct ServeContext<'a> {
     pub metrics: Arc<Metrics>,
     /// The cluster database.
     pub db: Db,
+    /// Cancelled when the server stops taking requests: an extension's listener closes then, and
+    /// its connections end once the request each is handling is answered.
+    pub stopping: crate::stopping::Stopping,
 }
 
 /// A server an extension started, told of each configuration a reload applies.
@@ -794,8 +797,14 @@ mod tests {
         Ok(())
     }
 
-    /// Notes what `serve` was given.
-    struct SeesServers(Arc<std::sync::Mutex<Vec<(bool, bool)>>>);
+    /// Notes what `serve` was given, and keeps its `stopping`.
+    struct SeesServers(Arc<std::sync::Mutex<Vec<(bool, bool, bool)>>>);
+
+    static KEPT_STOPPING: std::sync::Mutex<Option<crate::stopping::Stopping>> = std::sync::Mutex::new(None);
+
+    fn kept_stopping() -> Result<crate::stopping::Stopping, String> {
+        KEPT_STOPPING.lock().map_err(|e| e.to_string())?.clone().ok_or_else(|| "serve kept no stopping".to_string())
+    }
 
     impl Extension for SeesServers {
         fn name(&self) -> &'static str {
@@ -803,7 +812,8 @@ mod tests {
         }
 
         fn serve(&self, context: &ServeContext<'_>) -> Result<Option<Arc<dyn Served>>, String> {
-            self.0.lock().map_err(|e| e.to_string())?.push((context.radius.is_some(), context.tacacs.is_some()));
+            self.0.lock().map_err(|e| e.to_string())?.push((context.radius.is_some(), context.tacacs.is_some(), context.stopping.is_cancelled()));
+            *KEPT_STOPPING.lock().map_err(|e| e.to_string())? = Some(context.stopping.clone());
             Ok(None)
         }
     }
@@ -817,9 +827,14 @@ mod tests {
         let (_dir, config) = crate::test_support::minimal_config()?;
         let engine = Arc::new(crate::lua_engine::LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'accept'").map_err(|e| e.to_string())?);
         let tacacs = Arc::new(crate::tacacs::TacacsServer::new("127.0.0.1:0".parse().map_err(|_| "address")?, Arc::new(crate::clients::ClientTable::default()), engine, 4096));
-        let context = ServeContext { config: &config, radius: None, tacacs: Some(tacacs), metrics: Arc::new(Metrics::default()), db: crate::test_support::test_db() };
+        let stopping = crate::stopping::Stopping::new();
+        let context = ServeContext { config: &config, radius: None, tacacs: Some(tacacs), metrics: Arc::new(Metrics::default()), db: crate::test_support::test_db(), stopping: stopping.clone() };
         assert!(extensions.serve(&context)?.is_empty());
-        assert_eq!(seen.lock().map_err(|e| e.to_string())?.clone(), vec![(false, true)]);
+        assert_eq!(seen.lock().map_err(|e| e.to_string())?.clone(), vec![(false, true, false)]);
+        // What the extension kept of the context is cancelled with the server's.
+        stopping.cancel();
+        let kept = kept_stopping()?;
+        assert!(kept.is_cancelled());
         Ok(())
     }
 }

@@ -63,7 +63,9 @@ spec:
               port: metrics
             periodSeconds: 10
             failureThreshold: 3
-          # 503 once the node has been without a leader for stop_without_leader_ms.
+          # 503 once SIGTERM arrives, for [shutdown] ready_delay_ms (5 s with three nodes)
+          # before the node stops taking requests, so the Service moves NAS elsewhere first;
+          # 503 too once the node has been without a leader for stop_without_leader_ms.
           readinessProbe:
             httpGet:
               path: /readyz

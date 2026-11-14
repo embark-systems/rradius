@@ -139,7 +139,7 @@ api = "10.99.0.1:8200"
 - **確認回到叢集：** 記錄有 `cluster node N has caught up with the cluster`，`/metrics` 的 `rradius_cluster_leader` 是 1。節點啟動時會等有 leader、再等本機副本追上叢集已經寫入的資料，才開始回應，所以停機期間新增的帳號在它第一次回應時就看得到。等待的上限是 `migrations_wait_ms`；沒設 `migrations_dir` 又等不到時，它記一行警告後照常服務（可能用到舊資料）。
 - **最後才停 leader。** `rradius_cluster_is_leader` 是 1 的那台最後做：停掉 leader 時要重新選舉，那幾秒的寫入會逾時。
 
-- **用 SIGTERM 或 Ctrl+C 停止，** 會乾淨關閉資料庫，多節點時要約 10 秒（hiqlite 先等 9.5 秒），所以 `docker stop` 要用 `-t 30` 或設 `stop_grace_period: 30s`。SIGKILL（`kill -9`、容器被強制停止）不會，下次啟動時本機資料庫會從其他節點重建，比較慢。
+- **用 SIGTERM 或 Ctrl+C 停止，** 節點先讓 `/readyz` 回 503、照常回應 5 秒讓負載平衡器移出它，再停止接收、等處理中的請求回應完，最後乾淨關閉資料庫（hiqlite 再等 9.5 秒），多節點時要 15 秒左右，所以 `docker stop` 要用 `-t 30` 或設 `stop_grace_period: 30s`。兩段等待可以用 `[shutdown]` 調整（[usage 2.16 節](../usage.md#216-停止-shutdown)）。SIGKILL（`kill -9`、容器被強制停止）不會，下次啟動時本機資料庫會從其他節點重建，比較慢。
 
 ### 加新的 migration
 

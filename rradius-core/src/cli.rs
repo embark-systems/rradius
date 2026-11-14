@@ -108,6 +108,54 @@ async fn stop_node_and_exit_with(db: &lua_engine::Db, message: impl std::fmt::Di
     exit_with(message)
 }
 
+/// Stops the accounting spool replay: what was written stays on disk for the next start, and a
+/// request being replayed may run again.
+fn stop_replay(replay: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(replay) = replay {
+        replay.abort();
+    }
+}
+
+/// The stop that SIGTERM or SIGINT begins while the servers serve: `/readyz` says the node is
+/// stopping while requests are still answered for `ready_delay_ms`; then no more are taken, and
+/// those being handled are waited for, for at most `drain_ms`. A second signal ends the waits.
+async fn stop_serving(serving: &Serving, stopping: &crate::stopping::Stopping, replay: Option<tokio::task::JoinHandle<()>>, terminate: &mut Signal, interrupt: &mut Signal) {
+    let settings = *serving.shutdown.get();
+    metrics::set_stopping();
+    tracing::info!("stopping: /readyz answers 503; requests are answered for {} ms more, then those being handled are waited for, for at most {} ms", settings.ready_delay.as_millis(), settings.drain.as_millis());
+    let asked_again = tokio::select! {
+        () = tokio::time::sleep(settings.ready_delay) => false,
+        _ = stop_asked(terminate, interrupt) => true,
+    };
+    stopping.cancel();
+    stop_replay(replay);
+    tracing::info!("stopping: no more requests taken");
+    if asked_again {
+        tracing::info!("stopping: asked again; not waiting for the requests being handled");
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + settings.drain;
+    let radius = async {
+        match &serving.radius {
+            Some(server) => server.drain(deadline).await,
+            None => 0,
+        }
+    };
+    let tacacs = async {
+        match &serving.tacacs {
+            Some(server) => server.drain(deadline).await,
+            None => 0,
+        }
+    };
+    tokio::select! {
+        (radius, tacacs) = async { tokio::join!(radius, tacacs) } => match (radius, tacacs) {
+            (0, 0) => tracing::info!("stopping: every request taken was answered"),
+            (radius, tacacs) => tracing::warn!("stopping: after {} ms, {radius} RADIUS requests were still being handled and {tacacs} TACACS+ connections open; they are cut off", settings.drain.as_millis()),
+        },
+        _ = stop_asked(terminate, interrupt) => tracing::info!("stopping: asked again; not waiting for the requests being handled"),
+    }
+}
+
 /// Returns when SIGTERM or SIGINT arrives.
 async fn stop_asked(terminate: &mut Signal, interrupt: &mut Signal) {
     tokio::select! {
@@ -404,6 +452,9 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => stop_node_and_exit_with(&db, e).await,
     };
 
+    // Cancelled when the servers stop taking requests: the RADIUS and TACACS+ servers and the
+    // extensions' listen for it.
+    let stopping = crate::stopping::Stopping::new();
     let mut radius_running = None;
     let mut spool_replay = None;
     let mut radius_serving = None;
@@ -416,6 +467,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             .with_status_server(radius.status_server)
             .with_eap(radius.eap.clone())
             .with_accounting_observer(extensions.accounting_observer(&config))
+            .with_stopping(stopping.clone())
             .with_metrics(metrics.clone());
         let radius_server = match &radius.accounting_spool {
             Some(spool) => match Spool::open(&spool.dir, spool.max_bytes, metrics.acct_spool.clone()) {
@@ -460,6 +512,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             .with_max_connections(tacacs.max_connections)
             .with_idle_timeout(tacacs.idle_timeout)
             .with_tls_served(config.extension::<crate::tacacs_transport::TacacsTlsServed>().copied())
+            .with_stopping(stopping.clone())
             .with_metrics(metrics.clone());
         tacacs_running = Some(Arc::new(tacacs_server));
     }
@@ -467,7 +520,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     // Once both servers are made and before either serves, as for the RADIUS sockets: an
     // extension's server that cannot listen, such as the CoA relay, stops the start. A
     // configuration with TACACS+ alone starts the extensions too.
-    let context = crate::extension::ServeContext { config: &config, radius: radius_running.clone(), tacacs: tacacs_running.clone(), metrics: metrics.clone(), db: db.clone() };
+    let context = crate::extension::ServeContext { config: &config, radius: radius_running.clone(), tacacs: tacacs_running.clone(), metrics: metrics.clone(), db: db.clone(), stopping: stopping.clone() };
     let extensions_serving = match extensions.serve(&context) {
         Ok(serving) => serving,
         Err(e) => {
@@ -498,7 +551,8 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tracing::info!("Servers started. Press Ctrl+C to stop.");
-    let serving = Serving { config_path: config_path.into(), running: config, shared, radius: radius_running, tacacs: tacacs_running, extensions: extensions_serving };
+    let shutdown = reload::Live::new(config.shutdown);
+    let serving = Serving { config_path: config_path.into(), running: config, shared, radius: radius_running, tacacs: tacacs_running, extensions: extensions_serving, shutdown };
     let mut checked = tokio::time::interval(Duration::from_secs(1));
     let mut failed = false;
     loop {
@@ -518,10 +572,16 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    // What was written stays on disk for the next start; a request being replayed may run again.
-    if let Some(replay) = spool_replay {
-        replay.abort();
+    match failed {
+        // A node whose core stopped answers nothing well: no more waiting.
+        true => {
+            stopping.cancel();
+            stop_replay(spool_replay);
+        }
+        false => stop_serving(&serving, &stopping, spool_replay, &mut terminate, &mut interrupt).await,
     }
+    // After the requests were answered: what they gave an extension, such as the lines of the
+    // accounting packet log, is in.
     for served in &serving.extensions {
         served.stop();
     }

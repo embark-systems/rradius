@@ -31,6 +31,8 @@ pub struct ServerConfig {
     pub accounts: Option<AccountSettings>,
     /// `[runtime]`. A start applies it; a reload does not.
     pub runtime: RuntimeSettings,
+    /// `[shutdown]`. The configuration running when the stop begins applies it.
+    pub shutdown: ShutdownSettings,
     /// What the program's extensions read from their sections.
     pub extensions: crate::extension::ExtensionSettings,
 }
@@ -47,6 +49,32 @@ impl ServerConfig {
 pub struct RuntimeSettings {
     /// Each runtime worker thread bound to one CPU; Linux only.
     pub pin_threads: bool,
+}
+
+/// `[shutdown]`: how a stop on SIGTERM or SIGINT waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShutdownSettings {
+    /// How long `/readyz` says the node is stopping while requests are still answered.
+    pub ready_delay: Duration,
+    /// How long, at most, requests being handled are waited for once no more are taken.
+    pub drain: Duration,
+}
+
+/// The longest wait `[shutdown]` takes, in milliseconds.
+const SHUTDOWN_WAIT_MAX_MS: u64 = 60_000;
+
+/// `[shutdown]` of a cluster of `nodes` nodes: a single node has no other to send requests to,
+/// so by default it does not wait for a load balancer to notice.
+fn shutdown_settings(raw: Option<RawShutdown>, nodes: usize) -> Result<ShutdownSettings, String> {
+    let raw = raw.unwrap_or_default();
+    let ready_delay_ms = raw.ready_delay_ms.unwrap_or(if nodes > 1 { 5000 } else { 0 });
+    let drain_ms = raw.drain_ms.unwrap_or(5000);
+    for (name, value) in [("ready_delay_ms", ready_delay_ms), ("drain_ms", drain_ms)] {
+        if value > SHUTDOWN_WAIT_MAX_MS {
+            return Err(format!("shutdown.{name} must be at most {SHUTDOWN_WAIT_MAX_MS}"));
+        }
+    }
+    Ok(ShutdownSettings { ready_delay: Duration::from_millis(ready_delay_ms), drain: Duration::from_millis(drain_ms) })
 }
 
 /// Whether several SO_REUSEPORT sockets on one port share its UDP packets out. Linux hashes
@@ -448,6 +476,7 @@ struct RawConfig {
     tacacs: Option<RawTacacs>,
     metrics: Option<RawMetrics>,
     runtime: Option<RawRuntime>,
+    shutdown: Option<RawShutdown>,
     log: Option<RawLog>,
     /// `[proxy]`, which an extension reads.
     #[schemars(skip)]
@@ -469,6 +498,19 @@ struct RawConfig {
 struct RawRuntime {
     #[serde(default)]
     pin_threads: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+struct RawShutdown {
+    /// Without it, 5000 on a cluster of more than one node and 0 on one node.
+    ready_delay_ms: Option<u64>,
+    #[schemars(default = "default_drain_ms")]
+    drain_ms: Option<u64>,
+}
+
+fn default_drain_ms() -> u64 {
+    5000
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -1246,6 +1288,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
             return Err(fail(format!("log.trace.clients: '{name}' is not the name of a RADIUS client")));
         }
     }
+    let cluster_nodes = cluster.nodes.len();
     let mut config = ServerConfig {
         dictionary: base.join(raw.dictionary),
         lua,
@@ -1264,6 +1307,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
             Some(runtime) => RuntimeSettings { pin_threads: runtime.pin_threads },
             None => RuntimeSettings::default(),
         },
+        shutdown: shutdown_settings(raw.shutdown, cluster_nodes).map_err(fail)?,
         extensions: extension_settings,
     };
     // What the program's extensions need of the rest of the configuration.
@@ -2655,6 +2699,27 @@ mod tests {
         for refused in [0, 4095, 1073741825] {
             let error = buffer(&format!("recv_buffer_bytes = {refused}")).err().ok_or_else(|| format!("{refused} accepted"))?;
             assert!(error.contains("radius.recv_buffer_bytes"), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_shutdown_settings() -> Result<(), String> {
+        let three = format!("\n[cluster]\ndata_dir = \"data\"\n{CLUSTER_SECRETS}nodes = [{{ id = 1, raft = \"10.0.0.1:8100\", api = \"10.0.0.1:8200\" }}, {{ id = 2, raft = \"10.0.0.2:8100\", api = \"10.0.0.2:8200\" }}, {{ id = 3, raft = \"10.0.0.3:8100\", api = \"10.0.0.3:8200\" }}]\n");
+        let load = |cluster: &str, shutdown: &str| {
+            load_str(&base(&format!("{cluster}{RADIUS_CLIENT}{shutdown}"))).1.map(|config| (config.shutdown.ready_delay.as_millis(), config.shutdown.drain.as_millis())).map_err(|e| e.to_string())
+        };
+        let three = three.as_str();
+        assert_eq!(load("", "")?, (0, 5000));
+        assert_eq!(load(three, "")?, (5000, 5000));
+        assert_eq!(load(three, "\n[shutdown]\nready_delay_ms = 0\n")?, (0, 5000));
+        assert_eq!(load("", "\n[shutdown]\ndrain_ms = 0\n")?, (0, 0));
+        assert_eq!(load("", "\n[shutdown]\nready_delay_ms = 60000\ndrain_ms = 60000\n")?, (60000, 60000));
+        for (shutdown, field) in [("drain_ms = -1", "drain_ms"), ("ready_delay_ms = 60001", "ready_delay_ms"), ("drain_ms = 60001", "drain_ms"), ("drain_ms = \"5s\"", "drain_ms"), ("drain = 5000", "drain")] {
+            let Err(error) = load("", &format!("\n[shutdown]\n{shutdown}\n")) else { return Err(format!("{shutdown} taken")) };
+            if !error.contains(field) {
+                return Err(format!("{shutdown}: {error}"));
+            }
         }
         Ok(())
     }

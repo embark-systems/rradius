@@ -140,6 +140,13 @@ fn loaded(path: &str, extensions: &Extensions) -> Result<(toml::Table, Computed)
     }
     let (schema, _) = schema_and_descriptions(extensions)?;
     fill(&mut table, &schema);
+    // `[shutdown]` is in effect without the section, and its delay follows the number of nodes.
+    let shutdown = table.entry("shutdown").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let toml::Value::Table(shutdown) = shutdown {
+        let millis = |duration: std::time::Duration| toml::Value::Integer(i64::try_from(duration.as_millis()).unwrap_or(i64::MAX));
+        shutdown.insert("ready_delay_ms".to_string(), millis(config.shutdown.ready_delay));
+        shutdown.insert("drain_ms".to_string(), millis(config.shutdown.drain));
+    }
     let mut named = Vec::new();
     for (section, name, value) in computed {
         if let Some(toml::Value::Table(inner)) = table.get_mut(section) {

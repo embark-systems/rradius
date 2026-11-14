@@ -167,7 +167,8 @@ authentication protocol="radius" client="wlc" source=10.30.0.10 user="Staff1@cor
 | 剛寫入的資料讀不到 | `sql_query` 讀本機副本，可能比寫入慢一點。判斷寫入有沒有成功用 `sql_execute` 的回傳值，不要再查一次 |
 | 寫入都逾時 | 失去多數節點（三台剩一台）。只讀的登入照常，要寫入的登入不回應、TACACS+ 回 ERROR，計費有暫存時進暫存，等節點回來 |
 | 節點自己結束，狀態碼 1，記錄有 `exiting so that a restart recovers it` | 它的 Raft 核心停了（常見原因：斷線期間叢集寫入超過 `snapshot_every`），或 hiqlite 內部 panic。重新啟動它就會追上；有設自動重啟時不必處理（[第 7 章](07-ha-cluster.md)） |
-| 停止一個節點要等約 10 秒 | 正常：多節點時 hiqlite 關閉前先等 9.5 秒 |
+| 停止一個節點要等 15 秒左右 | 正常：多節點時先照常回應 5 秒讓負載平衡器移出它（`[shutdown] ready_delay_ms`），hiqlite 關閉前再等 9.5 秒 |
+| 停止時記錄 `stopping: after N ms, ... they are cut off` | 等了 `[shutdown] drain_ms` 還有請求沒做完（腳本、LDAP 或資料庫太慢），那些請求沒有回應，設備會重送到別台（[usage 2.16 節](../usage.md#216-停止-shutdown)） |
 | 剩一台時重啟，它一直起不來（有 migration 時以狀態碼 1 結束） | 重新啟動的節點要等到有 leader。先讓其他節點回來（[第 7 章](07-ha-cluster.md)） |
 | 異常結束後啟動很慢 | 要重播上次快照以來的寫入。見 [usage 2.2 節](../usage.md#22-cluster)的 `snapshot_every` |
 | 每個節點行為不同的功能 | 計費暫存、EAP 對話、追蹤的計時，都是每個節點自己的 |

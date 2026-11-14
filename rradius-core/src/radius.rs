@@ -1531,6 +1531,11 @@ pub struct RadiusServer {
     /// Requests handled at once, separately so accounting cannot starve authentication.
     auth_slots: Arc<Semaphore>,
     acct_slots: Arc<Semaphore>,
+    /// How many places each of them has, for `drain` to wait for all of them.
+    auth_capacity: usize,
+    acct_capacity: usize,
+    /// Cancelled when the server stops taking requests.
+    stopping: crate::stopping::Stopping,
 }
 
 impl RadiusServer {
@@ -1567,6 +1572,9 @@ impl RadiusServer {
             acct_overload_lines: Mutex::default(),
             auth_slots: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT)),
             acct_slots: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT)),
+            auth_capacity: DEFAULT_MAX_INFLIGHT,
+            acct_capacity: DEFAULT_MAX_INFLIGHT,
+            stopping: crate::stopping::Stopping::new(),
         }
     }
 
@@ -1637,7 +1645,27 @@ impl RadiusServer {
     pub fn with_limits(mut self, max_auth_inflight: usize, max_acct_inflight: usize) -> Self {
         self.auth_slots = Arc::new(Semaphore::new(max_auth_inflight));
         self.acct_slots = Arc::new(Semaphore::new(max_acct_inflight));
+        (self.auth_capacity, self.acct_capacity) = (max_auth_inflight, max_acct_inflight);
         self
+    }
+
+    /// The token whose cancelling makes the server stop taking requests; requests it is handling
+    /// are still answered.
+    pub fn with_stopping(mut self, stopping: crate::stopping::Stopping) -> Self {
+        self.stopping = stopping;
+        self
+    }
+
+    /// Waits until no request is being handled, UDP or RadSec, or until `deadline`; returns how
+    /// many were still being handled then, 0 when none were.
+    pub async fn drain(&self, deadline: tokio::time::Instant) -> usize {
+        let all = |slots: &Arc<Semaphore>, capacity: usize| slots.clone().acquire_many_owned(u32::try_from(capacity).unwrap_or(u32::MAX));
+        let both = async { (all(&self.auth_slots, self.auth_capacity).await, all(&self.acct_slots, self.acct_capacity).await) };
+        if tokio::time::timeout_at(deadline, both).await.is_ok() {
+            return 0;
+        }
+        let busy = |slots: &Semaphore, capacity: usize| capacity.saturating_sub(slots.available_permits());
+        busy(&self.auth_slots, self.auth_capacity) + busy(&self.acct_slots, self.acct_capacity)
     }
 
     pub fn with_auth_chains(self, chains: Arc<AuthChains>) -> Self {
@@ -1766,16 +1794,26 @@ impl RadiusServer {
     /// A request that can be answered without waiting is answered here; one that has to wait,
     /// or that came with another packet already waiting, goes on in a task of its own, so
     /// that a slow script does not hold up the others and a busy socket's requests run on
-    /// several threads. A request keeps its slot until its response is sent.
+    /// several threads. A request keeps its slot until its response is sent. Once `stopping` is
+    /// cancelled the loop ends; the requests it handed on are still answered.
     async fn receive_loop(self: Arc<Self>, kind: PacketKind, socket: Arc<UdpSocket>) {
         let mut buffer = [0u8; MAX_PACKET_LEN];
         let receiving = socket.local_addr().ok();
         let mut next: Option<(Vec<u8>, SocketAddr)> = None;
         loop {
+            // Stopped: what is not taken yet is left unanswered, for the client to send elsewhere.
+            if self.stopping.is_cancelled() {
+                return;
+            }
             let (data, addr) = match next.take() {
                 Some(packet) => packet,
                 None => {
-                    let Ok((size, addr)) = socket.recv_from(&mut buffer).await else { continue };
+                    let received = tokio::select! {
+                        biased;
+                        () = self.stopping.cancelled() => return,
+                        received = socket.recv_from(&mut buffer) => received,
+                    };
+                    let Ok((size, addr)) = received else { continue };
                     (buffer[..size].to_vec(), addr)
                 }
             };
@@ -7810,6 +7848,41 @@ pub(crate) mod tests {
             tokio::time::timeout(Duration::from_secs(5), client.recv_from(&mut buffer)).await.expect("no answer").unwrap();
         }
         assert_eq!(server.metrics.radius_duplicates.get(), 0, "neither was taken for a retransmission");
+    }
+
+    /// After `stopping` is cancelled: a request being handled is still answered, one sent later is
+    /// not, and `drain` waits for the first or says it is left.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_stopping_answers_what_is_being_handled() -> Result<(), String> {
+        const SLOW: &str = "sql_query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 3000000) SELECT count(*) AS n FROM c')";
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}\nreturn 'accept'")).map_err(|e| e.to_string())?);
+        let stopping = crate::stopping::Stopping::new();
+        let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()).with_limits(8, 8).with_stopping(stopping.clone()));
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
+        let to = socket.local_addr().map_err(|e| e.to_string())?;
+        let receiving = tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
+        let client = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let request = |identifier: u8| RadiusPacket::create_access_request(identifier, [identifier; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
+        client.send_to(&request(1), to).await.map_err(|e| e.to_string())?;
+        // Being handled: its slot is taken.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while server.auth_slots.available_permits() == 8 {
+            if Instant::now() > deadline {
+                return Err("the request was not taken".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        stopping.cancel();
+        tokio::time::timeout(Duration::from_secs(5), receiving).await.map_err(|_| "the receive loop did not end".to_string())?.map_err(|e| e.to_string())?;
+        assert_eq!(server.drain(tokio::time::Instant::now()).await, 1, "still being handled");
+        assert_eq!(server.drain(tokio::time::Instant::now() + Duration::from_secs(10)).await, 0);
+        let mut buffer = [0u8; MAX_PACKET_LEN];
+        let (size, _) = tokio::time::timeout(Duration::from_secs(1), client.recv_from(&mut buffer)).await.map_err(|_| "the request being handled was not answered".to_string())?.map_err(|e| e.to_string())?;
+        assert_eq!(buffer.first().copied(), Some(ACCESS_ACCEPT), "{size} octets");
+        // Taken no more.
+        client.send_to(&request(2), to).await.map_err(|e| e.to_string())?;
+        assert!(tokio::time::timeout(Duration::from_millis(300), client.recv_from(&mut buffer)).await.is_err(), "answered after stopping");
+        Ok(())
     }
 
     #[tokio::test]
