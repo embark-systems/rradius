@@ -108,12 +108,12 @@ impl ExternalDatabase {
             Pool::Postgres(pool) => {
                 let mut connection = pool.acquire().await.map_err(|e| self.failure(&e, true))?;
                 let rows = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(statement.as_str())), params).fetch_all(&mut *connection).await.map_err(|e| self.failure(&e, false))?;
-                rows.iter().map(|row| self.row(row, no_unsigned)).collect()
+                rows.iter().map(|row| self.row(row, POSTGRES)).collect()
             }
             Pool::Mysql(pool) => {
                 let mut connection = pool.acquire().await.map_err(|e| self.failure(&e, true))?;
                 let rows = bind_mysql(sqlx::query(sqlx::AssertSqlSafe(statement.as_str())), params).fetch_all(&mut *connection).await.map_err(|e| self.failure(&e, false))?;
-                rows.iter().map(|row| self.row(row, mysql_unsigned)).collect()
+                rows.iter().map(|row| self.row(row, MYSQL)).collect()
             }
         }
     }
@@ -147,7 +147,7 @@ impl ExternalDatabase {
         }
     }
 
-    fn row<R: Row>(&self, row: &R, unsigned: Unsigned<R>) -> Result<DbRow, DbFailure>
+    fn row<R: Row>(&self, row: &R, driver: Driver<R>) -> Result<DbRow, DbFailure>
     where
         usize: sqlx::ColumnIndex<R>,
         for<'r> i8: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
@@ -164,15 +164,16 @@ impl ExternalDatabase {
         for (index, column) in row.columns().iter().enumerate() {
             let name = column.name();
             let raw = row.try_get_raw(index).map_err(|e| self.failure(&e, false))?;
-            let value = if raw.is_null() { DbValue::Null } else { self.value(row, index, name, unsigned)? };
+            let value = if raw.is_null() { DbValue::Null } else { self.value(row, index, name, &raw.type_info(), driver)? };
             values.push((name.to_string(), value));
         }
         Ok(values)
     }
 
     /// The value of a column that is not NULL: the first type it decodes as, in the order of the
-    /// spec's list, checked against the column's type.
-    fn value<R: Row>(&self, row: &R, index: usize, name: &str, unsigned: Unsigned<R>) -> Result<DbValue, DbFailure>
+    /// spec's list. Each type is tried only when it fits the column's type, so a column does not
+    /// build an error for every type it is not.
+    fn value<R: Row>(&self, row: &R, index: usize, name: &str, column: &<R::Database as sqlx::Database>::TypeInfo, driver: Driver<R>) -> Result<DbValue, DbFailure>
     where
         usize: sqlx::ColumnIndex<R>,
         for<'r> i8: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
@@ -185,56 +186,165 @@ impl ExternalDatabase {
         for<'r> String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
         for<'r> Vec<u8>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
     {
-        if let Ok(value) = row.try_get::<i64, _>(index) {
+        if let Some(value) = decoded::<i64, R>(row, index, column) {
             return Ok(DbValue::Integer(value));
         }
-        if let Ok(value) = row.try_get::<i32, _>(index) {
+        if let Some(value) = decoded::<i32, R>(row, index, column) {
             return Ok(DbValue::Integer(i64::from(value)));
         }
-        if let Ok(value) = row.try_get::<i16, _>(index) {
+        if let Some(value) = decoded::<i16, R>(row, index, column) {
             return Ok(DbValue::Integer(i64::from(value)));
         }
-        if let Ok(value) = row.try_get::<i8, _>(index) {
+        if let Some(value) = decoded::<i8, R>(row, index, column) {
             return Ok(DbValue::Integer(i64::from(value)));
         }
         // Before bool, which takes a MySQL column of any integer type and gives 1 for 5.
-        if let Some(value) = unsigned(row, index) {
+        if let Some(value) = (driver.unsigned)(row, index) {
             let value = value.map_err(|too_big| DbFailure::mistake(format!("database {}: column {name} holds {too_big}, more than a script number can hold; CAST it to text in the SQL", self.name)))?;
             return Ok(DbValue::Integer(value));
         }
-        if let Ok(value) = row.try_get::<f64, _>(index) {
+        if let Some(value) = decoded::<f64, R>(row, index, column) {
             return Ok(DbValue::Real(value));
         }
-        if let Ok(value) = row.try_get::<f32, _>(index) {
+        if let Some(value) = decoded::<f32, R>(row, index, column) {
             return Ok(DbValue::Real(f64::from(value)));
         }
-        if let Ok(value) = row.try_get::<bool, _>(index) {
+        if let Some(value) = decoded::<bool, R>(row, index, column) {
             return Ok(DbValue::Integer(i64::from(value)));
         }
-        if let Ok(value) = row.try_get::<String, _>(index) {
+        if let Some(value) = decoded::<String, R>(row, index, column) {
             return Ok(DbValue::Text(value));
         }
-        if let Ok(value) = row.try_get::<Vec<u8>, _>(index) {
+        if let Some(value) = decoded::<Vec<u8>, R>(row, index, column) {
             return Ok(DbValue::Blob(value));
+        }
+        // What SUM and AVG give: exact, so as text rather than as a number that would round it.
+        if let Some(value) = (driver.decimal)(row, index) {
+            return value.map(DbValue::Text).map_err(|reason| DbFailure::mistake(format!("database {}: column {name}: {reason}", self.name)));
         }
         // The same statement would find the same type again: the SQL's mistake.
         Err(DbFailure::mistake(format!("database {}: column {name} has a type that cannot be read; CAST it to text in the SQL", self.name)))
     }
 }
 
-/// Reads a column of an unsigned integer type, or says it is none: `Err` holds a value too big
-/// for an `i64`.
-type Unsigned<R> = fn(&R, usize) -> Option<Result<i64, u64>>;
-
-/// PostgreSQL has no unsigned integer types.
-fn no_unsigned(_: &sqlx::postgres::PgRow, _: usize) -> Option<Result<i64, u64>> {
-    None
+/// The column's value as a `T`, when `T` fits the column's type and the value decodes.
+fn decoded<T, R: Row>(row: &R, index: usize, column: &<R::Database as sqlx::Database>::TypeInfo) -> Option<T>
+where
+    usize: sqlx::ColumnIndex<R>,
+    for<'r> T: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+{
+    if !<T as sqlx::Type<R::Database>>::compatible(column) {
+        return None;
+    }
+    // The check `try_get` makes, made above without building an error when it fails.
+    row.try_get_unchecked::<T, _>(index).ok()
 }
+
+/// What one driver reads beyond the types both have.
+struct Driver<R> {
+    /// A column of an unsigned integer type, or none: `Err` holds a value too big for an `i64`.
+    unsigned: fn(&R, usize) -> Option<Result<i64, u64>>,
+    /// A column of an exact decimal type as its text, or none: `Err` says why it cannot be read.
+    decimal: fn(&R, usize) -> Option<Result<String, String>>,
+}
+
+impl<R> Clone for Driver<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R> Copy for Driver<R> {}
+
+const POSTGRES: Driver<sqlx::postgres::PgRow> = Driver { unsigned: |_, _| None, decimal: postgres_numeric };
+const MYSQL: Driver<sqlx::mysql::MySqlRow> = Driver { unsigned: mysql_unsigned, decimal: mysql_decimal };
 
 /// MySQL's `UNSIGNED` columns, which its signed types refuse.
 fn mysql_unsigned(row: &sqlx::mysql::MySqlRow, index: usize) -> Option<Result<i64, u64>> {
-    let value = row.try_get::<u64, _>(index).ok()?;
+    let column = row.try_get_raw(index).ok()?.type_info().into_owned();
+    if !<u64 as sqlx::Type<sqlx::MySql>>::compatible(&column) {
+        return None;
+    }
+    let value = row.try_get_unchecked::<u64, _>(index).ok()?;
     Some(i64::try_from(value).map_err(|_| value))
+}
+
+/// MySQL's `DECIMAL`, which it sends as text.
+fn mysql_decimal(row: &sqlx::mysql::MySqlRow, index: usize) -> Option<Result<String, String>> {
+    let column = row.try_get_raw(index).ok()?.type_info().into_owned();
+    if sqlx::TypeInfo::name(&column) != "DECIMAL" {
+        return None;
+    }
+    // `String` refuses the type but reads the text it comes as.
+    Some(row.try_get_unchecked::<String, _>(index).map_err(|e| e.to_string()))
+}
+
+/// PostgreSQL's `NUMERIC`, which it sends in its binary form.
+fn postgres_numeric(row: &sqlx::postgres::PgRow, index: usize) -> Option<Result<String, String>> {
+    let raw = row.try_get_raw(index).ok()?;
+    if sqlx::TypeInfo::name(&*raw.type_info()) != "NUMERIC" {
+        return None;
+    }
+    let text = match raw.format() {
+        sqlx::postgres::PgValueFormat::Text => raw.as_str().map(str::to_string).map_err(|e| e.to_string()),
+        sqlx::postgres::PgValueFormat::Binary => raw.as_bytes().map_err(|e| e.to_string()).and_then(numeric_text),
+    };
+    Some(text)
+}
+
+/// The text of a `NUMERIC` in PostgreSQL's binary form: four 16-bit fields (the number of
+/// digits, the weight of the first, the sign, the digits after the point to show), then the
+/// digits, each 0 to 9999 in base 10000, the first one weighing 10000^weight.
+fn numeric_text(bytes: &[u8]) -> Result<String, String> {
+    let field = |at: usize| -> Result<u16, String> {
+        let pair = bytes.get(at..at + 2).ok_or("NUMERIC value is cut short")?;
+        Ok(u16::from_be_bytes([pair[0], pair[1]]))
+    };
+    let count = usize::from(field(0)?);
+    let weight = i32::from(field(2)? as i16);
+    let sign = field(4)?;
+    let scale = usize::from(field(6)?);
+    match sign {
+        0x0000 | 0x4000 => {}
+        0xC000 => return Ok("NaN".to_string()),
+        0xD000 => return Ok("Infinity".to_string()),
+        0xF000 => return Ok("-Infinity".to_string()),
+        _ => return Err(format!("NUMERIC value has unknown sign {sign:#06x}")),
+    }
+    if bytes.len() != 8 + count * 2 {
+        return Err("NUMERIC value has the wrong length".to_string());
+    }
+    let digits = (0..count).map(|i| field(8 + i * 2)).collect::<Result<Vec<u16>, String>>()?;
+    if digits.iter().any(|digit| *digit > 9999) {
+        return Err("NUMERIC value has a digit over 9999".to_string());
+    }
+    // Base-10000 digit at position `p` (0 = units, 1 = ten-thousands, -1 = the first four places
+    // after the point) is `digits[weight - p]`.
+    let digit = |p: i32| -> u16 { usize::try_from(weight - p).ok().and_then(|i| digits.get(i).copied()).unwrap_or(0) };
+    let mut text = String::new();
+    if sign == 0x4000 {
+        text.push('-');
+    }
+    if weight < 0 {
+        text.push('0');
+    } else {
+        text.push_str(&digit(weight).to_string());
+        for p in (0..weight).rev() {
+            text.push_str(&format!("{:04}", digit(p)));
+        }
+    }
+    if scale > 0 {
+        text.push('.');
+        let mut fraction = String::new();
+        let mut p = -1;
+        while fraction.len() < scale {
+            fraction.push_str(&format!("{:04}", digit(p)));
+            p -= 1;
+        }
+        fraction.truncate(scale);
+        text.push_str(&fraction);
+    }
+    Ok(text)
 }
 
 fn pool_options<DB: sqlx::Database>(settings: &DatabaseSettings) -> sqlx::pool::PoolOptions<DB> {
@@ -242,7 +352,9 @@ fn pool_options<DB: sqlx::Database>(settings: &DatabaseSettings) -> sqlx::pool::
     let size = u32::try_from(settings.pool_size).unwrap_or(u32::MAX);
     // Waiting for a connection, which takes opening one when none is free, is bounded by the
     // connect timeout as well as by the caller's.
-    sqlx::pool::PoolOptions::new().max_connections(size).min_connections(0).acquire_timeout(settings.connect_timeout)
+    // No ping before each use: it would double the round trips of every query, and a connection
+    // that died while idle fails its one call with an I/O error, which counts as unavailable.
+    sqlx::pool::PoolOptions::new().max_connections(size).min_connections(0).acquire_timeout(settings.connect_timeout).test_before_acquire(false)
 }
 
 fn bind_postgres<'q>(mut query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, params: &'q [hiqlite::Param]) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
@@ -447,6 +559,28 @@ mod tests {
         assert_eq!(classify(&E::RowNotFound, false), Class::Unknown);
         // While connecting, everything is the connection's.
         assert_eq!(classify(&E::Encode("too long".into()), true), Class::Unavailable);
+    }
+
+    /// PostgreSQL's binary NUMERIC: count, weight, sign, scale, then base-10000 digits.
+    #[test]
+    fn test_numeric_text() -> Result<(), String> {
+        let numeric = |weight: i16, sign: u16, scale: u16, digits: &[u16]| -> Vec<u8> {
+            let count = u16::try_from(digits.len()).unwrap_or(u16::MAX);
+            let mut bytes = Vec::new();
+            for field in [count, weight as u16, sign, scale].iter().chain(digits) {
+                bytes.extend_from_slice(&field.to_be_bytes());
+            }
+            bytes
+        };
+        assert_eq!(numeric_text(&numeric(1, 0, 3, &[1, 2345, 6780]))?, "12345.678");
+        assert_eq!(numeric_text(&numeric(-1, 0, 4, &[12]))?, "0.0012");
+        assert_eq!(numeric_text(&numeric(0, 0x4000, 0, &[5]))?, "-5");
+        assert_eq!(numeric_text(&numeric(0, 0, 2, &[]))?, "0.00");
+        assert_eq!(numeric_text(&numeric(1, 0, 0, &[100]))?, "1000000");
+        assert_eq!(numeric_text(&numeric(0, 0xC000, 0, &[]))?, "NaN");
+        assert!(numeric_text(&numeric(0, 0, 0, &[10000])).is_err());
+        assert!(numeric_text(&[0, 1, 0, 0]).is_err());
+        Ok(())
     }
 
     #[test]
