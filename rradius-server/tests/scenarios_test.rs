@@ -345,7 +345,8 @@ fn test_external_api() -> TestResult {
     assert_eq!(server.pap("dave", "wrong").code, ACCESS_REJECT);
     assert_eq!(server.chap("dave", "dave-password").code, ACCESS_REJECT, "CHAP has no password to send to the API");
     assert_eq!(server.pap("slow", "anything").code, ACCESS_REJECT, "no answer from the API is a refusal");
-    assert!(server.stderr().contains("member API gave no answer"), "{}", server.stderr());
+    let stderr = server.wait_for_log("member API gave no answer");
+    assert!(stderr.contains("member API gave no answer"), "{stderr}");
     assert!(!server.stderr().contains("dave-password"), "no password in the log");
     assert_eq!(metric(&server, "rradius_script_http_requests_total{result=\"ok\"}")?, 3.0);
     assert_eq!(metric(&server, "rradius_script_http_requests_total{result=\"timeout\"}")?, 1.0);
