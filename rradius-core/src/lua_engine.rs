@@ -2314,9 +2314,14 @@ impl LuaAuthEngine {
                     database.note_refused();
                     failed.note_mistake_raised(e);
                 })?;
-                let result = database_call(slot.as_ref(), &failed, run_within(failed.left(timeout), call(database.clone(), sql, params))).await?;
+                let left = failed.left(timeout);
+                let result = database_call(slot.as_ref(), &failed, run_within(left, call(database.clone(), sql, params))).await?;
                 match result.map_err(|_| {
-                    database.note_timeout();
+                    // A call made after the request's time was used up never reached the
+                    // database: the time is the script's, not the database's.
+                    if !left.is_zero() {
+                        database.note_timeout();
+                    }
                     database_timed_out(function, timeout)
                 })?.map_err(|failure| mlua::Error::RuntimeError(format!("{function}: {}", failure.message)))? {
                     Answer::Rows(rows) => rows_to_lua(&lua, &rows),
@@ -3445,7 +3450,9 @@ pub(crate) mod tests {
         let decision = engine("db_query('hang', 'SELECT 1') return 'accept'")?.authenticate(test_request()).await;
         assert!(decision.database_failed, "a timeout counts as the database failing");
         let counted = databases.get("hang").ok_or("not open")?.failures();
-        assert_eq!((counted.unavailable, counted.mistake), (5, 0), "every call that ran out of time, whatever was left of the limit");
+        // The calls that waited on the database: not the two made with nothing left, which never
+        // reached it.
+        assert_eq!((counted.unavailable, counted.mistake), (3, 0), "only the calls that had time left");
         Ok(())
     }
 

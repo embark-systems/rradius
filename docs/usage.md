@@ -781,8 +781,8 @@ port = 9812         # 預設
 | `rradius_acct_spool_corrupt_total` | 損壞而改名保留的暫存檔 |
 | `rradius_acct_spool_bytes` | 等待重放的位元組數；持續大於 0 代表資料庫的資料落後 |
 | `rradius_netlogon_logons_total`、`rradius_netlogon_channel_setups_total`、`rradius_netlogon_open_connections` | `netlogon` 處理器（3.7 節） |
-| `rradius_external_db_failures_total{database="...",reason="unavailable\|mistake\|unknown"}` | 每個外部資料庫失敗的呼叫（2.17 節），`sql` 處理器和 `db_query`、`db_execute` 都算。`unavailable` 是資料庫無法使用（含逾時），`mistake` 是陳述式或值的錯（含送出前就被拒的，例如值的數量不符），`unknown` 是其他。`db_query` 寫了不存在的名稱不算；`required_for_ready` 的檢查也不算。沒有 `[databases]` 時不輸出 |
-| `rradius_external_db_connections{database="...",state="in_use\|idle"}` | 每個外部資料庫連線池的連線：`in_use` 是交給呼叫正在用的，`idle` 是開著閒置的。不含 `required_for_ready` 的檢查連線 |
+| `rradius_external_db_failures_total{database="...",reason="unavailable\|mistake\|unknown"}` | 每個外部資料庫失敗的呼叫（2.17 節），`sql` 處理器和 `db_query`、`db_execute` 都算。`unavailable` 是資料庫無法使用（含逾時），`mistake` 是陳述式或值的錯（含送出前就被拒的，例如值的數量不符），`unknown` 是其他。`db_query` 寫了不存在的名稱不算；請求的時間（`[lua].query_timeout_ms`）已經用完後才呼叫的 `db_query`、`db_execute` 沒有送到資料庫，也不算；`required_for_ready` 的檢查也不算。沒有 `[databases]` 時不輸出 |
+| `rradius_external_db_connections{database="...",state="in_use\|idle"}` | 每個外部資料庫連線池的連線：`in_use` 是交給呼叫正在用的，加上正在建立的（還沒連上的連線也佔一個名額），`idle` 是開著閒置的。不含 `required_for_ready` 的檢查連線 |
 | `rradius_external_db_connections_max{database="..."}` | 連線池的上限，也就是 `pool_size`。`in_use` 一直等於它時，呼叫在排隊等連線 |
 | `rradius_external_db_reachable{database="..."}` | 只有設了 `required_for_ready` 的資料庫才有：檢查連得上是 1，否則 0（2.17 節） |
 | `rradius_reload_total{result="ok\|error"}` | 重新載入的結果 |

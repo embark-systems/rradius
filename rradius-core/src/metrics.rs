@@ -129,7 +129,7 @@ fn write_external_databases(out: &mut String, databases: &crate::external_db::Ex
         .iter()
         .flat_map(|(name, now)| [("in_use", now.in_use), ("idle", now.idle)].map(|(state, value)| (format!("{{database=\"{name}\",state=\"{state}\"}}"), value as u64)))
         .collect();
-    family(out, "rradius_external_db_connections", "gauge", "Connections of each external database's pool: in_use handed to a call, idle open and free.", in_use_idle);
+    family(out, "rradius_external_db_connections", "gauge", "Connections of each external database's pool: in_use handed to a call or being opened, idle open and free.", in_use_idle);
     let max = connections.iter().map(|(name, now)| (format!("{{database=\"{name}\"}}"), now.max as u64)).collect();
     family(out, "rradius_external_db_connections_max", "gauge", "The most connections each external database's pool keeps: its pool_size.", max);
     let reachable: Vec<(String, u64)> = all.iter().filter_map(|(name, database)| Some((format!("{{database=\"{name}\"}}"), u64::from(database.reachable()?)))).collect();

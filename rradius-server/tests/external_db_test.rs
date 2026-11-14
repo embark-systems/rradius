@@ -397,7 +397,8 @@ fn wait_readyz(port: u16, status: u16, limit: Duration) -> Result<Duration, Stri
     }
 }
 
-/// spec Required database stopped, Pool in use, and Failures by class against a real server:
+/// spec Required database stopped, Pool in use, Busy pool is not unreachable, and Failures by
+/// class against a real server:
 /// `/readyz` follows the database with `required_for_ready`, not the one without.
 #[tokio::test]
 #[ignore]
@@ -406,7 +407,7 @@ async fn test_postgresql_readiness() -> Result<(), String> {
     certificates(dir.path())?;
     let postgres = start_postgres(dir.path(), POSTGRES_INIT)?;
     let mut all = BTreeMap::new();
-    all.insert("pg".to_string(), DatabaseSettings { pool_size: 8, ..settings(DatabaseKind::Postgresql, postgres.port, "rradius", DatabaseTls::Off, None) });
+    all.insert("pg".to_string(), DatabaseSettings { pool_size: 8, required_for_ready: true, ..settings(DatabaseKind::Postgresql, postgres.port, "rradius", DatabaseTls::Off, None) });
     let databases = ExternalDatabases::open(&all);
     wait_ready(&databases, "pg").await?;
 
@@ -429,6 +430,28 @@ async fn test_postgresql_readiness() -> Result<(), String> {
     let (a, b) = held.await.map_err(|e| e.to_string())?;
     a?;
     b?;
+
+    // spec Busy pool is not unreachable: every connection held across two checks, which use a
+    // connection of their own.
+    databases.start_checks();
+    let pg = databases.get("pg").ok_or("no pg")?.clone();
+    wait_for("the first check", async || Ok(pg.reachable() == Some(true))).await?;
+    let hold = (check_interval() * 2 + Duration::from_secs(2)).as_secs_f64();
+    let all = (0..8).map(|_| {
+        let pg = pg.clone();
+        tokio::spawn(async move { pg.query(&format!("SELECT 1 FROM pg_sleep({hold})"), &[]).await.map(drop).map_err(|e| e.to_string()) })
+    });
+    let all: Vec<_> = all.collect();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(pg.connections().in_use, 8, "every connection held");
+    let until = Instant::now() + check_interval() * 2 + Duration::from_secs(1);
+    while Instant::now() < until {
+        assert_eq!(pg.reachable(), Some(true), "a busy pool was taken as unreachable");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    for held in all {
+        held.await.map_err(|e| e.to_string())??;
+    }
 
     let metrics_port = free_port();
     let connect_timeout = Duration::from_secs(1);
