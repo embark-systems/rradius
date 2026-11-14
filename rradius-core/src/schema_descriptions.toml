@@ -57,8 +57,8 @@ en = "The handlers of the chain, tried in order."
 zh-TW = "串接裡的處理器，依序嘗試。"
 
 [fields."auth.handlers.type"]
-en = "Kind of handler: sql, lua or ldap."
-zh-TW = "處理器種類：sql、lua 或 ldap。"
+en = "Kind of handler: sql, lua, ldap or netlogon."
+zh-TW = "處理器種類：sql、lua、ldap 或 netlogon。"
 
 [fields."auth.handlers.user_query"]
 en = "sql: query with exactly one ? for the user name; its first column is the stored password."
@@ -77,8 +77,8 @@ en = "sql: account whose password is checked when the user is not found. Anyone 
 zh-TW = "sql：查無使用者時改用這個帳號的密碼驗證，知道該密碼的人都會通過。"
 
 [fields."auth.handlers.timeout_ms"]
-en = "sql and ldap: how long one lookup may take, in milliseconds."
-zh-TW = "sql 與 ldap：一次查詢的時限，毫秒。"
+en = "sql, ldap and netlogon: how long one lookup or domain controller call may take, in milliseconds."
+zh-TW = "sql、ldap 與 netlogon：一次查詢或一次網域控制站呼叫的時限，毫秒。"
 
 [fields."auth.handlers.script"]
 en = "lua: the script file of this handler."
@@ -142,8 +142,8 @@ en = "ldap: connections kept open to the servers."
 zh-TW = "ldap：保持開啟的伺服器連線數。"
 
 [fields."auth.handlers.required_groups"]
-en = "ldap: the user must belong to one of these groups to be accepted."
-zh-TW = "ldap：使用者要屬於其中一個群組才接受。"
+en = "ldap and netlogon: the user must belong to one of these groups to be accepted; netlogon names them by SID (S-1-5-21-...)."
+zh-TW = "ldap 與 netlogon：使用者要屬於其中一個群組才接受；netlogon 以 SID（S-1-5-21-…）表示群組。"
 
 [fields."auth.handlers.group_attribute"]
 en = "ldap: user attribute listing the groups, such as memberOf."
@@ -158,16 +158,40 @@ en = "ldap: search filter for the groups of the user; {dn} is the user's DN."
 zh-TW = "ldap：找使用者所屬群組的搜尋條件；{dn} 是使用者的 DN。"
 
 [fields."auth.handlers.group_reply"]
-en = "ldap: reply attributes added when the user belongs to a group."
-zh-TW = "ldap：屬於某群組時加上的回應屬性。"
+en = "ldap and netlogon: reply attributes added when the user belongs to a group."
+zh-TW = "ldap 與 netlogon：屬於某群組時加上的回應屬性。"
 
 [fields."auth.handlers.group_reply.group"]
-en = "The group that adds these attributes."
-zh-TW = "加上這些屬性的群組。"
+en = "The group that adds these attributes; a SID for netlogon."
+zh-TW = "加上這些屬性的群組；netlogon 用 SID。"
 
 [fields."auth.handlers.group_reply.attributes"]
 en = "Reply attributes to add, by attribute name."
 zh-TW = "要加上的回應屬性，以屬性名稱為鍵。"
+
+[fields."auth.handlers.domain"]
+en = "netlogon: NetBIOS name of the Active Directory domain."
+zh-TW = "netlogon：Active Directory 網域的 NetBIOS 名稱。"
+
+[fields."auth.handlers.servers"]
+en = "netlogon: domain controller names or addresses, tried in order."
+zh-TW = "netlogon：網域控制站的名稱或位址，依序嘗試。"
+
+[fields."auth.handlers.port"]
+en = "netlogon: fixed Netlogon port of the domain controllers; without it the endpoint mapper on port 135 is asked."
+zh-TW = "netlogon：網域控制站固定的 Netlogon 埠；沒有設定時先問 135 埠的端點對應器。"
+
+[fields."auth.handlers.computer_name"]
+en = "netlogon: this node's computer account in the domain, without the trailing $ and at most 15 characters. Give every node its own account: nodes sharing one undo each other's secure channel."
+zh-TW = "netlogon：本節點在網域中的電腦帳號，不含結尾的 $，最多 15 個字元。每台節點各用一個帳號：共用帳號的節點會互相弄斷 secure channel。"
+
+[fields."auth.handlers.machine_password_file"]
+en = "netlogon: file holding the computer account's password; trailing line breaks are removed."
+zh-TW = "netlogon：存放電腦帳號密碼的檔案；結尾換行會去掉。"
+
+[fields."auth.handlers.connections"]
+en = "netlogon: most connections kept open to one domain controller."
+zh-TW = "netlogon：每台網域控制站最多保持開啟的連線數。"
 
 [fields."auth.username"]
 en = "How the user name is normalised before the handlers see it."

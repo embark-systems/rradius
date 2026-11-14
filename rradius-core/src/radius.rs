@@ -3571,6 +3571,83 @@ pub(crate) mod tests {
         assert!(microsoft_attribute(&response, 26).is_none());
     }
 
+    /// An MS-CHAPv2 Access-Request for `user` answering MSCHAP_AUTH_CHALLENGE with `password`.
+    fn mschap_request_for(user: &str, password: &str) -> Vec<u8> {
+        let mut response = vec![7u8, 0];
+        response.extend_from_slice(&MSCHAP_PEER_CHALLENGE);
+        response.extend_from_slice(&[0; 8]);
+        response.extend_from_slice(&crate::mschap::response_for(password, user, &MSCHAP_PEER_CHALLENGE, &MSCHAP_AUTH_CHALLENGE));
+        let attributes = vec![(1, user.as_bytes().to_vec()), microsoft_vsa(11, &MSCHAP_AUTH_CHALLENGE), microsoft_vsa(25, &response)];
+        RadiusPacket::create_access_request(9, [4; 16], attributes, SECRET)
+    }
+
+    /// A server whose chain is a `netlogon` handler, with a domain controller where User and
+    /// alice have `password`, then an `sql` handler that knows dave.
+    async fn netlogon_server(password: &'static str) -> Result<(RadiusServer, Arc<parking_lot::Mutex<crate::netlogon::channel::test_dc::State>>), String> {
+        let rig = crate::netlogon::handler::test_support::rig(password, |_| {}).await?;
+        static SEEDED: tokio::sync::OnceCell<Result<(), String>> = tokio::sync::OnceCell::const_new();
+        let db = crate::test_support::test_db();
+        SEEDED
+            .get_or_init(|| async {
+                let db = crate::test_support::test_db();
+                db.execute("CREATE TABLE radius_netlogon_users (username TEXT, password TEXT)").await.map_err(|e| e.to_string())?;
+                db.execute("INSERT INTO radius_netlogon_users VALUES ('dave', 'secret')").await.map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .await
+            .clone()?;
+        let sql = crate::auth_chain::Handler::Sql {
+            db,
+            user_query: "SELECT password FROM radius_netlogon_users WHERE username = ?".to_string(),
+            reply_query: None,
+            certificate_query: None,
+            default_user: None,
+            timeout: std::time::Duration::from_secs(5),
+        };
+        let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![crate::auth_chain::Handler::Netlogon(rig.handler), sql]);
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'reject'").map_err(|e| e.to_string())?);
+        let server = RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine, share_dictionary()).with_auth_chains(Arc::new(AuthChains::new(Some(chain), Vec::new())));
+        Ok((server, rig.state))
+    }
+
+    async fn answer(server: &RadiusServer, request: &[u8]) -> Result<RadiusPacket, String> {
+        let bytes = server.handle_auth(request, LOCALHOST).await.ok_or("no answer")?;
+        RadiusPacket::parse(&bytes).map_err(|e| format!("{e:?}"))
+    }
+
+    /// Scenarios: Correct password (with the RFC 2759 example), Unknown user goes to the next
+    /// handler, PAP request.
+    #[tokio::test]
+    async fn test_netlogon_chain() -> Result<(), String> {
+        let (server, state) = netlogon_server("clientPass").await?;
+        let response = answer(&server, &mschap_request("User", [4; 16], 16, 50)).await?;
+        assert_eq!(response.code, ACCESS_ACCEPT);
+        let mut expected = vec![7u8];
+        expected.extend_from_slice(b"S=407A5589115FD0D6209F510FE9C04566932CDA56");
+        assert_eq!(microsoft_attribute(&response, 26), Some(expected));
+        assert!(microsoft_attribute(&response, 16).is_some() && microsoft_attribute(&response, 17).is_some(), "no MPPE keys");
+        // dave is unknown to the domain: the sql handler decides.
+        assert_eq!(answer(&server, &mschap_request_for("dave", "secret")).await?.code, ACCESS_ACCEPT);
+        assert_eq!(answer(&server, &mschap_request_for("dave", "wrong")).await?.code, ACCESS_REJECT);
+        let calls = state.lock().calls.len();
+        let ra = [6u8; 16];
+        let pap = RadiusPacket::create_access_request(9, ra, vec![(1, b"dave".to_vec()), (USER_PASSWORD, encrypt_password("secret", &ra))], SECRET);
+        assert_eq!(answer(&server, &pap).await?.code, ACCESS_ACCEPT);
+        assert_eq!(state.lock().calls.len(), calls, "PAP reached the domain controller");
+        Ok(())
+    }
+
+    /// Scenario: Wrong password, with MS-CHAP-Error.
+    #[tokio::test]
+    async fn test_netlogon_wrong_password() -> Result<(), String> {
+        let (server, _) = netlogon_server("other").await?;
+        let response = answer(&server, &mschap_request("User", [4; 16], 16, 50)).await?;
+        assert_eq!(response.code, ACCESS_REJECT);
+        let error = microsoft_attribute(&response, 2).ok_or("no MS-CHAP-Error")?;
+        assert!(error[1..].starts_with(b"E=691 R=0"), "{error:?}");
+        Ok(())
+    }
+
     /// RFC 2865 section 5.26 lets one Vendor-Specific carry several vendor attributes.
     #[tokio::test]
     async fn test_mschapv2_attributes_in_one_vendor_specific() {
@@ -4791,6 +4868,24 @@ pub(crate) mod tests {
         assert_eq!(server.metrics.eap_peap.accept.get(), 1);
         assert_eq!(server.metrics.eap_tls.accept.get(), 0);
         assert_eq!(server.metrics.eap_open.get(), 0);
+    }
+
+    /// Scenario: PEAP inner method, checked by a domain controller.
+    #[tokio::test]
+    async fn test_peap_netlogon() -> Result<(), String> {
+        let chain = crate::netlogon::handler::test_support::chain("secret").await?;
+        let (dir, server) = peap_server_with("peap-netlogon", "return 'reject'", Some(chain));
+        let (response, authenticator, peer, heard) = peap_conversation(&server, dir.path(), b"anonymous", "alice", "secret").await;
+        assert_eq!(response.code, ACCESS_ACCEPT);
+        assert_eq!(joined(&response)[0], 3, "EAP-Success");
+        assert_eq!(heard, vec!["success".to_string(), "tlv 1".to_string()]);
+        let mut theirs = [0u8; 64];
+        peer.client.export_keying_material(&mut theirs[..], b"client EAP encryption", None).map_err(|e| e.to_string())?;
+        let (_, recv) = decrypt_mppe_key(&microsoft_attribute(&response, 17).ok_or("no receive key")?, &authenticator);
+        assert_eq!(recv, theirs[..32], "the MSK from the tunnel");
+        let (response, ..) = peap_conversation(&server, dir.path(), b"anonymous", "alice", "wrong").await;
+        assert_eq!(response.code, ACCESS_REJECT);
+        Ok(())
     }
 
     #[tokio::test]

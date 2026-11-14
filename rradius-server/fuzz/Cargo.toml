@@ -50,3 +50,10 @@ path = "fuzz_targets/eap_packet.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "netlogon_answer"
+path = "fuzz_targets/netlogon_answer.rs"
+test = false
+doc = false
+bench = false

@@ -31,6 +31,7 @@ pub mod script_http;
 pub mod session_resumption;
 pub mod spool;
 pub mod mschap;
+pub mod netlogon;
 pub mod pre_chain;
 pub mod tacacs;
 pub mod tacacs_rules;

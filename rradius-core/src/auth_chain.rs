@@ -4,6 +4,7 @@
 use crate::clients::Client;
 use crate::config::{AuthHandlerSettings, AuthPolicy, AuthSettings, ChainSettings, StripRealm, UsernameSettings};
 use crate::ldap_handler::LdapHandler;
+use crate::netlogon::handler::NetlogonHandler;
 use crate::lua_engine::{log_line, Db, DbValue, LuaAuthEngine, LuaRequest, LuaVms};
 use crate::common::{AttrValue, Outcome};
 use crate::{mschap, passwords};
@@ -113,6 +114,7 @@ pub enum Handler {
     /// A script that compares passwords, said so in its settings: see `verifies_password`.
     LuaVerifying(LuaAuthEngine),
     Ldap(LdapHandler),
+    Netlogon(NetlogonHandler),
 }
 
 pub struct AuthChain {
@@ -167,6 +169,7 @@ impl AuthChain {
                     }
                 }
                 AuthHandlerSettings::Ldap(ldap) => Handler::Ldap(LdapHandler::new(ldap.clone())?),
+                AuthHandlerSettings::Netlogon(netlogon) => Handler::Netlogon(NetlogonHandler::new(netlogon.clone())),
             });
         }
         Ok(Self::new(settings.policy, handlers).with_username(settings.username.clone()))
@@ -313,12 +316,10 @@ impl AuthChains {
                     }
                     AuthHandlerSettings::Ldap(ldap) => {
                         LdapHandler::new(ldap.clone()).map_err(|e| format!("{prefix}: {e}"))?;
-                        // Fixed in the file, so a mistake here would reject each member at login.
-                        for (name, value) in ldap.groups.reply.iter().flat_map(|(_, attributes)| attributes) {
-                            let value = AttrValue::Bytes(value.clone().into_bytes());
-                            crate::radius::encode_response_attributes(dictionary, [(name.as_str(), &value)], b"", &[0; 16], &mut Vec::new())
-                                .map_err(|e| format!("{prefix}: group_reply: {e}"))?;
-                        }
+                        check_group_reply(dictionary, ldap.groups.reply.iter().flat_map(|(_, attributes)| attributes)).map_err(|e| format!("{prefix}: {e}"))?;
+                    }
+                    AuthHandlerSettings::Netlogon(netlogon) => {
+                        check_group_reply(dictionary, netlogon.group_reply.iter().flat_map(|(_, attributes)| attributes)).map_err(|e| format!("{prefix}: {e}"))?;
                     }
                 }
             }
@@ -343,6 +344,16 @@ impl AuthChains {
     }
 }
 
+/// Encodes each `group_reply` attribute once: they are fixed in the file, so a mistake would
+/// otherwise reject each member of the group at login.
+fn check_group_reply<'a>(dictionary: &crate::dictionary::Dictionary, attributes: impl Iterator<Item = &'a (String, String)>) -> Result<(), String> {
+    for (name, value) in attributes {
+        let value = AttrValue::Bytes(value.clone().into_bytes());
+        crate::radius::encode_response_attributes(dictionary, [(name.as_str(), &value)], b"", &[0; 16], &mut Vec::new()).map_err(|e| format!("group_reply: {e}"))?;
+    }
+    Ok(())
+}
+
 impl Handler {
     /// Whether its accept means a password was compared.
     fn verifies_password(&self) -> bool {
@@ -354,6 +365,7 @@ impl Handler {
             Handler::Sql { .. } => "sql",
             Handler::Lua(_) | Handler::LuaVerifying(_) => "lua",
             Handler::Ldap(_) => "ldap",
+            Handler::Netlogon(_) => "netlogon",
         }
     }
 
@@ -380,6 +392,10 @@ impl Handler {
             Handler::Ldap(ldap) => {
                 let (outcome, attributes) = ldap.authenticate_account(credentials, account).await;
                 (outcome, attributes, None, false)
+            }
+            Handler::Netlogon(netlogon) => {
+                let (outcome, attributes, unavailable) = netlogon.authenticate(credentials, account).await;
+                (outcome, attributes, None, unavailable)
             }
             Handler::Sql { db, user_query, certificate_query, reply_query, default_user, timeout } => {
                 // Inside EAP the name is what gets logged and given back to the device, and it would
@@ -446,17 +462,22 @@ pub(crate) async fn verify_secret(stored: &str, user: &str, secret: &Secret) -> 
         Secret::Chap { id, response, challenge } => passwords::verify_chap(stored, *id, response, challenge),
         Secret::MsChapV2 { ident, peer_challenge, response, challenge } => {
             let proof = mschap::verify(stored, user, peer_challenge, challenge, response)?;
-            let mut success = vec![*ident];
-            success.extend_from_slice(proof.authenticator_response.as_bytes());
-            return Some(vec![
-                ("MS-CHAP2-Success".to_string(), AttrValue::Bytes(success)),
-                ("MS-MPPE-Send-Key".to_string(), AttrValue::Bytes(proof.send_key.to_vec())),
-                ("MS-MPPE-Recv-Key".to_string(), AttrValue::Bytes(proof.recv_key.to_vec())),
-            ]);
+            return Some(mschapv2_success(*ident, &proof));
         }
         Secret::Certificate | Secret::None => false,
     };
     verified.then(Vec::new)
+}
+
+/// What a verified MS-CHAPv2 response adds to the accept: `MS-CHAP2-Success` and the keys.
+pub(crate) fn mschapv2_success(ident: u8, proof: &mschap::Proof) -> Vec<(String, AttrValue)> {
+    let mut success = vec![ident];
+    success.extend_from_slice(proof.authenticator_response.as_bytes());
+    vec![
+        ("MS-CHAP2-Success".to_string(), AttrValue::Bytes(success)),
+        ("MS-MPPE-Send-Key".to_string(), AttrValue::Bytes(proof.send_key.to_vec())),
+        ("MS-MPPE-Recv-Key".to_string(), AttrValue::Bytes(proof.recv_key.to_vec())),
+    ]
 }
 
 /// The queries of a `sql` handler.

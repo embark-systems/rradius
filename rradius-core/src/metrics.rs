@@ -286,6 +286,18 @@ impl Metrics {
             ("{result=\"too_large\"}", self.script_http_too_large.get()),
             ("{result=\"busy\"}", self.script_http_busy.get()),
         ]);
+        let netlogon = crate::netlogon::handler::counters();
+        family("rradius_netlogon_logons_total", "counter", "MS-CHAPv2 logons the netlogon handlers asked domain controllers about, by result.", &[
+            ("{result=\"accept\"}", netlogon.accept.get()),
+            ("{result=\"reject\"}", netlogon.reject.get()),
+            ("{result=\"no_such_user\"}", netlogon.no_such_user.get()),
+            ("{result=\"unavailable\"}", netlogon.unavailable.get()),
+        ]);
+        family("rradius_netlogon_channel_setups_total", "counter", "Netlogon secure channels set up with domain controllers, by result.", &[
+            ("{result=\"ok\"}", netlogon.setups_ok.get()),
+            ("{result=\"failed\"}", netlogon.setups_failed.get()),
+        ]);
+        family("rradius_netlogon_open_connections", "gauge", "Sealed Netlogon connections open to domain controllers.", &[("", netlogon.open.get())]);
         family("rradius_eap_sessions_open", "gauge", "EAP conversations under way.", &[("", self.eap_open.get())]);
         let mut eap_sessions: Vec<(String, u64)> = vec![
             ("{method=\"tls\",result=\"accept\"}".to_string(), self.eap_tls.accept.get()),

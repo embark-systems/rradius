@@ -775,6 +775,7 @@ port = 9812         # 預設
 | `rradius_acct_spool_full_total` | 暫存已滿或寫入失敗，沒有回覆的請求 |
 | `rradius_acct_spool_corrupt_total` | 損壞而改名保留的暫存檔 |
 | `rradius_acct_spool_bytes` | 等待重放的位元組數；持續大於 0 代表資料庫的資料落後 |
+| `rradius_netlogon_logons_total`、`rradius_netlogon_channel_setups_total`、`rradius_netlogon_open_connections` | `netlogon` 處理器（3.7 節） |
 | `rradius_reload_total{result="ok\|error"}` | 重新載入的結果 |
 | `rradius_reload_last_success_timestamp_seconds` | 上次成功重新載入的時間，還沒有時是 0 |
 
@@ -1174,11 +1175,11 @@ script = "vpn_rules.lua"
 | policy | 行為 |
 | --- | --- |
 | `first_match`（預設） | 依序執行，第一個不略過的處理器決定結果；接受時只帶回該處理器的回應屬性 |
-| `all_accept` | 依序執行；任一拒絕或 challenge 就停止；至少一個接受才算通過；回應屬性依順序合併。串接裡有會比對密碼的處理器（`sql`、`ldap`、設了 `verifies_password` 的 `lua`）時，至少要有一個接受，否則拒絕；在它們接受之前，不會比對密碼的腳本也不能回 `challenge`。沒有人接受、後面也沒有這種處理器時，腳本不會執行，所以查不到的名稱不會留下腳本的寫入。憑證也適用：憑證證明的是名稱，不是帳號可以用 |
+| `all_accept` | 依序執行；任一拒絕或 challenge 就停止；至少一個接受才算通過；回應屬性依順序合併。串接裡有會比對密碼的處理器（`sql`、`ldap`、`netlogon`、設了 `verifies_password` 的 `lua`）時，至少要有一個接受，否則拒絕；在它們接受之前，不會比對密碼的腳本也不能回 `challenge`。沒有人接受、後面也沒有這種處理器時，腳本不會執行，所以查不到的名稱不會留下腳本的寫入。憑證也適用：憑證證明的是名稱，不是帳號可以用 |
 
 兩種模式下，全部略過都視為拒絕。
 
-**`first_match` 不會替你檢查密碼：** `sql` 或 `ldap` 查不到名稱時回「略過」，交給下一個處理器。後面接只檢查政策的腳本時，不存在的使用者不用密碼就能通過，所以政策腳本要放進 `all_accept`，或設定 `verifies_password` 並自己比對。
+**`first_match` 不會替你檢查密碼：** `sql`、`ldap` 或 `netlogon` 查不到名稱時回「略過」，交給下一個處理器。後面接只檢查政策的腳本時，不存在的使用者不用密碼就能通過，所以政策腳本要放進 `all_accept`，或設定 `verifies_password` 並自己比對。
 
 ### 3.3 `sql` 處理器
 
@@ -1300,12 +1301,79 @@ allowed = "[a-z0-9._-]+" # 選填
 | `sql` | `user_query`、`reply_query` | 驗證密碼 |
 | `ldap` | `filter` 的搜尋 | `attribute` 模式驗證密碼 |
 | `lua` | 全域變數 `auth_user` | `get_attr('User-Name')` |
+| `netlogon` | 向 DC 登入的帳號（再去掉 `網域\`） | 計算 challenge hash |
 
 - **MS-CHAPv2 一律用收到的名稱驗證，** 因為用戶端是用它計算回應的（見 5.1 節）。回應裡的屬性和 `get_attr` 也不會改變。
 - **不經過這些設定：** 計費封包、TACACS+ 授權，以及沒有串接時的最上層腳本。它們要自己處理名稱，`auth_user` 在這些腳本中是 `nil`。
 - **開啟 `lowercase` 之前，先把資料統一成小寫。** 否則資料表裡的 `Alice` 會查不到；原本只差大小寫的不同帳號，也會指向同一筆。
 - **設定 `allowed` 之前，先在測試環境確認。** 樣式太嚴會擋掉合法使用者。
 - 不做 Unicode 正規化（NFC 等），也不依 realm 選擇串接。
+
+### 3.7 `netlogon` 處理器（Active Directory 的 MS-CHAPv2）
+
+AD 不會透過 LDAP 給出 NT hash，所以 `sql`、`ldap` 處理器無法驗證 AD 帳號的 MS-CHAPv2。`netlogon` 處理器把 MS-CHAPv2 回應交給網域控制站（DC）驗證：以本節點的電腦帳號和 DC 建立 Netlogon secure channel（AES），再以網路登入（`NetrLogonSamLogonEx`）送出 challenge hash 和 NT-Response。DC 接受時回傳的 user session key 就是「NT hash 的雜湊」，`MS-CHAP2-Success` 和 MPPE 金鑰由它算出，和 `sql` 處理器以密碼算出的相同。所以 PEAP-MSCHAPv2、RADIUS MS-CHAPv2、TACACS+ MS-CHAPv2 都能用 AD 帳號登入，伺服器不必加入網域，也不用 Samba。
+
+```toml
+[[auth.handlers]]
+type = "netlogon"
+domain = "CORP"                               # NetBIOS 網域名稱
+servers = ["dc1.corp.example", "dc2.corp.example"]
+computer_name = "RRADIUS1"                    # 本節點的電腦帳號，不含 $
+machine_password_file = "netlogon-rradius1.secret"
+required_groups = ["S-1-5-21-1004336348-1177238915-682003330-1110"]
+
+[[auth.handlers.group_reply]]
+group = "S-1-5-21-1004336348-1177238915-682003330-1111"
+attributes = { "Filter-Id" = "staff" }
+```
+
+| 欄位 | 預設 | 說明 |
+| --- | --- | --- |
+| `domain` | （必填） | 網域的 NetBIOS 名稱，例如 `CORP`，不是 DNS 名稱 |
+| `servers` | （必填） | DC 的名稱或位址，依序使用，至少一個 |
+| `port` | 無 | DC 固定的 Netlogon 埠。沒有設定時先問 135 埠的端點對應器，每台 DC 問一次 |
+| `computer_name` | （必填） | 本節點的電腦帳號，不含結尾的 `$`，最多 15 個字元 |
+| `machine_password_file` | （必填） | 電腦帳號的密碼檔，以設定檔目錄解析，結尾換行會去掉。載入後只保留 NT hash |
+| `timeout_ms` | 2000 | 連線、建立 secure channel、一次登入各自的時限，必須大於 0 |
+| `connections` | 4 | 每台 DC 最多保持的連線數，必須大於 0 |
+| `required_groups` | 無 | SID 清單，使用者至少屬於其中一個才接受，否則拒絕 |
+| `group_reply` | 無 | 屬於某 SID 的群組時加上的回應屬性，依設定順序，可同時符合多個 |
+
+**每台節點一個電腦帳號。** DC 對每個電腦帳號只保留一組 secure channel，兩台節點共用帳號會互相弄斷對方的 channel。叢集裡每台節點的設定要有自己的 `computer_name` 和密碼檔，建立方式見手冊第 3 章〈用 AD 帳號登入〉。
+
+DC 回覆的對應：
+
+| DC 回覆 | 結果 |
+| --- | --- |
+| 成功 | 接受，帶 `MS-CHAP2-Success`、`MS-MPPE-Send-Key`、`MS-MPPE-Recv-Key` 和符合的 `group_reply` |
+| `STATUS_NO_SUCH_USER` | 略過，交給下一個處理器 |
+| `STATUS_WRONG_PASSWORD`、`STATUS_ACCOUNT_DISABLED`、`STATUS_ACCOUNT_LOCKED_OUT`、`STATUS_PASSWORD_EXPIRED`、`STATUS_PASSWORD_MUST_CHANGE`、`STATUS_ACCOUNT_EXPIRED`、`STATUS_INVALID_LOGON_HOURS`、`STATUS_INVALID_WORKSTATION` | 拒絕，INFO 記錄狀態名稱 |
+| 其他失敗 | 拒絕，INFO 記錄十六進位代碼 |
+| 以來賓帳號登入成功 | 拒絕。請求本身也要求 DC 不要改用來賓帳號 |
+| 回覆不是權威的（`Authoritative` 為 false） | 換下一台 DC |
+
+- **只處理 MS-CHAPv2。** PAP、CHAP、憑證登入一律略過，不連 DC。PAP 要對 AD 驗證請用 `ldap` 處理器的 `bind` 模式。
+- **群組以 SID 表示，** 例如 `S-1-5-21-…-1110`。比對的是 DC 在登入回覆中給的群組：網域 SID 加上每個群組 RID，以及額外 SID（其他網域、通用群組）。不必另外查 LDAP。SID 可以用 PowerShell 的 `Get-ADGroup staff | Select SID` 查。不在群組和密碼錯誤的回應相同。
+- **帳號名稱：** 登入用串接處理後的名稱（3.6 節），再去掉 `網域\` 前綴，網域一律用 `domain`。challenge hash 用收到的名稱，和本機驗證相同。
+- **連線重用與換 DC：** 每台 DC 的連線共用同一組 secure channel，在請求之間重用。連線中斷，或 DC 表示 channel 已失效（`STATUS_ACCESS_DENIED`、密封或綁定被拒）時，重建 channel 並在新連線上重試一次，仍失敗就換下一台。在 `timeout_ms` 內沒有回應的連線會關閉，直接換下一台。
+- **全部 DC 都不能用時，** 和 `sql` 處理器的資料庫不能用時相同：RADIUS 不回應，計入 `rradius_radius_discarded_total{reason="database"}`，TACACS+ 回 ERROR，讓設備重送或換伺服器（2.2 節〈資料庫不能用時〉），並記錄 ERROR。電腦帳號密碼錯誤、DC 不支援 AES 這類設定問題也記錄 ERROR。
+- **秘密不進記錄：** 電腦帳號密碼、session key、user session key、NT-Response 和 MPPE 金鑰在任何記錄層級都不會出現，用完即清除。
+- `check` 和啟動只檢查設定與密碼檔，不連 DC。channel 在第一個請求時才建立。
+- **Samba AD DC 要允許 MS-CHAPv2：** Samba 預設的 `ntlm auth = ntlmv2-only` 不接受 MS-CHAPv2，密碼正確也回 `STATUS_WRONG_PASSWORD`。在每台 DC 的 `smb.conf` `[global]` 加上 `ntlm auth = mschapv2-and-ntlmv2-only` 後重新啟動。
+- **效能：** 在同一台 Mac 上對容器裡的 Samba 4.17 DC 量測，`connections` 為 1、4、16 時約每秒 1600、3700、8300 次登入，瓶頸在 DC。DC 承受得了時可以調高 `connections`。
+
+指標（2.8 節）：
+
+| 項目 | 說明 |
+| --- | --- |
+| `rradius_netlogon_logons_total{result="accept\|reject\|no_such_user\|unavailable"}` | 交給 DC 驗證的 MS-CHAPv2 登入 |
+| `rradius_netlogon_channel_setups_total{result="ok\|failed"}` | 建立 secure channel 的次數。`failed` 持續增加通常是電腦帳號密碼錯誤 |
+| `rradius_netlogon_open_connections` | 目前開著的 Netlogon 連線 |
+
+**限制：**
+- 不會自動加入網域，也不會輪替電腦帳號密碼。電腦帳號要事先建立並設定密碼（手冊第 3 章），之後若在 AD 重設密碼，要同時更新密碼檔並重新載入。
+- 只支援 AES secure channel。停用 AES 的舊 DC（Windows Server 2008 以前）不支援。
+- 在 Samba 4.17 AD DC 上以 `docker/interop-netlogon/run.sh` 實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、各種拒絕、群組、DC 重啟後重建 channel、電腦帳號密碼錯誤）。還沒有在 Windows Server 的 DC 上實測。
 
 ## 4. Lua 腳本
 
@@ -1628,9 +1696,9 @@ CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固�
 
 ### 5.1 MS-CHAPv2
 
-`sql` 處理器和 `ldap` 處理器的 `attribute` 模式支援 MS-CHAPv2（RFC 2759），成功時回覆 `MS-CHAP2-Success` 和 `MS-MPPE-Send-Key`、`MS-MPPE-Recv-Key`，失敗時回覆帶 `E=691 R=0` 的 `MS-CHAP-Error`。
+`sql` 處理器、`ldap` 處理器的 `attribute` 模式和 `netlogon` 處理器（3.7 節，AD 帳號）支援 MS-CHAPv2（RFC 2759），成功時回覆 `MS-CHAP2-Success` 和 `MS-MPPE-Send-Key`、`MS-MPPE-Recv-Key`，失敗時回覆帶 `E=691 R=0` 的 `MS-CHAP-Error`。
 
-- **只能搭配明文、`{clear}` 或 `{nthash}`。** 其他格式都會拒絕，因為這個協定需要 NT hash。
+- **只能搭配明文、`{clear}` 或 `{nthash}`。** 其他格式都會拒絕，因為這個協定需要 NT hash。AD 帳號用 `netlogon` 處理器，由 DC 驗證。
 - **MS-CHAPv2 本身很弱：** 擷取到的交換可以離線破解，而且 NT hash 外洩就等於密碼外洩。請只用在加密通道內，能用其他方式就不要用它。
 - **使用者名稱：** 驗證時只用最後一個反斜線之後的部分（`BIGCO\alice` 用 `alice`）。查帳號時預設用完整的 `User-Name`，要忽略網域請設定 `strip_realm`（見 3.6 節），或自行寫在查詢裡。正規化只影響查帳號，驗證仍用收到的名稱。
 - **不支援：** `ldap` 處理器的 `bind` 模式、最上層腳本和 `lua` 處理器、MS-CHAPv1。EAP-TLS 不用密碼，PEAP、TTLS 內層的 MS-CHAPv2 見 2.12 節。

@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [radius_packet, tacacs_packet, eap_packet, dictionary, attribute_text]
+        target: [radius_packet, tacacs_packet, eap_packet, dictionary, attribute_text, netlogon_answer]
     defaults:
       run:
         working-directory: rradius-server/fuzz

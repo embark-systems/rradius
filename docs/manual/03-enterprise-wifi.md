@@ -115,8 +115,75 @@ lowercase = true
 | --- | --- | --- |
 | 帳號的密碼只有雜湊（bcrypt、argon2、舊系統搬來的），或要讓 LDAP 用 bind 驗證 | EAP-TTLS 內層 PAP：`methods` 加 `"ttls"` | [usage 2.12 節](../usage.md#212-eap-radiuseap)、[第 9 章](09-migrate-users.md#能搬的和不能搬的) |
 | 設備什麼都不會（印表機） | MAC 認證 | [第 4 章](04-wired-mab.md) |
+| 員工帳號在 Active Directory，要用 PEAP-MSCHAPv2 | `netlogon` 處理器，由 DC 驗證 | 下一節 |
 
 用自己發的 USIM 卡（EAP-AKA'），或讓不會 802.1X 的設備每人一把 Wi-Fi 密碼，需要 rradius-enterprise，見企業版手冊。
+
+## 用 AD 帳號登入
+
+AD 不會給出密碼的 NT hash，所以 PEAP-MSCHAPv2 沒辦法用 `ldap` 處理器對 AD 驗證。`netlogon` 處理器把 MS-CHAPv2 的回應交給網域控制站（DC）驗證，rradius 不必加入網域。細節見 [usage 3.7 節](../usage.md#37-netlogon-處理器active-directory-的-ms-chapv2)。
+
+### 1. 為每台節點建立電腦帳號
+
+每台 rradius 節點用一個自己的電腦帳號。兩台共用時，會互相弄斷對方和 DC 的 secure channel。名稱最多 15 個字元。
+
+在 Windows（需要 RSAT 的 ActiveDirectory 模組）：
+
+```powershell
+$pw = Read-Host -AsSecureString "RRADIUS1 的密碼"
+New-ADComputer -Name RRADIUS1 -SamAccountName 'RRADIUS1$' -AccountPassword $pw -Enabled $true
+```
+
+在 Samba AD DC：
+
+```bash
+samba-tool computer create RRADIUS1
+samba-tool user setpassword 'RRADIUS1$'
+```
+
+Samba 預設不接受 MS-CHAPv2。在每台 DC 的 `/etc/samba/smb.conf` `[global]` 加上下面這行，再重新啟動 samba：
+
+```ini
+ntlm auth = mschapv2-and-ntlmv2-only
+```
+
+把同一個密碼存到節點上，只給 rradius 讀：
+
+```bash
+install -m 600 -o rradius /dev/null /etc/rradius/netlogon-rradius1.secret
+read -rs pw && printf '%s' "$pw" > /etc/rradius/netlogon-rradius1.secret
+```
+
+### 2. 設定
+
+把 `netlogon` 處理器放在原本的 `sql` 處理器前面。AD 沒有的名稱（例如筆電憑證的名稱）DC 回「沒有這個使用者」，交給 `sql` 處理器；憑證登入 `netlogon` 處理器不處理。
+
+```toml
+[[auth.handlers]]
+type = "netlogon"
+domain = "CORP"                       # NetBIOS 網域名稱
+servers = ["dc1.corp.example", "dc2.corp.example"]
+computer_name = "RRADIUS1"            # 每台節點不同
+machine_password_file = "netlogon-rradius1.secret"
+# 只讓 Wi-Fi 群組登入，並依群組給 VLAN：
+required_groups = ["S-1-5-21-1004336348-1177238915-682003330-1110"]
+
+[[auth.handlers.group_reply]]
+group = "S-1-5-21-1004336348-1177238915-682003330-1110"
+attributes = { "Tunnel-Type" = "VLAN", "Tunnel-Medium-Type" = "IEEE-802", "Tunnel-Private-Group-Id" = "20" }
+
+[[auth.handlers]]
+type = "sql"
+# 原本的設定
+```
+
+- 群組用 SID，用 `Get-ADGroup wifi-staff | Select SID` 或 `samba-tool group show wifi-staff` 查。
+- 員工輸入 `CORP\staff1` 或 `staff1@corp.example.com` 時，`[auth.username]` 的 `strip_realm = "both"` 讓查帳號用 `staff1`。
+- 節點和 DC 之間要開 TCP 135（端點對應器）和 DC 的動態 RPC 埠（預設 49152 到 65535）。DC 把 Netlogon 固定在某個埠時，設 `port` 就不必開 135。
+
+### 3. 測試
+
+`rradius-server check` 只檢查設定，不連 DC。把 `eapol/peap.conf` 的 `identity`、`password` 改成 AD 帳號後跑 `eapol_test`，看到 `SUCCESS` 就對了。再試一次錯的密碼，應該被拒絕。`/metrics` 的 `rradius_netlogon_channel_setups_total{result="ok"}` 是 1 以上，`rradius_netlogon_logons_total` 跟著增加。
 
 ## 上線前
 
@@ -137,3 +204,9 @@ lowercase = true
 | EAP-TLS 紀錄寫 Identity 不符 | 用戶端的 Identity 和憑證的 SAN／CN 都不同，改用戶端設定或設 `match_identity = false` |
 | 有 `UnknownRevocationStatus` | 設了 `crl_file`，但缺少某一層 CA 的 CRL |
 | 手機一直跳出「是否信任憑證」 | 裝置上沒有 CA，或伺服器名稱和設定的不同 |
+| 記錄 `cannot set up the secure channel as RRADIUS1$`，提到 `STATUS_ACCESS_DENIED` | 密碼檔和 AD 上的電腦帳號密碼不同，或 `computer_name` 打錯。在 AD 重設密碼後更新密碼檔，送 SIGHUP |
+| 同上，提到 `STATUS_NO_TRUST_SAM_ACCOUNT` | AD 沒有這個電腦帳號，或 `domain` 不是 NetBIOS 名稱 |
+| 記錄 `no domain controller of CORP could answer`，RADIUS 沒有回應 | 連不到 DC：防火牆擋了 135 或動態 RPC 埠，或 DC 名稱解析不到 |
+| 兩台節點輪流出現 `STATUS_ACCESS_DENIED` | 兩台用了同一個電腦帳號 |
+| Samba DC，密碼正確也被拒，記錄 `STATUS_WRONG_PASSWORD` | `smb.conf` 沒有設 `ntlm auth = mschapv2-and-ntlmv2-only` |
+| AD 帳號被拒，記錄 `not in any of required_groups` | 使用者不在列出的群組，或 SID 抄錯 |
