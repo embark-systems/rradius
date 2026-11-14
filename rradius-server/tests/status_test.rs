@@ -180,7 +180,13 @@ fn test_cluster_wrong_arguments() -> Result<(), String> {
 fn test_cluster_one_node() -> Result<(), String> {
     let (server, metrics) = server("")?;
     login(&server, 1)?;
-    let config = server.config.to_string_lossy().into_owned();
+    // The configuration `status` reads lists a node 2 the cluster does not have: the members
+    // come from the cluster all the same.
+    let text = std::fs::read_to_string(&server.config).map_err(|e| e.to_string())?;
+    let listed = text.replacen("[radius]", &format!("[[cluster.nodes]]\nid = 2\nraft = \"127.0.0.1:{}\"\napi = \"127.0.0.1:{}\"\n[radius]", free_port(), free_port()), 1);
+    let config = server.dir.path().join("status.toml");
+    std::fs::write(&config, listed).map_err(|e| e.to_string())?;
+    let config = config.to_string_lossy().into_owned();
     // The node leads once its management API answers; until then the members come from the configuration.
     let deadline = Instant::now() + Duration::from_secs(30);
     let json = loop {
@@ -296,5 +302,55 @@ fn test_cluster_three_nodes() -> Result<(), String> {
     assert!(json["nodes"][2]["error"].as_str().is_some_and(|e| !e.is_empty()), "{json}");
     assert_eq!(json["total"]["reachable"], 2, "{json}");
     assert_eq!(json["total"]["nodes"], 3, "{json}");
+    Ok(())
+}
+
+#[test]
+fn test_cluster_secret_refused() -> Result<(), String> {
+    let (server, _) = server("")?;
+    let text = std::fs::read_to_string(&server.config).map_err(|e| e.to_string())?;
+    let config = server.dir.path().join("wrong-secret.toml");
+    std::fs::write(&config, text.replace("test-api-secret-01234", "another-api-secret-99")).map_err(|e| e.to_string())?;
+    let (code, _, stderr) = status(&["--config", &config.to_string_lossy(), "--cluster"])?;
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("secret_api"), "{stderr}");
+    Ok(())
+}
+
+/// Nothing running: the members come from the configuration and none can be sampled.
+#[test]
+fn test_cluster_nothing_listening() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let port = free_port();
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&config, format!("{text}[metrics]\nport = {port}\n")).map_err(|e| e.to_string())?;
+    let (code, stdout, stderr) = status(&["--config", &config.to_string_lossy(), "--cluster", "--json"])?;
+    assert_eq!(code, Some(3), "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| format!("{e}: {stdout}"))?;
+    assert_eq!(json["members_from"], "configuration", "{json}");
+    assert_eq!(json["nodes"][0]["reachable"], false, "{json}");
+    assert_eq!(json["total"]["reachable"], 0, "{json}");
+    Ok(())
+}
+
+#[test]
+fn test_cluster_watching() -> Result<(), String> {
+    let (server, _) = server("")?;
+    let config = server.config.to_string_lossy().into_owned();
+    let child = Command::new(PROGRAM).args(["status", "--config", &config, "--cluster", "--watch", "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_millis(3500));
+    let killed = Command::new("kill").args(["-TERM", &child.id().to_string()]).status().map_err(|e| e.to_string())?;
+    assert!(killed.success());
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    // Two samples for the first print, then one each second.
+    assert!(stdout.lines().count() >= 2, "{stdout}");
+    for line in stdout.lines() {
+        let json: serde_json::Value = serde_json::from_str(line).map_err(|e| format!("{e}: {line}"))?;
+        assert_eq!(json["cluster"], true, "{json}");
+        assert!((json["interval_seconds"].as_f64().unwrap_or(0.0) - 1.0).abs() < 0.5, "{json}");
+    }
     Ok(())
 }
