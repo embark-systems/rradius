@@ -792,7 +792,7 @@ port = 9812         # 預設
 沒有 Prometheus 時，`status` 直接讀這台節點自己的 `/readyz` 與 `/metrics`，相隔 1 秒取兩次，列出每秒的量和目前的值：
 
 ```bash
-rradius-server status [--config <path>] [--watch] [--json]
+rradius-server status [--config <path>] [--watch] [--json] [--cluster]
 ```
 
 - **要有 `[metrics]`。** 指令照設定檔的 `bind` 與 `port` 連線；`bind` 是 `0.0.0.0` 或 `::` 時改連 `127.0.0.1` 或 `::1`。所以要在節點本機執行，用同一個設定檔。
@@ -852,7 +852,44 @@ RADIUS
 | 2 | 參數錯誤、設定檔讀不了，或設定檔沒有 `[metrics]` |
 | 3 | 連不上 metrics 埠、2 秒內沒有回答，或回答不像 rradius 的格式。`--watch` 時不會因此結束，而是每秒重試並在 stderr 說明；恢復後第一次的每秒量是從上一次成功取樣起算的平均，開頭的秒數就是這段時間 |
 
-`status` 只看一台節點。整個叢集的數字請用 Prometheus 彙總，或在每台執行。
+不帶 `--cluster` 時 `status` 只看一台節點。
+
+**`--cluster`** 一次看整個叢集，可以和 `--watch`、`--json`、`--config` 一起用：
+
+- **成員從哪裡來：** 依 `[[cluster.nodes]]` 的順序問各台的叢集管理 API（用 `secret_api`），每台最多等 2 秒，用第一台回答者的成員清單和它看到的 leader；不需要有 leader。全部沒回答時改用設定檔列的節點，輸出開頭註明。`secret_api` 被拒絕時結束碼 2。
+- **每台的 metrics 位址：** 成員 api 位址的主機，配上這台設定檔 `[metrics]` 的 port（`10.0.0.2:8200` → `10.0.0.2:9812`；IPv6 保留方括號；名稱照常解析）。執行指令的這台用自己的位址，和不帶 `--cluster` 時相同。
+- **前提：** 每台的 `[metrics] bind` 要綁其他節點連得到的內部位址（例如 WireGuard 位址），port 各台一樣；預設的 `127.0.0.1` 其他台連不到，會列為 unreachable。port 不一致時只能在各台分別執行。`/metrics` 沒有認證，綁內部位址時要用防火牆或 WireGuard 限制來源。Kubernetes 用 hostNetwork 時，`bind = "0.0.0.0"` 即可。
+- **取樣：** 所有成員同時取兩次樣本，相隔 1 秒，每台的數字和單台 `status` 算法相同。連不到的成員列為 unreachable，原因列在表下，不計入合計。
+
+文字輸出每台一列，最後是合計（數字只是示意）：
+
+```text
+rradius cluster status over 1.0 s, members from the cluster
+
+node   role      ready        auth/s  acct/s  discarded/s  in progress  address
+1      leader    ok           1520.0  30.0    0.0          12           10.99.0.1:9812
+2      follower  ok           1488.0  28.0    0.0          9            10.99.0.2:9812
+3      follower  unreachable  -       -       -            -            10.99.0.3:9812
+total            2/3          3008.0  58.0    0.0          21
+
+node 3: cannot reach the metrics port at 10.99.0.3:9812: Connection refused (os error 61)
+(every node's [metrics] bind has to be an address this host can reach, on the same port as here)
+```
+
+`role` 是 `leader`、`follower` 或 `learner`：連得到的成員看它自己的指標，連不到的看成員清單。`discarded/s` 是五種丟棄原因的合計，`in progress` 是登入加計費正在處理的請求。
+
+`--cluster --json` 每次印一行 JSON：
+
+```json
+{"cluster": true, "members_from": "cluster", "interval_seconds": 1.0,
+ "nodes": [{"id": 1, "role": "leader", "address": "10.99.0.1:9812", "reachable": true, "status": {...}},
+           {"id": 3, "role": "follower", "address": "10.99.0.3:9812", "reachable": false, "error": "cannot reach ..."}],
+ "total": {"auth_per_second": 3008.0, "acct_per_second": 58.0, "discarded_per_second": 0.0, "in_progress": 21, "reachable": 2, "nodes": 3}}
+```
+
+`members_from` 是 `cluster` 或 `configuration`。每台的 `status` 就是那台 `status --json` 的物件（企業版的段落也在裡面）；連不到的成員沒有 `status`，改為 `error`。這些 `key` 之後保持不變。
+
+`--cluster` 的結束碼：0 是至少一台取樣成功（其他台連不到也是 0）；2 是參數錯誤、設定檔讀不了、沒有 `[metrics]`、`secret_api` 被拒；3 是一台都連不到（`--watch` 時不結束，每秒再看一次）。
 
 ### 2.9 重新載入（SIGHUP）
 

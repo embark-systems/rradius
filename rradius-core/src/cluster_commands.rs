@@ -41,16 +41,25 @@ struct Parsed {
 
 /// One node as the cluster has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Member {
-    raft: String,
-    api: String,
+pub(crate) struct Member {
+    pub(crate) raft: String,
+    pub(crate) api: String,
 }
 
 /// The cluster's members: voters and every node with its addresses.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct Members {
-    voters: BTreeSet<u64>,
-    nodes: BTreeMap<u64, Member>,
+pub(crate) struct Members {
+    pub(crate) voters: BTreeSet<u64>,
+    pub(crate) nodes: BTreeMap<u64, Member>,
+}
+
+/// Where a list of members came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// A node of the cluster said so.
+    Cluster,
+    /// No node answered: `[[cluster.nodes]]` of the configuration.
+    Configuration,
 }
 
 /// What a node said about the cluster.
@@ -233,6 +242,27 @@ async fn find_leader(api: &Api, configured: &[ClusterNode]) -> Result<(LeaderAdd
     }
 }
 
+/// The members as the first node of `configured`, in order, that answers within `PING_WAIT` has
+/// them, and the leader it sees; without waiting for a leader, which is what `status` needs when
+/// there is none. When none answers, the configured nodes, all as voters, and no leader. Fails only
+/// on a refused secret.
+pub(crate) async fn current_members(api: &Api, configured: &[ClusterNode]) -> Result<(Members, Option<u64>, Source), String> {
+    for node in configured {
+        match api.metrics_within(&node.api, PING_WAIT).await {
+            Ok(metrics) => return Ok((metrics.members, metrics.leader, Source::Cluster)),
+            Err(Failure::Secret(e)) => return Err(e),
+            Err(Failure::Unusable(e) | Failure::Silent(e)) => tracing::debug!("{e}"),
+        }
+    }
+    Ok((configured_members(configured), None, Source::Configuration))
+}
+
+/// The configured nodes as members, all of them voters.
+fn configured_members(configured: &[ClusterNode]) -> Members {
+    let nodes = configured.iter().map(|node| (node.id, Member { raft: node.raft.clone(), api: node.api.clone() })).collect();
+    Members { voters: configured.iter().map(|node| node.id).collect(), nodes }
+}
+
 /// Moves the nodes in `silent` to the end, keeping the order within both groups.
 fn quiet_last(order: &mut [&ClusterNode], silent: &BTreeSet<u64>) {
     order.sort_by_key(|node| silent.contains(&node.id));
@@ -385,13 +415,13 @@ enum Answer {
 }
 
 /// Requests to the nodes' management API.
-struct Api {
+pub(crate) struct Api {
     client: reqwest::Client,
     secret: String,
 }
 
 impl Api {
-    fn new(secret: String) -> Result<Self, String> {
+    pub(crate) fn new(secret: String) -> Result<Self, String> {
         // Plain HTTP only, but the client wants TLS set up all the same; both rustls crypto
         // providers are compiled in, so name one. No proxy, no redirects: requests go only to
         // the cluster's own addresses.
@@ -410,12 +440,17 @@ impl Api {
     }
 
     async fn metrics(&self, address: &str) -> Result<Metrics, Failure> {
+        self.metrics_within(address, REQUEST_WAIT).await
+    }
+
+    /// `metrics` with its own time to answer.
+    async fn metrics_within(&self, address: &str, wait: Duration) -> Result<Metrics, Failure> {
         let response = self
             .client
             .get(format!("http://{address}/cluster/metrics/{RAFT}"))
             .header("X-API-SECRET", &self.secret)
             .header(reqwest::header::ACCEPT, "application/json")
-            .timeout(REQUEST_WAIT)
+            .timeout(wait)
             .send()
             .await
             .map_err(|e| Failure::Silent(format!("{address}: {e}")))?;
@@ -581,6 +616,25 @@ mod tests {
             assert!(outcome.stderr.contains(says), "{progress:?}: {}", outcome.stderr);
         }
         assert_eq!(Progress::load(&AtomicU8::new(Progress::Sent as u8)), Progress::Sent);
+    }
+
+    /// With no node answering, the members are those of the configuration.
+    #[tokio::test]
+    async fn test_current_members_from_the_configuration() -> Result<(), String> {
+        let mut nodes = Vec::new();
+        for id in [1, 2] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+            let address = listener.local_addr().map_err(|e| e.to_string())?;
+            drop(listener);
+            nodes.push(ClusterNode { id, raft: format!("node{id}:8100"), api: address.to_string() });
+        }
+        let api = Api::new("secret".to_string())?;
+        let (members, leader, source) = current_members(&api, &nodes).await?;
+        assert_eq!(source, Source::Configuration);
+        assert_eq!(leader, None);
+        assert_eq!(members.voters, [1, 2].into_iter().collect());
+        assert_eq!(members.nodes.get(&2).map(|member| member.api.clone()), Some(nodes[1].api.clone()));
+        Ok(())
     }
 
     #[test]

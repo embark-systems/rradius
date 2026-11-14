@@ -159,10 +159,142 @@ fn test_nothing_listening() -> Result<(), String> {
 
 #[test]
 fn test_wrong_arguments() -> Result<(), String> {
-    for args in [&["--bogus"][..], &["--config"], &["--json", "--json"]] {
+    for args in [&["--bogus"][..], &["--config"], &["--json", "--json"], &["--cluster", "--cluster"]] {
         let (code, _, stderr) = status(args)?;
         assert_eq!(code, Some(2), "{args:?}");
         assert!(stderr.contains("usage: rradius-server status"), "{args:?}: {stderr}");
     }
+    Ok(())
+}
+
+#[test]
+fn test_cluster_wrong_arguments() -> Result<(), String> {
+    let (code, _, stderr) = status(&["--cluster", "--json", "--cluster"])?;
+    assert_eq!(code, Some(2));
+    assert!(stderr.contains("[--cluster]"), "{stderr}");
+    Ok(())
+}
+
+/// `--cluster` on the only node of a cluster: one member, the leader, with its own status.
+#[test]
+fn test_cluster_one_node() -> Result<(), String> {
+    let (server, metrics) = server("")?;
+    login(&server, 1)?;
+    let config = server.config.to_string_lossy().into_owned();
+    // The node leads once its management API answers; until then the members come from the configuration.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let json = loop {
+        let (code, stdout, stderr) = status(&["--config", &config, "--cluster", "--json"])?;
+        assert_eq!(code, Some(0), "{stderr}");
+        let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| format!("{e}: {stdout}"))?;
+        if json["members_from"] == "cluster" && json["nodes"][0]["role"] == "leader" {
+            break json;
+        }
+        if Instant::now() > deadline {
+            return Err(format!("not a one-member cluster led by node 1: {json}"));
+        }
+    };
+    assert_eq!(json["cluster"], true);
+    let nodes = json["nodes"].as_array().ok_or("no nodes")?;
+    assert_eq!(nodes.len(), 1, "{json}");
+    assert_eq!(nodes[0]["id"], 1);
+    assert_eq!(nodes[0]["reachable"], true);
+    assert_eq!(nodes[0]["address"], format!("127.0.0.1:{metrics}"));
+    let radius = section(&nodes[0]["status"], "radius").ok_or("no RADIUS section in the member's status")?;
+    assert_eq!(item(radius, "auth_requests").map(|item| item["total"].clone()), Some(serde_json::json!(1)), "{json}");
+    assert_eq!(json["total"]["nodes"], 1);
+    assert_eq!(json["total"]["reachable"], 1);
+    // The same as text: one member line and the total.
+    let (code, stdout, stderr) = status(&["--config", &config, "--cluster"])?;
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.lines().any(|line| line.starts_with("1 ") && line.contains("leader")), "{stdout}");
+    assert!(stdout.lines().any(|line| line.starts_with("total")), "{stdout}");
+    Ok(())
+}
+
+/// Three nodes on their own loopback addresses, which only Linux has without setting up.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_cluster_three_nodes() -> Result<(), String> {
+    use std::path::Path;
+    struct Children(Vec<Option<std::process::Child>>);
+    impl Drop for Children {
+        fn drop(&mut self) {
+            for child in self.0.iter_mut().filter_map(Option::take) {
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let ready_at = |host: &str, port: u16| -> Option<u16> {
+        let mut stream = std::net::TcpStream::connect((host, port)).ok()?;
+        stream.write_all(b"GET /readyz HTTP/1.1\r\nHost: x\r\n\r\n").ok()?;
+        let mut text = String::new();
+        stream.read_to_string(&mut text).ok()?;
+        text.split(' ').nth(1)?.parse().ok()
+    };
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::fs::write(dir.path().join("top.lua"), "return 'accept'").map_err(|e| e.to_string())?;
+    let hosts = ["127.0.0.11", "127.0.0.12", "127.0.0.13"];
+    let (raft, api, metrics) = (free_port(), free_port(), free_port());
+    let node_list: String = hosts.iter().enumerate().map(|(i, host)| format!("[[cluster.nodes]]\nid = {}\nraft = \"{host}:{raft}\"\napi = \"{host}:{api}\"\n", i + 1)).collect();
+    let mut configs = Vec::new();
+    let mut children = Children(Vec::new());
+    for (i, host) in hosts.iter().enumerate() {
+        let config = format!(
+            "dictionary = \"{dictionary}\"\n[lua]\nscript = \"top.lua\"\n\
+             [cluster]\nnode_id = {id}\ndata_dir = \"data{id}\"\nlisten = \"{host}\"\n\
+             secret_raft = \"cluster-raft-secret-01\"\nsecret_api = \"cluster-api-secret-012\"\n{node_list}\
+             [radius]\nbind = \"{host}\"\nauth_port = {auth}\nacct_port = {acct}\n\
+             [[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n\
+             [metrics]\nbind = \"{host}\"\nport = {metrics}\n",
+            dictionary = root.join("../share/dictionary").display(),
+            id = i + 1,
+            auth = free_port(),
+            acct = free_port(),
+        );
+        let path = dir.path().join(format!("node{}.toml", i + 1));
+        std::fs::write(&path, config).map_err(|e| e.to_string())?;
+        let log = std::fs::File::create(dir.path().join(format!("node{}.log", i + 1))).map_err(|e| e.to_string())?;
+        let child = Command::new(PROGRAM).arg("server").arg("--config").arg(&path).current_dir(dir.path()).stdout(Stdio::null()).stderr(log).spawn().map_err(|e| e.to_string())?;
+        children.0.push(Some(child));
+        configs.push(path.to_string_lossy().into_owned());
+    }
+    let logs = || (1..=3).map(|n| std::fs::read_to_string(dir.path().join(format!("node{n}.log"))).unwrap_or_default()).collect::<Vec<_>>().join("\n---\n");
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while hosts.iter().any(|host| ready_at(host, metrics) != Some(200)) {
+        if Instant::now() > deadline {
+            return Err(format!("the nodes did not become ready: {}", logs()));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let look = || -> Result<(Option<i32>, serde_json::Value, String), String> {
+        let (code, stdout, stderr) = status(&["--config", &configs[0], "--cluster", "--json"])?;
+        let json = serde_json::from_str(&stdout).map_err(|e| format!("{e}: {stdout} {stderr}"))?;
+        Ok((code, json, stderr))
+    };
+    let (code, json, stderr) = look()?;
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(json["members_from"], "cluster", "{json}");
+    assert_eq!(json["total"]["nodes"], 3, "{json}");
+    assert_eq!(json["total"]["reachable"], 3, "{json}");
+    for (node, host) in json["nodes"].as_array().ok_or("no nodes")?.iter().zip(hosts) {
+        assert_eq!(node["address"], format!("{host}:{metrics}"), "{json}");
+        assert_eq!(node["reachable"], true, "{json}");
+    }
+    assert_eq!(json["nodes"].as_array().ok_or("no nodes")?.iter().filter(|node| node["role"] == "leader").count(), 1, "{json}");
+    // Node 3 stops: it is shown unreachable, the others still count.
+    if let Some(mut child) = children.0[2].take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let (code, json, stderr) = look()?;
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(json["nodes"][2]["reachable"], false, "{json}");
+    assert!(json["nodes"][2]["error"].as_str().is_some_and(|e| !e.is_empty()), "{json}");
+    assert_eq!(json["total"]["reachable"], 2, "{json}");
+    assert_eq!(json["total"]["nodes"], 3, "{json}");
     Ok(())
 }
