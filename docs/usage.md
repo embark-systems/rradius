@@ -94,6 +94,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 - **client：** 範例允許三個私有網段，因為容器看到的來源位址由 Docker 決定。請改成你的設備位址。
 - **TACACS+：** 範例沒有啟用。要用時在設定加上 `[tacacs]`，並在 Compose 發布 `49/tcp`。
 - **統計：** 範例沒有啟用。要用時加上 `[metrics]`，並把 `bind` 改成容器可從外部連到的位址（見 2.8 節）。RadSec（`[radius.tls]`）需要 rradius-enterprise。
+- **看狀態：** 範例設定開了 `[metrics]`（容器內的 `127.0.0.1:9812`，沒有對外開埠），用 `docker compose exec rradius rradius-server status --config /etc/rradius/rradius.toml --watch` 看這個節點在做什麼（見 2.8 節）。
 - **重新載入：** 修改 `docker/config/` 的腳本或 client 後，執行 `docker compose kill -s HUP rradius` 就會套用，不必重啟（見 2.9 節）。
 - **資料：** 放在 Compose 的具名 volume。`docker compose down --volumes` 會刪除資料。
 - **EAP：** 範例沒有啟用。要用時加上 `[radius.eap]`，憑證放在 `docker/config/`（見 2.12 節）。
@@ -184,7 +185,7 @@ rradius-server config init --lang zh-TW > rradius.toml           # 起始設定�
 - **`config show`：** 先和 `check` 一樣載入設定（有錯時印出相同訊息，狀態 2），再把檔案裡已有的區段中省略的欄位補上預設值，以 TOML 印出。檔案沒寫的區段（例如沒有 `[tacacs]`）不會加上。啟動時才算出的預設值（`[radius] sockets`、`[cluster] read_connections`）用執行這個指令的機器算出的值，並在第一行註明。沒有 `--config` 時讀預設的設定檔。
 - **密碼一律顯示成 `<hidden>`，** 例如用戶端的 `secret`、`secret_raft`、`secret_api`、LDAP 的 `bind_password`。輸出可以貼給別人看，但檔案路徑（例如 `secret_file`）照樣顯示。
 - **`config diff`：** 兩個檔案都先補上預設值再比，所以一邊寫出預設值、另一邊省略不算差異。每行一個不同的欄位：`radius.max_auth_inflight: 4096 | 8192`，只有一邊有時寫 `(absent)`。`radius.clients`、`tacacs.clients` 依 `name`（沒有時依 `address`）配對，順序不同不算差異，路徑寫成 `radius.clients[core-switches].secret`；其他清單（例如 `auth.handlers`）依位置比較，因為順序有意義。密碼不同時只寫 `differs (hidden)`。`cluster.node_id` 和 `cluster.listen` 列在最後的 `node-specific:`，不算差異。相同時印 `no differences`，狀態 0；有差異時狀態 1；設定有錯或參數不對時狀態 2。它不讀設定檔引用的檔案（Lua 腳本、密碼檔、憑證），只比路徑。
-- **`config init`：** 印出一份起始設定檔，可以直接存檔使用：`dictionary`、`[lua] script`、`[cluster]`（含一個節點）、`[radius]` 和一個範例用戶端。`secret_raft`、`secret_api` 和範例用戶端的 `secret` 是每次不同的 32 個隨機英數字元；叢集的其他節點要用同樣的叢集密碼，用戶端的 `secret` 也要設在 NAS 上。其他欄位都以註解列出，附預設值和說明（`--lang` 選英文或繁體中文），拿掉 `#` 就能設定。存檔後把 `dictionary` 指向實際安裝的字典檔、建立 `auth.lua`，`check` 就會通過。
+- **`config init`：** 印出一份起始設定檔，可以直接存檔使用：`dictionary`、`[lua] script`、`[cluster]`（含一個節點）、`[radius]` 和一個範例用戶端，以及開在 `127.0.0.1:9812` 的 `[metrics]`（`status` 指令要用，見 2.8 節；這個埠沒有認證，不要改綁對外位址）。`secret_raft`、`secret_api` 和範例用戶端的 `secret` 是每次不同的 32 個隨機英數字元；叢集的其他節點要用同樣的叢集密碼，用戶端的 `secret` 也要設在 NAS 上。其他欄位都以註解列出，附預設值和說明（`--lang` 選英文或繁體中文），拿掉 `#` 就能設定。存檔後把 `dictionary` 指向實際安裝的字典檔、建立 `auth.lua`，`check` 就會通過。
 
 ### 2.1 `[lua]`
 
