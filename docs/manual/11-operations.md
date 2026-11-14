@@ -169,6 +169,15 @@ systemctl reload rradius        # 服務檔有 ExecReload=/bin/kill -HUP $MAINPI
 | `rradius_script_http_requests_total{result="timeout"}` | 腳本呼叫的 API 逾時 | 增加：API 有問題 |
 | `rradius_reload_total{result="error"}` | 重新載入失敗 | 大於 0 就要看記錄 |
 | `rradius_log_dropped_lines_total` | 記錄來不及寫 | 增加：記錄的去處太慢 |
+| `rradius_radius_response_seconds`、`rradius_tacacs_response_seconds` | 回應花了多久 | p99 變大：資料庫、目錄或腳本變慢，見下面的查詢 |
+
+登入回應時間的 p99（5 分鐘內，全部節點一起算）：
+
+```promql
+histogram_quantile(0.99, sum by (le) (rate(rradius_radius_response_seconds_bucket{kind="auth"}[5m])))
+```
+
+要分節點看時改成 `sum by (le, instance)`。沒有 Prometheus 時，`rradius-server status` 的 RADIUS、TACACS+ 段落也會列出 p50 和 p99。
 
 活著與否用 Status-Server 檢查最準確，它走和認證相同的路徑：
 

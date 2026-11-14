@@ -259,7 +259,7 @@ pub(crate) fn settings(extensions: &Extensions, found: Vec<Section>, base: &Path
 
 /// What `status` shows of an item: the current value, or how fast a counter goes up together
 /// with its total.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Show {
     /// The value now, as of a gauge.
     Value,
@@ -267,6 +267,10 @@ pub enum Show {
     Rate,
     /// The total of a counter alone.
     Total,
+    /// A quantile (0.5 for the median) of what a histogram counted between the two samples, in
+    /// milliseconds; the item's metric is the family name, without `_bucket`. Left out when
+    /// nothing was counted.
+    Quantile(f64),
 }
 
 /// One line of a `status` section: a metric, with the values of its labels when it has some.

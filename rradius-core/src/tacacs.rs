@@ -919,6 +919,7 @@ impl TacacsServer {
                 return Ok(());
             };
             let Some(packet) = read? else { return Ok(()) };
+            let started = Instant::now();
             if stopping.is_cancelled() && !logins.continues(&packet, Instant::now()) {
                 tracing::debug!("TACACS+ connection from {source} closed: the server is stopping");
                 return Ok(());
@@ -1033,6 +1034,15 @@ impl TacacsServer {
             tokio::time::timeout(timeouts.write, socket.write_all(&response.encode()))
                 .await
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, format!("a response could not be written within {:?}", timeouts.write)))??;
+            let timed = match packet.type_ {
+                TYPE_AUTHEN => Some(&metrics.tacacs_response_authen),
+                TYPE_AUTHOR => Some(&metrics.tacacs_response_author),
+                TYPE_ACCT => Some(&metrics.tacacs_response_acct),
+                _ => None,
+            };
+            if let Some(histogram) = timed {
+                histogram.observe(started.elapsed());
+            }
             // RFC 8907 section 10.5.2: no more sessions once the secret looks wrong.
             if undecodable {
                 match tls {
@@ -1678,6 +1688,24 @@ pub(crate) mod tests {
         let mut connection = AsciiConnection::open().await;
         connection.login(b"", &[b"alice", b"secret"]).await;
         assert_eq!(connection.metrics.tacacs_authen.get(), 1);
+    }
+
+    /// Each authentication packet is timed on its own, an authorization once.
+    #[tokio::test]
+    async fn test_response_times() -> Result<(), String> {
+        let mut connection = AsciiConnection::open().await;
+        assert_eq!(connection.login(b"alice", &[b"secret"]).await, AUTHEN_STATUS_PASS);
+        connection.stream.write_all(&encrypted_request(TYPE_AUTHOR, 1, 0, &author_body(b"alice", &[b"service=shell"]))).await.map_err(|e| e.to_string())?;
+        read_packet(&mut connection.stream, MAX_BODY_LEN).await.map_err(|e| e.to_string())?.ok_or("no authorization reply")?;
+        // Timed just after the reply is written, so it may come a moment after the reply is read.
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while connection.metrics.tacacs_response_author.count() < 1 && Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(connection.metrics.tacacs_response_authen.count(), 2, "the START and the CONTINUE");
+        assert_eq!(connection.metrics.tacacs_response_author.count(), 1);
+        assert_eq!(connection.metrics.tacacs_response_acct.count(), 0);
+        Ok(())
     }
 
     #[tokio::test]

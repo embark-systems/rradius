@@ -88,6 +88,25 @@ fn test_one_look() -> Result<(), String> {
     for key in ["radsec", "proxy", "coa_relay", "dynamic_clients", "dpsk", "diameter", "accounting_export", "backup"] {
         assert!(section(&json, key).is_none(), "{key}: {json}");
     }
+    // Logins between the two samples: their response times are shown, accounting's are not.
+    // Logins until it has printed, so that some come between its samples however slowly it starts.
+    let mut child = Command::new(PROGRAM).args(["status", "--config", &config, "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let mut identifier = 4u8;
+    while child.try_wait().map_err(|e| e.to_string())?.is_none() && identifier < 250 {
+        login(&server, identifier)?;
+        identifier += 1;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| format!("{e}: {stdout}"))?;
+    let radius = section(&json, "radius").ok_or("no RADIUS section")?;
+    for key in ["auth_p50_ms", "auth_p99_ms"] {
+        let value = item(radius, key).and_then(|item| item["value"].as_f64()).ok_or(format!("no {key}: {json}"))?;
+        assert!(value > 0.0, "{key}: {json}");
+    }
+    assert!(item(radius, "acct_p50_ms").is_none() && item(radius, "acct_p99_ms").is_none(), "{json}");
     // The same as text.
     let (code, stdout, stderr) = status(&["--config", &config])?;
     assert_eq!(code, Some(0), "{stderr}");

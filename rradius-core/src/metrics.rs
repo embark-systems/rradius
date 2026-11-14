@@ -106,6 +106,69 @@ pub fn write_family(out: &mut String, name: &str, kind: &str, help: &str, sample
     }
 }
 
+/// The upper bounds, in seconds, of the response time buckets; `+Inf` comes after them. From
+/// well under a millisecond, where local logins answer, to 10 s, past which a NAS has given up.
+pub const RESPONSE_BUCKETS: [f64; 17] = [0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
+
+/// The most one observation adds to a histogram's sum.
+const MAX_OBSERVED_NANOS: u64 = 1 << 40;
+
+/// How long requests took: a count for each bucket of `RESPONSE_BUCKETS` and one for `+Inf`, not
+/// cumulative, their sum in microseconds, and their number.
+#[derive(Debug, Default)]
+pub struct Histogram {
+    buckets: [AtomicU64; RESPONSE_BUCKETS.len() + 1],
+    sum_nanos: AtomicU64,
+}
+
+impl Histogram {
+    pub fn observe(&self, elapsed: Duration) {
+        let seconds = elapsed.as_secs_f64();
+        let bucket = RESPONSE_BUCKETS.iter().position(|bound| seconds <= *bound).unwrap_or(RESPONSE_BUCKETS.len());
+        if let Some(counter) = self.buckets.get(bucket) {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+        // Nanoseconds, so that the average from `_sum` is not short of the truncated fractions of
+        // microsecond responses. One observation adds at most 2^40 ns (about 18 minutes, far past
+        // any NAS timeout), so that the sum, one plain atomic add per request, cannot wrap before
+        // some 16 million such requests, or 584 years of time in all.
+        let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX).min(MAX_OBSERVED_NANOS);
+        self.sum_nanos.fetch_add(nanos, Ordering::Relaxed);
+    }
+
+    /// How many requests were observed: the buckets added up, so that recording one costs
+    /// two atomic adds rather than three, and `_count` always equals the `+Inf` bucket.
+    pub fn count(&self) -> u64 {
+        self.buckets.iter().map(|counter| counter.load(Ordering::Relaxed)).sum()
+    }
+
+    /// The time of all of them together.
+    pub fn sum(&self) -> Duration {
+        Duration::from_nanos(self.sum_nanos.load(Ordering::Relaxed))
+    }
+
+    /// The samples of this histogram with `labels` (`kind="auth"`, without braces): the
+    /// cumulative buckets, `_sum` in seconds and `_count`.
+    pub fn render(&self, out: &mut String, name: &str, labels: &str) {
+        let mut cumulative = 0u64;
+        for (index, counter) in self.buckets.iter().enumerate() {
+            cumulative += counter.load(Ordering::Relaxed);
+            let bound = RESPONSE_BUCKETS.get(index).map_or_else(|| "+Inf".to_string(), |bound| bound.to_string());
+            let _ = writeln!(out, "{name}_bucket{{{labels},le=\"{bound}\"}} {cumulative}");
+        }
+        let _ = writeln!(out, "{name}_sum{{{labels}}} {}", self.sum_nanos.load(Ordering::Relaxed) as f64 / 1e9);
+        let _ = writeln!(out, "{name}_count{{{labels}}} {cumulative}");
+    }
+}
+
+/// Writes one histogram family: its HELP and TYPE lines, then each histogram with its labels.
+pub fn write_histograms(out: &mut String, name: &str, help: &str, histograms: &[(&str, &Histogram)]) {
+    let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} histogram");
+    for (labels, histogram) in histograms {
+        histogram.render(out, name, labels);
+    }
+}
+
 /// How the conversations of one EAP method ended.
 #[derive(Debug, Default)]
 pub struct EapCounters {
@@ -170,6 +233,11 @@ pub struct Metrics {
     pub tacacs_author: Counter,
     pub tacacs_acct: Counter,
     pub tacacs_malformed: Counter,
+    pub radius_response_auth: Histogram,
+    pub radius_response_acct: Histogram,
+    pub tacacs_response_authen: Histogram,
+    pub tacacs_response_author: Histogram,
+    pub tacacs_response_acct: Histogram,
     pub reload_ok: Counter,
     pub reload_error: Counter,
     pub reload_last_success: Counter,
@@ -254,12 +322,11 @@ impl Metrics {
     /// label combination is present from the start, so that a query does not see a series appear.
     pub fn render_with(&self, extensions: &crate::extension::Extensions) -> String {
         let mut out = String::new();
-        let mut family = |name: &str, kind: &str, help: &str, samples: &[(&str, u64)]| write_family(&mut out, name, kind, help, samples);
-        family("rradius_radius_packets_total", "counter", "RADIUS requests processed, after the checks and duplicate detection.", &[
+        write_family(&mut out, "rradius_radius_packets_total", "counter", "RADIUS requests processed, after the checks and duplicate detection.", &[
             ("{kind=\"auth\"}", self.radius_packets_auth.get()),
             ("{kind=\"acct\"}", self.radius_packets_acct.get()),
         ]);
-        family("rradius_radius_responses_total", "counter", "RADIUS responses sent, excluding replays and Status-Server.", &[
+        write_family(&mut out, "rradius_radius_responses_total", "counter", "RADIUS responses sent, excluding replays and Status-Server.", &[
             ("{code=\"access_accept\"}", self.radius_access_accept.get()),
             ("{code=\"access_reject\"}", self.radius_access_reject.get()),
             ("{code=\"access_challenge\"}", self.radius_access_challenge.get()),
@@ -281,49 +348,58 @@ impl Metrics {
             })
             .collect();
         let client_samples: Vec<(&str, u64)> = client_samples.iter().map(|(labels, value)| (labels.as_str(), *value)).collect();
-        family("rradius_radius_client_responses_total", "counter", "RADIUS responses sent to each client, excluding replays and Status-Server.", &client_samples);
-        family("rradius_radius_status_server_total", "counter", "Status-Server packets answered.", &[("", self.radius_status_server.get())]);
-        family("rradius_radius_duplicates_total", "counter", "Retransmissions answered from the duplicate cache or discarded while in progress.", &[("", self.radius_duplicates.get())]);
-        family("rradius_radius_discarded_total", "counter", "RADIUS packets discarded before processing.", &[
+        write_family(&mut out, "rradius_radius_client_responses_total", "counter", "RADIUS responses sent to each client, excluding replays and Status-Server.", &client_samples);
+        write_family(&mut out, "rradius_radius_status_server_total", "counter", "Status-Server packets answered.", &[("", self.radius_status_server.get())]);
+        write_family(&mut out, "rradius_radius_duplicates_total", "counter", "Retransmissions answered from the duplicate cache or discarded while in progress.", &[("", self.radius_duplicates.get())]);
+        write_family(&mut out, "rradius_radius_discarded_total", "counter", "RADIUS packets discarded before processing.", &[
             ("{reason=\"overload\"}", self.radius_discarded_overload.get()),
             ("{reason=\"unknown_client\"}", self.radius_discarded_unknown_client.get()),
             ("{reason=\"invalid\"}", self.radius_discarded_invalid.get()),
             ("{reason=\"database\"}", self.radius_discarded_database.get()),
             ("{reason=\"no_leader\"}", self.radius_discarded_no_leader.get()),
         ]);
+        write_histograms(&mut out, "rradius_radius_response_seconds", "How long RADIUS requests took to answer, over UDP or RadSec, from after the duplicate check to the response; requests given no response are not counted.", &[
+            ("kind=\"auth\"", &self.radius_response_auth),
+            ("kind=\"acct\"", &self.radius_response_acct),
+        ]);
         if let Some(slots) = self.radius_slots.get() {
             let busy = |places: &Semaphore, capacity: usize| capacity.saturating_sub(places.available_permits()) as u64;
-            family("rradius_radius_requests_in_progress", "gauge", "RADIUS requests being handled now, over UDP or RadSec.", &[
+            write_family(&mut out, "rradius_radius_requests_in_progress", "gauge", "RADIUS requests being handled now, over UDP or RadSec.", &[
                 ("{kind=\"auth\"}", busy(&slots.auth, slots.auth_capacity)),
                 ("{kind=\"acct\"}", busy(&slots.acct, slots.acct_capacity)),
             ]);
-            family("rradius_radius_requests_limit", "gauge", "RADIUS requests that can be handled at once: max_auth_inflight and max_acct_inflight.", &[
+            write_family(&mut out, "rradius_radius_requests_limit", "gauge", "RADIUS requests that can be handled at once: max_auth_inflight and max_acct_inflight.", &[
                 ("{kind=\"auth\"}", slots.auth_capacity as u64),
                 ("{kind=\"acct\"}", slots.acct_capacity as u64),
             ]);
         }
-        family("rradius_tacacs_connections_total", "counter", "TACACS+ connections by what became of them.", &[
+        write_family(&mut out, "rradius_tacacs_connections_total", "counter", "TACACS+ connections by what became of them.", &[
             ("{result=\"accepted\"}", self.tacacs_accepted.get()),
             ("{result=\"refused\"}", self.tacacs_refused.get()),
         ]);
-        family("rradius_tacacs_connections_open", "gauge", "TACACS+ connections open now.", &[("", self.tacacs_open.get())]);
-        family("rradius_tacacs_requests_total", "counter", "TACACS+ requests by type.", &[
+        write_family(&mut out, "rradius_tacacs_connections_open", "gauge", "TACACS+ connections open now.", &[("", self.tacacs_open.get())]);
+        write_family(&mut out, "rradius_tacacs_requests_total", "counter", "TACACS+ requests by type.", &[
             ("{type=\"authen\"}", self.tacacs_authen.get()),
             ("{type=\"author\"}", self.tacacs_author.get()),
             ("{type=\"acct\"}", self.tacacs_acct.get()),
         ]);
-        family("rradius_tacacs_malformed_total", "counter", "TACACS+ requests whose decrypted body makes no sense, as with the wrong secret.", &[("", self.tacacs_malformed.get())]);
-        family("rradius_log_dropped_lines_total", "counter", "Log lines lost because output could not keep up or writing them failed.", &[("", crate::logging::dropped_lines())]);
+        write_family(&mut out, "rradius_tacacs_malformed_total", "counter", "TACACS+ requests whose decrypted body makes no sense, as with the wrong secret.", &[("", self.tacacs_malformed.get())]);
+        write_histograms(&mut out, "rradius_tacacs_response_seconds", "How long TACACS+ requests took to answer, from reading the packet to writing the reply; each authentication packet on its own.", &[
+            ("type=\"authen\"", &self.tacacs_response_authen),
+            ("type=\"author\"", &self.tacacs_response_author),
+            ("type=\"acct\"", &self.tacacs_response_acct),
+        ]);
+        write_family(&mut out, "rradius_log_dropped_lines_total", "counter", "Log lines lost because output could not keep up or writing them failed.", &[("", crate::logging::dropped_lines())]);
         let (batched, split) = crate::lua_engine::write_batch_counts();
         let cluster = crate::lua_engine::cluster_status();
-        family("rradius_cluster_leader", "gauge", "1 while this node has a leader to write through, else 0.", &[("", u64::from(cluster.leader))]);
-        family("rradius_cluster_is_leader", "gauge", "1 while this node is the cluster's leader.", &[("", u64::from(cluster.is_leader))]);
-        family("rradius_cluster_applied_index", "gauge", "The last log entry applied to this node's replica.", &[("", cluster.applied)]);
-        family("rradius_cluster_seconds_without_leader", "gauge", "How long this node has had no leader to write through; 0 while it has one.", &[("", cluster.without_leader.map_or(0, |lasted| lasted.as_secs()))]);
-        family("rradius_cluster_caught_up", "gauge", "1 once this node's replica has caught up with the cluster after it started; 0 while it serves from a replica that may be behind.", &[("", u64::from(cluster.caught_up))]);
-        family("rradius_db_batched_writes_total", "counter", "Script writes committed in one transaction together with others.", &[("", batched)]);
-        family("rradius_db_split_batches_total", "counter", "Transactions of script writes that failed and were split to find the statement that failed.", &[("", split)]);
-        family("rradius_script_http_requests_total", "counter", "http_request calls by result.", &[
+        write_family(&mut out, "rradius_cluster_leader", "gauge", "1 while this node has a leader to write through, else 0.", &[("", u64::from(cluster.leader))]);
+        write_family(&mut out, "rradius_cluster_is_leader", "gauge", "1 while this node is the cluster's leader.", &[("", u64::from(cluster.is_leader))]);
+        write_family(&mut out, "rradius_cluster_applied_index", "gauge", "The last log entry applied to this node's replica.", &[("", cluster.applied)]);
+        write_family(&mut out, "rradius_cluster_seconds_without_leader", "gauge", "How long this node has had no leader to write through; 0 while it has one.", &[("", cluster.without_leader.map_or(0, |lasted| lasted.as_secs()))]);
+        write_family(&mut out, "rradius_cluster_caught_up", "gauge", "1 once this node's replica has caught up with the cluster after it started; 0 while it serves from a replica that may be behind.", &[("", u64::from(cluster.caught_up))]);
+        write_family(&mut out, "rradius_db_batched_writes_total", "counter", "Script writes committed in one transaction together with others.", &[("", batched)]);
+        write_family(&mut out, "rradius_db_split_batches_total", "counter", "Transactions of script writes that failed and were split to find the statement that failed.", &[("", split)]);
+        write_family(&mut out, "rradius_script_http_requests_total", "counter", "http_request calls by result.", &[
             ("{result=\"ok\"}", self.script_http_ok.get()),
             ("{result=\"timeout\"}", self.script_http_timeout.get()),
             ("{result=\"error\"}", self.script_http_error.get()),
@@ -332,18 +408,18 @@ impl Metrics {
             ("{result=\"busy\"}", self.script_http_busy.get()),
         ]);
         let netlogon = crate::netlogon::handler::counters();
-        family("rradius_netlogon_logons_total", "counter", "MS-CHAPv2 logons the netlogon handlers asked domain controllers about, by result.", &[
+        write_family(&mut out, "rradius_netlogon_logons_total", "counter", "MS-CHAPv2 logons the netlogon handlers asked domain controllers about, by result.", &[
             ("{result=\"accept\"}", netlogon.accept.get()),
             ("{result=\"reject\"}", netlogon.reject.get()),
             ("{result=\"no_such_user\"}", netlogon.no_such_user.get()),
             ("{result=\"unavailable\"}", netlogon.unavailable.get()),
         ]);
-        family("rradius_netlogon_channel_setups_total", "counter", "Netlogon secure channels set up with domain controllers, by result.", &[
+        write_family(&mut out, "rradius_netlogon_channel_setups_total", "counter", "Netlogon secure channels set up with domain controllers, by result.", &[
             ("{result=\"ok\"}", netlogon.setups_ok.get()),
             ("{result=\"failed\"}", netlogon.setups_failed.get()),
         ]);
-        family("rradius_netlogon_open_connections", "gauge", "Sealed Netlogon connections open to domain controllers.", &[("", netlogon.open.get())]);
-        family("rradius_eap_sessions_open", "gauge", "EAP conversations under way.", &[("", self.eap_open.get())]);
+        write_family(&mut out, "rradius_netlogon_open_connections", "gauge", "Sealed Netlogon connections open to domain controllers.", &[("", netlogon.open.get())]);
+        write_family(&mut out, "rradius_eap_sessions_open", "gauge", "EAP conversations under way.", &[("", self.eap_open.get())]);
         let mut eap_sessions: Vec<(String, u64)> = vec![
             ("{method=\"tls\",result=\"accept\"}".to_string(), self.eap_tls.accept.get()),
             ("{method=\"tls\",result=\"reject\"}".to_string(), self.eap_tls.reject.get()),
@@ -371,21 +447,21 @@ impl Metrics {
             }
         }
         let eap_sessions: Vec<(&str, u64)> = eap_sessions.iter().map(|(labels, value)| (labels.as_str(), *value)).collect();
-        family("rradius_eap_sessions_total", "counter", "EAP conversations by how they ended.", &eap_sessions);
-        family("rradius_acct_spool_written_total", "counter", "Accounting requests written to the spool.", &[("", self.acct_spool.written.get())]);
-        family("rradius_acct_spool_replayed_total", "counter", "Spooled accounting requests the script accepted.", &[("", self.acct_spool.replayed.get())]);
-        family("rradius_acct_spool_rejected_total", "counter", "Spooled accounting requests moved to rejected.log.", &[("", self.acct_spool.rejected.get())]);
-        family("rradius_acct_spool_full_total", "counter", "Accounting requests not spooled because the spool is full or the disk failed.", &[("", self.acct_spool.full.get())]);
-        family("rradius_acct_spool_corrupt_total", "counter", "Damaged spool files set aside.", &[("", self.acct_spool.corrupt.get())]);
-        family("rradius_acct_spool_bytes", "gauge", "Bytes of accounting requests waiting to be replayed.", &[("", self.acct_spool.bytes.get())]);
-        family("rradius_reload_total", "counter", "Reloads by result.", &[
+        write_family(&mut out, "rradius_eap_sessions_total", "counter", "EAP conversations by how they ended.", &eap_sessions);
+        write_family(&mut out, "rradius_acct_spool_written_total", "counter", "Accounting requests written to the spool.", &[("", self.acct_spool.written.get())]);
+        write_family(&mut out, "rradius_acct_spool_replayed_total", "counter", "Spooled accounting requests the script accepted.", &[("", self.acct_spool.replayed.get())]);
+        write_family(&mut out, "rradius_acct_spool_rejected_total", "counter", "Spooled accounting requests moved to rejected.log.", &[("", self.acct_spool.rejected.get())]);
+        write_family(&mut out, "rradius_acct_spool_full_total", "counter", "Accounting requests not spooled because the spool is full or the disk failed.", &[("", self.acct_spool.full.get())]);
+        write_family(&mut out, "rradius_acct_spool_corrupt_total", "counter", "Damaged spool files set aside.", &[("", self.acct_spool.corrupt.get())]);
+        write_family(&mut out, "rradius_acct_spool_bytes", "gauge", "Bytes of accounting requests waiting to be replayed.", &[("", self.acct_spool.bytes.get())]);
+        write_family(&mut out, "rradius_reload_total", "counter", "Reloads by result.", &[
             ("{result=\"ok\"}", self.reload_ok.get()),
             ("{result=\"error\"}", self.reload_error.get()),
         ]);
-        family("rradius_reload_last_success_timestamp_seconds", "gauge", "When the last successful reload happened; 0 before the first.", &[("", self.reload_last_success.get())]);
+        write_family(&mut out, "rradius_reload_last_success_timestamp_seconds", "gauge", "When the last successful reload happened; 0 before the first.", &[("", self.reload_last_success.get())]);
         let (version, started) = self.started.get().map_or(("unknown", 0), |started| (started.version, started.at));
-        family("rradius_build_info", "gauge", "Always 1; the version of the program in its label.", &[(&format!("{{version=\"{}\"}}", label_value(version)), 1)]);
-        family("rradius_start_time_seconds", "gauge", "The Unix time the program started; 0 when unknown.", &[("", started)]);
+        write_family(&mut out, "rradius_build_info", "gauge", "Always 1; the version of the program in its label.", &[(&format!("{{version=\"{}\"}}", label_value(version)), 1)]);
+        write_family(&mut out, "rradius_start_time_seconds", "gauge", "The Unix time the program started; 0 when unknown.", &[("", started)]);
         extensions.render_metrics(&mut out);
         out
     }
@@ -501,6 +577,35 @@ fn respond(head: &[u8], metrics: &Metrics, readiness: Readiness) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The buckets example of the spec.
+    #[test]
+    fn test_histogram_buckets() {
+        let histogram = super::Histogram::default();
+        for micros in [300, 700, 3_000_000, 20_000_000] {
+            histogram.observe(std::time::Duration::from_micros(micros));
+        }
+        let mut out = String::new();
+        histogram.render(&mut out, "t", "kind=\"auth\"");
+        let value = |sample: &str| out.lines().find_map(|line| line.strip_prefix(sample)?.strip_prefix(' ')).unwrap_or("missing").to_string();
+        for bound in ["0.00005", "0.0001", "0.00025"] {
+            assert_eq!(value(&format!("t_bucket{{kind=\"auth\",le=\"{bound}\"}}")), "0", "{bound}: {out}");
+        }
+        assert_eq!(value("t_bucket{kind=\"auth\",le=\"0.0005\"}"), "1", "{out}");
+        for bound in ["0.001", "0.0025", "0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2.5"] {
+            assert_eq!(value(&format!("t_bucket{{kind=\"auth\",le=\"{bound}\"}}")), "2", "{bound}: {out}");
+        }
+        for bound in ["5", "10"] {
+            assert_eq!(value(&format!("t_bucket{{kind=\"auth\",le=\"{bound}\"}}")), "3", "{bound}: {out}");
+        }
+        assert_eq!(value("t_bucket{kind=\"auth\",le=\"+Inf\"}"), "4", "{out}");
+        assert_eq!(value("t_count{kind=\"auth\"}"), "4");
+        assert_eq!(value("t_sum{kind=\"auth\"}"), "23.001");
+        assert_eq!(out.lines().count(), 20);
+        // What status reads back.
+        let parsed = crate::status::parse(&out).map_err(|e| e.to_string());
+        assert!(parsed.is_ok(), "{parsed:?}");
+    }
+
     use super::*;
     use tokio::net::TcpStream;
     use std::net::Ipv4Addr;
