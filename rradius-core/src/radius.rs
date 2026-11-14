@@ -3396,6 +3396,11 @@ mod metrics_tests {
         assert_eq!(metrics.radius_response_auth.count(), 3, "a replay is not timed");
         assert!(server.receive(PacketKind::Auth, &request(4, b"a"), "192.0.2.1:1".parse().map_err(|e: std::net::AddrParseError| e.to_string())?).await.is_none());
         assert_eq!(metrics.radius_response_auth.count(), 3, "a discarded packet is not timed");
+        let mut status = RadiusPacket { code: STATUS_SERVER, identifier: 9, authenticator: [1; 16], attributes: vec![] };
+        status.push_message_authenticator(b"s");
+        server.receive(PacketKind::Auth, &status.encode(), source).await.ok_or("no Status-Server answer")?;
+        assert_eq!(metrics.radius_status_server.get(), 1);
+        assert_eq!(metrics.radius_response_auth.count(), 3, "Status-Server is not timed");
         Ok(())
     }
 
@@ -8514,8 +8519,12 @@ pub(crate) mod tests {
         assert_eq!(replied.receive(PacketKind::Auth, &pap(4, "fwd-replied", "pw"), from("127.0.0.1")).await, Some(vec![ACCOUNTING_RESPONSE, 4, 0, 20]));
         assert!(crate::logging::records_for("fwd-replied").is_empty(), "no decision to record");
 
-        let silent = forwarding_server(|| Route::Unanswered).await;
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let silent = forwarding_server(|| Route::Unanswered).await.with_metrics(metrics.clone());
         assert!(silent.receive(PacketKind::Auth, &pap(5, "fwd-silent", "pw"), from("127.0.0.1")).await.is_none());
+        // Handled, so timing started, but with no response it is not timed.
+        assert_eq!(metrics.radius_packets_auth.get(), 1);
+        assert_eq!(metrics.radius_response_auth.count(), 0, "a request given no response is not timed");
         Ok(())
     }
 

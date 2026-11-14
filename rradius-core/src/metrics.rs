@@ -111,14 +111,14 @@ pub fn write_family(out: &mut String, name: &str, kind: &str, help: &str, sample
 pub const RESPONSE_BUCKETS: [f64; 17] = [0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
 
 /// The most one observation adds to a histogram's sum.
-const MAX_OBSERVED_MICROS: u64 = 1 << 40;
+const MAX_OBSERVED_NANOS: u64 = 1 << 40;
 
 /// How long requests took: a count for each bucket of `RESPONSE_BUCKETS` and one for `+Inf`, not
 /// cumulative, their sum in microseconds, and their number.
 #[derive(Debug, Default)]
 pub struct Histogram {
     buckets: [AtomicU64; RESPONSE_BUCKETS.len() + 1],
-    sum_micros: AtomicU64,
+    sum_nanos: AtomicU64,
 }
 
 impl Histogram {
@@ -128,10 +128,12 @@ impl Histogram {
         if let Some(counter) = self.buckets.get(bucket) {
             counter.fetch_add(1, Ordering::Relaxed);
         }
-        // One observation adds at most 2^40 µs (about 12.7 days), so that the sum, one plain
-        // atomic add per request, cannot wrap before some 16 million such requests.
-        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX).min(MAX_OBSERVED_MICROS);
-        self.sum_micros.fetch_add(micros, Ordering::Relaxed);
+        // Nanoseconds, so that the average from `_sum` is not short of the truncated fractions of
+        // microsecond responses. One observation adds at most 2^40 ns (about 18 minutes, far past
+        // any NAS timeout), so that the sum, one plain atomic add per request, cannot wrap before
+        // some 16 million such requests, or 584 years of time in all.
+        let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX).min(MAX_OBSERVED_NANOS);
+        self.sum_nanos.fetch_add(nanos, Ordering::Relaxed);
     }
 
     /// How many requests were observed: the buckets added up, so that recording one costs
@@ -142,7 +144,7 @@ impl Histogram {
 
     /// The time of all of them together.
     pub fn sum(&self) -> Duration {
-        Duration::from_micros(self.sum_micros.load(Ordering::Relaxed))
+        Duration::from_nanos(self.sum_nanos.load(Ordering::Relaxed))
     }
 
     /// The samples of this histogram with `labels` (`kind="auth"`, without braces): the
@@ -154,7 +156,7 @@ impl Histogram {
             let bound = RESPONSE_BUCKETS.get(index).map_or_else(|| "+Inf".to_string(), |bound| bound.to_string());
             let _ = writeln!(out, "{name}_bucket{{{labels},le=\"{bound}\"}} {cumulative}");
         }
-        let _ = writeln!(out, "{name}_sum{{{labels}}} {}", self.sum_micros.load(Ordering::Relaxed) as f64 / 1e6);
+        let _ = writeln!(out, "{name}_sum{{{labels}}} {}", self.sum_nanos.load(Ordering::Relaxed) as f64 / 1e9);
         let _ = writeln!(out, "{name}_count{{{labels}}} {cumulative}");
     }
 }

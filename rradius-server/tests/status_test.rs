@@ -89,10 +89,13 @@ fn test_one_look() -> Result<(), String> {
         assert!(section(&json, key).is_none(), "{key}: {json}");
     }
     // Logins between the two samples: their response times are shown, accounting's are not.
-    let child = Command::new(PROGRAM).args(["status", "--config", &config, "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
-    std::thread::sleep(Duration::from_millis(300));
-    for identifier in 4..=13 {
+    // Logins until it has printed, so that some come between its samples however slowly it starts.
+    let mut child = Command::new(PROGRAM).args(["status", "--config", &config, "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let mut identifier = 4u8;
+    while child.try_wait().map_err(|e| e.to_string())?.is_none() && identifier < 250 {
         login(&server, identifier)?;
+        identifier += 1;
+        std::thread::sleep(Duration::from_millis(20));
     }
     let output = child.wait_with_output().map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout);
