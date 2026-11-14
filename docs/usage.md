@@ -760,11 +760,13 @@ port = 9812         # 預設
 | `rradius_radius_status_server_total` | 回應的 Status-Server |
 | `rradius_radius_duplicates_total` | 由重送快取回覆，或因為還在處理而丟棄的重送 |
 | `rradius_radius_discarded_total{reason="overload\|unknown_client\|invalid\|database\|no_leader"}` | 沒有回應的封包；`invalid` 包含格式錯誤、驗證失敗和不符合 Message-Authenticator 政策；`database` 是叢集資料庫不能用而沒有決定的登入，`no_leader` 是 `stop_without_leader_ms` 讓它不回應的（2.2 節〈資料庫不能用時〉） |
+| `rradius_radius_response_seconds{kind="auth\|acct"}` | 處理一個請求到送出回應的時間，Prometheus histogram（`_bucket{le}`、`_sum` 秒、`_count`）。從封包通過重送檢查開始算，到回應交給傳送端為止；企業版經 RadSec 進來的請求也算在內。bucket 的上限固定為 0.05、0.1、0.25、0.5、1、2.5、5、10、25、50、100、250、500 ms 與 1、2.5、5、10 s，再加 `+Inf`。重送快取的回覆、Status-Server 和沒有回應的封包都不計，所以 `_count` 會比 `rradius_radius_packets_total` 少 |
 | `rradius_cluster_leader`、`rradius_cluster_is_leader`、`rradius_cluster_applied_index`、`rradius_cluster_seconds_without_leader` | 這個節點看到的叢集狀態，見 2.2 節〈叢集狀態指標〉 |
 | `rradius_tacacs_connections_total{result="accepted\|refused"}` | TACACS+ 連線 |
 | `rradius_tacacs_connections_open` | 目前的 TACACS+ 連線數 |
 | `rradius_tacacs_requests_total{type="authen\|author\|acct"}` | TACACS+ 請求 |
 | `rradius_tacacs_malformed_total` | 解密後欄位不合 RFC 8907 而回 ERROR 的 START、授權和計費請求。持續增加通常是密碼設錯 |
+| `rradius_tacacs_response_seconds{type="authen\|author\|acct"}` | 讀完一個 TACACS+ 封包到回應寫出的時間，histogram，bucket 和上一個 RADIUS 指標相同。只計成功寫出的回應；連線在回應前斷掉、或不回應就關閉的不計 |
 | `rradius_log_dropped_lines_total` | 輸出跟不上或寫入失敗而遺失的記錄行數（2.10 節） |
 | `rradius_db_batched_writes_total` | 和其他寫入在同一個交易裡提交的 `sql_execute`（2.4 節） |
 | `rradius_db_split_batches_total` | 因為其中一個陳述式失敗而拆開的寫入交易（2.4 節） |
@@ -806,15 +808,17 @@ rradius-server status [--config <path>] [--watch] [--json] [--cluster]
 | --- | --- |
 | Node（`node`） | `/readyz` 的回答（`ok`、`stopping`、`no leader`）、叢集狀態（是不是 leader、有沒有 leader、追上了沒、applied index、沒有 leader 的秒數）、版本、已執行秒數 |
 | Reload（`reload`） | 重新載入成功與失敗的次數、上次成功的時間 |
-| RADIUS（`radius`） | 登入與計費請求、四種回應、重送、五種丟棄原因的每秒量，以及正在處理的請求數與上限 |
+| RADIUS（`radius`） | 登入與計費請求、四種回應、重送、五種丟棄原因的每秒量，正在處理的請求數與上限，以及這段時間登入與計費回應時間的 p50、p99（毫秒） |
 | Busiest RADIUS clients（`radius_top_clients`） | 這段時間回應最多的 5 個 client 與它們的每秒回應量 |
-| TACACS+（`tacacs`） | 開著的連線、三種請求與格式錯誤的每秒量 |
+| TACACS+（`tacacs`） | 開著的連線、三種請求與格式錯誤的每秒量，以及三種請求這段時間回應時間的 p50、p99（毫秒） |
 | EAP（`eap`） | 進行中的 EAP 對話 |
 | Accounting spool（`acct_spool`） | 等待重放的位元組、重放、放棄與沒寫入暫存的每秒量 |
 | Netlogon（`netlogon`） | 開著的連線、四種登入結果的每秒量 |
 | Log（`log`） | 遺失記錄行的每秒量 |
 
 企業版另有自己的段落，接在最後（見企業版文件）。每秒量的後面括號是從啟動到現在的累計值。
+
+**回應時間的 p50、p99**（`auth_p50_ms`、`auth_p99_ms`、`acct_p50_ms`、`acct_p99_ms`；TACACS+ 是 `authen_`、`author_`、`acct_` 開頭）是用兩次樣本之間 `rradius_radius_response_seconds`、`rradius_tacacs_response_seconds` 各 bucket 增加的數量估出來的：找到落在哪個 bucket，在它的上下限之間線性內插，四捨五入到 0.001 ms（1 µs）。所以是估計值，精確度受 bucket 寬度限制（例如落在 2.5 到 5 ms 的值只知道在這個範圍內）；超過 10 s 的顯示 10000。這段時間沒有那一種請求、或計數器重設時，那一項不列。
 
 文字輸出的樣子（節錄，數字只是示意）：
 

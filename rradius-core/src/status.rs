@@ -276,6 +276,10 @@ fn core_sections_first() -> Vec<StatusSection> {
                 item("Auth limit", "auth_limit", "rradius_radius_requests_limit", &[("kind", "auth")], Show::Value),
                 item("Acct in progress", "acct_in_progress", "rradius_radius_requests_in_progress", &[("kind", "acct")], Show::Value),
                 item("Acct limit", "acct_limit", "rradius_radius_requests_limit", &[("kind", "acct")], Show::Value),
+                item("Auth p50 (ms)", "auth_p50_ms", "rradius_radius_response_seconds", &[("kind", "auth")], Show::Quantile(0.5)),
+                item("Auth p99 (ms)", "auth_p99_ms", "rradius_radius_response_seconds", &[("kind", "auth")], Show::Quantile(0.99)),
+                item("Acct p50 (ms)", "acct_p50_ms", "rradius_radius_response_seconds", &[("kind", "acct")], Show::Quantile(0.5)),
+                item("Acct p99 (ms)", "acct_p99_ms", "rradius_radius_response_seconds", &[("kind", "acct")], Show::Quantile(0.99)),
             ],
         },
     ]
@@ -293,6 +297,12 @@ fn core_sections_last() -> Vec<StatusSection> {
                 item("Authorization", "author", "rradius_tacacs_requests_total", &[("type", "author")], Show::Rate),
                 item("Accounting", "acct", "rradius_tacacs_requests_total", &[("type", "acct")], Show::Rate),
                 item("Malformed", "malformed", "rradius_tacacs_malformed_total", &[], Show::Rate),
+                item("Authentication p50 (ms)", "authen_p50_ms", "rradius_tacacs_response_seconds", &[("type", "authen")], Show::Quantile(0.5)),
+                item("Authentication p99 (ms)", "authen_p99_ms", "rradius_tacacs_response_seconds", &[("type", "authen")], Show::Quantile(0.99)),
+                item("Authorization p50 (ms)", "author_p50_ms", "rradius_tacacs_response_seconds", &[("type", "author")], Show::Quantile(0.5)),
+                item("Authorization p99 (ms)", "author_p99_ms", "rradius_tacacs_response_seconds", &[("type", "author")], Show::Quantile(0.99)),
+                item("Accounting p50 (ms)", "acct_p50_ms", "rradius_tacacs_response_seconds", &[("type", "acct")], Show::Quantile(0.5)),
+                item("Accounting p99 (ms)", "acct_p99_ms", "rradius_tacacs_response_seconds", &[("type", "acct")], Show::Quantile(0.99)),
             ],
         },
         StatusSection { title: "EAP", key: "eap", items: vec![item("Sessions under way", "sessions_open", "rradius_eap_sessions_open", &[], Show::Value)] },
@@ -321,15 +331,91 @@ fn core_sections_last() -> Vec<StatusSection> {
     ]
 }
 
+/// The cumulative buckets of the histogram `metric` with exactly `labels` besides `le`, by upper
+/// bound, the last `+Inf`; `None` when there is no `+Inf` bucket. A bucket whose `le` is not a
+/// number is passed over.
+pub fn histogram_buckets(scrape: &Scrape, metric: &str, labels: &[(&str, &str)]) -> Option<Vec<(f64, f64)>> {
+    let mut buckets: Vec<(f64, f64)> = scrape
+        .samples(&format!("{metric}_bucket"))
+        .iter()
+        .filter(|(have, _)| have.len() == labels.len() + 1 && labels.iter().all(|(name, value)| have.get(*name).map(String::as_str) == Some(*value)))
+        .filter_map(|(have, count)| {
+            let bound = match have.get("le")?.as_str() {
+                "+Inf" => f64::INFINITY,
+                text => text.parse::<f64>().ok().filter(|bound| bound.is_finite())?,
+            };
+            Some((bound, *count))
+        })
+        .collect();
+    buckets.sort_by(|a, b| a.0.total_cmp(&b.0));
+    (buckets.last()?.0 == f64::INFINITY).then_some(buckets)
+}
+
+/// What a quantile of the requests counted between two looks at a histogram's buckets came to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Quantile {
+    /// In seconds; the last finite bound when it falls past it.
+    Seconds(f64),
+    /// Nothing was counted, or the buckets of the two looks differ.
+    None,
+    /// A count went down: the server restarted.
+    Reset,
+}
+
+/// The quantile `q` of what was counted between the cumulative buckets `before` and `after`: in
+/// the bucket where the count first reaches `q` times the total, interpolated from its lower bound
+/// (0 for the first) to its upper bound.
+pub fn quantile(before: &[(f64, f64)], after: &[(f64, f64)], q: f64) -> Quantile {
+    if before.len() != after.len() || before.iter().zip(after).any(|(then, now)| then.0 != now.0) {
+        return Quantile::None;
+    }
+    let counted: Vec<(f64, f64)> = before.iter().zip(after).map(|(then, now)| (now.0, now.1 - then.1)).collect();
+    if counted.iter().any(|(_, count)| *count < 0.0) {
+        return Quantile::Reset;
+    }
+    let total = counted.last().map_or(0.0, |(_, count)| *count);
+    if total <= 0.0 {
+        return Quantile::None;
+    }
+    let wanted = q * total;
+    let (mut lower, mut below) = (0.0, 0.0);
+    for (bound, count) in counted {
+        if count >= wanted {
+            if bound.is_infinite() {
+                return Quantile::Seconds(lower);
+            }
+            let inside = count - below;
+            if inside <= 0.0 {
+                return Quantile::Seconds(lower);
+            }
+            return Quantile::Seconds(lower + (bound - lower) * (wanted - below) / inside);
+        }
+        (lower, below) = (bound, count);
+    }
+    Quantile::Seconds(lower)
+}
+
 /// Makes a section of what two samples have for its items; `None` when it would be empty.
 fn show_section(section: &StatusSection, before: &Scrape, after: &Scrape, seconds: f64, reset: &mut bool) -> Option<ShownSection> {
     let items: Vec<ShownItem> = section
         .items
         .iter()
         .filter_map(|item| {
+            if let Show::Quantile(q) = item.show {
+                let buckets = |scrape: &Scrape| histogram_buckets(scrape, item.metric, item.labels);
+                let value = match quantile(&buckets(before)?, &buckets(after)?, q) {
+                    Quantile::Seconds(seconds) => (seconds * 1_000_000.0).round() / 1000.0,
+                    Quantile::None => return None,
+                    Quantile::Reset => {
+                        *reset = true;
+                        return None;
+                    }
+                };
+                return Some(ShownItem { key: item.key.to_string(), label: item.label.to_string(), reading: Reading::Value(Value::Number(value)) });
+            }
             let now = after.value(item.metric, item.labels)?;
             let reading = match item.show {
-                Show::Value | Show::Total => Reading::Value(Value::Number(now)),
+                Show::Value | Show::Total | Show::Quantile(_) => Reading::Value(Value::Number(now)),
                 Show::Rate => {
                     let (rate, went_down) = before.value(item.metric, item.labels).map_or((0.0, false), |then| rate(then, now, seconds));
                     *reset |= went_down;
@@ -1118,6 +1204,83 @@ mod tests {
         assert_eq!(target(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)), SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port));
         let given = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port);
         assert_eq!(target(given), given);
+    }
+
+    /// Cumulative buckets of the response times as `/metrics` has them, for `counts` per bucket
+    /// from the one up to 0.5 ms on; the three below it are empty.
+    fn bucket_lines(metric: &str, labels: &str, counts: &[u64; 15]) -> String {
+        let mut text = String::new();
+        let mut cumulative = 0;
+        for (index, count) in [0, 0, 0].iter().chain(counts).enumerate() {
+            cumulative += count;
+            let bound = crate::metrics::RESPONSE_BUCKETS.get(index).map_or_else(|| "+Inf".to_string(), f64::to_string);
+            text.push_str(&format!("{metric}_bucket{{{labels},le=\"{bound}\"}} {cumulative}\n"));
+        }
+        text
+    }
+
+    fn radius_times(counts: &[u64; 15]) -> String {
+        bucket_lines("rradius_radius_response_seconds", "kind=\"auth\"", counts)
+    }
+
+    fn quantile_of(before: &str, after: &str) -> Result<(Option<Reading>, Option<Reading>, bool), String> {
+        let start = Instant::now();
+        let section = StatusSection {
+            title: "T",
+            key: "t",
+            items: vec![
+                item("p50", "auth_p50_ms", "rradius_radius_response_seconds", &[("kind", "auth")], Show::Quantile(0.5)),
+                item("p99", "auth_p99_ms", "rradius_radius_response_seconds", &[("kind", "auth")], Show::Quantile(0.99)),
+            ],
+        };
+        let shown = view(address(), &sample_of(before, start)?, &sample_of(after, start + Duration::from_secs(1))?, &[section], 0.0);
+        let found = |key: &str| shown.sections.iter().find(|section| section.key == "t").and_then(|section| section.items.iter().find(|item| item.key == key)).map(|item| item.reading.clone());
+        Ok((found("auth_p50_ms"), found("auth_p99_ms"), shown.counter_reset))
+    }
+
+    /// The two percentile examples of the spec.
+    #[test]
+    fn test_quantiles() -> Result<(), String> {
+        let before = radius_times(&[5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0]);
+        let after = radius_times(&[65, 31, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0]);
+        let number = |value: f64| Some(Reading::Value(Value::Number(value)));
+        assert_eq!(quantile_of(&before, &after)?, (number(0.458), number(2.5), false));
+        let past = radius_times(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(quantile_of(&radius_times(&[0; 15]), &past)?, (number(10000.0), number(10000.0), false));
+        Ok(())
+    }
+
+    #[test]
+    fn test_quantile_without_requests_left_out() -> Result<(), String> {
+        let same = radius_times(&[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(quantile_of(&same, &same)?, (None, None, false));
+        assert_eq!(quantile_of("", "")?, (None, None, false), "no histogram");
+        // A count that went down: the server restarted.
+        assert_eq!(quantile_of(&same, &radius_times(&[0; 15]))?, (None, None, true));
+        Ok(())
+    }
+
+    #[test]
+    fn test_quantile_incomplete_buckets_left_out() -> Result<(), String> {
+        let before = radius_times(&[0; 15]);
+        let full = radius_times(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let without_inf: String = full.lines().filter(|line| !line.contains("+Inf")).map(|line| format!("{line}\n")).collect();
+        assert_eq!(quantile_of(&before, &without_inf)?, (None, None, false));
+        // An `le` that is not a number is passed over; the rest still makes the quantile.
+        let odd = format!("{full}rradius_radius_response_seconds_bucket{{kind=\"auth\",le=\"soon\"}} 7\n");
+        let odd_before = format!("{before}rradius_radius_response_seconds_bucket{{kind=\"auth\",le=\"soon\"}} 0\n");
+        assert_eq!(quantile_of(&odd_before, &odd)?.0, Some(Reading::Value(Value::Number(0.375))));
+        Ok(())
+    }
+
+    #[test]
+    fn test_quantile_interpolation() {
+        // Everything counted in the first bucket: the median halfway inside it, the maximum at its bound.
+        let before = [(0.0005, 0.0), (0.001, 0.0), (f64::INFINITY, 0.0)];
+        let after = [(0.0005, 4.0), (0.001, 4.0), (f64::INFINITY, 4.0)];
+        assert_eq!(quantile(&before, &after, 0.5), Quantile::Seconds(0.00025));
+        assert_eq!(quantile(&before, &after, 1.0), Quantile::Seconds(0.0005));
+        assert_eq!(quantile(&before[..2], &after, 0.5), Quantile::None, "different buckets");
     }
 
     /// The member addresses table of the spec.

@@ -1996,6 +1996,7 @@ impl RadiusServer {
             DuplicateCheck::Process(ticket) => Some(ticket),
             DuplicateCheck::ProcessUncached => None,
         };
+        let started = Instant::now();
         match kind {
             PacketKind::Auth => self.metrics.radius_packets_auth.inc(),
             PacketKind::Acct => self.metrics.radius_packets_acct.inc(),
@@ -2034,6 +2035,12 @@ impl RadiusServer {
             }
             (crate::forwarding::Route::Unanswered, _) => None,
         };
+        if response.is_some() {
+            match kind {
+                PacketKind::Auth => self.metrics.radius_response_auth.observe(started.elapsed()),
+                PacketKind::Acct => self.metrics.radius_response_acct.observe(started.elapsed()),
+            }
+        }
         match response.as_ref().and_then(|response| response.first()) {
             Some(&ACCESS_ACCEPT) => self.metrics.radius_access_accept.inc(),
             Some(&ACCESS_REJECT) => self.metrics.radius_access_reject.inc(),
@@ -3367,6 +3374,29 @@ mod metrics_tests {
         }
         assert_eq!(metrics.radius_duplicates.get(), 1);
         assert_eq!((metrics.radius_packets_auth.get(), metrics.radius_access_accept.get()), (1, 1));
+    }
+
+    /// Answered requests are timed; a retransmission answered from the duplicate cache, a
+    /// discarded packet and Status-Server are not.
+    #[tokio::test]
+    async fn test_response_times() -> Result<(), String> {
+        let (server, metrics) = counted_server("return 'accept'").await;
+        let source = LOCAL.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
+        for identifier in 1..=3 {
+            server.receive(PacketKind::Auth, &request(identifier, b"a"), source).await.ok_or("no answer")?;
+        }
+        assert_eq!(metrics.radius_response_auth.count(), 3);
+        assert!(metrics.radius_response_auth.sum() > Duration::ZERO);
+        assert_eq!(metrics.radius_response_acct.count(), 0);
+        let rendered = metrics.render();
+        assert!(rendered.contains("rradius_radius_response_seconds_bucket{kind=\"auth\",le=\"+Inf\"} 3\n"), "{rendered}");
+        assert!(rendered.contains("rradius_radius_response_seconds_count{kind=\"acct\"} 0\n"), "{rendered}");
+        server.receive(PacketKind::Auth, &request(3, b"a"), source).await.ok_or("no replay")?;
+        assert_eq!(metrics.radius_duplicates.get(), 1);
+        assert_eq!(metrics.radius_response_auth.count(), 3, "a replay is not timed");
+        assert!(server.receive(PacketKind::Auth, &request(4, b"a"), "192.0.2.1:1".parse().map_err(|e: std::net::AddrParseError| e.to_string())?).await.is_none());
+        assert_eq!(metrics.radius_response_auth.count(), 3, "a discarded packet is not timed");
+        Ok(())
     }
 
     #[tokio::test]
