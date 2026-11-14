@@ -366,12 +366,41 @@ async fn serve_listener(listener: TcpListener, metrics: Arc<Metrics>, read_timeo
     }
 }
 
+/// Set once the server begins to stop on SIGTERM or SIGINT; never cleared, as the process ends.
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes `/readyz` answer 503 `stopping` from now on, so that a load balancer sends requests to
+/// the other nodes while this one still answers them.
+pub fn set_stopping() {
+    STOPPING.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// What `/readyz` answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Readiness {
+    Ready,
+    /// Authentication goes unanswered for want of a leader.
+    NoLeader,
+    /// The server is stopping.
+    Stopping,
+}
+
+fn readiness() -> Readiness {
+    if STOPPING.load(std::sync::atomic::Ordering::Relaxed) {
+        Readiness::Stopping
+    } else if crate::lua_engine::stopped_without_leader() {
+        Readiness::NoLeader
+    } else {
+        Readiness::Ready
+    }
+}
+
 /// Answers one request and closes. Nothing is sent to a client that does not finish its head.
 async fn answer<S: AsyncRead + AsyncWrite + Unpin>(mut socket: S, metrics: &Metrics, read_timeout: Duration) -> io::Result<()> {
     let Ok(Ok(Some(head))) = tokio::time::timeout(read_timeout, read_head(&mut socket)).await else {
         return Ok(());
     };
-    let response = respond(&head, metrics, crate::lua_engine::stopped_without_leader());
+    let response = respond(&head, metrics, readiness());
     // A client that does not read must not keep its place, any more than one that does not write.
     let writing = async {
         socket.write_all(response.as_bytes()).await?;
@@ -398,9 +427,9 @@ async fn read_head<S: AsyncRead + Unpin>(socket: &mut S) -> io::Result<Option<Ve
 }
 
 /// The response to one request head. `/livez` answers while the process serves at all; `/readyz`
-/// answers 503 while the node has stopped answering authentication for want of a leader
-/// (`stopped`), so that a load balancer sends requests to the other nodes meanwhile.
-fn respond(head: &[u8], metrics: &Metrics, stopped: bool) -> String {
+/// answers 503 while the node has stopped answering authentication for want of a leader, or is
+/// stopping, so that a load balancer sends requests to the other nodes meanwhile.
+fn respond(head: &[u8], metrics: &Metrics, readiness: Readiness) -> String {
     let line = head.split(|byte| *byte == b'\r').next().unwrap_or_default();
     let line = String::from_utf8_lossy(line);
     let mut parts = line.split(' ');
@@ -412,8 +441,11 @@ fn respond(head: &[u8], metrics: &Metrics, stopped: bool) -> String {
     match (method, path) {
         ("GET", "/metrics") => reply("200 OK", "text/plain; version=0.0.4", &metrics.render()),
         ("GET", "/livez") => reply("200 OK", "text/plain", "ok\n"),
-        ("GET", "/readyz") if stopped => reply("503 Service Unavailable", "text/plain", "no leader\n"),
-        ("GET", "/readyz") => reply("200 OK", "text/plain", "ok\n"),
+        ("GET", "/readyz") => match readiness {
+            Readiness::Ready => reply("200 OK", "text/plain", "ok\n"),
+            Readiness::NoLeader => reply("503 Service Unavailable", "text/plain", "no leader\n"),
+            Readiness::Stopping => reply("503 Service Unavailable", "text/plain", "stopping\n"),
+        },
         ("GET", _) => reply("404 Not Found", "text/plain", "not found\n"),
         _ => reply("405 Method Not Allowed", "text/plain", "method not allowed\n"),
     }
@@ -489,28 +521,37 @@ mod tests {
     #[test]
     fn test_health_paths() {
         let metrics = Metrics::default();
-        for (request, limit_ms, without_ms, status, body) in [
-            ("GET /livez HTTP/1.1", 3000, Some(10_000), "200 OK", Some("ok\n")),
-            ("GET /readyz HTTP/1.1", 0, Some(10_000), "200 OK", None),
-            ("GET /readyz HTTP/1.1", 3000, None, "200 OK", None),
-            ("GET /readyz HTTP/1.1", 3000, Some(2_000), "200 OK", None),
-            ("GET /readyz HTTP/1.1", 3000, Some(4_000), "503 Service Unavailable", Some("no leader\n")),
-            ("GET /readyz?verbose=1 HTTP/1.1", 3000, Some(4_000), "503 Service Unavailable", None),
-            ("POST /readyz HTTP/1.1", 0, None, "405 Method Not Allowed", None),
-            ("POST /livez HTTP/1.1", 0, None, "405 Method Not Allowed", None),
+        for (request, limit_ms, without_ms, stopping, status, body) in [
+            ("GET /livez HTTP/1.1", 3000, Some(10_000), false, "200 OK", Some("ok\n")),
+            ("GET /readyz HTTP/1.1", 0, Some(10_000), false, "200 OK", None),
+            ("GET /readyz HTTP/1.1", 3000, None, false, "200 OK", None),
+            ("GET /readyz HTTP/1.1", 3000, Some(2_000), false, "200 OK", None),
+            ("GET /readyz HTTP/1.1", 3000, Some(4_000), false, "503 Service Unavailable", Some("no leader\n")),
+            ("GET /readyz?verbose=1 HTTP/1.1", 3000, Some(4_000), false, "503 Service Unavailable", None),
+            ("POST /readyz HTTP/1.1", 0, None, false, "405 Method Not Allowed", None),
+            ("POST /livez HTTP/1.1", 0, None, false, "405 Method Not Allowed", None),
+            ("GET /readyz HTTP/1.1", 0, None, true, "503 Service Unavailable", Some("stopping\n")),
+            ("GET /readyz HTTP/1.1", 3000, Some(4_000), true, "503 Service Unavailable", Some("stopping\n")),
+            ("GET /livez HTTP/1.1", 0, None, true, "200 OK", Some("ok\n")),
         ] {
             let status_now = crate::lua_engine::ClusterStatus { without_leader: without_ms.map(Duration::from_millis), ..Default::default() };
-            let stopped = crate::lua_engine::stops_without_leader(limit_ms, &status_now);
-            let response = respond(format!("{request}\r\nHost: x\r\n\r\n").as_bytes(), &metrics, stopped);
-            assert!(response.starts_with(&format!("HTTP/1.1 {status}\r\n")), "{request} {limit_ms} {without_ms:?}: {response}");
+            let readiness = match (stopping, crate::lua_engine::stops_without_leader(limit_ms, &status_now)) {
+                (true, _) => Readiness::Stopping,
+                (false, true) => Readiness::NoLeader,
+                (false, false) => Readiness::Ready,
+            };
+            let response = respond(format!("{request}\r\nHost: x\r\n\r\n").as_bytes(), &metrics, readiness);
+            assert!(response.starts_with(&format!("HTTP/1.1 {status}\r\n")), "{request} {limit_ms} {without_ms:?} {stopping}: {response}");
             if let Some(body) = body {
                 assert!(response.ends_with(&format!("\r\n\r\n{body}")), "{request}: {response}");
             }
         }
         // The other paths are unchanged by readiness.
-        assert!(respond(b"GET /metrics HTTP/1.1\r\n\r\n", &metrics, true).starts_with("HTTP/1.1 200 OK"));
-        assert!(respond(b"GET /livez HTTP/1.1\r\n\r\n", &metrics, true).starts_with("HTTP/1.1 200 OK"));
-        assert!(respond(b"GET /ready HTTP/1.1\r\n\r\n", &metrics, false).starts_with("HTTP/1.1 404"));
+        for readiness in [Readiness::NoLeader, Readiness::Stopping] {
+            assert!(respond(b"GET /metrics HTTP/1.1\r\n\r\n", &metrics, readiness).starts_with("HTTP/1.1 200 OK"));
+            assert!(respond(b"GET /livez HTTP/1.1\r\n\r\n", &metrics, readiness).starts_with("HTTP/1.1 200 OK"));
+        }
+        assert!(respond(b"GET /ready HTTP/1.1\r\n\r\n", &metrics, Readiness::Ready).starts_with("HTTP/1.1 404"));
     }
 
     #[tokio::test]

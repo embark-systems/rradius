@@ -158,10 +158,11 @@ patches:
 | 路徑 | 200 | 503 | 範例的用途 |
 | --- | --- | --- | --- |
 | `/livez` | 程序在回應 | 不會 | startupProbe、livenessProbe |
-| `/readyz` | 會回應認證 | 設了 `stop_without_leader_ms`，而且沒有 leader 超過這段時間 | readinessProbe |
+| `/readyz` | 會回應認證 | 正在停止（收到 SIGTERM）；或設了 `stop_without_leader_ms`，而且沒有 leader 超過這段時間 | readinessProbe |
 
 - **未就緒的 Pod 會從 `rradius` Service 移出，** NAS 的請求改送其他 Pod。範例設 `stop_without_leader_ms = 10000`：三台剩一台時，剩下那台約 10 秒後停止回應、變成未就緒，`/livez` 仍是 200，容器不會被重啟。
-- **沒設 `stop_without_leader_ms` 時 `/readyz` 一直是 200，** 因為那時節點沒有 leader 也照常用本機副本回應只讀的登入；把它移出 Service 反而讓所有登入都失敗。
+- **刪除或更新 Pod 時，** kubelet 送 SIGTERM，`/readyz` 立刻變 503，Pod 照常回應 5 秒（三節點的預設 `[shutdown] ready_delay_ms`），readinessProbe 每 5 秒一次、失敗 1 次就移出，所以 Service 先不再送請求過來，之後它才停止接收、等處理中的請求做完再結束。整個過程約 15 秒，在 `terminationGracePeriodSeconds: 30` 內（[usage 2.16 節](../usage.md#216-停止-shutdown)）。
+- **沒設 `stop_without_leader_ms` 時，除了停止中以外 `/readyz` 一直是 200，** 因為那時節點沒有 leader 也照常用本機副本回應只讀的登入；把它移出 Service 反而讓所有登入都失敗。
 - **startupProbe 等最多 5 分鐘：** metrics 埠在節點追上叢集後才開，這要先有 leader。沒有 startupProbe 的話，livenessProbe 會在選出 leader 前把容器重啟。
 - **`rradius-cluster` 設 `publishNotReadyAddresses: true`：** 未就緒的 Pod 也保留 DNS 名稱。不設的話，等 leader 的節點彼此找不到，永遠選不出 leader。
 

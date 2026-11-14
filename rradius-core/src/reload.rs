@@ -136,6 +136,8 @@ pub struct Serving {
     pub tacacs: Option<Arc<TacacsServer>>,
     /// The servers the program's extensions started.
     pub extensions: Vec<Arc<dyn crate::extension::Served>>,
+    /// `[shutdown]` of the configuration last applied: a reload changes it.
+    pub shutdown: Live<config::ShutdownSettings>,
 }
 
 impl Serving {
@@ -178,6 +180,7 @@ impl Serving {
         for served in &self.extensions {
             served.reload(&config);
         }
+        self.shutdown.set(config.shutdown);
         Ok(needs_restart(&self.running, &config, &self.shared.extensions))
     }
 }
@@ -284,7 +287,8 @@ mod tests {
         let generation = build(&running, &shared).unwrap();
         let settings = running.radius.as_ref().unwrap();
         let server = Arc::new(RadiusServer::from_state(settings.auth_addr, settings.acct_addr, generation.radius.unwrap(), crate::radius::share_test_dictionary()));
-        (Serving { config_path, running, shared, radius: Some(server.clone()), tacacs: None, extensions: Vec::new() }, server)
+        let shutdown = Live::new(running.shutdown);
+        (Serving { config_path, running, shared, radius: Some(server.clone()), tacacs: None, extensions: Vec::new(), shutdown }, server)
     }
 
     fn request(identifier: u8) -> Vec<u8> {
@@ -457,13 +461,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reload_applies_shutdown() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let (serving, _) = serving(dir.path(), "return 'accept'", &config_text(CLIENT));
+        assert_eq!(serving.shutdown.get().drain, Duration::from_millis(5000));
+        write_config(dir.path(), &format!("{}[shutdown]\nready_delay_ms = 100\ndrain_ms = 200\n", config_text(CLIENT)));
+        assert_eq!(serving.try_reload()?, Vec::<&str>::new(), "no restart needed");
+        assert_eq!((serving.shutdown.get().ready_delay, serving.shutdown.get().drain), (Duration::from_millis(100), Duration::from_millis(200)));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_extensions_hear_of_reloads_and_name_restarts() -> Result<(), String> {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let extensions = crate::extension::Extensions::new(vec![Arc::new(Watch(seen.clone()))])?;
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let text = |auth: usize, acct: usize, port: u16| format!("{}[tacacs]\nport = {port}\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n", config_text(&format!("max_auth_inflight = {auth}\nmax_acct_inflight = {acct}\n{CLIENT}")));
         let (mut serving, server) = serving(dir.path(), "return 'accept'", &text(10, 10, 49));
-        let context = crate::extension::ServeContext { config: &serving.running, radius: Some(server), tacacs: None, metrics: serving.shared.metrics.clone(), db: serving.shared.db.clone() };
+        let context = crate::extension::ServeContext { config: &serving.running, radius: Some(server), tacacs: None, metrics: serving.shared.metrics.clone(), db: serving.shared.db.clone(), stopping: crate::stopping::Stopping::new() };
         serving.extensions = extensions.serve(&context)?;
         write_config(dir.path(), &text(10, 11, 49));
         serving.try_reload()?;

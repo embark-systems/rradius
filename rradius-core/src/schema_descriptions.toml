@@ -365,6 +365,16 @@ zh-TW = "Prometheus 指標端點的埠。"
 en = "Pin each worker thread to one CPU; Linux only."
 zh-TW = "把工作執行緒各綁在一顆 CPU 上；只在 Linux。"
 
+# shutdown
+
+[fields."shutdown.ready_delay_ms"]
+en = "On SIGTERM or SIGINT, how long /readyz says the node is stopping while requests are still answered, in milliseconds; by default 5000 on a cluster of more than one node, 0 on one node."
+zh-TW = "收到 SIGTERM 或 SIGINT 後，/readyz 回報停止中、但仍照常回答請求的時間，毫秒；多節點預設 5000，單節點預設 0。"
+
+[fields."shutdown.drain_ms"]
+en = "Once no more requests are taken, how long at most to wait for those being handled, in milliseconds."
+zh-TW = "停止接收新請求後，最多等處理中的請求多久，毫秒。"
+
 # radius
 
 [fields."radius.bind"]

@@ -11,6 +11,7 @@ use tokio::sync::Semaphore;
 use crate::clients::{Client, ClientTable};
 use crate::metrics::{Metrics, Open};
 use crate::reload::Live;
+use crate::stopping::Stopping;
 use crate::lua_engine::{LuaAuthEngine, LuaRequest};
 use crate::common::AttrValue;
 use std::sync::Arc;
@@ -459,6 +460,17 @@ enum AuthenStep {
 struct AsciiLogins(HashMap<u32, AsciiLogin>);
 
 impl AsciiLogins {
+    /// When the last login on this connection still waiting for the client's next packet runs
+    /// out, if one is.
+    fn ends(&self, now: Instant) -> Option<Instant> {
+        self.0.values().map(|login| login.started + ASCII_LOGIN_LIMIT).filter(|end| *end > now).max()
+    }
+
+    /// Whether `packet` goes on a login under way, rather than starting something new.
+    fn continues(&self, packet: &TacacsPacket, now: Instant) -> bool {
+        packet.type_ == TYPE_AUTHEN && packet.seq_num != 1 && self.0.get(&packet.session_id).is_some_and(|login| now.duration_since(login.started) < ASCII_LOGIN_LIMIT)
+    }
+
     fn forget(&mut self, session_id: u32) {
         self.0.remove(&session_id);
     }
@@ -687,6 +699,10 @@ pub struct TacacsServer {
     tls_served: Option<TacacsTlsServed>,
     /// What `admit` logs of connections it refuses, at most once a second each.
     refusals: parking_lot::Mutex<(DiscardLog, DiscardLog)>,
+    /// How many places `connection_slots` has, for `drain` to wait for all of them.
+    connection_capacity: usize,
+    /// Cancelled when the server stops taking requests.
+    stopping: Stopping,
 }
 
 impl TacacsServer {
@@ -695,7 +711,7 @@ impl TacacsServer {
     }
 
     pub fn from_state(addr: SocketAddr, state: TacacsState, max_body_len: usize) -> Self {
-        Self { addr, max_body_len, state: Arc::new(Live::new(state)), metrics: Arc::default(), connection_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONNECTIONS)), timeouts: Timeouts::default(), tls_served: None, refusals: parking_lot::Mutex::default() }
+        Self { addr, max_body_len, state: Arc::new(Live::new(state)), metrics: Arc::default(), connection_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONNECTIONS)), timeouts: Timeouts::default(), tls_served: None, refusals: parking_lot::Mutex::default(), connection_capacity: DEFAULT_MAX_CONNECTIONS, stopping: Stopping::new() }
     }
 
     /// How long connections may go idle and take to write; an extension that makes connections
@@ -738,7 +754,7 @@ impl TacacsServer {
     /// made, as RFC 9887 has them inside TLS; `check` is asked about the peer now and then. An
     /// error ends the connection, for the extension to log.
     pub async fn serve_clear<S: AsyncRead + AsyncWrite + Unpin>(&self, admitted: Admitted, stream: S, check: Box<dyn PeerCheck>) -> io::Result<()> {
-        let served = Self::handle_clear_connection(stream, admitted.source.ip(), &self.state, &self.metrics, self.max_body_len, self.timeouts, check).await;
+        let served = Self::serve_packets(stream, admitted.source.ip(), &self.state, &self.metrics, self.max_body_len, self.timeouts, Transport::Clear(check), &self.stopping).await;
         drop(admitted);
         served
     }
@@ -775,7 +791,25 @@ impl TacacsServer {
     /// Sets how many connections from configured clients stay open at once.
     pub fn with_max_connections(mut self, max_connections: usize) -> Self {
         self.connection_slots = Arc::new(Semaphore::new(max_connections));
+        self.connection_capacity = max_connections;
         self
+    }
+
+    /// The token whose cancelling makes the server stop taking connections and requests; a
+    /// connection ends once the reply to the request it is handling is sent.
+    pub fn with_stopping(mut self, stopping: Stopping) -> Self {
+        self.stopping = stopping;
+        self
+    }
+
+    /// Waits until no connection is open, without TLS or over it, or until `deadline`; returns how
+    /// many were still open then, 0 when none were.
+    pub async fn drain(&self, deadline: tokio::time::Instant) -> usize {
+        let all = self.connection_slots.clone().acquire_many_owned(u32::try_from(self.connection_capacity).unwrap_or(u32::MAX));
+        if tokio::time::timeout_at(deadline, all).await.is_ok() {
+            return 0;
+        }
+        self.connection_capacity.saturating_sub(self.connection_slots.available_permits())
     }
 
     /// Sets how often a peer an extension checks is checked again.
@@ -816,7 +850,12 @@ impl TacacsServer {
         let mut strangers = DiscardLog::default();
 
         loop {
-            let (socket, addr) = accept_next(&listener, label, &mut failures).await;
+            // Stopped: the listener closes, and new connections are refused.
+            let (socket, addr) = tokio::select! {
+                biased;
+                () = self.stopping.cancelled() => return Ok(()),
+                accepted = accept_next(&listener, label, &mut failures) => accepted,
+            };
             let Some(admitted) = self.admit_with(addr, &mut strangers, &mut discards) else {
                 drop(socket);
                 continue;
@@ -825,12 +864,13 @@ impl TacacsServer {
             let max_body_len = self.max_body_len;
             let timeouts = self.timeouts;
             let metrics = self.metrics.clone();
+            let stopping = self.stopping.clone();
             tokio::spawn(async move {
                 let _admitted = admitted;
                 // Yield first: a freshly spawned task sits in this worker's LIFO slot, which other
                 // workers cannot steal, so a script that never yields would also stall the receive loop.
                 tokio::task::yield_now().await;
-                if let Err(e) = Self::handle_connection(socket, addr.ip(), &live, &metrics, max_body_len, timeouts).await {
+                if let Err(e) = Self::serve_packets(socket, addr.ip(), &live, &metrics, max_body_len, timeouts, Transport::Obfuscated, &stopping).await {
                     tracing::warn!("{} connection error from {}: {}", label, addr, e);
                 }
             });
@@ -841,26 +881,48 @@ impl TacacsServer {
     /// with an unsupported version, oversized body, or the unencrypted flag (every
     /// configured client has a non-empty secret).
     pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(socket: S, source: IpAddr, live: &Live<TacacsState>, metrics: &Metrics, max_body_len: usize, timeouts: Timeouts) -> io::Result<()> {
-        Self::serve_packets(socket, source, live, metrics, max_body_len, timeouts, Transport::Obfuscated).await
+        Self::serve_packets(socket, source, live, metrics, max_body_len, timeouts, Transport::Obfuscated, &Stopping::new()).await
     }
 
     /// Serves packets in the clear, as RFC 9887 has them inside TLS, on a connection whose peer
     /// `check` checks again now and then.
     pub async fn handle_clear_connection<S: AsyncRead + AsyncWrite + Unpin>(socket: S, source: IpAddr, live: &Live<TacacsState>, metrics: &Metrics, max_body_len: usize, timeouts: Timeouts, check: Box<dyn PeerCheck>) -> io::Result<()> {
-        Self::serve_packets(socket, source, live, metrics, max_body_len, timeouts, Transport::Clear(check)).await
+        Self::serve_packets(socket, source, live, metrics, max_body_len, timeouts, Transport::Clear(check), &Stopping::new()).await
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn serve_packets<S: AsyncRead + AsyncWrite + Unpin>(mut socket: S, source: IpAddr, live: &Live<TacacsState>, metrics: &Metrics, max_body_len: usize, timeouts: Timeouts, transport: Transport) -> io::Result<()> {
+    /// Once `stopping` is cancelled, the connection ends when it would wait for a new request: a
+    /// reply being made is still sent, and an ASCII login under way may still be finished, until
+    /// it runs out; any other packet then closes the connection unanswered.
+    async fn serve_packets<S: AsyncRead + AsyncWrite + Unpin>(mut socket: S, source: IpAddr, live: &Live<TacacsState>, metrics: &Metrics, max_body_len: usize, timeouts: Timeouts, transport: Transport, stopping: &Stopping) -> io::Result<()> {
         let mut logins = AsciiLogins::default();
         let mut first_packet = true;
         let mut checked = Instant::now();
         loop {
-            let Ok(read) = tokio::time::timeout(timeouts.idle, read_packet(&mut socket, max_body_len)).await else {
+            let login_ends = logins.ends(Instant::now());
+            let stopped = async {
+                stopping.cancelled().await;
+                if let Some(end) = login_ends {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(end)).await;
+                }
+            };
+            let read = tokio::select! {
+                biased;
+                () = stopped => {
+                    tracing::debug!("TACACS+ connection from {source} closed: the server is stopping");
+                    return Ok(());
+                }
+                read = tokio::time::timeout(timeouts.idle, read_packet(&mut socket, max_body_len)) => read,
+            };
+            let Ok(read) = read else {
                 tracing::warn!("TACACS+ connection from {source} closed: idle for {:?}", timeouts.idle);
                 return Ok(());
             };
             let Some(packet) = read? else { return Ok(()) };
+            if stopping.is_cancelled() && !logins.continues(&packet, Instant::now()) {
+                tracing::debug!("TACACS+ connection from {source} closed: the server is stopping");
+                return Ok(());
+            }
             // Only the first packet can ask for single-connection mode, and only its reply agrees.
             let reply_flags = if std::mem::replace(&mut first_packet, false) { packet.flags & SINGLE_CONNECT_FLAG } else { 0 };
             // Every packet, so that a reload reaches connections already open.
@@ -1928,6 +1990,81 @@ pub(crate) mod tests {
         drop(first);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(metrics.tacacs_open.get(), 0);
+    }
+
+    /// After `stopping` is cancelled: the reply being made is sent and its connection then ends,
+    /// an idle connection ends, new connections are refused, and `drain` counts what is open.
+    async fn read_end(stream: &mut tokio::net::TcpStream) -> Result<usize, String> {
+        let mut buffer = [0u8; 16];
+        tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer)).await.map_err(|_| "not closed".to_string())?.map_err(|e| e.to_string())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_stopping_closes_after_the_reply() -> Result<(), String> {
+        const SLOW: &str = "if get_attr('user') == 'slow' then sql_query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 3000000) SELECT count(*) AS n FROM c') end ";
+        let engine = script_engine(&format!("{SLOW}return 'accept'")).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        let metrics = Arc::new(Metrics::default());
+        let stopping = Stopping::new();
+        let server = Arc::new(TacacsServer::from_state(addr, state_with_secret(Some(SECRET), &engine), MAX_BODY_LEN).with_metrics(metrics.clone()).with_stopping(stopping.clone()));
+        let serving = tokio::spawn({
+            let server = server.clone();
+            async move { server.serve(listener).await }
+        });
+        let mut idle = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        let mut busy = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        busy.write_all(&request_with_key(SECRET, &start_body(b"slow", b"secret"))).await.map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while metrics.tacacs_authen.get() == 0 || metrics.tacacs_open.get() < 2 {
+            if Instant::now() > deadline {
+                return Err("the request was not read".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(server.drain(tokio::time::Instant::now()).await, 2, "two connections open");
+        stopping.cancel();
+        tokio::time::timeout(Duration::from_secs(5), serving).await.map_err(|_| "the accept loop did not end".to_string())?.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+        assert!(tokio::net::TcpStream::connect(addr).await.is_err(), "a new connection was taken");
+        assert_eq!(read_end(&mut idle).await?, 0, "the idle connection ends");
+        let reply = tokio::time::timeout(Duration::from_secs(5), read_packet(&mut busy, MAX_BODY_LEN)).await.map_err(|_| "no reply".to_string())?.map_err(|e| e.to_string())?.ok_or("closed before the reply")?;
+        let body = TacacsPacket::encrypt_decrypt(&reply.body, SECRET, reply.session_id, reply.version, reply.seq_num);
+        assert_eq!(body.first().copied(), Some(AUTHEN_STATUS_PASS));
+        assert_eq!(read_end(&mut busy).await?, 0, "the connection ends after the reply");
+        assert_eq!(server.drain(tokio::time::Instant::now() + Duration::from_secs(5)).await, 0);
+        Ok(())
+    }
+
+    /// Once the server stops, an ASCII login under way is finished, and the connection then ends;
+    /// a new request on a connection whose login waits closes it unanswered.
+    #[tokio::test]
+    async fn test_stopping_finishes_an_ascii_login() -> Result<(), String> {
+        let engine = script_engine("return 'accept'").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        let stopping = Stopping::new();
+        let server = Arc::new(TacacsServer::from_state(addr, state_with_secret(Some(SECRET), &engine), MAX_BODY_LEN).with_stopping(stopping.clone()));
+        tokio::spawn({
+            let server = server.clone();
+            async move { server.serve(listener).await }
+        });
+        let mut finishing = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        let mut starting = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        for stream in [&mut finishing, &mut starting] {
+            stream.write_all(&authen_packet(ASCII_SESSION, 1, &ascii_start_body(b"alice"))).await.map_err(|e| e.to_string())?;
+            let (seq, status, ..) = next_reply(stream).await;
+            assert_eq!((seq, status), (2, AUTHEN_STATUS_GETPASS));
+        }
+        stopping.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        finishing.write_all(&authen_packet(ASCII_SESSION, 3, &continue_body(b"secret", 0))).await.map_err(|e| e.to_string())?;
+        let (seq, status, ..) = next_reply(&mut finishing).await;
+        assert_eq!((seq, status), (4, AUTHEN_STATUS_PASS));
+        assert_eq!(read_end(&mut finishing).await?, 0, "the connection ends after the login");
+        starting.write_all(&authen_packet(ASCII_SESSION + 1, 1, &start_body(b"bob", b"secret"))).await.map_err(|e| e.to_string())?;
+        assert_eq!(read_end(&mut starting).await?, 0, "a new request is not answered");
+        assert_eq!(server.drain(tokio::time::Instant::now() + Duration::from_secs(5)).await, 0);
+        Ok(())
     }
 
     #[tokio::test]

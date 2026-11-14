@@ -39,8 +39,34 @@ fn test_show_fills_defaults_and_hides_secrets() -> Result<(), String> {
     assert!(stdout.contains("\nsecret = \"<hidden>\"\n") && stdout.contains("\nsecret_raft = \"<hidden>\"\n"), "{stdout}");
     assert!(!stdout.contains("test-raft-secret") && !stdout.contains("secret = \"s\""), "{stdout}");
     assert!(!stdout.contains("[tacacs]"), "a section the file lacks is not added: {stdout}");
+    // `[shutdown]` is in effect without the section: one node does not wait for a load balancer.
+    assert!(stdout.contains("\n[shutdown]\n") && stdout.contains("\nready_delay_ms = 0\n") && stdout.contains("\ndrain_ms = 5000\n"), "{stdout}");
     // It started nothing.
     assert!(!dir.path().join("data").exists());
+    Ok(())
+}
+
+/// With more than one node, `[shutdown]` waits 5 s for a load balancer by default (Defaults).
+#[test]
+fn test_show_of_shutdown_with_three_nodes() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let others = "[[cluster.nodes]]\nid = 2\nraft = \"127.0.0.2:8100\"\napi = \"127.0.0.2:8200\"\n[[cluster.nodes]]\nid = 3\nraft = \"127.0.0.3:8100\"\napi = \"127.0.0.3:8200\"\n[radius]\n";
+    let (_, three) = with_copy(dir.path(), "three.toml", |text| text.replacen("[radius]\n", others, 1))?;
+    let (code, stdout, stderr) = config(&["show", "--config", path(&three)?])?;
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("\n[shutdown]\n") && stdout.contains("\nready_delay_ms = 5000\n") && stdout.contains("\ndrain_ms = 5000\n"), "{stdout}");
+    Ok(())
+}
+
+/// A wait over 60000 ms fails `check` with status 2, naming the field (Out of range).
+#[test]
+fn test_check_of_shutdown_out_of_range() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (_, long) = with_copy(dir.path(), "long.toml", |text| format!("{text}[shutdown]\ndrain_ms = 60001\n"))?;
+    let output = Command::new(PROGRAM).args(["check", "--config", path(&long)?]).output().map_err(|e| e.to_string())?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("shutdown.drain_ms"), "{stderr}");
     Ok(())
 }
 

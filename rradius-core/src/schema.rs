@@ -246,6 +246,7 @@ const CHAPTERS: &[(&str, &str)] = &[
     ("tacacs", "#23-radius-與-tacacs"),
     ("runtime", "#24-過載與重送"),
     ("metrics", "#28-統計-metrics"),
+    ("shutdown", "#216-停止-shutdown"),
     ("log", "#210-記錄-log"),
     ("accounts", "#214-帳號管理-accounts"),
     ("auth", "#3-認證串接-auth"),

@@ -98,8 +98,8 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 - **資料：** 放在 Compose 的具名 volume。`docker compose down --volumes` 會刪除資料。
 - **EAP：** 範例沒有啟用。要用時加上 `[radius.eap]`，憑證放在 `docker/config/`（見 2.12 節）。
 - **計費暫存：** 範例沒有啟用。要用時，`[radius.accounting_spool].dir` 要指向 volume 裡的路徑（例如 `/var/lib/rradius/spool`；`/etc/rradius` 是唯讀的），否則換掉容器就遺失已確認的計費（見 2.11 節）。
-- **停止：** `docker stop` 送的 SIGTERM 和 Ctrl+C 的 SIGINT 都會正常關閉資料庫，並等還在緩衝的記錄寫出，最多 5 秒。SIGKILL 不會，下次啟動時本機資料庫會重建。啟動途中也一樣能停止：等待叢集或套用 migration 時收到，會關閉節點後以狀態碼 0 結束，下次啟動接著做。正在跑超過 25 秒的 migration 檔時，等滿 25 秒就結束，這次不算乾淨關閉，下次啟動會重建本機資料庫；節點還沒起來時收到，會先等它起來（最多 25 秒）再正常關閉；25 秒內起不來（例如叢集沒有多數節點）就直接結束，這時無法乾淨關閉，資料目錄可能留下 `lock` 檔，下次啟動會重建本機資料庫。
-- **多節點的關閉要約 10 秒：** hiqlite 關閉叢集成員前會先等 9.5 秒（讓負載平衡器有時間不再送請求過來；這段時間它還是 leader），之後其他節點才選出新 leader。所以 `docker stop` 要多給時間（`docker stop -t 30`，或 Compose 的 `stop_grace_period: 30s`，`compose.cluster.yaml` 已經設了），systemd 的預設 90 秒足夠。時間不夠被 SIGKILL 時，下次啟動會重建本機資料庫。
+- **停止：** `docker stop` 送的 SIGTERM 和 Ctrl+C 的 SIGINT 都會依序：先讓 `/readyz` 回 503、照常回應一段時間，再停止接收新的請求、等處理中的請求回應完，然後正常關閉資料庫，並等還在緩衝的記錄寫出，最多 5 秒（細節與兩段等待的設定見 2.16 節）。SIGKILL 不會，下次啟動時本機資料庫會重建。啟動途中也一樣能停止：等待叢集或套用 migration 時收到，會關閉節點後以狀態碼 0 結束，下次啟動接著做。正在跑超過 25 秒的 migration 檔時，等滿 25 秒就結束，這次不算乾淨關閉，下次啟動會重建本機資料庫；節點還沒起來時收到，會先等它起來（最多 25 秒）再正常關閉；25 秒內起不來（例如叢集沒有多數節點）就直接結束，這時無法乾淨關閉，資料目錄可能留下 `lock` 檔，下次啟動會重建本機資料庫。
+- **多節點的關閉要 15 秒左右：** 預設先等 5 秒讓負載平衡器移出這個節點（`[shutdown] ready_delay_ms`），處理中的請求通常很快做完（最多等 `drain_ms`，預設 5 秒），之後 hiqlite 關閉叢集成員前還會再等 9.5 秒（這段時間它還是 leader），其他節點才選出新 leader。所以 `docker stop` 要多給時間（`docker stop -t 30`，或 Compose 的 `stop_grace_period: 30s`，`compose.cluster.yaml` 已經設了），systemd 的預設 90 秒足夠。時間不夠被 SIGKILL 時，下次啟動會重建本機資料庫。
 - **節點壞掉時自己結束：** 節點的 Raft 核心因錯誤停止時（例如下方 2.2 節的 follower 落後太多），或 hiqlite 內部 panic 時，程序記錄 `exiting so that a restart recovers it` 後以狀態碼 1 結束。所以一定要讓它自動重新啟動：systemd 設 `Restart=on-failure`，Docker 設 `restart: unless-stopped`（範例 Compose 都設了）。
 
 ## 2. 設定檔總覽
@@ -119,6 +119,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | `[metrics]` | 否 | 啟用統計端點（2.8 節） |
 | `[log]` | 否 | 記錄的等級、格式與認證紀錄（2.10 節） |
 | `[accounts]` | 否 | `rradius-server user` 管理帳號時執行的 SQL（2.14 節） |
+| `[shutdown]` | 否 | 收到 SIGTERM 後的兩段等待（2.16 節） |
 | `[runtime]` | 否 | `pin_threads`：把工作執行緒各綁在一顆 CPU 上，只在 Linux（2.4 節） |
 
 `[radius]` 與 `[tacacs]` 至少要有一個。所有區段都拒絕不認得的欄位，拼錯的欄位會讓啟動失敗並指出欄位名稱。
@@ -744,10 +745,10 @@ port = 9812         # 預設
 | 路徑 | 回應 |
 | --- | --- |
 | `GET /livez` | 一律 200 `ok`：程序還在回應。不看資料庫或叢集 |
-| `GET /readyz` | 設了 `[cluster] stop_without_leader_ms`、而且沒有可用的 leader 超過這段時間時是 503 `no leader`，也就是節點故意不回應認證的時候（2.2 節〈資料庫不能用時〉）；其他時候 200 `ok` |
+| `GET /readyz` | 收到 SIGTERM 或 SIGINT、正在停止時是 503 `stopping`（2.16 節）；設了 `[cluster] stop_without_leader_ms`、而且沒有可用的 leader 超過這段時間時是 503 `no leader`，也就是節點故意不回應認證的時候（2.2 節〈資料庫不能用時〉）；其他時候 200 `ok` |
 
 - 內容都是 `text/plain` 的一行字。查詢字串不影響結果；GET 以外的方法回 405，其他路徑回 404。連線數、逾時和標頭大小的限制和 `/metrics` 共用。
-- 沒設 `stop_without_leader_ms` 時 `/readyz` 一直是 200：這時節點沒有 leader 也會用本機副本回應只讀的登入，算成未就緒反而會讓負載平衡器把所有節點都移出。
+- 沒設 `stop_without_leader_ms` 時，除了停止中以外 `/readyz` 一直是 200：這時節點沒有 leader 也會用本機副本回應只讀的登入，算成未就緒反而會讓負載平衡器把所有節點都移出。
 - metrics 埠在節點追上叢集、協定埠開好之後才開，所以啟動中兩個路徑都連不上；Kubernetes 要用 startupProbe 等它。
 
 | 項目 | 說明 |
@@ -1132,6 +1133,27 @@ rradius-server user show --config /etc/rradius/rradius.toml alice
 - 屬性名稱和值的格式以各廠商文件為準，上表沒有用實體設備驗證過。
 - `Cisco-AVPair` 的值會以明文送出，只在可信任的網路或 RadSec 上用。
 - `wpa_pmk` 每次都跑 4096 輪 PBKDF2，約數毫秒；設備多時把算好的 PMK 存起來，不要每次登入都算。
+
+### 2.16 停止 `[shutdown]`
+
+收到第一個 SIGTERM 或 SIGINT 時，依序：
+
+1. **`/readyz` 回 503 `stopping`，** 但 RADIUS 和 TACACS+ 照常回應 `ready_delay_ms`，讓負載平衡器或 Kubernetes 有時間把這個節點移出、改送別台。`/livez` 不變。
+2. **停止接收：** 不再讀 RADIUS 的 UDP 埠，關閉 TACACS+ 的埠（新連線被拒），已開的 TACACS+ 連線送出手上請求的回應後關閉，不再讀下一個（進行中的 ASCII 登入可以做完，最多到它的 60 秒期限；這時連線上的其他請求不回應、直接關閉）；計費暫存停止重放，資料留在磁碟。
+3. **等處理中的請求，** 最多 `drain_ms`。全部回應完時記 `stopping: every request taken was answered`；時間到還沒做完時記 WARN，例如 `stopping: after 5000 ms, 1 RADIUS requests were still being handled and 0 TACACS+ connections open; they are cut off`，那些請求不會回應，設備會重送到別台。
+4. 關閉資料庫（多節點時 hiqlite 還會等 9.5 秒，見 1. 節）、寫出記錄，以狀態碼 0 結束。
+
+```toml
+[shutdown]
+ready_delay_ms = 5000 # 第 1 段；預設：[cluster].nodes 超過一個時 5000，否則 0
+drain_ms = 5000       # 第 3 段；預設 5000
+```
+
+- 兩個值都是 0 到 60000（毫秒），超過時啟動失敗。重新載入（SIGHUP）會套用，停止時用收到訊號那一刻的設定。
+- **單節點預設不等第 1 段，** 因為沒有別台可以接手，多等只是多幾秒不回應的時間。前面有負載平衡器時，請設成至少「探針間隔 × 失敗次數」再加一點，例如 Kubernetes 範例的 readinessProbe 每 5 秒一次、失敗 1 次就移出，預設的 5 秒剛好。
+- **第二個 SIGTERM 或 SIGINT 會跳過還沒等完的第 1、3 段，** 記 `stopping: asked again; not waiting for the requests being handled`，直接進第 4 段；資料庫照樣正常關閉，不會因此縮短。
+- **寬限時間要夠：** 多節點時最多約 `ready_delay_ms` + `drain_ms` + 9.5 秒 + 記錄寫出（最多 5 秒），預設約 25 秒，所以 `docker stop -t 30`、`stop_grace_period: 30s`、Kubernetes 的 `terminationGracePeriodSeconds: 30` 都夠。調大這兩個值時一起調大寬限時間，否則被 SIGKILL，下次啟動要重建本機資料庫。
+- 啟動途中（等叢集或套用 migration 時）收到訊號不走這幾段，見 1. 節〈停止〉。
 
 ## 3. 認證串接 `[auth]`
 
@@ -1834,6 +1856,8 @@ cd rradius-server/fuzz && mkdir -p corpus/radius_packet && cargo +nightly-2026-1
 | `RADIUS response attribute error: ...` | 回應屬性的值不符合字典型別，例如 `reply_query` 查到 `2001:db8::1/64` 當前綴。該次認證會被拒絕，即使密碼正確；修正資料表的值 |
 | `rradius_auth: authentication ... decision="reject"` | 認證紀錄。`handler` 是做出決定的處理器；`none` 表示全部略過，`no_password_check` 表示 `all_accept` 沒有人比對過密碼，`normalization` 表示名稱被拒絕 |
 | `auth chain: rejecting a request from client ...: all_accept without checking a password` | `all_accept` 裡的 `sql`、`ldap` 都沒有接受，只有腳本說可以，或腳本在它們接受之前就回 `challenge`。通常是名稱不在資料表裡。憑證也一樣，見 3.2 節 |
+| `stopping: after N ms, ... they are cut off` | 停止時等了 `drain_ms` 還有請求沒做完，那些請求沒有回應；通常是腳本、LDAP 或資料庫太慢。要多等就調大 `[shutdown] drain_ms`，寬限時間也一起調（2.16 節） |
+| 停止時 `/readyz` 是 503 `stopping` 但還在回應 | 正常：第 1 段 `ready_delay_ms`，讓負載平衡器先移出這個節點（2.16 節） |
 | `Raft node has not been initialized` | 節點還沒加入叢集，加入後就會停止；一直出現時，檢查其他節點是否啟動 |
 | `rradius_log_dropped_lines_total` 持續增加 | 記錄輸出跟不上或寫入失敗，有記錄遺失；檢查 stderr 接到哪裡，或降低 `level`、關閉 `auth` |
 | TACACS+ 設備登入一直回 ERROR | 同一個會談的封包順序不對、連線上未完成的登入超過 8 個，或登入超過 60 秒 |
