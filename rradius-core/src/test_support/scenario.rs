@@ -146,6 +146,19 @@ impl Server {
         std::fs::read_to_string(self.dir.path().join("stderr.log")).unwrap_or_default()
     }
 
+    /// Waits for logged text, since lines are written in the background and can come after the
+    /// answer to the request that logged them.
+    pub fn wait_for_log(&self, text: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let stderr = self.stderr();
+            if stderr.contains(text) || Instant::now() >= deadline {
+                return stderr;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Waits for the log line that says the RADIUS ports are open, after the migrations.
     pub fn wait_ready(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(60);

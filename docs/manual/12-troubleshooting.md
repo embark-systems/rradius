@@ -7,7 +7,7 @@
 | 工具 | 看什麼 | 怎麼用 |
 | --- | --- | --- |
 | **認證紀錄** | 每次登入的結果，和是誰做的決定 | 記錄裡 `authentication protocol=...` 開頭的行，預設就有 |
-| **指標** | 沒有留下紀錄的事：被丟棄的封包、過載、上游狀態 | `curl -s http://127.0.0.1:9812/metrics`，要有 `[metrics]` |
+| **指標** | 沒有留下紀錄的事：被丟棄的封包、過載、上游狀態 | `rradius-server status --config ... --watch` 看每秒的量；完整內容 `curl -s http://127.0.0.1:9812/metrics`。都要有 `[metrics]` |
 | **追蹤** | 一個使用者或一台 NAS 的完整請求和回應 | `[log.trace]` 加 SIGHUP，見[第 11 章](11-operations.md#排查某個使用者的問題) |
 | **`check`** | 設定檔、憑證、腳本語法有沒有問題 | `rradius-server check --config ...`，不影響執行中的服務 |
 

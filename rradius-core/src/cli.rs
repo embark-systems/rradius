@@ -78,8 +78,9 @@ fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
 /// `--config`: what no arguments and `help` print, and what a mistake prints.
 fn full_usage(extensions: &crate::extension::Extensions, default: &str) -> String {
     named(&format!(
-        "{USAGE}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}\n{}",
+        "{USAGE}\n{}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}\n{}",
         admin::CHECK_USAGE,
+        crate::status::USAGE,
         crate::config_tools::USAGE,
         crate::tuning::USAGE,
         accounts::USAGE,
@@ -219,6 +220,9 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     }
     if args.get(1).is_some_and(|command| command == "user") {
         std::process::exit(accounts::run(&args[2..]).await);
+    }
+    if args.get(1).is_some_and(|command| command == "status") {
+        std::process::exit(crate::status::run(&args[2..], extensions).await);
     }
     if args.get(1).is_some_and(|command| command == "cluster") {
         std::process::exit(crate::cluster_commands::run(&args[2..]).await);
@@ -444,7 +448,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => tracing::warn!("runtime.pin_threads: {e}; running without pinning"),
         }
     }
-    let metrics = Arc::new(Metrics::for_extensions(extensions));
+    let metrics = Arc::new(Metrics::for_extensions(extensions).with_version(program.version));
     let dictionary = Arc::new(dictionary);
     let shared = Shared { db: db.clone(), vms, dictionary: dictionary.clone(), metrics: metrics.clone(), extensions: extensions.clone() };
     let generation = match reload::build(&config, &shared) {

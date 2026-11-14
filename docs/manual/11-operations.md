@@ -176,6 +176,14 @@ systemctl reload rradius        # 服務檔有 ExecReload=/bin/kill -HUP $MAINPI
 echo 'Message-Authenticator=0x00' | radclient -t 2 -r 1 10.99.0.1:1812 status "$(cat nas.secret)"
 ```
 
+手邊沒有 Prometheus、想馬上知道這台在做什麼時，在節點上執行：
+
+```bash
+rradius-server status --config /etc/rradius/rradius.toml --watch
+```
+
+每秒列一次登入、計費、回應、丟棄的每秒量、正在處理的請求和上限、`/readyz` 的狀態與叢集狀態，以及回應最多的幾個 client。要有 `[metrics]`；`--json` 給腳本用。說明見 [usage 2.8 節〈`status` 指令〉](../usage.md#看這台節點現在在做什麼status-指令)。
+
 全部指標見 [usage 2.8 節](../usage.md#28-統計-metrics)。
 
 - **數值從啟動開始累計，** 每個節點各算各的，重新載入不會歸零。告警要看增加的速度，不是絕對值。

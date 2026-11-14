@@ -30,6 +30,7 @@ pub mod second_factor;
 pub mod script_http;
 pub mod session_resumption;
 pub mod spool;
+pub mod status;
 pub mod stopping;
 pub mod mschap;
 pub mod netlogon;
