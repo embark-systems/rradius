@@ -1500,6 +1500,29 @@ fn test_check_takes_a_group_reply_of_several_attributes() {
     assert_eq!(code, Some(0), "{stderr}");
 }
 
+/// Scenario: Check does not contact a domain controller; a group reply attribute outside the
+/// dictionary still fails.
+#[test]
+fn test_check_netlogon_handler() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    std::fs::write(dir.path().join("machine.pw"), "Machine-PW-1\n").map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    // 192.0.2.1 is reserved for documentation: nothing answers there.
+    let handler = "[auth]\n[[auth.handlers]]\ntype = \"netlogon\"\ndomain = \"CORP\"\nservers = [\"192.0.2.1\"]\ncomputer_name = \"RRADIUS1\"\n\
+        machine_password_file = \"machine.pw\"\ntimeout_ms = 60000\n[[auth.handlers.group_reply]]\ngroup = \"S-1-5-21-1-2-3-1110\"\n";
+    std::fs::write(&config, format!("{text}{handler}attributes = {{ \"Filter-Id\" = \"staff\" }}\n")).map_err(|e| e.to_string())?;
+    let started = std::time::Instant::now();
+    let (code, _, stderr) = check_command(PROGRAM, &config);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(30), "check waited for a domain controller");
+    std::fs::write(&config, format!("{text}{handler}attributes = {{ \"Filter_Id\" = \"staff\" }}\n")).map_err(|e| e.to_string())?;
+    let (code, _, stderr) = check_command(PROGRAM, &config);
+    assert_ne!(code, Some(0));
+    assert!(stderr.contains("Filter_Id"), "{stderr}");
+    Ok(())
+}
+
 /// A server with one client whose secret is `secret`.
 fn server_with_secret(secret: &str) -> Server {
     let dir = tempfile::tempdir().unwrap();

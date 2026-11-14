@@ -34,6 +34,8 @@ rust-embed-utils = "8"
 getrandom = "0.4"
 # MS-CHAPv2 (RFC 2759) is defined in terms of DES.
 des = "0.9"
+# Netlogon secure channels (MS-NRPC) seal, sign and compute credentials with AES-128 in CFB8 mode.
+aes = "0.9"
 # {argon2} passwords; hiqlite already depends on this crate.
 argon2 = "0.6"
 sha1 = "0.11"

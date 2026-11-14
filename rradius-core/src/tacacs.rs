@@ -1741,6 +1741,20 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// MS-CHAPv2 over TACACS+, checked by a domain controller.
+    #[tokio::test]
+    async fn test_mschapv2_through_netlogon() -> Result<(), Box<dyn std::error::Error>> {
+        let chains = Arc::new(AuthChains::new(Some(crate::netlogon::handler::test_support::chain("secret").await?), Vec::new()));
+        let challenge = [0x11; 16];
+        for (password, expected) in [("secret", AUTHEN_STATUS_PASS), ("wrong", AUTHEN_STATUS_FAIL)] {
+            let body = typed_start_body(AUTHEN_TYPE_MSCHAPV2, 1, b"alice", &mschapv2_data(9, &challenge, password));
+            let mut connection = AsciiConnection::with_enable(script_engine("return 'reject'").await, Some(chains.clone()), EnableMode::Login).await;
+            let (seq, status, ..) = connection.ask(ASCII_SESSION, 1, &body).await;
+            assert_eq!((seq, status), (2, expected), "{password}");
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_chap_needs_a_handler_that_checked_it() -> Result<(), Box<dyn std::error::Error>> {
         // A policy script that accepts everyone, first, and a handler that compares passwords after:

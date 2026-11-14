@@ -30,12 +30,12 @@ pub(crate) fn nt_password_hash(password: &str) -> Zeroizing<[u8; 16]> {
     Zeroizing::new(Md4::digest(&*unicode).into())
 }
 
-fn hash_nt_password_hash(hash: &[u8; 16]) -> Zeroizing<[u8; 16]> {
+pub(crate) fn hash_nt_password_hash(hash: &[u8; 16]) -> Zeroizing<[u8; 16]> {
     Zeroizing::new(Md4::digest(hash).into())
 }
 
 /// RFC 2759 section 8.2. Only the user name goes in, without any domain.
-fn challenge_hash(peer_challenge: &[u8; 16], authenticator_challenge: &[u8; 16], user: &str) -> [u8; 8] {
+pub(crate) fn challenge_hash(peer_challenge: &[u8; 16], authenticator_challenge: &[u8; 16], user: &str) -> [u8; 8] {
     let name = user.rsplit('\\').next().unwrap_or(user);
     let mut hasher = Sha1::new();
     hasher.update(peer_challenge);
@@ -62,7 +62,7 @@ fn des_key(key: &[u8]) -> [u8; 8] {
 }
 
 /// RFC 2759 section 8.5.
-fn challenge_response(challenge: &[u8; 8], hash: &[u8; 16]) -> Option<[u8; 24]> {
+pub(crate) fn challenge_response(challenge: &[u8; 8], hash: &[u8; 16]) -> Option<[u8; 24]> {
     let mut padded = Zeroizing::new([0u8; 21]);
     padded[..16].copy_from_slice(hash);
     let mut response = [0u8; 24];
@@ -147,13 +147,26 @@ pub fn verify(stored: &str, user: &str, peer_challenge: &[u8; 16], authenticator
     if !constant_time_eq(&expected, response) {
         return None;
     }
-    let hash_hash = hash_nt_password_hash(&hash);
-    let master = master_key(&hash_hash, response);
-    Some(Proof {
-        authenticator_response: authenticator_response(&hash_hash, response, &challenge),
+    Some(proof(&hash_nt_password_hash(&hash), response, &challenge))
+}
+
+/// What a domain controller's acceptance proves: the user session key it returns for an
+/// MS-CHAPv2 response is the hash of the NT hash, which is all the proof is computed from.
+/// `challenge` is the challenge hash the response answers. An all-zero key is no proof.
+pub fn proof_from_session_key(user_session_key: &[u8; 16], response: &[u8; 24], challenge: &[u8; 8]) -> Option<Proof> {
+    if user_session_key.iter().all(|byte| *byte == 0) {
+        return None;
+    }
+    Some(proof(user_session_key, response, challenge))
+}
+
+fn proof(hash_hash: &[u8; 16], response: &[u8; 24], challenge: &[u8; 8]) -> Proof {
+    let master = master_key(hash_hash, response);
+    Proof {
+        authenticator_response: authenticator_response(hash_hash, response, challenge),
         send_key: start_key(&master, CLIENT_RECEIVE_SERVER_SEND),
         recv_key: start_key(&master, CLIENT_SEND_SERVER_RECEIVE),
-    })
+    }
 }
 
 /// The response a client would send, for tests elsewhere.
@@ -202,6 +215,19 @@ mod tests {
             assert!(same(verify(stored, "User", &PEER_CHALLENGE, &AUTH_CHALLENGE, &NT_RESPONSE).unwrap()), "{stored}");
         }
         assert!(same(verify("clientPass", "BIGCO\\User", &PEER_CHALLENGE, &AUTH_CHALLENGE, &NT_RESPONSE).unwrap()));
+    }
+
+    /// Scenario: Same proof as local verification, from the key a domain controller returns.
+    #[test]
+    fn test_proof_from_session_key() -> Result<(), String> {
+        let local = verify("clientPass", "User", &PEER_CHALLENGE, &AUTH_CHALLENGE, &NT_RESPONSE).ok_or("not verified")?;
+        let session_key = hash_nt_password_hash(&nt_password_hash("clientPass"));
+        let challenge = challenge_hash(&PEER_CHALLENGE, &AUTH_CHALLENGE, "User");
+        let proof = proof_from_session_key(&session_key, &NT_RESPONSE, &challenge).ok_or("no proof")?;
+        assert_eq!(proof.authenticator_response, AUTH_RESPONSE);
+        assert_eq!((proof.send_key, proof.recv_key), (local.send_key, local.recv_key));
+        assert!(proof_from_session_key(&[0; 16], &NT_RESPONSE, &challenge).is_none());
+        Ok(())
     }
 
     #[test]

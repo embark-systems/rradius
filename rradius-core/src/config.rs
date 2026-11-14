@@ -1,5 +1,6 @@
 use crate::clients::{ClientOptions, ClientTable, MessageAuthenticatorPolicy, DEFAULT_COA_PORT};
 use crate::ldap_handler::{GroupSource, LdapGroups, LdapSettings, PasswordCheck};
+use crate::netlogon::handler::NetlogonSettings;
 use crate::tacacs_rules::AuthorizationRules;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -165,6 +166,7 @@ pub enum AuthHandlerSettings {
     /// `verifies_password`: the script compares passwords, so its accept proves one inside EAP.
     Lua { script: PathBuf, verifies_password: bool },
     Ldap(LdapSettings),
+    Netlogon(NetlogonSettings),
 }
 
 /// One authentication chain: handlers run in order and are combined by `policy`.
@@ -640,6 +642,7 @@ enum RawAuthHandler {
         verifies_password: bool,
     },
     Ldap(RawLdap),
+    Netlogon(RawNetlogon),
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -670,6 +673,31 @@ struct RawLdap {
     group_filter: Option<String>,
     #[serde(default)]
     group_reply: Vec<RawGroupReply>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawNetlogon {
+    domain: String,
+    servers: Vec<String>,
+    port: Option<u16>,
+    computer_name: String,
+    machine_password_file: PathBuf,
+    #[serde(default = "default_netlogon_timeout_ms")]
+    timeout_ms: u64,
+    #[serde(default = "default_netlogon_connections")]
+    connections: usize,
+    required_groups: Option<Vec<String>>,
+    #[serde(default)]
+    group_reply: Vec<RawGroupReply>,
+}
+
+fn default_netlogon_timeout_ms() -> u64 {
+    2000
+}
+
+fn default_netlogon_connections() -> usize {
+    4
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -1682,6 +1710,9 @@ fn chain_handlers(prefix: &str, raw: Vec<RawAuthHandler>, base: &Path) -> Result
             RawAuthHandler::Ldap(ldap) => AuthHandlerSettings::Ldap(
                 ldap_settings(ldap, base).map_err(|e| format!("{}[{}].{}", prefix, index, e))?,
             ),
+            RawAuthHandler::Netlogon(netlogon) => {
+                AuthHandlerSettings::Netlogon(netlogon_settings(netlogon, base).map_err(|e| format!("{prefix}[{index}].{e}"))?)
+            }
         });
     }
     Ok(handlers)
@@ -1752,6 +1783,71 @@ fn ldap_settings(raw: RawLdap, base: &Path) -> Result<LdapSettings, String> {
         allow_plaintext: raw.allow_plaintext,
         pool_size: raw.pool_size,
         groups: ldap_groups(raw.required_groups, raw.group_attribute, raw.group_base_dn, raw.group_filter, raw.group_reply)?,
+    })
+}
+
+/// The longest NetBIOS computer name.
+const MAX_COMPUTER_NAME: usize = 15;
+
+/// Validates a `netlogon` handler; errors start with the offending field name. It reads the
+/// password file but contacts no domain controller.
+fn netlogon_settings(raw: RawNetlogon, base: &Path) -> Result<NetlogonSettings, String> {
+    use crate::netlogon::logon::Sid;
+    if raw.domain.is_empty() {
+        return Err("domain must not be empty".to_string());
+    }
+    if raw.servers.is_empty() {
+        return Err("servers must list at least one domain controller".to_string());
+    }
+    if raw.servers.iter().any(String::is_empty) {
+        return Err("servers must not hold an empty name".to_string());
+    }
+    if raw.port == Some(0) {
+        return Err("port must be greater than 0".to_string());
+    }
+    let name = &raw.computer_name;
+    if name.is_empty() || name.chars().count() > MAX_COMPUTER_NAME || name.ends_with('$') {
+        return Err(format!("computer_name '{name}' must have 1 to {MAX_COMPUTER_NAME} characters and no trailing $"));
+    }
+    let path = base.join(&raw.machine_password_file);
+    let text = zeroize::Zeroizing::new(fs::read_to_string(&path).map_err(|e| format!("machine_password_file: cannot read '{}': {}", path.display(), e))?);
+    let password = text.trim_end_matches(['\r', '\n']);
+    if password.is_empty() {
+        return Err(format!("machine_password_file: '{}' is empty", path.display()));
+    }
+    if raw.timeout_ms == 0 {
+        return Err("timeout_ms must be greater than 0".to_string());
+    }
+    if raw.connections == 0 {
+        return Err("connections must be greater than 0".to_string());
+    }
+    let required_groups = match raw.required_groups {
+        Some(groups) if groups.is_empty() => return Err("required_groups must list at least one SID; leave it out to require none".to_string()),
+        Some(groups) => groups.iter().map(|g| g.parse::<Sid>()).collect::<Result<Vec<_>, _>>().map_err(|e| format!("required_groups: {e}"))?,
+        None => Vec::new(),
+    };
+    let group_reply = raw
+        .group_reply
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let group = entry.group.parse::<Sid>().map_err(|e| format!("group_reply[{index}].group: {e}"))?;
+            if entry.attributes.0.is_empty() {
+                return Err(format!("group_reply[{index}].attributes must list at least one attribute"));
+            }
+            Ok((group, entry.attributes.0))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(NetlogonSettings {
+        domain: raw.domain,
+        servers: raw.servers,
+        port: raw.port,
+        computer_name: raw.computer_name,
+        machine_nt_hash: crate::mschap::nt_password_hash(password),
+        timeout: Duration::from_millis(raw.timeout_ms),
+        connections: raw.connections,
+        required_groups,
+        group_reply,
     })
 }
 
@@ -3438,6 +3534,101 @@ mod tests {
             SQL_HANDLER, RADIUS_CLIENT
         )));
         assert!(err.contains("reply_query") && err.contains("found 2"), "unexpected error: {err}");
+    }
+
+    const NETLOGON_HANDLER: &str = "[[auth.handlers]]\ntype = \"netlogon\"\ndomain = \"CORP\"\nservers = [\"dc1.corp.example\"]\n\
+        machine_password_file = \"machine.pw\"\n";
+
+    /// A `netlogon` handler with `computer_name` and `fields`, its password file beside the
+    /// configuration file.
+    fn netlogon_config(computer_name: &str, fields: &str) -> Result<(tempfile::TempDir, Result<ServerConfig, ConfigError>), String> {
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        fs::write(dir.path().join("machine.pw"), "Machine-PW-1\r\n").map_err(|e| e.to_string())?;
+        let path = dir.path().join("rradius.toml");
+        let body = base(&format!("\n[auth]\n{NETLOGON_HANDLER}computer_name = \"{computer_name}\"\n{fields}\n{RADIUS_CLIENT}"));
+        fs::write(&path, body).map_err(|e| e.to_string())?;
+        let result = load(&path);
+        Ok((dir, result))
+    }
+
+    fn netlogon_error(computer_name: &str, fields: &str) -> Result<String, String> {
+        let (_dir, result) = netlogon_config(computer_name, fields)?;
+        match result {
+            Ok(_) => Err(format!("loaded with {computer_name} and {fields}")),
+            Err(e) => Ok(e.to_string()),
+        }
+    }
+
+    /// Scenario: Minimal settings.
+    #[test]
+    fn test_netlogon_minimal_settings() -> Result<(), String> {
+        let (_dir, result) = netlogon_config("RRADIUS1", "")?;
+        let auth = result.map_err(|e| e.to_string())?.auth.ok_or("no auth")?;
+        let Some([AuthHandlerSettings::Netlogon(netlogon)]) = auth.default.as_ref().map(|chain| chain.handlers.as_slice()) else {
+            return Err("not one netlogon handler".to_string());
+        };
+        assert_eq!((netlogon.domain.as_str(), netlogon.servers.as_slice(), netlogon.computer_name.as_str()), ("CORP", &["dc1.corp.example".to_string()][..], "RRADIUS1"));
+        assert_eq!((netlogon.timeout, netlogon.connections, netlogon.port), (Duration::from_millis(2000), 4, None));
+        // The line break is not part of the password, and the password is not kept.
+        assert_eq!(*netlogon.machine_nt_hash, *crate::mschap::nt_password_hash("Machine-PW-1"));
+        assert!(!format!("{netlogon:?}").contains("Machine-PW"));
+        assert!(netlogon.required_groups.is_empty() && netlogon.group_reply.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_netlogon_groups() -> Result<(), String> {
+        let fields = "port = 49664\ntimeout_ms = 500\nconnections = 2\nrequired_groups = [\"S-1-5-21-1-2-3-513\"]\n\
+            [[auth.handlers.group_reply]]\ngroup = \"s-1-5-21-1-2-3-1110\"\nattributes = { \"Filter-Id\" = \"staff\" }\n";
+        let (_dir, result) = netlogon_config("RRADIUS1", fields)?;
+        let auth = result.map_err(|e| e.to_string())?.auth.ok_or("no auth")?;
+        let Some([AuthHandlerSettings::Netlogon(netlogon)]) = auth.default.as_ref().map(|chain| chain.handlers.as_slice()) else {
+            return Err("not one netlogon handler".to_string());
+        };
+        assert_eq!((netlogon.port, netlogon.timeout, netlogon.connections), (Some(49664), Duration::from_millis(500), 2));
+        assert_eq!(netlogon.required_groups.iter().map(ToString::to_string).collect::<Vec<_>>(), ["S-1-5-21-1-2-3-513"]);
+        let [(group, attributes)] = netlogon.group_reply.as_slice() else {
+            return Err("not one group reply".to_string());
+        };
+        assert_eq!((group.to_string().as_str(), attributes.as_slice()), ("S-1-5-21-1-2-3-1110", &[("Filter-Id".to_string(), "staff".to_string())][..]));
+        Ok(())
+    }
+
+    /// Scenarios: Name too long, Malformed SID, and the other mistakes loading refuses.
+    #[test]
+    fn test_netlogon_refused_settings() -> Result<(), String> {
+        for (name, fields, expected) in [
+            ("RRADIUS-NODE-0001", "", "computer_name"),
+            ("RRADIUS1$", "", "computer_name"),
+            ("", "", "computer_name"),
+            ("RRADIUS1", "required_groups = [\"Domain Users\"]\n", "required_groups"),
+            ("RRADIUS1", "required_groups = []\n", "required_groups"),
+            ("RRADIUS1", "[[auth.handlers.group_reply]]\ngroup = \"Staff\"\nattributes = { \"Filter-Id\" = \"x\" }\n", "group_reply[0].group"),
+            ("RRADIUS1", "[[auth.handlers.group_reply]]\ngroup = \"S-1-5-32-544\"\n", "group_reply[0].attributes"),
+            ("RRADIUS1", "timeout_ms = 0\n", "timeout_ms"),
+            ("RRADIUS1", "connections = 0\n", "connections"),
+            ("RRADIUS1", "port = 0\n", "port"),
+            ("RRADIUS1", "realm = \"x\"\n", "realm"),
+        ] {
+            let error = netlogon_error(name, fields)?;
+            assert!(error.contains(expected), "{name} {fields}: {error}");
+        }
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        let path = dir.path().join("rradius.toml");
+        for (handler, expected) in [
+            (NETLOGON_HANDLER.replace("[\"dc1.corp.example\"]", "[]"), "servers"),
+            (NETLOGON_HANDLER.replace("\"CORP\"", "\"\""), "domain"),
+            (NETLOGON_HANDLER.to_string(), "machine_password_file"),
+        ] {
+            fs::write(&path, base(&format!("\n[auth]\n{handler}computer_name = \"RRADIUS1\"\n{RADIUS_CLIENT}"))).map_err(|e| e.to_string())?;
+            let error = load(&path).err().ok_or(expected)?.to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+        fs::write(dir.path().join("machine.pw"), "\n").map_err(|e| e.to_string())?;
+        fs::write(&path, base(&format!("\n[auth]\n{NETLOGON_HANDLER}computer_name = \"RRADIUS1\"\n{RADIUS_CLIENT}"))).map_err(|e| e.to_string())?;
+        let error = load(&path).err().ok_or("an empty password loaded")?.to_string();
+        assert!(error.contains("machine_password_file") && error.contains("empty"), "{error}");
+        Ok(())
     }
 
     const LDAP_HANDLER: &str = "[[auth.handlers]]\ntype = \"ldap\"\nurls = [\"ldaps://dc1.example.com\"]\n\
