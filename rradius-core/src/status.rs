@@ -1,18 +1,22 @@
 //! The `status` command: what this node is doing now, read from its own `/readyz` and `/metrics`,
 //! as rates over the time between two samples and current values, as text or JSON.
 
+use crate::cluster_commands::{current_members, Api, Members, Source};
+use crate::config::ClusterSettings;
 use crate::extension::{Extensions, Show, StatusItem, StatusSection};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::future::Future;
 use std::io::{IsTerminal, Write as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::signal::unix::{signal, SignalKind};
 
-pub const USAGE: &str = "usage: rradius-server status [--config <path>] [--watch] [--json]";
+pub const USAGE: &str = "usage: rradius-server status [--config <path>] [--watch] [--json] [--cluster]";
 
 /// How long one exchange with the metrics port may take.
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -503,6 +507,266 @@ pub fn target(bind: SocketAddr) -> SocketAddr {
     }
 }
 
+/// The metrics address of a cluster member: the host of its api address `member_api` with this
+/// node's metrics `port`, as `host:port` to be resolved.
+pub fn metrics_address(member_api: &str, port: u16) -> Result<String, String> {
+    let host = member_api.rsplit_once(':').map(|(host, _)| host).filter(|host| !host.is_empty()).ok_or_else(|| format!("no host and port in the api address {member_api:?}"))?;
+    if host.contains(':') && !host.starts_with('[') {
+        return Ok(format!("[{host}]:{port}"));
+    }
+    Ok(format!("{host}:{port}"))
+}
+
+/// The first address `address` resolves to.
+async fn resolve(address: &str) -> Result<SocketAddr, String> {
+    let found = tokio::time::timeout(EXCHANGE_TIMEOUT, tokio::net::lookup_host(address))
+        .await
+        .map_err(|_| format!("cannot resolve {address} within {} s", EXCHANGE_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("cannot resolve {address}: {e}"))?;
+    found.into_iter().next().ok_or_else(|| format!("{address} resolves to no address"))
+}
+
+/// One member in a look at the whole cluster: its view, or why there is none.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MemberView {
+    pub(crate) id: u64,
+    pub(crate) role: &'static str,
+    pub(crate) address: String,
+    pub(crate) shown: Result<View, String>,
+}
+
+/// What one print of `status --cluster` shows.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClusterView {
+    pub(crate) from: Source,
+    pub(crate) interval: f64,
+    pub(crate) members: Vec<MemberView>,
+}
+
+/// The numbers of one member that the cluster lines show and add up.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct Figures {
+    pub(crate) auth: f64,
+    pub(crate) acct: f64,
+    pub(crate) discarded: f64,
+    pub(crate) in_progress: f64,
+}
+
+/// The cluster's total: the figures of the members that could be sampled, added up.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct Total {
+    pub(crate) figures: Figures,
+    pub(crate) reachable: usize,
+    pub(crate) members: usize,
+}
+
+/// What a reading of the RADIUS section counts: a rate per second, or a value.
+fn radius_readings(view: &View) -> impl Iterator<Item = (&str, f64)> {
+    view.sections.iter().filter(|section| section.key == "radius").flat_map(|section| section.items.iter()).filter_map(|item| match &item.reading {
+        Reading::Rate { rate, .. } => Some((item.key.as_str(), *rate)),
+        Reading::Value(Value::Number(value)) => Some((item.key.as_str(), *value)),
+        Reading::Value(Value::Text(_)) => None,
+    })
+}
+
+pub(crate) fn figures(view: &View) -> Figures {
+    let mut figures = Figures::default();
+    for (key, number) in radius_readings(view) {
+        match key {
+            "auth_requests" => figures.auth = number,
+            "acct_requests" => figures.acct = number,
+            "auth_in_progress" | "acct_in_progress" => figures.in_progress += number,
+            _ if key.starts_with("discarded_") => figures.discarded += number,
+            _ => {}
+        }
+    }
+    figures
+}
+
+pub(crate) fn total(cluster: &ClusterView) -> Total {
+    let mut total = Total { members: cluster.members.len(), ..Total::default() };
+    for shown in cluster.members.iter().filter_map(|member| member.shown.as_ref().ok()) {
+        let figures = figures(shown);
+        total.reachable += 1;
+        total.figures.auth += figures.auth;
+        total.figures.acct += figures.acct;
+        total.figures.discarded += figures.discarded;
+        total.figures.in_progress += figures.in_progress;
+    }
+    total
+}
+
+/// A member's role: what its own metrics say about leading when it could be sampled, else the
+/// leader the cluster sees; the others are followers when they vote and learners when not.
+fn role(id: u64, members: &Members, leader: Option<u64>, shown: Option<&View>) -> &'static str {
+    let leads = match shown.and_then(|view| view.sections.first()).and_then(|node| node.items.iter().find(|item| item.key == "is_leader")) {
+        Some(item) => item.reading == Reading::Value(Value::Number(1.0)),
+        None => leader == Some(id),
+    };
+    if leads {
+        "leader"
+    } else if members.voters.contains(&id) {
+        "follower"
+    } else {
+        "learner"
+    }
+}
+
+const NOT_REACHABLE_HINT: &str = "every node's [metrics] bind has to be an address this host can reach, on the same port as here";
+
+/// The cluster view as text: one line per member, then the total and why members were left out.
+pub(crate) fn cluster_text(cluster: &ClusterView) -> String {
+    let from = match cluster.from {
+        Source::Cluster => "the cluster",
+        Source::Configuration => "this configuration: no node's api answered",
+    };
+    let mut out = String::new();
+    let _ = writeln!(out, "rradius cluster status over {:.1} s, members from {from}\n", cluster.interval);
+    let mut rows: Vec<Vec<String>> = vec![["node", "role", "ready", "auth/s", "acct/s", "discarded/s", "in progress", "address"].map(str::to_string).to_vec()];
+    for member in &cluster.members {
+        let (ready, numbers) = match &member.shown {
+            Ok(shown) => {
+                let figures = figures(shown);
+                (shown.ready.text.clone(), [format!("{:.1}", figures.auth), format!("{:.1}", figures.acct), format!("{:.1}", figures.discarded), number(figures.in_progress)])
+            }
+            Err(_) => ("unreachable".to_string(), ["-", "-", "-", "-"].map(str::to_string)),
+        };
+        let mut row = vec![member.id.to_string(), member.role.to_string(), ready];
+        row.extend(numbers);
+        row.push(member.address.clone());
+        rows.push(row);
+    }
+    let total = total(cluster);
+    rows.push(vec![
+        "total".to_string(),
+        String::new(),
+        format!("{}/{}", total.reachable, total.members),
+        format!("{:.1}", total.figures.auth),
+        format!("{:.1}", total.figures.acct),
+        format!("{:.1}", total.figures.discarded),
+        number(total.figures.in_progress),
+        String::new(),
+    ]);
+    let widths: Vec<usize> = (0..rows[0].len()).map(|column| rows.iter().map(|row| row[column].chars().count()).max().unwrap_or(0)).collect();
+    for row in &rows {
+        let line: Vec<String> = row.iter().zip(&widths).map(|(cell, width)| format!("{cell:width$}")).collect();
+        let _ = writeln!(out, "{}", line.join("  ").trim_end());
+    }
+    let mut unreachable = cluster.members.iter().filter_map(|member| member.shown.as_ref().err().map(|e| (member.id, e))).peekable();
+    if unreachable.peek().is_some() {
+        let _ = writeln!(out);
+        for (id, e) in unreachable {
+            let _ = writeln!(out, "node {id}: {e}");
+        }
+        let _ = writeln!(out, "({NOT_REACHABLE_HINT})");
+    }
+    out
+}
+
+/// The cluster view as one JSON object; each member's `status` is what `status --json` prints.
+pub(crate) fn cluster_json(cluster: &ClusterView) -> serde_json::Value {
+    let members: Vec<serde_json::Value> = cluster
+        .members
+        .iter()
+        .map(|member| {
+            let mut object = serde_json::json!({"id": member.id, "role": member.role, "address": member.address, "reachable": member.shown.is_ok()});
+            match &member.shown {
+                Ok(shown) => object["status"] = json(shown),
+                Err(e) => object["error"] = e.clone().into(),
+            }
+            object
+        })
+        .collect();
+    let total = total(cluster);
+    serde_json::json!({
+        "cluster": true,
+        "members_from": match cluster.from { Source::Cluster => "cluster", Source::Configuration => "configuration" },
+        "interval_seconds": cluster.interval,
+        "nodes": members,
+        "total": {
+            "auth_per_second": total.figures.auth,
+            "acct_per_second": total.figures.acct,
+            "discarded_per_second": total.figures.discarded,
+            "in_progress": json_number(total.figures.in_progress),
+            "reachable": total.reachable,
+            "nodes": total.members,
+        },
+    })
+}
+
+/// The members as the cluster has them, and where to sample each.
+struct Known {
+    members: Members,
+    leader: Option<u64>,
+    from: Source,
+    /// Each member's id, metrics address as shown, and the socket address it resolved to.
+    targets: Vec<(u64, String, Result<SocketAddr, String>)>,
+    at: Instant,
+}
+
+/// Finds the members and resolves their metrics addresses. Fails only when the cluster refuses the
+/// api secret.
+async fn know_members(cluster: &ClusterSettings, api: &Api, local: SocketAddr) -> Result<Known, String> {
+    let (members, leader, from) = current_members(api, &cluster.nodes).await?;
+    let targets = futures::future::join_all(members.nodes.iter().map(|(id, member)| async move {
+        if *id == cluster.node_id {
+            return (*id, local.to_string(), Ok(local));
+        }
+        match metrics_address(&member.api, local.port()) {
+            Ok(address) => {
+                let resolved = resolve(&address).await;
+                (*id, address, resolved)
+            }
+            Err(e) => (*id, member.api.clone(), Err(e)),
+        }
+    }))
+    .await;
+    Ok(Known { members, leader, from, targets, at: Instant::now() })
+}
+
+/// One sample of every member, together, in the order of `targets`.
+async fn sample_members(targets: &[(u64, String, Result<SocketAddr, String>)]) -> Vec<Result<Sample, String>> {
+    futures::future::join_all(targets.iter().map(|(_, _, resolved)| async move {
+        match resolved {
+            Ok(address) => sample(*address).await.map_err(|e| e.message(*address)),
+            Err(e) => Err(e.clone()),
+        }
+    }))
+    .await
+}
+
+/// What a member answering for the first time shows until it has been sampled twice.
+const FIRST_SAMPLE: &str = "answered for the first time; its rates follow at the next sample";
+
+/// The cluster view of each member's previous sample in `before` and its new one in `after`.
+fn cluster_view(known: &Known, before: &BTreeMap<u64, Sample>, after: &[Result<Sample, String>], extra: &[StatusSection], now_unix: f64) -> ClusterView {
+    let members: Vec<MemberView> = known
+        .targets
+        .iter()
+        .zip(after)
+        .map(|((id, address, resolved), after)| {
+            let shown = match (resolved, after, before.get(id)) {
+                (Err(e), _, _) | (Ok(_), Err(e), _) => Err(e.clone()),
+                (Ok(socket), Ok(after), Some(before)) => Ok(view(*socket, before, after, extra, now_unix)),
+                (Ok(_), Ok(_), None) => Err(FIRST_SAMPLE.to_string()),
+            };
+            MemberView { id: *id, role: role(*id, &known.members, known.leader, shown.as_ref().ok()), address: address.clone(), shown }
+        })
+        .collect();
+    let interval = members.iter().find_map(|member| member.shown.as_ref().ok().map(|view| view.interval)).unwrap_or(INTERVAL.as_secs_f64());
+    ClusterView { from: known.from, interval, members }
+}
+
+/// Keeps each member's newest sample; a member that failed keeps its older one, so that its next
+/// rates are over the whole time since then.
+fn keep_samples(known: &Known, before: &mut BTreeMap<u64, Sample>, after: Vec<Result<Sample, String>>) {
+    for ((id, _, _), after) in known.targets.iter().zip(after) {
+        if let Ok(after) = after {
+            before.insert(*id, after);
+        }
+    }
+}
+
 fn now_unix() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64())
 }
@@ -512,18 +776,20 @@ fn now_unix() -> f64 {
 struct Options {
     watch: bool,
     json: bool,
+    cluster: bool,
 }
 
-fn print_view(view: &View, options: Options, clear: bool) {
+/// Prints one look, as JSON or as text, clearing the terminal before it when `clear`.
+fn print_out(text: impl FnOnce() -> String, json: impl FnOnce() -> serde_json::Value, options: Options, clear: bool) {
     let mut out = std::io::stdout().lock();
     let written = if options.json {
-        writeln!(out, "{}", json(view))
+        writeln!(out, "{}", json())
     } else if clear {
-        write!(out, "\x1b[H\x1b[2J{}", text(view))
+        write!(out, "\x1b[H\x1b[2J{}", text())
     } else if options.watch {
-        writeln!(out, "{}", text(view))
+        writeln!(out, "{}", text())
     } else {
-        write!(out, "{}", text(view))
+        write!(out, "{}", text())
     };
     let _ = written.and_then(|()| out.flush());
 }
@@ -531,13 +797,14 @@ fn print_view(view: &View, options: Options, clear: bool) {
 /// The `status` command; returns the exit status.
 pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
     crate::logging::init_for_command();
-    let mut options = Options { watch: false, json: false };
+    let mut options = Options { watch: false, json: false, cluster: false };
     let mut config_path = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--watch" if !options.watch => options.watch = true,
             "--json" if !options.json => options.json = true,
+            "--cluster" if !options.cluster => options.cluster = true,
             "--config" if config_path.is_none() => match rest.next() {
                 Some(path) => config_path = Some(path.clone()),
                 None => return usage(),
@@ -562,9 +829,68 @@ pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
         eprintln!("status needs [metrics]: the command reads this node's /metrics. Add to {path}:\n[metrics]\nbind = \"127.0.0.1\"\nport = 9812");
         return 2;
     };
-    let address = target(bind);
     let extra = extensions.status_sections();
-    let watching = async {
+    let watching: Pin<Box<dyn Future<Output = i32> + '_>> = if options.cluster { Box::pin(watch_cluster(&config.cluster, target(bind), &extra, options)) } else { Box::pin(watch_one(target(bind), &extra, options)) };
+    let (Ok(mut terminate), Ok(mut interrupt)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
+        return watching.await;
+    };
+    tokio::select! {
+        status = watching => status,
+        _ = terminate.recv() => 0,
+        _ = interrupt.recv() => 0,
+    }
+}
+
+/// How long `--cluster --watch` uses the members it found before asking the cluster again.
+const MEMBERS_EVERY: Duration = Duration::from_secs(10);
+
+/// `status --cluster`: two samples of every member a second apart; with `--watch`, one more each
+/// second, asking the cluster for its members again every `MEMBERS_EVERY`.
+async fn watch_cluster(cluster: &ClusterSettings, local: SocketAddr, extra: &[StatusSection], options: Options) -> i32 {
+    let api = match Api::new(cluster.secret_api.clone()) {
+        Ok(api) => api,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let clear = options.watch && !options.json && std::io::stdout().is_terminal();
+    let mut known: Option<Known> = None;
+    let mut before: BTreeMap<u64, Sample> = BTreeMap::new();
+    let mut next = Instant::now();
+    loop {
+        let stale = known.as_ref().is_none_or(|known| known.at.elapsed() >= MEMBERS_EVERY);
+        if stale {
+            match know_members(cluster, &api, local).await {
+                Ok(found) => known = Some(found),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            }
+        }
+        let Some(known) = known.as_ref() else { return 2 };
+        // Nothing to compare with yet: a first sample of everyone, a second later the next.
+        if before.is_empty() {
+            let first = sample_members(&known.targets).await;
+            next = Instant::now() + INTERVAL;
+            keep_samples(known, &mut before, first);
+        }
+        tokio::time::sleep_until(next.into()).await;
+        next = Instant::now() + INTERVAL;
+        let after = sample_members(&known.targets).await;
+        let shown = cluster_view(known, &before, &after, extra, now_unix());
+        print_out(|| cluster_text(&shown), || cluster_json(&shown), options, clear);
+        if !options.watch {
+            return if shown.members.iter().any(|member| member.shown.is_ok()) { 0 } else { 3 };
+        }
+        keep_samples(known, &mut before, after);
+    }
+}
+
+/// `status` of this node: two samples a second apart, then one more each second with `--watch`.
+async fn watch_one(address: SocketAddr, extra: &[StatusSection], options: Options) -> i32 {
+    {
         let mut before = match sample(address).await {
             Ok(sample) => sample,
             Err(e) if !options.watch => {
@@ -591,7 +917,8 @@ pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
             match sample(address).await {
                 Ok(after) => {
                     next = after.at + INTERVAL;
-                    print_view(&view(address, &before, &after, &extra, now_unix()), options, clear);
+                    let shown = view(address, &before, &after, extra, now_unix());
+                    print_out(|| text(&shown), || json(&shown), options, clear);
                     if !options.watch {
                         return 0;
                     }
@@ -607,14 +934,6 @@ pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
                 }
             }
         }
-    };
-    let (Ok(mut terminate), Ok(mut interrupt)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
-        return watching.await;
-    };
-    tokio::select! {
-        status = watching => status,
-        _ = terminate.recv() => 0,
-        _ = interrupt.recv() => 0,
     }
 }
 
@@ -799,6 +1118,120 @@ mod tests {
         assert_eq!(target(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)), SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port));
         let given = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port);
         assert_eq!(target(given), given);
+    }
+
+    /// The member addresses table of the spec.
+    #[test]
+    fn test_metrics_address() -> Result<(), String> {
+        assert_eq!(metrics_address("10.0.0.2:8200", 9812)?, "10.0.0.2:9812");
+        assert_eq!(metrics_address("[fd00::2]:8200", 9812)?, "[fd00::2]:9812");
+        assert_eq!(metrics_address("node2.internal:8200", 9100)?, "node2.internal:9100");
+        assert!(metrics_address("node2", 9812).is_err());
+        assert!(metrics_address(":8200", 9812).is_err());
+        Ok(())
+    }
+
+    /// A view with the RADIUS readings the cluster lines show, and the node's leading.
+    fn radius_view(auth: f64, acct: f64, in_progress: (f64, f64), leads: bool) -> View {
+        let rate = |key: &str, rate: f64| ShownItem { key: key.to_string(), label: key.to_string(), reading: Reading::Rate { rate, total: rate } };
+        let value = |key: &str, value: f64| ShownItem { key: key.to_string(), label: key.to_string(), reading: Reading::Value(Value::Number(value)) };
+        let node = ShownSection { key: "node".to_string(), title: "Node".to_string(), items: vec![value("is_leader", if leads { 1.0 } else { 0.0 })] };
+        let radius = ShownSection {
+            key: "radius".to_string(),
+            title: "RADIUS".to_string(),
+            items: vec![rate("auth_requests", auth), rate("acct_requests", acct), rate("discarded_overload", 0.0), value("auth_in_progress", in_progress.0), value("acct_in_progress", in_progress.1), value("auth_limit", 4096.0)],
+        };
+        View { address: address(), interval: 1.0, ready: Ready { status: 200, text: "ok".to_string() }, counter_reset: false, sections: vec![node, radius] }
+    }
+
+    /// The total example of the spec: two of three members reachable.
+    fn two_of_three() -> ClusterView {
+        let members = vec![
+            MemberView { id: 1, role: "leader", address: "10.0.0.1:9812".to_string(), shown: Ok(radius_view(100.0, 10.0, (2.0, 1.0), true)) },
+            MemberView { id: 2, role: "follower", address: "10.0.0.2:9812".to_string(), shown: Ok(radius_view(50.0, 5.0, (1.0, 0.0), false)) },
+            MemberView { id: 3, role: "follower", address: "10.0.0.3:9812".to_string(), shown: Err("cannot reach the metrics port at 10.0.0.3:9812: refused".to_string()) },
+        ];
+        ClusterView { from: Source::Cluster, interval: 1.0, members }
+    }
+
+    #[test]
+    fn test_cluster_total() {
+        let total = total(&two_of_three());
+        assert_eq!(total, Total { figures: Figures { auth: 150.0, acct: 15.0, discarded: 0.0, in_progress: 4.0 }, reachable: 2, members: 3 });
+    }
+
+    #[test]
+    fn test_role() {
+        let members = Members { voters: [1, 2].into_iter().collect(), nodes: BTreeMap::new() };
+        let leading = radius_view(0.0, 0.0, (0.0, 0.0), true);
+        let following = radius_view(0.0, 0.0, (0.0, 0.0), false);
+        assert_eq!(role(2, &members, Some(1), Some(&leading)), "leader", "its own metrics count first");
+        assert_eq!(role(1, &members, Some(1), Some(&following)), "follower");
+        assert_eq!(role(1, &members, Some(1), None), "leader", "unreachable: the leader the cluster sees");
+        assert_eq!(role(2, &members, Some(1), None), "follower");
+        assert_eq!(role(5, &members, Some(1), None), "learner");
+    }
+
+    /// A member's rates are over the time since its last sample that worked; one with none yet
+    /// waits for the next.
+    #[test]
+    fn test_cluster_view_keeps_samples() -> Result<(), String> {
+        let start = Instant::now();
+        let socket = |last: u8| Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, last)), 9812));
+        let known = Known {
+            members: Members { voters: [1, 2].into_iter().collect(), nodes: BTreeMap::new() },
+            leader: Some(1),
+            from: Source::Cluster,
+            targets: vec![(1, "10.0.0.1:9812".to_string(), socket(1)), (2, "10.0.0.2:9812".to_string(), socket(2))],
+            at: start,
+        };
+        let packets = |count: u64, at: Instant| sample_of(&format!("rradius_radius_packets_total{{kind=\"auth\"}} {count}\n"), at);
+        let mut before = BTreeMap::new();
+        keep_samples(&known, &mut before, vec![packets(100, start), Err("down".to_string())]);
+        // Node 1 failed once in between: its rates are over three seconds.
+        keep_samples(&known, &mut before, vec![Err("down".to_string()), Err("down".to_string())]);
+        let after = vec![packets(130, start + Duration::from_secs(3)), packets(7, start + Duration::from_secs(3))];
+        let shown = cluster_view(&known, &before, &after, &[], 0.0);
+        let first = shown.members[0].shown.as_ref().map_err(String::clone)?;
+        assert_eq!(figures(first).auth, 10.0);
+        assert_eq!(shown.members[1].shown, Err(FIRST_SAMPLE.to_string()));
+        keep_samples(&known, &mut before, after);
+        let after = vec![packets(140, start + Duration::from_secs(4)), packets(12, start + Duration::from_secs(4))];
+        let shown = cluster_view(&known, &before, &after, &[], 0.0);
+        let second = shown.members[1].shown.as_ref().map_err(String::clone)?;
+        assert_eq!(figures(second).auth, 5.0);
+        Ok(())
+    }
+
+    /// The text and the JSON of a cluster view show the same members and numbers.
+    #[test]
+    fn test_cluster_text_and_json_agree() -> Result<(), String> {
+        let cluster = two_of_three();
+        let written = cluster_text(&cluster);
+        let shown = cluster_json(&cluster);
+        let rows: Vec<Vec<&str>> = written.lines().map(|line| line.split_whitespace().collect()).collect();
+        let row = |first: &str| rows.iter().find(|row| row.first() == Some(&first)).cloned().ok_or(format!("no {first} row: {written}"));
+        assert_eq!(row("1")?, ["1", "leader", "ok", "100.0", "10.0", "0.0", "3", "10.0.0.1:9812"]);
+        assert_eq!(row("2")?, ["2", "follower", "ok", "50.0", "5.0", "0.0", "1", "10.0.0.2:9812"]);
+        assert_eq!(row("3")?, ["3", "follower", "unreachable", "-", "-", "-", "-", "10.0.0.3:9812"]);
+        assert_eq!(row("total")?, ["total", "2/3", "150.0", "15.0", "0.0", "4"]);
+        assert!(written.contains("node 3: cannot reach") && written.contains("[metrics] bind"), "{written}");
+        assert_eq!(shown["cluster"], true);
+        assert_eq!(shown["members_from"], "cluster");
+        assert_eq!(shown["total"], serde_json::json!({"auth_per_second": 150.0, "acct_per_second": 15.0, "discarded_per_second": 0.0, "in_progress": 4, "reachable": 2, "nodes": 3}));
+        let nodes = shown["nodes"].as_array().ok_or("no nodes")?;
+        for (node, id) in nodes.iter().zip(["1", "2", "3"]) {
+            let row = row(id)?;
+            assert_eq!(node["id"].to_string(), row[0]);
+            assert_eq!(node["role"], row[1]);
+            assert_eq!(node["address"], row[7]);
+        }
+        assert_eq!(nodes[0]["status"], json(&radius_view(100.0, 10.0, (2.0, 1.0), true)), "a member's status is what status --json prints");
+        assert_eq!(nodes[2]["reachable"], false);
+        assert!(nodes[2]["error"].as_str().is_some_and(|e| e.contains("cannot reach")) && nodes[2].get("status").is_none());
+        let from_configuration = cluster_json(&ClusterView { from: Source::Configuration, ..cluster });
+        assert_eq!(from_configuration["members_from"], "configuration");
+        Ok(())
     }
 
     /// Serves `answer` once to whoever connects, after reading the request head.

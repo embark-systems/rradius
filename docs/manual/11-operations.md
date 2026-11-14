@@ -184,6 +184,12 @@ rradius-server status --config /etc/rradius/rradius.toml --watch
 
 每秒列一次登入、計費、回應、丟棄的每秒量、正在處理的請求和上限、`/readyz` 的狀態與叢集狀態，以及回應最多的幾個 client。要有 `[metrics]`；`--json` 給腳本用。說明見 [usage 2.8 節〈`status` 指令〉](../usage.md#看這台節點現在在做什麼status-指令)。
 
+叢集要一次看全部節點時加 `--cluster`：每台一列加合計，連不到的節點列為 unreachable。前提是各台的 `[metrics]` 綁在彼此連得到的內部位址、port 相同（見同一節）。
+
+```bash
+rradius-server status --config /etc/rradius/rradius.toml --cluster --watch
+```
+
 全部指標見 [usage 2.8 節](../usage.md#28-統計-metrics)。
 
 - **數值從啟動開始累計，** 每個節點各算各的，重新載入不會歸零。告警要看增加的速度，不是絕對值。

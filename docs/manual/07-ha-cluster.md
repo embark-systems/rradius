@@ -86,6 +86,14 @@ curl -s http://10.99.0.1:9812/metrics | grep rradius_
 
 在 node1 送 Start、在 node3 送 Stop，`accounting` 表裡是同一列：寫入經過叢集，哪一台收到都一樣。
 
+一次看三台在做什麼，在任一台執行：
+
+```bash
+rradius-server status --config /etc/rradius/rradius.toml --cluster --watch
+```
+
+每台一列：角色（leader／follower）、`/readyz`、登入與計費的每秒量、丟棄、處理中，最後一列是合計。各台的 metrics 位址是成員 api 位址的主機配上這台的 `[metrics]` port，所以三台的 `[metrics]` 都要綁 WireGuard 位址（像上面的 `10.99.0.1:9812`）、port 相同；連不到的那台會列為 unreachable 並寫出原因。說明見 [usage 2.8 節〈`status` 指令〉](../usage.md#看這台節點現在在做什麼status-指令)。
+
 ## 設定說明
 
 ```toml
