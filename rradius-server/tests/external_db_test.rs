@@ -165,6 +165,26 @@ fn login(server: &Server, user: &str, password: &str, wait: Duration) -> Result<
     }
 }
 
+/// The answer to a CHAP Access-Request, the Request Authenticator as the challenge.
+fn chap_login(server: &Server, user: &str, password: &str) -> Result<RadiusPacket, String> {
+    use md5::{Digest, Md5};
+    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    socket.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    let authenticator: [u8; 16] = std::array::from_fn(|i| 0x50 + i as u8);
+    let ident = 7u8;
+    let mut hash = Md5::new();
+    hash.update([ident]);
+    hash.update(password.as_bytes());
+    hash.update(authenticator);
+    let mut value = vec![ident];
+    value.extend_from_slice(&hash.finalize());
+    let packet = RadiusPacket::create_access_request(authenticator[0], authenticator, vec![(1, user.as_bytes().to_vec()), (3, value)], b"s");
+    socket.send_to(&packet, ("127.0.0.1", server.auth_port)).map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 4096];
+    let (size, _) = socket.recv_from(&mut buf).map_err(|e| format!("no answer to CHAP: {e}"))?;
+    RadiusPacket::parse(&buf[..size])
+}
+
 /// Sends an Accounting-Request for `session` and returns whether it was answered.
 fn account(server: &Server, identifier: u8, session: &str, octets: u32, wait: Duration) -> Result<bool, String> {
     let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -187,7 +207,7 @@ async fn wait_for(what: &str, mut done: impl AsyncFnMut() -> Result<bool, String
 }
 
 const POSTGRES_INIT: &str = "CREATE TABLE radcheck (username TEXT PRIMARY KEY, password TEXT);\n\
-    INSERT INTO radcheck VALUES ('alice', '{SSHA}78cdSUfS/6uxGK+hBLB0UWTNMtdyci1zYWx0MQ==');\n\
+    INSERT INTO radcheck VALUES ('alice', '{SSHA}78cdSUfS/6uxGK+hBLB0UWTNMtdyci1zYWx0MQ=='), ('bob', '{clear}bob-secret');\n\
     CREATE TABLE acct (id TEXT PRIMARY KEY, octets BIGINT);\n\
     CREATE TABLE users (username TEXT, plan TEXT, realm TEXT);\n\
     INSERT INTO users VALUES ('alice', 'gold', 'corp');\n\
@@ -222,6 +242,8 @@ async fn test_postgresql() -> Result<(), String> {
         check(db_execute('pg', 'INSERT INTO acct (id, octets) VALUES (?, ?)', {'s-1', 42}) == 1, 'insert')
         rows = db_query('pg', 'SELECT octets FROM acct WHERE id = ?', {'s-1'})
         check(#rows == 1 and rows[1].octets == 42, 'read back')
+        rows = db_query('pg', 'SELECT SUM(octets) AS total, 12.50::numeric AS price, (-0.001)::numeric AS tiny FROM acct WHERE id = ?', {'s-1'})
+        check(rows[1].total == '42' and rows[1].price == '12.50' and rows[1].tiny == '-0.001', 'numeric: ' .. tostring(rows[1].total) .. ' ' .. tostring(rows[1].price) .. ' ' .. tostring(rows[1].tiny))
         rows = db_query('pg', 'SELECT id, rate, name, active, note FROM kinds')
         local row = rows[1]
         check(row.id == 7 and row.rate == 1.5 and row.name == 'alice' and row.active == 1 and row.note == nil, 'types')
@@ -247,6 +269,9 @@ async fn test_postgresql() -> Result<(), String> {
     assert_eq!(reply.code, radius::ACCESS_ACCEPT);
     let reply = login(&server, "alice", "wrong", Duration::from_secs(10))?.ok_or("no answer")?;
     assert_eq!(reply.code, radius::ACCESS_REJECT);
+    // CHAP needs the stored password itself, read the same way.
+    assert_eq!(chap_login(&server, "bob", "bob-secret")?.code, radius::ACCESS_ACCEPT);
+    assert_eq!(chap_login(&server, "bob", "wrong")?.code, radius::ACCESS_REJECT);
 
     // spec Database stopped during login and during accounting, and Constraint violation in
     // accounting: `dup-1` is written now, and again from the spool, where it is a mistake.
@@ -316,6 +341,8 @@ async fn test_mysql() -> Result<(), String> {
         check(row.u_small == 5 and row.u_int == 4000000000, 'unsigned: ' .. tostring(row.u_small) .. ' ' .. tostring(row.u_int))
         local ok, e = pcall(db_query, 'm', 'SELECT u_big FROM kinds')
         check(not ok and string.find(tostring(e), 'u_big', 1, true) ~= nil, 'too big: ' .. tostring(e))
+        row = db_query('m', 'SELECT SUM(id) AS total, CAST(12.50 AS DECIMAL(6,2)) AS price FROM kinds')[1]
+        check(row.total == '7' and row.price == '12.50', 'decimal: ' .. tostring(row.total) .. ' ' .. tostring(row.price))
         check(db_execute('m', 'UPDATE users SET username = ? WHERE username = ?', {'carol', 'nobody'}) == 0, 'no rows changed')
         return 'accept'
     "#).await?;
