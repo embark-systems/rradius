@@ -525,6 +525,17 @@ mod tests {
         )
     }
 
+    /// spec Password hidden: by the core's own descriptions.
+    #[test]
+    fn test_database_password_hidden() -> Result<(), String> {
+        let mut config = table("[databases.billing]\nkind = \"postgresql\"\nhost = \"h\"\npassword = \"s3cret\"\n[[auth.chains.corp.handlers]]\ntype = \"ldap\"\nbind_password = \"chain-pw\"\n")?;
+        hide_secrets(&mut config, &crate::schema::core_descriptions()?);
+        let text = toml::to_string(&config).map_err(|e| e.to_string())?;
+        assert!(!text.contains("s3cret") && text.contains(HIDDEN) && text.contains("host = \"h\""), "{text}");
+        assert!(!text.contains("chain-pw"), "a secret of a named chain, also under a name: {text}");
+        Ok(())
+    }
+
     #[test]
     fn test_hide_secrets() -> Result<(), String> {
         let mut config = table("[cluster]\nsecret_raft = \"raft-secret\"\ndata_dir = \"data\"\n[[radius.clients]]\naddress = \"10.0.0.1\"\nsecret = \"s3cret\"\n[[tacacs.clients]]\naddress = \"10.0.0.1\"\nsecret = \"t\"\n")?;

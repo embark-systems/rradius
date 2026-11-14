@@ -121,6 +121,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | `[log]` | 否 | 記錄的等級、格式與認證紀錄（2.10 節） |
 | `[accounts]` | 否 | `rradius-server user` 管理帳號時執行的 SQL（2.14 節） |
 | `[shutdown]` | 否 | 收到 SIGTERM 後的兩段等待（2.16 節） |
+| `[databases.<name>]` | 否 | 外部的 MySQL、PostgreSQL，給 `sql` 處理器和 `db_query` 用（2.17 節） |
 | `[runtime]` | 否 | `pin_threads`：把工作執行緒各綁在一顆 CPU 上，只在 Linux（2.4 節） |
 
 `[radius]` 與 `[tacacs]` 至少要有一個。所有區段都拒絕不認得的欄位，拼錯的欄位會讓啟動失敗並指出欄位名稱。
@@ -906,7 +907,7 @@ docker compose kill -s HUP rradius
 收到 SIGHUP 時重讀設定檔（包含 `secret_file`）並套用，結果寫一行到記錄：`configuration reloaded from ...` 或 `reload failed, keeping the running configuration: ...`。
 
 - **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）與 `[lua.http]`。
-- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`，以及新增或移除 `[radius]`、`[tacacs]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
+- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`，以及新增或移除 `[radius]`、`[tacacs]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
 - **全部成功才會套用。** 檢查和啟動時相同，任何一項有誤就全部維持原狀，程序繼續服務；修正後再送一次 SIGHUP 即可。
 - 進行中的請求用舊內容做完，不會中斷。已開啟的 TACACS+ 連線不會因此斷線，但下一個封包會依新名單處理：client 被移除時關閉連線，密碼更換後要用新密碼。
 - `auto` 學到的值和重送快取會保留。每次重新載入都會重建 LDAP 連線池。
@@ -1269,6 +1270,37 @@ drain_ms = 5000       # 第 3 段；預設 5000
 - **寬限時間要夠：** 多節點時最多約 `ready_delay_ms` + `drain_ms` + 9.5 秒 + 記錄寫出（最多 5 秒），預設約 25 秒，所以 `docker stop -t 30`、`stop_grace_period: 30s`、Kubernetes 的 `terminationGracePeriodSeconds: 30` 都夠。調大這兩個值時一起調大寬限時間，否則被 SIGKILL，下次啟動要重建本機資料庫。
 - 啟動途中（等叢集或套用 migration 時）收到訊號不走這幾段，見 1. 節〈停止〉。
 
+### 2.17 外部資料庫 `[databases]`
+
+帳號表或計費表已經在 MySQL 或 PostgreSQL 裡，而且要繼續由別的系統維護時，不必搬進叢集：在這裡列出資料庫，`sql` 處理器用 `database` 指定它（3.3 節），腳本用 `db_query`、`db_execute`（4.3 節）。
+
+```toml
+[databases.billing]
+kind = "postgresql"              # 必填，"mysql" 或 "postgresql"
+host = "db.example.com"          # 必填
+port = 5432                      # 預設 mysql 3306、postgresql 5432
+database = "radius"              # 必填
+user = "rradius"                 # 必填
+password_file = "billing.secret" # 或 password = "..."，只能設一個
+tls = "verify"                   # 預設；"verify" 或 "off"
+ca_file = "db-ca.pem"            # 選填；沒有時信任系統的根憑證
+pool_size = 8                    # 預設，每個節點最多幾條連線
+connect_timeout_ms = 5000        # 預設，建立一條連線的時限
+```
+
+- **名稱**只能有 ASCII 字母、數字和 `_`，例如 `billing`。不支援連線 URL。
+- **密碼。** `password_file` 去掉結尾的換行，不能是空的；相對路徑以設定檔所在目錄為準。`password` 和 `password_file` 都沒有時不送密碼。`rradius-server config show` 不顯示 `password`。PostgreSQL 不讀 `~/.pgpass`，但會讀 `PGPASSWORD` 這類環境變數：設定檔沒寫密碼而環境有 `PGPASSWORD` 時，會送出它。
+- **TLS。** `verify` 驗證憑證鏈和主機名稱（PostgreSQL 的 `verify-full`、MySQL 的 `VERIFY_IDENTITY`），憑證不是 `ca_file` 簽發的就連不上，算資料庫無法使用。`ca_file` 在 `check` 和啟動時就讀，讀不到或裡面沒有憑證時啟動失敗；`tls = "off"` 時不能設。`off` 不加密，`host` 不是本機時啟動會記 WARN，因為密碼和資料都以明文送出。
+- **MySQL 不用 TLS 時，帳號要用 `mysql_native_password`。** MySQL 8 預設的 `caching_sha2_password` 在沒有 TLS 時要用 RSA 交換密碼，rradius 沒有這部分。MySQL 8.4 預設關閉 `mysql_native_password`，要以 `--mysql-native-password=ON` 啟動，再用 `CREATE USER ... IDENTIFIED WITH mysql_native_password BY '...'` 建帳號。走 TLS 時沒有這個限制。
+- **連線池。** 啟動時只建立連線池、不連線，第一個用到的請求才連。所以資料庫沒開也能啟動，只有用到它的請求失敗。每個節點各有一個池，資料庫允許的連線數至少要是節點數 × `pool_size`。
+- **要重啟才套用。** 重新載入（SIGHUP）會列出 `[databases]` 需要重啟，執行中的連線池繼續用。處理器用到重啟前不存在的名稱時，重新載入失敗並說要重啟。
+- **`pool_size` 決定滿載時的吞吐，** 約為 `pool_size` ÷ 一次查詢的來回時間。量測（Apple M4 Max，PostgreSQL 17 在本機 Docker，`sql` 處理器的 PAP，明文密碼）：`pool_size = 8` 約 13300 次/秒，32 約 19900 次/秒；同一台機器用內建資料庫約 48000 次/秒。每秒 2000 次時兩者的 p99 都約 0.35 ms。網路較遠時每次來回較久，要更多連線才有同樣吞吐。
+- **時限。** `sql` 處理器的 `timeout_ms` 包括等連線池給連線的時間。腳本的 `db_query`、`db_execute` 和 `sql_query`、`sql_execute` 共用一個請求的 `[lua] query_timeout_ms`。
+- **失敗時。** 連不上、逾時、TLS 失敗，以及表示資料庫忙的錯誤（PostgreSQL 的 SQLSTATE 08、53、57 類和 40001、40P01；MySQL 的 1040、1053、1205、1213、1317）算資料庫無法使用：登入不回應，讓設備重送或改送別台；設了計費暫存（2.11 節）時計費寫進暫存，恢復後重放。語法錯誤、約束違反（例如主鍵重複）這類陳述式本身的錯誤，登入時拒絕；計費時不回應，從暫存重放時移到 `rejected.log`。
+- **佔位符。** 只用 `?`，依序綁定；PostgreSQL 會改成 `$1`、`$2` 送出，MySQL 原樣送出。單引號字串、雙引號名稱和註解（`--`、`/* */`）裡的 `?` 不算；PostgreSQL 的 `::text` 轉型可以用。`?1`、`:name`、`$name` 啟動或呼叫時就會出錯。不支援的寫法：方括號裡的 `?`（例如 PostgreSQL 陣列的 `a[?]`，方括號會被當成名稱的引號，數量不符而出錯）、PostgreSQL 的 `$$` 字串（裡面的 `?` 會被當成佔位符）、PostgreSQL 的 `?` 運算子（jsonb 的 `?`、`?|`、`?&`，請改用 `jsonb_exists()` 這類函式）、MySQL 用反斜線跳脫的引號（`'it\'s'`，請寫成 `'it''s'`）。
+- **PostgreSQL 的參數有型別，不會自動轉換：** 字串綁成 `text`，整數和 `true`、`false` 綁成 `bigint`（1、0），其他數字綁成 `double precision`。欄位是 `boolean`、`inet`、`timestamp` 等型別時要在 SQL 裡轉，例如 `CAST(? AS inet)`、`?::inet`，布林欄位寫 `active = (? <> 0)`。不轉時 PostgreSQL 回型別錯誤，算陳述式的錯。MySQL 會自己轉換。
+- **值型別。** 整數（含 MySQL 的 `UNSIGNED`，超過 2^63−1 時出錯）、浮點數 → 數字；布林 → 1、0；文字 → 字串；二進位 → 字串；NULL → `nil`。其他型別（日期時間、`NUMERIC`／`DECIMAL`、幾何型別等）會出錯並指出欄名，請在 SQL 裡 `CAST` 成文字或數字。
+
 ## 3. 認證串接 `[auth]`
 
 認證串接把多個處理器依設定順序執行，每個處理器回傳「接受」、「拒絕」、「略過」（交給下一個處理器）或「要求 challenge」（只有 `lua` 處理器，RADIUS 認證才有）。
@@ -1325,7 +1357,8 @@ script = "vpn_rules.lua"
 | `certificate_query` | 無 | EAP-TLS 憑證通過後改用這個查詢找使用者，剛好一個 `?`，查到就接受，不看第一欄。沒有設定時用 `user_query`，第一欄是 NULL、只有前綴或空值就拒絕（2.12 節） |
 | `reply_query` | 無 | 取得回應屬性的查詢，剛好一個 `?`，回傳 `(attribute, value)` 兩欄 |
 | `default_user` | 無 | 查無使用者時改用這個帳號的密碼驗證（知道該密碼的人都會通過，請謹慎使用）。通過時認證紀錄的 `account` 是這個帳號，`user` 是對方送來的名稱 |
-| `timeout_ms` | 5000 | 每次查詢的時限，必須大於 0 |
+| `timeout_ms` | 5000 | 每次查詢的時限，必須大於 0；用 `database` 時包括等連線的時間 |
+| `database` | 無 | `[databases.<name>]` 的名稱（2.17 節），查詢在那個 MySQL 或 PostgreSQL 執行，佔位符一樣寫 `?`。沒有設定時查叢集自己的資料庫。名稱不存在時啟動失敗 |
 
 - 查無使用者 → 略過；查到多筆 → 拒絕並記錄；密碼欄為 NULL、空字串或只有 `{clear}` 這類前綴 → 拒絕。
 - `?` 的數量以字元計算，不要在查詢的字串常值中使用 `?`。
@@ -1545,6 +1578,8 @@ DC 回覆的對應：
 | `set_attr(name, value)` | 加入一個回應屬性（字串或數字），依呼叫順序保留。tagged 屬性可以在名稱後加 tag，例如 `Tunnel-Type:1` |
 | `sql_query(sql [, params])` | 讀取本機資料庫副本，回傳列的陣列，每列是「欄名 → 值」的表；只能讀取 |
 | `sql_execute(sql [, params])` | 透過叢集寫入並複寫，回傳受影響的列數 |
+| `db_query(name, sql [, params])` | 在 `[databases.<name>]`（2.17 節）執行查詢，回傳格式和 `sql_query` 相同；也可以寫入，但回傳的是列 |
+| `db_execute(name, sql [, params])` | 在 `[databases.<name>]` 執行寫入，回傳受影響的列數 |
 | `now_unix()` | 目前的 Unix 時間（秒） |
 | `totp_verify(secret, code)` | 以 RFC 6238 驗證 TOTP 驗證碼（HMAC-SHA-1、6 位數、30 秒一步，前後各容許一步）。符合時回傳時間步，否則回傳 `nil`；`secret` 不是 Base32 時腳本出錯 |
 | `random_token()` | 回傳 32 個十六進位字元的隨機值，可用來產生 `State` |
@@ -1576,6 +1611,13 @@ local rows = sql_query("SELECT plan FROM users WHERE username = ?", {get_attr('U
 - 表、函式、NaN 和無限大都會讓腳本出錯。`nil` 在陣列中間會出錯，在結尾會被丟掉，只有 SQL 還需要那個值時才會因數量不符而出錯。**值可能不存在時要先檢查：** `{get_attr('User-Name')}` 在沒有這個屬性時是空陣列，會因數量不符而出錯。要比對或寫入 NULL，請直接寫在 SQL 裡（`IS NULL`、`NULL`）。
 - 不傳 `params` 或傳 `nil` 時視為沒有值，所以 SQL 裡有 `?` 就會出錯。字串、引號內的名稱和註解裡的 `?` 不算。
 - 上面對各節點結果不同的寫法的檢查只看 SQL 文字，不看參數值。
+
+**外部資料庫：** `db_query`、`db_execute` 的參數規則和上面相同，數量不符時一樣不送出。`name` 不在 `[databases]` 時腳本出錯。外部資料庫不經叢集複寫，所以 `db_execute` 不檢查 `now()` 這類寫法。失敗時的處理和佔位符、值型別的限制見 2.17 節。
+
+```lua
+local rows = db_query('billing', 'SELECT plan FROM users WHERE username = ?', {get_attr('User-Name')})
+db_execute('billing', 'INSERT INTO acct (id, octets) VALUES (?, ?)', {get_attr('Acct-Session-Id'), get_attr('Acct-Output-Octets')})
+```
 
 ### 4.4 回傳值
 

@@ -1221,6 +1221,8 @@ pub fn sql_placeholders(sql: &str) -> Result<Vec<Placeholder>, String> {
                     i += 1;
                 }
             }
+            // PostgreSQL's cast, as in `a::text`: never a parameter there, and an error in SQLite.
+            b':' if next == Some(b':') => i += 2,
             // SQLite reads `$` as part of a parameter's name too, as in `$$name` and `:$name`.
             b':' | b'@' | b'$' if next.is_some_and(|b| is_word(b) || b == b'$') => return Err(unsupported_placeholder(sql, i)),
             _ => i += 1,
@@ -1374,6 +1376,16 @@ impl DbFailure {
     /// A failure that is neither the cluster's nor known to be the statement's.
     pub fn other(message: String) -> Self {
         Self { message, kind: DbFailureKind::Unknown }
+    }
+
+    /// A database that could not take the call: another try may work.
+    pub fn database_unavailable(message: String) -> Self {
+        Self { message, kind: DbFailureKind::Unavailable }
+    }
+
+    /// The statement or its values: the same call would fail the same way again.
+    pub fn mistake(message: String) -> Self {
+        Self { message, kind: DbFailureKind::Mistake }
     }
 
     /// For a call that took too long.
@@ -1867,6 +1879,8 @@ pub struct LuaAuthEngine {
     chunk_name: String,
     /// What `http_request` sends through; `None` without `[lua.http]`.
     http: Option<Arc<ScriptHttp>>,
+    /// What `db_query` and `db_execute` use: `[databases.<name>]`.
+    databases: crate::external_db::ExternalDatabases,
     /// What `send_disconnect` and `send_coa` send through; `None` in a program without CoA.
     dynamic_auth: Option<Arc<dyn DynamicAuthorization>>,
     /// For each VM, the function that makes a request's global table, made on first use.
@@ -1897,7 +1911,7 @@ impl mlua::UserData for RequestData {}
 /// `...` keeps the script's arguments where the script put them, so a wrong one is
 /// reported at the same position as before.
 const BINDER: &str = r#"
-local meta, get_attr, get_attrs, set_attr, sql_query, sql_execute, log, send_disconnect, send_coa, http_request, url_encode, now_unix, totp_verify, random_token, wpa_pmk = ...
+local meta, get_attr, get_attrs, set_attr, sql_query, sql_execute, db_query, db_execute, log, send_disconnect, send_coa, http_request, url_encode, now_unix, totp_verify, random_token, wpa_pmk = ...
 local setmetatable = setmetatable
 return function(request, protocol, phase, client, auth_user, replayed, eap_method, tls_subject, tls_subject_attrs, radsec_subject, radsec_subject_attrs)
 	local env = setmetatable({
@@ -1916,6 +1930,8 @@ return function(request, protocol, phase, client, auth_user, replayed, eap_metho
 		set_attr = function(...) return set_attr(request, ...) end,
 		sql_query = function(...) return sql_query(request, ...) end,
 		sql_execute = function(...) return sql_execute(request, ...) end,
+		db_query = function(...) return db_query(request, ...) end,
+		db_execute = function(...) return db_execute(request, ...) end,
 		log = function(...) return log(request, ...) end,
 		send_disconnect = function(...) return send_disconnect(request, ...) end,
 		send_coa = function(...) return send_coa(request, ...) end,
@@ -1931,6 +1947,50 @@ return function(request, protocol, phase, client, auth_user, replayed, eap_metho
 	return env
 end
 "#;
+
+/// One database call of a script: gives the accounting slot up while it waits, takes its time
+/// from what the request's calls have together, and notes how it failed. `call` is made with
+/// what is left of that time.
+async fn database_call<T, E>(slot: Option<&Arc<AccountingSlot>>, failed: &DbFailures, call: impl Future<Output = Result<Result<T, DbFailure>, E>>) -> LuaResult<Result<Result<T, DbFailure>, E>> {
+    if let Some(slot) = slot {
+        slot.give_up_place();
+    }
+    let started = Instant::now();
+    let result = call.await;
+    failed.spend(started.elapsed());
+    if let Some(slot) = slot {
+        slot.take_place().await?;
+    }
+    note_database_failure(&result, failed);
+    Ok(result)
+}
+
+/// The error of a database call that ran out of the request's time.
+fn database_timed_out(function: &str, timeout: Duration) -> mlua::Error {
+    mlua::Error::RuntimeError(format!("{function} timed out: the database calls of one request have {} ms together", timeout.as_millis()))
+}
+
+/// Rows as `sql_query` and `db_query` return them: an array of tables keyed by column name.
+fn rows_to_lua(lua: &Lua, rows: &[DbRow]) -> LuaResult<Value> {
+    let result = lua.create_table()?;
+    for (i, row) in rows.iter().enumerate() {
+        let lua_row = lua.create_table()?;
+        for (name, value) in row {
+            lua_row.set(name.as_str(), db_value_to_lua(lua, value)?)?;
+        }
+        result.set(i + 1, lua_row)?;
+    }
+    Ok(Value::Table(result))
+}
+
+/// What `db_query` and `db_execute` do with an external database once the call is checked.
+type ExternalCall = fn(Arc<crate::external_db::ExternalDatabase>, String, Vec<hiqlite::Param>) -> std::pin::Pin<Box<dyn Future<Output = Result<Answer, DbFailure>> + Send>>;
+
+/// What an external database answered `db_query` or `db_execute`.
+enum Answer {
+    Rows(Vec<DbRow>),
+    Affected(u64),
+}
 
 /// A function whose first argument is the request it works for; the rest are
 /// converted and reported as the script's arguments 1, 2, and so on.
@@ -1976,6 +2036,7 @@ impl LuaAuthEngine {
         let binders = vms.vms.iter().map(|_| std::sync::OnceLock::new()).collect();
         Ok(Self {
             http: None,
+            databases: Default::default(),
             db,
             vms,
             bytecode,
@@ -2013,6 +2074,12 @@ impl LuaAuthEngine {
     /// Gives scripts `http_request` and `url_encode`; `None` leaves them out.
     pub fn with_script_http(mut self, http: Option<Arc<ScriptHttp>>) -> Self {
         self.http = http;
+        self
+    }
+
+    /// Gives `db_query` and `db_execute` the databases of `[databases.<name>]`.
+    pub fn with_databases(mut self, databases: crate::external_db::ExternalDatabases) -> Self {
+        self.databases = databases;
         self
     }
 
@@ -2099,35 +2166,17 @@ impl LuaAuthEngine {
         })?;
 
         let timeout = self.query_timeout;
-        let timed_out = move |what: &str| mlua::Error::RuntimeError(format!("{} timed out: the database calls of one request have {} ms together", what, timeout.as_millis()));
 
         let db = self.db.clone();
         let sql_query = request_async_function(lua, move |lua, request, (sql, params): (String, Value)| {
             let (db, slot, failed) = (db.clone(), request.slot.clone(), request.failures.clone());
             async move {
                 let params = bound_params("sql_query", &sql, &params).inspect_err(|e| failed.note_mistake_raised(e))?;
-                if let Some(slot) = &slot {
-                    slot.give_up_place();
-                }
                 // The request's calls share the limit, so that one request cannot wait on the
                 // database for many times what a NAS waits for its answer.
-                let started = Instant::now();
-                let rows = run_within(failed.left(timeout), db.query_bound(&sql, params)).await;
-                failed.spend(started.elapsed());
-                if let Some(slot) = &slot {
-                    slot.take_place().await?;
-                }
-                note_database_failure(&rows, &failed);
-                let rows = rows.map_err(|_| timed_out("sql_query"))?.map_err(|failure| mlua::Error::RuntimeError(failure.message))?;
-                let result = lua.create_table()?;
-                for (i, row) in rows.iter().enumerate() {
-                    let lua_row = lua.create_table()?;
-                    for (name, value) in row {
-                        lua_row.set(name.as_str(), db_value_to_lua(&lua, value)?)?;
-                    }
-                    result.set(i + 1, lua_row)?;
-                }
-                Ok(result)
+                let rows = database_call(slot.as_ref(), &failed, run_within(failed.left(timeout), db.query_bound(&sql, params))).await?;
+                let rows = rows.map_err(|_| database_timed_out("sql_query", timeout))?.map_err(|failure| mlua::Error::RuntimeError(failure.message))?;
+                rows_to_lua(&lua, &rows)
             }
         })?;
 
@@ -2213,20 +2262,13 @@ impl LuaAuthEngine {
                     return Err(error);
                 }
                 let params = bound_params("sql_execute", &sql, &params).inspect_err(|e| failed.note_mistake_raised(e))?;
-                if let Some(slot) = &slot {
-                    slot.give_up_place();
-                }
-                let started = Instant::now();
-                let affected = db.execute_within(&sql, params, failed.left(timeout)).await;
-                failed.spend(started.elapsed());
-                if let Some(slot) = &slot {
-                    slot.take_place().await?;
-                }
-                note_database_failure(&affected, &failed);
-                let affected = affected.map_err(|_| timed_out("sql_execute"))?.map_err(|failure| mlua::Error::RuntimeError(failure.message))?;
+                let affected = database_call(slot.as_ref(), &failed, db.execute_within(&sql, params, failed.left(timeout))).await?;
+                let affected = affected.map_err(|_| database_timed_out("sql_execute", timeout))?.map_err(|failure| mlua::Error::RuntimeError(failure.message))?;
                 Ok(affected as f64)
             }
         })?;
+        let db_query = self.external_call(lua, "db_query", |database, sql, params| Box::pin(async move { database.query(&sql, &params).await.map(Answer::Rows) }))?;
+        let db_execute = self.external_call(lua, "db_execute", |database, sql, params| Box::pin(async move { database.execute(&sql, &params).await.map(Answer::Affected) }))?;
         let clock = lua.create_function(|_, ()| Ok(now_unix()))?;
         let totp_verify = lua.create_function(|_, (secret, code): (String, mlua::LuaString)| {
             crate::totp::verify(&secret, &code.as_bytes(), now_unix() as u64).map_err(mlua::Error::RuntimeError)
@@ -2244,23 +2286,38 @@ impl LuaAuthEngine {
             Ok(crate::common::hex::encode_hex(&pmk[..]))
         })?;
 
-        lua.load(BINDER).set_name("=rradius").call((
-            meta,
-            get_attr,
-            get_attrs,
-            set_attr,
-            sql_query,
-            sql_execute,
-            log,
-            send_disconnect,
-            send_coa,
-            http_request,
-            url_encode,
-            clock,
-            totp_verify,
-            random_token,
-            wpa_pmk,
-        ))
+        // More than a tuple converts: in the order BINDER takes them, nil for those left out.
+        let function = |function: Option<Function>| function.map_or(Value::Nil, Value::Function);
+        let arguments: MultiValue = [Value::Table(meta)]
+            .into_iter()
+            .chain([get_attr, get_attrs, set_attr, sql_query, sql_execute, db_query, db_execute, log, send_disconnect, send_coa].map(Value::Function))
+            .chain([function(http_request), function(url_encode)])
+            .chain([clock, totp_verify, random_token, wpa_pmk].map(Value::Function))
+            .collect();
+        lua.load(BINDER).set_name("=rradius").call(arguments)
+    }
+
+    /// `db_query` or `db_execute`: checks the name and the values before anything is sent, and
+    /// shares the request's time limit, its accounting slot and its failure notes with
+    /// `sql_query`.
+    fn external_call(&self, lua: &Lua, function: &'static str, call: ExternalCall) -> LuaResult<Function> {
+        let (databases, timeout) = (self.databases.clone(), self.query_timeout);
+        request_async_function(lua, move |lua, request, (name, sql, params): (String, String, Value)| {
+            let (databases, slot, failed) = (databases.clone(), request.slot.clone(), request.failures.clone());
+            async move {
+                let Some(database) = databases.get(&name).cloned() else {
+                    let error = mlua::Error::RuntimeError(format!("{function}: there is no database '{name}' in [databases]"));
+                    failed.note_mistake_raised(&error);
+                    return Err(error);
+                };
+                let params = bound_params(function, &sql, &params).inspect_err(|e| failed.note_mistake_raised(e))?;
+                let result = database_call(slot.as_ref(), &failed, run_within(failed.left(timeout), call(database, sql, params))).await?;
+                match result.map_err(|_| database_timed_out(function, timeout))?.map_err(|failure| mlua::Error::RuntimeError(format!("{function}: {}", failure.message)))? {
+                    Answer::Rows(rows) => rows_to_lua(&lua, &rows),
+                    Answer::Affected(affected) => Ok(Value::Number(affected as f64)),
+                }
+            }
+        })
     }
 
     /// Runs the configured script for one request: `"accept"` accepts, `"ignore"`
@@ -3299,6 +3356,85 @@ pub(crate) mod tests {
         let quick = LuaAuthEngine::new(test_vms(), test_db(), "for i = 1, 100 do sql_query('SELECT 1 AS n') end return 'accept'")?.with_query_timeout(Duration::from_millis(1000));
         let decision = quick.authenticate(test_request()).await;
         assert!(decision.accepted() && !decision.database_failed);
+        Ok(())
+    }
+
+    /// `[databases.<name>]` with one PostgreSQL database `hang` whose server takes connections
+    /// and never answers, so that a call to it waits for as long as it is given.
+    async fn hanging_database() -> Result<crate::external_db::ExternalDatabases, String> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let mut settings = crate::external_db::test_support::settings(crate::config::DatabaseKind::Postgresql, "127.0.0.1", port, crate::config::DatabaseTls::Off);
+        settings.connect_timeout = Duration::from_secs(30);
+        let mut all = std::collections::BTreeMap::new();
+        all.insert("hang".to_string(), settings);
+        Ok(crate::external_db::ExternalDatabases::open(&all))
+    }
+
+    /// spec Unknown connection name: a script error that names it, noted as the script's mistake.
+    #[tokio::test]
+    async fn test_db_query_unknown_name() -> Result<(), String> {
+        let databases = hanging_database().await?;
+        for function in ["db_query", "db_execute"] {
+            let engine = LuaAuthEngine::new(test_vms(), test_db(), "return 'accept'")?.with_databases(databases.clone());
+            let lua = engine.new_state(&test_request()).map_err(|e| e.to_string())?;
+            let error = lua.load(format!("return {function}('nope', 'SELECT 1')")).eval_async::<mlua::Value>().await.err().ok_or("it ran")?.to_string();
+            assert!(error.contains("'nope'") && error.contains(function), "{error}");
+            let script = format!("{function}('nope', 'SELECT 1') return 'accept'");
+            let decision = LuaAuthEngine::new(test_vms(), test_db(), &script)?.with_databases(databases.clone()).authenticate(test_request()).await;
+            assert!(!decision.accepted() && !decision.database_failed && decision.final_result, "a mistake, not the database: {function}");
+        }
+        Ok(())
+    }
+
+    /// Values that do not match the placeholders are an error before anything is sent: the
+    /// database never answers, so a call that reached it would time out instead.
+    #[tokio::test]
+    async fn test_db_query_parameters_checked_first() -> Result<(), String> {
+        let databases = hanging_database().await?;
+        let engine = LuaAuthEngine::new(test_vms(), test_db(), "return 'accept'")?.with_databases(databases).with_query_timeout(Duration::from_secs(20));
+        let lua = engine.new_state(&test_request()).map_err(|e| e.to_string())?;
+        let started = std::time::Instant::now();
+        for (call, expected) in [
+            ("db_query('hang', 'SELECT a FROM t WHERE x = ? AND y = ?', {'one'})", "2 placeholders, 1 value"),
+            ("db_execute('hang', 'DELETE FROM t WHERE x = ?')", "1 placeholder, 0 values"),
+            ("db_query('hang', 'SELECT a FROM t WHERE x = ?1', {'one'})", "db_query"),
+            ("db_query('hang', 'SELECT 1', 'one')", "must be an array"),
+        ] {
+            let error = lua.load(format!("return {call}")).eval_async::<mlua::Value>().await.err().ok_or("it ran")?.to_string();
+            assert!(error.contains(expected), "{call}: {error}");
+        }
+        assert!(started.elapsed() < Duration::from_secs(5), "something waited for the database");
+        Ok(())
+    }
+
+    /// spec Time limit shared with the embedded database: `db_query` gets only what `sql_query`
+    /// left of the request's limit, and the other way round.
+    #[tokio::test]
+    async fn test_db_query_shares_the_limit() -> Result<(), String> {
+        let limit = Duration::from_millis(400);
+        let databases = hanging_database().await?;
+        let engine = |script: &str| -> Result<LuaAuthEngine, String> { Ok(LuaAuthEngine::new(test_vms(), test_db(), script)?.with_query_timeout(limit).with_databases(databases.clone())) };
+        for script in [
+            format!("local slow = [[{SLOW_READ}]] pcall(sql_query, slow) local ok, e = pcall(db_query, 'hang', 'SELECT 1') error(e)"),
+            "pcall(db_query, 'hang', 'SELECT 1') local ok, e = pcall(sql_query, 'SELECT 1 AS n') error(e)".to_string(),
+            "pcall(db_execute, 'hang', 'DELETE FROM t') local ok, e = pcall(db_query, 'hang', 'SELECT 1') error(e)".to_string(),
+        ] {
+            let lua = engine(&script)?.new_state(&test_request()).map_err(|e| e.to_string())?;
+            let started = std::time::Instant::now();
+            let error = lua.load(script.as_str()).exec_async().await.err().ok_or("it ran")?.to_string();
+            let took = started.elapsed();
+            assert!(error.contains("timed out"), "{script}: {error}");
+            assert!(took >= limit * 9 / 10 && took < limit * 2, "{script}: took {took:?} for a limit of {limit:?}");
+        }
+        let decision = engine("db_query('hang', 'SELECT 1') return 'accept'")?.authenticate(test_request()).await;
+        assert!(decision.database_failed, "a timeout counts as the database failing");
         Ok(())
     }
 

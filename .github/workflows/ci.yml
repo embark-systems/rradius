@@ -46,6 +46,16 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --locked -p rradius-server --test ldap_test -- --ignored
 
+  external-db:
+    # Runs MySQL 8.4 and PostgreSQL 17 in Docker for [databases], which `cargo test` skips.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test --locked -p rradius-server --test external_db_test -- --ignored
+
   bench:
     # The load generator, a member of the workspace; its tests start a real server. The ones
     # that need rradius-enterprise say so and pass when it is not built.

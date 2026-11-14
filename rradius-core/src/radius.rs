@@ -3688,7 +3688,7 @@ pub(crate) mod tests {
             .await
             .clone()?;
         let sql = crate::auth_chain::Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: "SELECT password FROM radius_netlogon_users WHERE username = ?".to_string(),
             reply_query: None,
             certificate_query: None,
@@ -4304,7 +4304,7 @@ pub(crate) mod tests {
         let db = crate::test_support::test_db();
         db.execute("CREATE TABLE decision_users (username TEXT, password TEXT)").await.unwrap();
         db.execute("INSERT INTO decision_users VALUES ('alice', 'secret')").await.unwrap();
-        let sql = || Handler::Sql { db: db.clone(), user_query: "SELECT password FROM decision_users WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: Duration::from_secs(5) };
+        let sql = || Handler::Sql { source: crate::auth_chain::SqlSource::Cluster(db.clone()), user_query: "SELECT password FROM decision_users WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: Duration::from_secs(5) };
         let (url, _log) = mock_server().await;
         let ldap = Handler::Ldap(LdapHandler::new(settings(vec![url], PasswordCheck::Bind)).unwrap());
         let refuse = UsernameSettings { allowed: Some(AllowedNames::new("[a-z]+").unwrap()), ..Default::default() };
@@ -4346,7 +4346,7 @@ pub(crate) mod tests {
         db.execute("CREATE TABLE record_users (username TEXT, password TEXT)").await.unwrap();
         db.execute("INSERT INTO record_users VALUES ('rec-alice', 'secret')").await.unwrap();
         let handler = crate::auth_chain::Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: "SELECT password FROM record_users WHERE username = ?".to_string(),
             reply_query: None,
             certificate_query: None, default_user: None,
@@ -4788,7 +4788,7 @@ pub(crate) mod tests {
         db.execute("CREATE TABLE eap_chain_reply (username TEXT, attribute TEXT, value TEXT)").await.unwrap();
         db.execute("INSERT INTO eap_chain_reply VALUES ('alice.example.com', 'Tunnel-Private-Group-Id', '100')").await.unwrap();
         let sql = |user_query: &str| crate::auth_chain::Handler::Sql {
-            db: db.clone(),
+            source: crate::auth_chain::SqlSource::Cluster(db.clone()),
             user_query: user_query.to_string(),
             reply_query: Some("SELECT attribute, value FROM eap_chain_reply WHERE username = ?".to_string()),
             certificate_query: None, default_user: None,
@@ -4840,7 +4840,7 @@ pub(crate) mod tests {
         let request = RadiusPacket::create_access_request(71, ra, attributes(&ra), SECRET);
         assert_eq!(RadiusPacket::parse(&server.handle_auth(&request, LOCALHOST).await.unwrap()).unwrap().code, ACCESS_REJECT);
         // A sql handler still wants the password, though the name is one it would accept by certificate.
-        let handler = crate::auth_chain::Handler::Sql { db, user_query: "SELECT password FROM eap_plain_users WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: Duration::from_secs(5) };
+        let handler = crate::auth_chain::Handler::Sql { source: crate::auth_chain::SqlSource::Cluster(db), user_query: "SELECT password FROM eap_plain_users WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: Duration::from_secs(5) };
         let server = eap_chain_server(&settings, &engine, vec![handler]);
         let ra = [72u8; 16];
         let request = RadiusPacket::create_access_request(72, ra, attributes(&ra), SECRET);
@@ -4920,7 +4920,7 @@ pub(crate) mod tests {
         db.execute(&format!("CREATE TABLE {table}_reply (username TEXT, attribute TEXT, value TEXT)")).await.unwrap();
         db.execute(&format!("INSERT INTO {table}_reply VALUES ('alice', 'Tunnel-Private-Group-Id', '100')")).await.unwrap();
         let handler = crate::auth_chain::Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: format!("SELECT password FROM {table}_users WHERE username = ?"),
             certificate_query: None,
             reply_query: Some(format!("SELECT attribute, value FROM {table}_reply WHERE username = ?")),
@@ -5282,7 +5282,7 @@ pub(crate) mod tests {
         let db = crate::test_support::test_db();
         db.execute(&format!("CREATE TABLE {table} (username TEXT, password TEXT)")).await.unwrap();
         db.execute(&format!("INSERT INTO {table} VALUES ('alice', 'secret')")).await.unwrap();
-        let sql = crate::auth_chain::Handler::Sql { db, user_query: format!("SELECT password FROM {table} WHERE username = ?"), certificate_query: None, reply_query: None, default_user: None, timeout: Duration::from_secs(5) };
+        let sql = crate::auth_chain::Handler::Sql { source: crate::auth_chain::SqlSource::Cluster(db), user_query: format!("SELECT password FROM {table} WHERE username = ?"), certificate_query: None, reply_query: None, default_user: None, timeout: Duration::from_secs(5) };
         AuthChain::new(policy, vec![sql, accepting_script()])
     }
 
@@ -5373,7 +5373,7 @@ pub(crate) mod tests {
         db.execute(&format!("CREATE TABLE {table} (username TEXT, password TEXT)")).await.unwrap();
         db.execute(&format!("INSERT INTO {table} VALUES ('alice', 'secret'), ('DEFAULT', 'guest-pass')")).await.unwrap();
         let handler = crate::auth_chain::Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: format!("SELECT password FROM {table} WHERE username = ?"),
             certificate_query: None,
             reply_query: None,
@@ -7324,7 +7324,7 @@ pub(crate) mod tests {
         db.execute("CREATE TABLE v6_bad_reply (username TEXT, attribute TEXT, value TEXT)").await.unwrap();
         db.execute("INSERT INTO v6_bad_reply VALUES ('v6-bad', 'Framed-IPv6-Prefix', '2001:db8::1/64')").await.unwrap();
         let handler = crate::auth_chain::Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: "SELECT password FROM v6_bad_users WHERE username = ?".to_string(),
             reply_query: Some("SELECT attribute, value FROM v6_bad_reply WHERE username = ?".to_string()),
             certificate_query: None, default_user: None,
@@ -7348,7 +7348,7 @@ pub(crate) mod tests {
         db.execute("CREATE TABLE v6_reply (username TEXT, attribute TEXT, value TEXT)").await.unwrap();
         db.execute("INSERT INTO v6_reply VALUES ('v6-alice', 'Framed-IPv6-Prefix', '2001:db8::/64')").await.unwrap();
         let handler = crate::auth_chain::Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: "SELECT password FROM v6_users WHERE username = ?".to_string(),
             reply_query: Some("SELECT attribute, value FROM v6_reply WHERE username = ?".to_string()),
             certificate_query: None, default_user: None,
@@ -7648,7 +7648,7 @@ pub(crate) mod tests {
             })
             .await;
         crate::auth_chain::Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: "SELECT password FROM radius_chain_users WHERE username = ?".to_string(),
             reply_query: Some("SELECT attribute, value FROM radius_chain_reply WHERE username = ?".to_string()),
             certificate_query: None, default_user: None,
@@ -8450,7 +8450,7 @@ pub(crate) mod tests {
         let db = chain_server().await.state().engine.db.clone(); // seeds radius_chain_users / radius_chain_reply
         let handlers = vec![
             crate::auth_chain::Handler::Sql {
-                db: db.clone(),
+                source: crate::auth_chain::SqlSource::Cluster(db.clone()),
                 user_query: "SELECT password FROM radius_chain_users WHERE username = ?".to_string(),
                 reply_query: Some("SELECT attribute, value FROM radius_chain_reply WHERE username = ? AND attribute = 'Filter-Id'".to_string()),
                 certificate_query: None, default_user: None,

@@ -84,9 +84,16 @@ impl Descriptions {
         })
     }
 
-    /// Whether the setting at `path` is marked `secret`, its own entry or the one it shares.
+    /// Whether the setting at `path` is marked `secret`. The names under a map are not in the table, which has
+    /// `*` in their place (`databases.*.password`), so every segment may also stand for one.
     pub fn is_secret(&self, path: &str) -> bool {
-        self.entry(path).is_some_and(|texts| texts.secret)
+        let segments: Vec<&str> = path.split('.').collect();
+        // Paths are a few segments deep; the bound only keeps a strange one from costing much.
+        let tries = 1u32 << segments.len().min(12);
+        (0..tries).any(|stars| {
+            let candidate: Vec<&str> = segments.iter().enumerate().map(|(index, segment)| if index < 12 && stars & (1 << index) != 0 { "*" } else { *segment }).collect();
+            self.entry(&candidate.join(".")).is_some_and(|texts| texts.secret)
+        })
     }
 
     /// The entry of `path`: its own, or through `same_as` that of the path it shares.
@@ -247,6 +254,7 @@ const CHAPTERS: &[(&str, &str)] = &[
     ("runtime", "#24-過載與重送"),
     ("metrics", "#28-統計-metrics"),
     ("shutdown", "#216-停止-shutdown"),
+    ("databases", "#217-外部資料庫-databases"),
     ("log", "#210-記錄-log"),
     ("accounts", "#214-帳號管理-accounts"),
     ("auth", "#3-認證串接-auth"),

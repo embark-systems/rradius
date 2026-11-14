@@ -25,6 +25,7 @@ pub const PATH_KEYS: &[&str] = &[
     "secret_raft_file",
     "secret_api_file",
     "bind_password_file",
+    "password_file",
     "cert_file",
     "key_file",
     "client_ca_file",

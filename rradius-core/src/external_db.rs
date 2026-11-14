@@ -1,0 +1,461 @@
+//! External MySQL and PostgreSQL databases: `[databases.<name>]`, which the `sql` handler's
+//! `database` and the scripts' `db_query` and `db_execute` use.
+
+use crate::config::{DatabaseKind, DatabaseSettings, DatabaseTls};
+use crate::lua_engine::{DbFailure, DbRow, DbValue};
+use sqlx::{Column, ConnectOptions, Row, ValueRef};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+/// The connections of one `[databases.<name>]`.
+pub struct ExternalDatabase {
+    name: String,
+    kind: DatabaseKind,
+    pool: Pool,
+}
+
+enum Pool {
+    Mysql(sqlx::MySqlPool),
+    Postgres(sqlx::PgPool),
+}
+
+/// Every `[databases.<name>]`, by name. Made at startup; a reload keeps them.
+#[derive(Clone, Default)]
+pub struct ExternalDatabases(Arc<BTreeMap<String, Arc<ExternalDatabase>>>);
+
+impl ExternalDatabases {
+    /// A pool for each database, without connecting: the first call that needs a connection
+    /// opens one, so a database that is down does not keep the server from starting. Needs a
+    /// Tokio runtime.
+    pub fn open(settings: &BTreeMap<String, DatabaseSettings>) -> Self {
+        let databases = settings
+            .iter()
+            .map(|(name, settings)| {
+                if settings.tls == DatabaseTls::Off && !is_loopback(&settings.host) {
+                    tracing::warn!("databases.{name}: tls = \"off\" sends the password and the data to {} unencrypted", settings.host);
+                }
+                (name.clone(), Arc::new(ExternalDatabase::open(name, settings)))
+            })
+            .collect();
+        Self(Arc::new(databases))
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Arc<ExternalDatabase>> {
+        self.0.get(name)
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+}
+
+/// Whether `host` is this machine, so that a connection to it without TLS stays on it.
+fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+impl ExternalDatabase {
+    fn open(name: &str, settings: &DatabaseSettings) -> Self {
+        let pool = match settings.kind {
+            DatabaseKind::Postgresql => {
+                // Not `new`: it reads `~/.pgpass`. The variables `new_without_pgpass` reads are
+                // overridden below wherever the configuration says something.
+                let mut options = sqlx::postgres::PgConnectOptions::new_without_pgpass().host(&settings.host).port(settings.port).database(&settings.database).username(&settings.user);
+                if let Some(password) = &settings.password {
+                    options = options.password(password);
+                }
+                options = match settings.tls {
+                    DatabaseTls::Verify => options.ssl_mode(sqlx::postgres::PgSslMode::VerifyFull),
+                    DatabaseTls::Off => options.ssl_mode(sqlx::postgres::PgSslMode::Disable),
+                };
+                if let Some(ca_file) = &settings.ca_file {
+                    options = options.ssl_root_cert(ca_file);
+                }
+                Pool::Postgres(pool_options(settings).connect_lazy_with(options.disable_statement_logging()))
+            }
+            DatabaseKind::Mysql => {
+                let mut options = sqlx::mysql::MySqlConnectOptions::new().host(&settings.host).port(settings.port).database(&settings.database).username(&settings.user);
+                if let Some(password) = &settings.password {
+                    options = options.password(password);
+                }
+                options = match settings.tls {
+                    DatabaseTls::Verify => options.ssl_mode(sqlx::mysql::MySqlSslMode::VerifyIdentity),
+                    DatabaseTls::Off => options.ssl_mode(sqlx::mysql::MySqlSslMode::Disabled),
+                };
+                if let Some(ca_file) = &settings.ca_file {
+                    options = options.ssl_ca(ca_file);
+                }
+                Pool::Mysql(pool_options(settings).connect_lazy_with(options.disable_statement_logging()))
+            }
+        };
+        Self { name: name.to_string(), kind: settings.kind, pool }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn kind(&self) -> DatabaseKind {
+        self.kind
+    }
+
+    /// The rows `sql` returns, with `params` bound to its `?` placeholders in order. The caller
+    /// checks the number of values and bounds the time.
+    pub async fn query(&self, sql: &str, params: &[hiqlite::Param]) -> Result<Vec<DbRow>, DbFailure> {
+        // The SQL is the configuration's or the script's, as with `sql_query`; values are bound.
+        let statement = statement_for(self.kind, sql).map_err(DbFailure::mistake)?;
+        match &self.pool {
+            Pool::Postgres(pool) => {
+                let mut connection = pool.acquire().await.map_err(|e| self.failure(&e, true))?;
+                let rows = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(statement.as_str())), params).fetch_all(&mut *connection).await.map_err(|e| self.failure(&e, false))?;
+                rows.iter().map(|row| self.row(row, no_unsigned)).collect()
+            }
+            Pool::Mysql(pool) => {
+                let mut connection = pool.acquire().await.map_err(|e| self.failure(&e, true))?;
+                let rows = bind_mysql(sqlx::query(sqlx::AssertSqlSafe(statement.as_str())), params).fetch_all(&mut *connection).await.map_err(|e| self.failure(&e, false))?;
+                rows.iter().map(|row| self.row(row, mysql_unsigned)).collect()
+            }
+        }
+    }
+
+    /// How many rows `sql` changed, with `params` bound as for `query`.
+    pub async fn execute(&self, sql: &str, params: &[hiqlite::Param]) -> Result<u64, DbFailure> {
+        // The SQL is the configuration's or the script's, as with `sql_query`; values are bound.
+        let statement = statement_for(self.kind, sql).map_err(DbFailure::mistake)?;
+        match &self.pool {
+            Pool::Postgres(pool) => {
+                let mut connection = pool.acquire().await.map_err(|e| self.failure(&e, true))?;
+                let done = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(statement.as_str())), params).execute(&mut *connection).await.map_err(|e| self.failure(&e, false))?;
+                Ok(done.rows_affected())
+            }
+            Pool::Mysql(pool) => {
+                let mut connection = pool.acquire().await.map_err(|e| self.failure(&e, true))?;
+                let done = bind_mysql(sqlx::query(sqlx::AssertSqlSafe(statement.as_str())), params).execute(&mut *connection).await.map_err(|e| self.failure(&e, false))?;
+                Ok(done.rows_affected())
+            }
+        }
+    }
+
+    /// `error` as a failure of this database; `connecting` when it came while getting a
+    /// connection, which is never the statement's fault.
+    fn failure(&self, error: &sqlx::Error, connecting: bool) -> DbFailure {
+        let message = format!("database {}: {error}", self.name);
+        match classify(error, connecting) {
+            Class::Unavailable => DbFailure::database_unavailable(message),
+            Class::Mistake => DbFailure::mistake(message),
+            Class::Unknown => DbFailure::other(message),
+        }
+    }
+
+    fn row<R: Row>(&self, row: &R, unsigned: Unsigned<R>) -> Result<DbRow, DbFailure>
+    where
+        usize: sqlx::ColumnIndex<R>,
+        for<'r> i8: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> i16: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> i32: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> f32: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> f64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> bool: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Vec<u8>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    {
+        let mut values = Vec::with_capacity(row.columns().len());
+        for (index, column) in row.columns().iter().enumerate() {
+            let name = column.name();
+            let raw = row.try_get_raw(index).map_err(|e| self.failure(&e, false))?;
+            let value = if raw.is_null() { DbValue::Null } else { self.value(row, index, name, unsigned)? };
+            values.push((name.to_string(), value));
+        }
+        Ok(values)
+    }
+
+    /// The value of a column that is not NULL: the first type it decodes as, in the order of the
+    /// spec's list, checked against the column's type.
+    fn value<R: Row>(&self, row: &R, index: usize, name: &str, unsigned: Unsigned<R>) -> Result<DbValue, DbFailure>
+    where
+        usize: sqlx::ColumnIndex<R>,
+        for<'r> i8: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> i16: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> i32: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> f32: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> f64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> bool: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Vec<u8>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    {
+        if let Ok(value) = row.try_get::<i64, _>(index) {
+            return Ok(DbValue::Integer(value));
+        }
+        if let Ok(value) = row.try_get::<i32, _>(index) {
+            return Ok(DbValue::Integer(i64::from(value)));
+        }
+        if let Ok(value) = row.try_get::<i16, _>(index) {
+            return Ok(DbValue::Integer(i64::from(value)));
+        }
+        if let Ok(value) = row.try_get::<i8, _>(index) {
+            return Ok(DbValue::Integer(i64::from(value)));
+        }
+        // Before bool, which takes a MySQL column of any integer type and gives 1 for 5.
+        if let Some(value) = unsigned(row, index) {
+            let value = value.map_err(|too_big| DbFailure::mistake(format!("database {}: column {name} holds {too_big}, more than a script number can hold; CAST it to text in the SQL", self.name)))?;
+            return Ok(DbValue::Integer(value));
+        }
+        if let Ok(value) = row.try_get::<f64, _>(index) {
+            return Ok(DbValue::Real(value));
+        }
+        if let Ok(value) = row.try_get::<f32, _>(index) {
+            return Ok(DbValue::Real(f64::from(value)));
+        }
+        if let Ok(value) = row.try_get::<bool, _>(index) {
+            return Ok(DbValue::Integer(i64::from(value)));
+        }
+        if let Ok(value) = row.try_get::<String, _>(index) {
+            return Ok(DbValue::Text(value));
+        }
+        if let Ok(value) = row.try_get::<Vec<u8>, _>(index) {
+            return Ok(DbValue::Blob(value));
+        }
+        // The same statement would find the same type again: the SQL's mistake.
+        Err(DbFailure::mistake(format!("database {}: column {name} has a type that cannot be read; CAST it to text in the SQL", self.name)))
+    }
+}
+
+/// Reads a column of an unsigned integer type, or says it is none: `Err` holds a value too big
+/// for an `i64`.
+type Unsigned<R> = fn(&R, usize) -> Option<Result<i64, u64>>;
+
+/// PostgreSQL has no unsigned integer types.
+fn no_unsigned(_: &sqlx::postgres::PgRow, _: usize) -> Option<Result<i64, u64>> {
+    None
+}
+
+/// MySQL's `UNSIGNED` columns, which its signed types refuse.
+fn mysql_unsigned(row: &sqlx::mysql::MySqlRow, index: usize) -> Option<Result<i64, u64>> {
+    let value = row.try_get::<u64, _>(index).ok()?;
+    Some(i64::try_from(value).map_err(|_| value))
+}
+
+fn pool_options<DB: sqlx::Database>(settings: &DatabaseSettings) -> sqlx::pool::PoolOptions<DB> {
+    // `pool_size` is at least 1 and a configuration would not hold four billion.
+    let size = u32::try_from(settings.pool_size).unwrap_or(u32::MAX);
+    // Waiting for a connection, which takes opening one when none is free, is bounded by the
+    // connect timeout as well as by the caller's.
+    sqlx::pool::PoolOptions::new().max_connections(size).min_connections(0).acquire_timeout(settings.connect_timeout)
+}
+
+fn bind_postgres<'q>(mut query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, params: &'q [hiqlite::Param]) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    for param in params {
+        query = match param {
+            hiqlite::Param::Null => query.bind(None::<String>),
+            hiqlite::Param::Integer(value) => query.bind(*value),
+            hiqlite::Param::Real(value) => query.bind(*value),
+            hiqlite::Param::Text(value) => query.bind(value.as_str()),
+            hiqlite::Param::Blob(value) => query.bind(value.as_slice()),
+            // What hiqlite passes between the statements of one transaction; scripts never make it.
+            hiqlite::Param::StmtOutputIndexed(..) | hiqlite::Param::StmtOutputNamed(..) => query.bind(None::<String>),
+        };
+    }
+    query
+}
+
+fn bind_mysql<'q>(mut query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>, params: &'q [hiqlite::Param]) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
+    for param in params {
+        query = match param {
+            hiqlite::Param::Null => query.bind(None::<String>),
+            hiqlite::Param::Integer(value) => query.bind(*value),
+            hiqlite::Param::Real(value) => query.bind(*value),
+            hiqlite::Param::Text(value) => query.bind(value.as_str()),
+            hiqlite::Param::Blob(value) => query.bind(value.as_slice()),
+            // What hiqlite passes between the statements of one transaction; scripts never make it.
+            hiqlite::Param::StmtOutputIndexed(..) | hiqlite::Param::StmtOutputNamed(..) => query.bind(None::<String>),
+        };
+    }
+    query
+}
+
+/// The statement as sent to a database of `kind`: for PostgreSQL the n-th `?` becomes `$n`, for
+/// MySQL nothing changes. A `?` in text, a quoted name or a comment is left alone, and numbered
+/// or named placeholders are refused, as `sql_query` refuses them.
+pub fn statement_for(kind: DatabaseKind, sql: &str) -> Result<String, String> {
+    let placeholders = crate::lua_engine::sql_placeholders(sql)?;
+    if let Some(numbered) = placeholders.iter().find(|placeholder| placeholder.number.is_some()) {
+        let form: String = sql[numbered.at..].chars().take_while(|c| *c == '?' || c.is_ascii_digit()).collect();
+        return Err(format!("only plain ? placeholders are supported, found {form}"));
+    }
+    if kind == DatabaseKind::Mysql {
+        return Ok(sql.to_string());
+    }
+    let mut statement = String::with_capacity(sql.len() + placeholders.len() * 2);
+    let mut from = 0;
+    for (index, placeholder) in placeholders.iter().enumerate() {
+        statement.push_str(&sql[from..placeholder.at]);
+        statement.push('$');
+        statement.push_str(&(index + 1).to_string());
+        from = placeholder.at + 1;
+    }
+    statement.push_str(&sql[from..]);
+    Ok(statement)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Unavailable,
+    Mistake,
+    Unknown,
+}
+
+/// Whether trying later could help. Getting a connection fails only for reasons of the
+/// connection: the server is down, refuses the account or presents a certificate that does not
+/// verify. An error the server reports for the statement is the statement's, except those that
+/// say the server cannot take it now.
+fn classify(error: &sqlx::Error, connecting: bool) -> Class {
+    use sqlx::Error as E;
+    if connecting {
+        return Class::Unavailable;
+    }
+    match error {
+        E::Io(_) | E::Tls(_) | E::Protocol(_) | E::PoolTimedOut | E::PoolClosed | E::WorkerCrashed | E::BeginFailed => Class::Unavailable,
+        E::Database(database) if busy(database.as_ref()) => Class::Unavailable,
+        E::Database(_) | E::Encode(_) | E::InvalidArgument(_) => Class::Mistake,
+        _ => Class::Unknown,
+    }
+}
+
+/// MySQL errors that mean the server cannot take the statement now: too many connections, a
+/// shutdown, a lock wait timeout and a deadlock.
+const MYSQL_BUSY: [u16; 5] = [1040, 1053, 1205, 1213, 1317];
+
+/// Whether the server reported that it cannot take the statement now, rather than refusing it:
+/// PostgreSQL's SQLSTATE classes 08 (connection), 53 (resources) and 57 (operator intervention),
+/// serialization failures and deadlocks, and the MySQL errors of `MYSQL_BUSY`.
+fn busy(error: &dyn sqlx::error::DatabaseError) -> bool {
+    if let Some(mysql) = error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>() {
+        return MYSQL_BUSY.contains(&mysql.number());
+    }
+    let Some(code) = error.code() else {
+        return false;
+    };
+    ["08", "53", "57"].iter().any(|class| code.starts_with(class)) || code == "40001" || code == "40P01"
+}
+
+/// A database's settings and a port nothing listens on, for tests elsewhere too.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use crate::config::{DatabaseKind, DatabaseSettings, DatabaseTls};
+    use std::time::Duration;
+
+    pub(crate) fn settings(kind: DatabaseKind, host: &str, port: u16, tls: DatabaseTls) -> DatabaseSettings {
+        DatabaseSettings { user: "rradius".to_string(), pool_size: 2, connect_timeout: Duration::from_millis(300), ..crate::test_support::database_settings(kind, host, port, "rradius", "pw", tls, None) }
+    }
+
+    /// A port nothing listens on.
+    pub(crate) fn closed_port() -> Result<u16, String> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        drop(listener);
+        Ok(port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::test_support::{closed_port, settings};
+
+    /// spec Database not reachable at startup: opening does not connect, and a call through it
+    /// fails as the database being unavailable.
+    #[tokio::test]
+    async fn test_open_without_the_database() -> Result<(), String> {
+        let port = closed_port()?;
+        let mut all = BTreeMap::new();
+        all.insert("pg".to_string(), settings(DatabaseKind::Postgresql, "127.0.0.1", port, DatabaseTls::Off));
+        all.insert("my".to_string(), settings(DatabaseKind::Mysql, "127.0.0.1", port, DatabaseTls::Off));
+        let databases = ExternalDatabases::open(&all);
+        assert_eq!(databases.names().collect::<Vec<_>>(), ["my", "pg"]);
+        for name in ["pg", "my"] {
+            let database = databases.get(name).ok_or("missing")?;
+            let failure = database.query("SELECT 1", &[]).await.err().ok_or("it answered")?;
+            assert!(failure.unavailable(), "{name}: {failure}");
+            assert!(failure.to_string().contains(name), "{failure}");
+            let failure = database.execute("DELETE FROM t", &[]).await.err().ok_or("it answered")?;
+            assert!(failure.unavailable(), "{name}: {failure}");
+        }
+        Ok(())
+    }
+
+    /// spec Plain connection to a remote host: a warning for it, none for this machine.
+    #[tokio::test]
+    async fn test_warning_without_tls() {
+        let open = |host: &str| {
+            let mut all = BTreeMap::new();
+            all.insert("billing".to_string(), settings(DatabaseKind::Postgresql, host, 5432, DatabaseTls::Off));
+            ExternalDatabases::open(&all)
+        };
+        let remote = crate::test_support::radius::logged_during(async { drop(open("db.example.com")) }).await;
+        assert!(remote.contains("WARN") && remote.contains("databases.billing") && remote.contains("db.example.com"), "{remote}");
+        for host in ["127.0.0.1", "localhost", "::1", "[::1]"] {
+            let local = crate::test_support::radius::logged_during(async { drop(open(host)) }).await;
+            assert!(!local.contains("WARN"), "{host}: {local}");
+        }
+        let verified = crate::test_support::radius::logged_during(async {
+            let mut all = BTreeMap::new();
+            all.insert("billing".to_string(), settings(DatabaseKind::Postgresql, "db.example.com", 5432, DatabaseTls::Verify));
+            drop(ExternalDatabases::open(&all))
+        })
+        .await;
+        assert!(!verified.contains("WARN"), "{verified}");
+    }
+
+    /// spec rewriting by kind, and a `?` in text, a quoted name or a comment left alone.
+    #[test]
+    fn test_statement_for() -> Result<(), String> {
+        use DatabaseKind::{Mysql, Postgresql};
+        for (kind, sql, sent) in [
+            (Postgresql, "SELECT a FROM t WHERE x = ? AND y = ?", "SELECT a FROM t WHERE x = $1 AND y = $2"),
+            (Postgresql, "SELECT a FROM t -- why?\nWHERE x = ?", "SELECT a FROM t -- why?\nWHERE x = $1"),
+            (Mysql, "SELECT a FROM t WHERE x = ? AND y = ?", "SELECT a FROM t WHERE x = ? AND y = ?"),
+            (Postgresql, "SELECT '?' AS mark, plan FROM users WHERE username = ? AND realm = ?", "SELECT '?' AS mark, plan FROM users WHERE username = $1 AND realm = $2"),
+            (Postgresql, "SELECT \"a?\" /* ? */ FROM t WHERE x = ?", "SELECT \"a?\" /* ? */ FROM t WHERE x = $1"),
+            (Postgresql, "SELECT 'it''s?' FROM t", "SELECT 'it''s?' FROM t"),
+            (Postgresql, "SELECT a::text FROM t WHERE x = ?::inet", "SELECT a::text FROM t WHERE x = $1::inet"),
+        ] {
+            assert_eq!(statement_for(kind, sql)?, sent, "{sql}");
+        }
+        for refused in ["SELECT ?1", "SELECT :name", "SELECT $name", "SELECT $1"] {
+            for kind in [Mysql, Postgresql] {
+                let error = statement_for(kind, refused).err().ok_or(refused)?;
+                assert!(error.contains("only plain ? placeholders"), "{refused}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// One error of each class.
+    #[test]
+    fn test_classify() {
+        use sqlx::Error as E;
+        let io = || E::Io(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused"));
+        assert_eq!(classify(&io(), false), Class::Unavailable);
+        assert_eq!(classify(&E::PoolTimedOut, false), Class::Unavailable);
+        assert_eq!(classify(&E::PoolClosed, false), Class::Unavailable);
+        assert_eq!(classify(&E::Tls("bad certificate".into()), false), Class::Unavailable);
+        assert_eq!(classify(&E::Protocol("unexpected".to_string()), false), Class::Unavailable);
+        assert_eq!(classify(&E::Encode("too long".into()), false), Class::Mistake);
+        assert_eq!(classify(&E::Decode("bad".into()), false), Class::Unknown);
+        assert_eq!(classify(&E::RowNotFound, false), Class::Unknown);
+        // While connecting, everything is the connection's.
+        assert_eq!(classify(&E::Encode("too long".into()), true), Class::Unavailable);
+    }
+
+    #[test]
+    fn test_loopback() {
+        for host in ["localhost", "LOCALHOST", "127.0.0.1", "127.1.2.3", "::1", "[::1]"] {
+            assert!(is_loopback(host), "{host}");
+        }
+        for host in ["db.example.com", "10.0.0.1", "localhost.example.com", "::2"] {
+            assert!(!is_loopback(host), "{host}");
+        }
+    }
+}
