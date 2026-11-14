@@ -356,7 +356,8 @@ pub fn init_text(lang: Lang, extensions: &Extensions, secrets: &[String; 3]) -> 
          [cluster]\ndata_dir = \"data\"\nsecret_raft = \"{}\"\nsecret_api = \"{}\"\n\
          [[cluster.nodes]]\nid = 1\nraft = \"127.0.0.1:8100\"\napi = \"127.0.0.1:8200\"\n\
          [radius]\n\
-         [[radius.clients]]\nname = \"example\"\naddress = \"127.0.0.1\"\nsecret = \"{}\"\n",
+         [[radius.clients]]\nname = \"example\"\naddress = \"127.0.0.1\"\nsecret = \"{}\"\n\
+         [metrics]\n",
         secrets[0], secrets[1], secrets[2]
     )
     .parse()
@@ -367,10 +368,13 @@ pub fn init_text(lang: Lang, extensions: &Extensions, secrets: &[String; 3]) -> 
                      # Every node of the cluster needs the same secret_raft and secret_api; the example\n\
                      # client's secret goes into the NAS too.\n\
                      # Point dictionary at the installed dictionary, and create the script auth.lua.\n\
+                     # [metrics] answers /metrics, /livez and /readyz on 127.0.0.1:9812, which the status\n\
+                     # command reads; it has no authentication, so bind it to an inside address only.\n\
                      # A commented setting shows its default; remove the # to set it.\n",
         Lang::ZhTw => "# 由 `config init` 產生的 rradius 設定檔。\n\
                        # 叢集的每個節點都要用相同的 secret_raft 與 secret_api；範例用戶端的 secret 也要設在 NAS 上。\n\
                        # 把 dictionary 指向實際安裝的字典檔，並自己建立腳本 auth.lua。\n\
+                       # [metrics] 在 127.0.0.1:9812 回答 /metrics、/livez 與 /readyz，status 指令讀的就是它；沒有認證，只能綁內部位址。\n\
                        # 註解掉的設定列出預設值；拿掉 # 即可設定。\n",
     };
     out.push_str(heading);
@@ -577,6 +581,9 @@ mod tests {
             assert_eq!(cluster.get("secret_raft").and_then(toml::Value::as_str), Some(secrets[0].as_str()));
             assert_eq!(cluster.get("secret_api").and_then(toml::Value::as_str), Some(secrets[1].as_str()));
             assert!(text.contains("\n# max_auth_inflight = 4096\n"), "{text}");
+            // [metrics] on, at its defaults: status works on the configuration as it is.
+            assert_eq!(parsed.get("metrics").and_then(toml::Value::as_table).map(toml::Table::len), Some(0), "{text}");
+            assert!(text.contains("\n[metrics]\n") && text.contains("\n# bind = \"127.0.0.1\"\n") && text.contains("\n# port = 9812\n"), "{text}");
             assert!(text.contains("\n# [tacacs]\n") && text.contains("\n# [[tacacs.clients]]\n"), "{text}");
             let english = text.contains("# Point dictionary at the installed dictionary");
             assert_eq!(english, lang == Lang::En, "{text}");
