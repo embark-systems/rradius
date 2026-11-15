@@ -901,6 +901,12 @@ impl std::fmt::Display for MigrationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Invalid(message) | Self::Failed(message) => f.write_str(message),
+            // The cluster node gives one write 30 s to be answered, whatever migrations_wait_ms is:
+            // a file that takes longer goes on in the cluster, and the next start finds it done.
+            Self::Cluster(message) if message.contains("local client write timed out") => write!(
+                f,
+                "cluster was not ready to apply migrations: {message} (the cluster node gives one migration file 30 s to be answered, whatever migrations_wait_ms is; the file goes on running in the cluster: start again with migrations_wait_ms longer than it takes)"
+            ),
             Self::Cluster(message) => write!(f, "cluster was not ready to apply migrations: {message} (the limit is migrations_wait_ms; raise it if a migration file takes longer)"),
             Self::Unavailable(message) => write!(f, "cluster was not ready: {message}"),
         }
@@ -3803,6 +3809,12 @@ pub(crate) mod tests {
         assert_eq!(MigrationError::Failed(String::new()).exit_code(), 2);
         assert_eq!(MigrationError::Cluster(String::new()).exit_code(), 1);
         assert_eq!(MigrationError::Unavailable(String::new()).exit_code(), 1);
+        // A file over the 30 s the cluster node gives a write says so, as raising the wait alone
+        // does not keep the first start from giving up.
+        let slow = MigrationError::Cluster("cannot apply migrations: Timeout: local client write timed out".to_string()).to_string();
+        assert!(slow.contains("30 s") && slow.contains("start again"), "{slow}");
+        let wait = MigrationError::Cluster("no answer within 3s".to_string()).to_string();
+        assert!(wait.contains("the limit is migrations_wait_ms") && !wait.contains("30 s"), "{wait}");
         let unavailable = MigrationError::Unavailable("no usable leader".to_string()).to_string();
         assert!(unavailable.contains("not ready") && !unavailable.contains("migration"), "{unavailable}");
     }

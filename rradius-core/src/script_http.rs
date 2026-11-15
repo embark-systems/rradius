@@ -737,7 +737,10 @@ pub(crate) mod tests {
         let started = std::time::Instant::now();
         assert!(!engine.authenticate(login("carol")).await.accepted(), "not answered");
         let waited = started.elapsed();
-        assert!(waited >= Duration::from_millis(1500) && waited < Duration::from_secs(4), "{waited:?}");
+        // About 2 s: a script that gave up at once, or still waited for the 30 s it has before the
+        // waits were shortened, is what this is after. The upper limit has room for a machine busy
+        // with other tests, where this took longer than 4 s.
+        assert!(waited >= Duration::from_millis(1500) && waited < Duration::from_secs(10), "{waited:?}");
         Ok(())
     }
 }
