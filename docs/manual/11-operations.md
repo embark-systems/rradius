@@ -170,6 +170,9 @@ systemctl reload rradius        # 服務檔有 ExecReload=/bin/kill -HUP $MAINPI
 | `rradius_reload_total{result="error"}` | 重新載入失敗 | 大於 0 就要看記錄 |
 | `rradius_log_dropped_lines_total` | 記錄來不及寫 | 增加：記錄的去處太慢 |
 | `rradius_radius_response_seconds`、`rradius_tacacs_response_seconds` | 回應花了多久 | p99 變大：資料庫、目錄或腳本變慢，見下面的查詢 |
+| `rradius_external_db_failures_total{reason="unavailable"}` | 外部資料庫（MySQL、PostgreSQL）連不上或逾時 | 增加：資料庫、網路或帳號有問題；`reason="mistake"` 增加是 SQL 或值的錯 |
+| `rradius_external_db_connections{state="in_use"}` 對 `rradius_external_db_connections_max` | 外部資料庫的連線池用了多少 | 一直等於上限：呼叫在排隊，查詢變慢或 `pool_size` 太小 |
+| `rradius_external_db_reachable` | 設了 `required_for_ready` 的資料庫連不連得上 | 0：這台的 `/readyz` 回 503，負載平衡器會把它移出 |
 
 登入回應時間的 p99（5 分鐘內，全部節點一起算）：
 
@@ -191,13 +194,15 @@ echo 'Message-Authenticator=0x00' | radclient -t 2 -r 1 10.99.0.1:1812 status "$
 rradius-server status --config /etc/rradius/rradius.toml --watch
 ```
 
-每秒列一次登入、計費、回應、丟棄的每秒量、正在處理的請求和上限、`/readyz` 的狀態與叢集狀態，以及回應最多的幾個 client。要有 `[metrics]`；`--json` 給腳本用。說明見 [usage 2.8 節〈`status` 指令〉](../usage.md#看這台節點現在在做什麼status-指令)。
+每秒列一次登入、計費、回應、丟棄的每秒量、正在處理的請求和上限、`/readyz` 的狀態與叢集狀態、回應最多的幾個 client，有外部資料庫時再列出每個資料庫的連線用量、失敗的每秒量和連不連得上。要有 `[metrics]`；`--json` 給腳本用。說明見 [usage 2.8 節〈`status` 指令〉](../usage.md#看這台節點現在在做什麼status-指令)。
 
 叢集要一次看全部節點時加 `--cluster`：每台一列加合計，連不到的節點列為 unreachable。前提是各台的 `[metrics]` 綁在彼此連得到的內部位址、port 相同（見同一節）。
 
 ```bash
 rradius-server status --config /etc/rradius/rradius.toml --cluster --watch
 ```
+
+帳號資料庫在外部 MySQL 或 PostgreSQL、沒有它就無法正確回應時，在那個 `[databases.<名稱>]` 設 `required_for_ready = true`：它連不上時 `/readyz` 回 503 `database <名稱> unreachable`，負載平衡器或 Kubernetes 會先把這台移出。每 5 秒檢查一次，連續 2 次失敗算連不上，預設設定下最慢約 20 秒；恢復只要一次成功。所有節點都連同一個資料庫時，它停止會讓全部節點一起未就緒，所以只對真的不可缺的資料庫設定。細節見 [usage 2.17 節](../usage.md#217-外部資料庫-databases)。
 
 全部指標見 [usage 2.8 節](../usage.md#28-統計-metrics)。
 

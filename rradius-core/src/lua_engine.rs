@@ -2310,9 +2310,20 @@ impl LuaAuthEngine {
                     failed.note_mistake_raised(&error);
                     return Err(error);
                 };
-                let params = bound_params(function, &sql, &params).inspect_err(|e| failed.note_mistake_raised(e))?;
-                let result = database_call(slot.as_ref(), &failed, run_within(failed.left(timeout), call(database, sql, params))).await?;
-                match result.map_err(|_| database_timed_out(function, timeout))?.map_err(|failure| mlua::Error::RuntimeError(format!("{function}: {}", failure.message)))? {
+                let params = bound_params(function, &sql, &params).inspect_err(|e| {
+                    database.note_refused();
+                    failed.note_mistake_raised(e);
+                })?;
+                let left = failed.left(timeout);
+                let result = database_call(slot.as_ref(), &failed, run_within(left, call(database.clone(), sql, params))).await?;
+                match result.map_err(|_| {
+                    // A call made after the request's time was used up never reached the
+                    // database: the time is the script's, not the database's.
+                    if !left.is_zero() {
+                        database.note_timeout();
+                    }
+                    database_timed_out(function, timeout)
+                })?.map_err(|failure| mlua::Error::RuntimeError(format!("{function}: {}", failure.message)))? {
                     Answer::Rows(rows) => rows_to_lua(&lua, &rows),
                     Answer::Affected(affected) => Ok(Value::Number(affected as f64)),
                 }
@@ -3390,6 +3401,7 @@ pub(crate) mod tests {
             let decision = LuaAuthEngine::new(test_vms(), test_db(), &script)?.with_databases(databases.clone()).authenticate(test_request()).await;
             assert!(!decision.accepted() && !decision.database_failed && decision.final_result, "a mistake, not the database: {function}");
         }
+        assert_eq!(databases.get("hang").ok_or("not open")?.failures(), crate::external_db::FailureTotals::default(), "a name not configured is no database's failure");
         Ok(())
     }
 
@@ -3398,7 +3410,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_db_query_parameters_checked_first() -> Result<(), String> {
         let databases = hanging_database().await?;
-        let engine = LuaAuthEngine::new(test_vms(), test_db(), "return 'accept'")?.with_databases(databases).with_query_timeout(Duration::from_secs(20));
+        let engine = LuaAuthEngine::new(test_vms(), test_db(), "return 'accept'")?.with_databases(databases.clone()).with_query_timeout(Duration::from_secs(20));
         let lua = engine.new_state(&test_request()).map_err(|e| e.to_string())?;
         let started = std::time::Instant::now();
         for (call, expected) in [
@@ -3411,6 +3423,8 @@ pub(crate) mod tests {
             assert!(error.contains(expected), "{call}: {error}");
         }
         assert!(started.elapsed() < Duration::from_secs(5), "something waited for the database");
+        let counted = databases.get("hang").ok_or("not open")?.failures();
+        assert_eq!((counted.mistake, counted.unavailable), (4, 0), "each refused call is a mistake against it");
         Ok(())
     }
 
@@ -3435,6 +3449,10 @@ pub(crate) mod tests {
         }
         let decision = engine("db_query('hang', 'SELECT 1') return 'accept'")?.authenticate(test_request()).await;
         assert!(decision.database_failed, "a timeout counts as the database failing");
+        let counted = databases.get("hang").ok_or("not open")?.failures();
+        // The calls that waited on the database: not the two made with nothing left, which never
+        // reached it.
+        assert_eq!((counted.unavailable, counted.mistake), (3, 0), "only the calls that had time left");
         Ok(())
     }
 

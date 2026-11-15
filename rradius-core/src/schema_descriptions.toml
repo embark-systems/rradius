@@ -332,6 +332,10 @@ zh-TW = "對這個資料庫最多保持的連線數，至少 1。"
 en = "How long opening one connection may take, in milliseconds."
 zh-TW = "建立一條連線的時限，毫秒。"
 
+[fields."databases.*.required_for_ready"]
+en = "Whether /readyz answers 503 while this database cannot be reached. A check runs SELECT 1 on a connection of its own every 5 seconds; two failures in a row make it unreachable, one success reachable again."
+zh-TW = "這個資料庫連不上時 /readyz 是否回 503。每 5 秒用一條專用連線執行 SELECT 1；連續兩次失敗算連不上，一次成功就恢復。"
+
 # log
 
 [fields."log.level"]

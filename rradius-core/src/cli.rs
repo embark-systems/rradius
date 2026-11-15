@@ -452,6 +452,8 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     let dictionary = Arc::new(dictionary);
     // Pools only: nothing connects until a handler or a script needs a connection.
     let databases = crate::external_db::ExternalDatabases::open(&config.databases);
+    databases.start_checks();
+    metrics.watch_databases(databases.clone());
     let shared = Shared { db: db.clone(), vms, dictionary: dictionary.clone(), metrics: metrics.clone(), extensions: extensions.clone(), databases };
     let generation = match reload::build(&config, &shared) {
         Ok(generation) => generation,

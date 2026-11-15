@@ -419,6 +419,7 @@ mod tests {
         let database = |pool: usize| format!("{plain}[databases.billing]\nkind = \"postgresql\"\nhost = \"h\"\ndatabase = \"d\"\nuser = \"u\"\npool_size = {pool}\n");
         assert_eq!(restart_names(&database(8), &database(16)), ["[databases]"]);
         assert_eq!(restart_names(&plain, &database(8)), ["[databases]"]);
+        assert_eq!(restart_names(&database(8), &format!("{}required_for_ready = true\n", database(8))), ["[databases]"]);
         // The script and the secret are applied, so they are not reported.
         assert!(restart_names(&plain, &plain.replace("auth.lua", "other.lua")).is_empty());
         assert!(restart_names(&plain, &plain.replace("secret = \"s\"", "secret = \"t\"")).is_empty());
