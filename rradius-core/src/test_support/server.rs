@@ -9,6 +9,7 @@ use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A port for one server to bind later, handed out once, from below the range systems use
@@ -19,14 +20,80 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// where a socket is not close-on-exec from the moment it exists, a server being spawned
 /// by a test alongside can inherit it and hold the port for as long as it runs.
 ///
-/// The start moves with the clock, 20 ports a second, because a server that just ended
-/// leaves its TCP ports unusable for a while: a run starting seconds after another stays
-/// past the ports that one used, and the range lasts ten minutes before it comes round.
+/// A process takes its ports from lanes of 250, each held by one process at a time with a lock
+/// on a file in the temporary directory, so that test programs running side by side (as when a
+/// CI job runs them in parallel, or one process runs each test) never hand out the same port.
+/// The lock goes with the process. Past the 48 lanes, or where the files cannot be locked,
+/// ports come from a range that moves with the clock, as they did before, which the processes
+/// of one second share.
 pub fn free_port() -> u16 {
-    static NEXT: AtomicU16 = AtomicU16::new(0);
-    let seconds = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
-    let _ = NEXT.compare_exchange(0, 20000 + (seconds % 600) as u16 * 20, Ordering::SeqCst, Ordering::SeqCst);
-    NEXT.fetch_add(1, Ordering::SeqCst)
+    static LANES: Mutex<Option<PortLanes>> = Mutex::new(None);
+    let mut lanes = LANES.lock().unwrap_or_else(PoisonError::into_inner);
+    let lanes = lanes.get_or_insert_with(|| PortLanes::new(std::env::temp_dir().join("rradius-test-ports")));
+    lanes.next().unwrap_or_else(|| {
+        static NEXT: AtomicU16 = AtomicU16::new(0);
+        let _ = NEXT.compare_exchange(0, FIRST_PORT + (unix_seconds() % 600) as u16 * 20, Ordering::SeqCst, Ordering::SeqCst);
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    })
+}
+
+/// The first port of the lanes.
+const FIRST_PORT: u16 = 20000;
+/// How many lanes there are, and how many ports each has: 48 * 250 ports end at 31999.
+const LANES: u16 = 48;
+const LANE_PORTS: u16 = 250;
+
+fn unix_seconds() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// The lanes one process has taken, and where it is in the last one.
+struct PortLanes {
+    dir: PathBuf,
+    /// The files whose lock this process holds, with the lane of each: closing one frees its lane.
+    held: Vec<(u16, std::fs::File)>,
+    /// How many ports of the last lane have been handed out.
+    used: u16,
+    /// Where in a lane the ports begin, so that a process that takes a lane just left by another
+    /// starts past the ports that one used, which a server that ended may still hold.
+    start: u16,
+}
+
+impl PortLanes {
+    fn new(dir: PathBuf) -> PortLanes {
+        PortLanes { dir, held: Vec::new(), used: LANE_PORTS, start: (unix_seconds() % 50) as u16 * 5 }
+    }
+
+    /// The next port, or `None` when no lane is free to take.
+    fn next(&mut self) -> Option<u16> {
+        if self.used >= LANE_PORTS {
+            self.take_lane()?;
+        }
+        let (lane, _) = self.held.last()?;
+        let port = FIRST_PORT + lane * LANE_PORTS + (self.start + self.used) % LANE_PORTS;
+        self.used += 1;
+        Some(port)
+    }
+
+    /// Locks the first lane that is free, beginning at one that depends on the process so that
+    /// processes starting together do not all try the same.
+    fn take_lane(&mut self) -> Option<()> {
+        std::fs::create_dir_all(&self.dir).ok()?;
+        let first = (std::process::id() % u32::from(LANES)) as u16;
+        for step in 0..LANES {
+            let lane = (first + step) % LANES;
+            if self.held.iter().any(|(held, _)| *held == lane) {
+                continue;
+            }
+            let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.dir.join(format!("lane-{lane}"))) else { continue };
+            if file.try_lock().is_ok() {
+                self.held.push((lane, file));
+                self.used = 0;
+                return Some(());
+            }
+        }
+        None
+    }
 }
 
 /// Writes a configuration with `script` as `[lua].script` and, when given,
@@ -566,4 +633,52 @@ pub fn lock_files(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     locks(&dir.join("data"), &mut found);
     found
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    fn lane_of(port: u16) -> u16 {
+        (port - FIRST_PORT) / LANE_PORTS
+    }
+
+    /// Two processes (two sets of lanes on one directory) hand out no port twice, also when one
+    /// needs more than a lane, and every port is below the range of outgoing connections.
+    #[test]
+    fn test_lanes_do_not_overlap() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let (mut a, mut b) = (PortLanes::new(dir.path().to_path_buf()), PortLanes::new(dir.path().to_path_buf()));
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..700 {
+            for lanes in [&mut a, &mut b] {
+                let port = lanes.next().ok_or("no lane")?;
+                assert!((FIRST_PORT..FIRST_PORT + LANES * LANE_PORTS).contains(&port), "{port}");
+                assert!(seen.insert(port), "{port} handed out twice");
+            }
+        }
+        assert!(a.held.len() >= 3 && b.held.len() >= 3, "{} and {} lanes", a.held.len(), b.held.len());
+        Ok(())
+    }
+
+    /// A lane is free again once the process that held it ends, and with every lane held there is
+    /// no port from the lanes.
+    #[test]
+    fn test_lane_freed_with_its_process_and_none_left() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let mut a = PortLanes::new(dir.path().to_path_buf());
+        let first = lane_of(a.next().ok_or("no lane")?);
+        let mut b = PortLanes::new(dir.path().to_path_buf());
+        assert_ne!(lane_of(b.next().ok_or("no lane")?), first, "a lane held by a process is taken by another");
+        drop(a);
+        let mut c = PortLanes::new(dir.path().to_path_buf());
+        assert_eq!(lane_of(c.next().ok_or("no lane")?), first, "the lane of an ended process is free");
+        let mut all = PortLanes::new(dir.path().to_path_buf());
+        while all.take_lane().is_some() {}
+        // The lanes b and c hold, and the rest in `all`.
+        assert_eq!(all.held.len() + 2, usize::from(LANES), "every lane is held by someone");
+        all.used = LANE_PORTS;
+        assert_eq!(all.next(), None);
+        Ok(())
+    }
 }
