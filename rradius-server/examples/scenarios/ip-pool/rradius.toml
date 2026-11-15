@@ -1,0 +1,53 @@
+# 位址池：單機，認證時從資料表的池分配 IP 位址，計費確認與釋放。
+# 說明：docs/manual/14-ip-pool.md
+#
+#   cd rradius-server
+#   cargo run --release -- server --config examples/scenarios/ip-pool/rradius.toml
+#
+# 相對路徑都以這個檔案所在的目錄為準。
+
+dictionary = "../../../../share/dictionary"
+
+# 有 [auth] 時認證交給下面的串接；這個腳本只處理計費（確認、延長、釋放位址）。
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+# all_accept：依序執行，任一個拒絕就停。先由 sql 處理器驗密碼（密碼錯就不會往下，所以不會替
+# 沒通過的人分配位址），再由 lua 處理器分配位址。
+[auth]
+policy = "all_accept"
+
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM subscribers WHERE username = ? AND enabled = 1"
+
+[[auth.handlers]]
+type = "lua"
+script = "allocate.lua"
+
+[radius]
+bind = "127.0.0.1"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[[radius.clients]]
+name = "localhost"
+address = "127.0.0.1"
+secret_file = "localhost.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812
+
+# 現在在線的 session：rradius-server session list。位址池本身就記著誰在用哪個位址，
+# 所以直接查它：狀態是 active 而且還沒到期的列。
+[sessions]
+list = "SELECT username, nas, session_id, ip, updated FROM ip_pool WHERE state = 'active' AND expires > strftime('%s', 'now') ORDER BY ip"
+show = "SELECT username, nas, session_id, ip, updated FROM ip_pool WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY ip"

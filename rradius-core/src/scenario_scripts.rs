@@ -14,6 +14,10 @@ const QUICK_START_ACCOUNTING: &str = include_str!("../../rradius-server/examples
 const DEVICE_ADMIN_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/device-admin/migrations/1_schema.sql");
 const DEVICE_ADMIN_DATA: &str = include_str!("../../rradius-server/examples/scenarios/device-admin/migrations/2_demo_data.sql");
 const DEVICE_ADMIN_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/device-admin/tacacs.lua");
+const IP_POOL_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/migrations/1_schema.sql");
+const IP_POOL_DATA: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/migrations/2_demo_data.sql");
+const IP_POOL_ALLOCATE: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/allocate.lua");
+const IP_POOL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
 
 /// `text` with each of `tables` renamed to `prefix_table`, whole words only, and not where the
 /// word is a quoted string of its own, such as the phase `'accounting'`.
@@ -300,5 +304,211 @@ async fn test_member_api_script() -> Result<(), String> {
     assert_eq!(run_with_http(EXTERNAL_API_SCRIPT, &address, login("dave", "")).await?.0, Outcome::Reject);
     assert_eq!(run_with_http(EXTERNAL_API_SCRIPT, &address, vec![("User-Name", bytes("dave"))]).await?.0, Outcome::Reject, "CHAP has no password to send");
     assert_eq!(asked.lock().map_err(|e| e.to_string())?.len(), 1, "only the slow one was asked");
+    Ok(())
+}
+
+// ---- The address pool of chapter 14 ----
+
+const POOL_TABLES: [&str; 6] = ["subscribers", "ip_pool", "housekeeping", "ip_pool_user", "ip_pool_state", "ip_pool_expiry"];
+
+/// The pool's schema and demo data under `prefix`, with the two scripts.
+struct Pool {
+    prefix: &'static str,
+    allocate: String,
+    accounting: String,
+}
+
+impl Pool {
+    async fn new(prefix: &'static str) -> Pool {
+        apply(&renamed(IP_POOL_SCHEMA, prefix, &POOL_TABLES)).await;
+        apply(&renamed(IP_POOL_DATA, prefix, &POOL_TABLES)).await;
+        // The first request would reap the table; the tests that look at a reap ask for it.
+        apply(&format!("UPDATE {prefix}_housekeeping SET last_run = {}", now())).await;
+        Pool { prefix, allocate: renamed(IP_POOL_ALLOCATE, prefix, &POOL_TABLES), accounting: renamed(IP_POOL_ACCOUNTING, prefix, &POOL_TABLES) }
+    }
+
+    /// The chain's lua handler for `user`: the outcome and the Framed-IP-Address it gave.
+    async fn allocate(&self, user: &str) -> (Outcome, Option<String>, Vec<(String, AttrValue)>) {
+        let (outcome, attributes) = run(&self.allocate, "radius", "authentication", "nas-a", Some(user), vec![("User-Name", bytes(user))]).await;
+        let ip = attributes.iter().find_map(|(name, value)| match value {
+            AttrValue::Bytes(found) if name == "Framed-IP-Address" => Some(String::from_utf8_lossy(found).into_owned()),
+            _ => None,
+        });
+        (outcome, ip, attributes)
+    }
+
+    /// An accounting packet from the NAS `nas` for `user`'s session `session`.
+    async fn account(&self, nas: &str, status: f64, user: &str, session: &str, ip: &str) -> Outcome {
+        let attributes = vec![
+            ("User-Name", bytes(user)),
+            ("Acct-Session-Id", bytes(session)),
+            ("Acct-Status-Type", number(status)),
+            ("Framed-IP-Address", bytes(ip)),
+            ("NAS-IP-Address", bytes(nas)),
+        ];
+        run(&self.accounting, "radius", "accounting", "nas-a", None, attributes).await.0
+    }
+
+    /// (state, user, session, nas) of the address.
+    async fn row(&self, ip: &str) -> Vec<DbValue> {
+        let found = rows(&format!("SELECT state, username, session_id, nas FROM {}_ip_pool WHERE ip = '{ip}'", self.prefix)).await;
+        found.into_iter().next().unwrap_or_default()
+    }
+
+    async fn count(&self, state: &str) -> i64 {
+        match rows(&format!("SELECT count(*) FROM {}_ip_pool WHERE state = '{state}'", self.prefix)).await.first().and_then(|row| row.first()) {
+            Some(DbValue::Integer(count)) => *count,
+            _ => -1,
+        }
+    }
+
+    async fn execute(&self, sql: &str) {
+        apply(&sql.replace("POOL", &format!("{}_ip_pool", self.prefix)).replace("SUBS", &format!("{}_subscribers", self.prefix)).replace("HOUSE", &format!("{}_housekeeping", self.prefix))).await;
+    }
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
+fn in_range(ip: &str, prefix: &str) -> bool {
+    ip.starts_with(prefix)
+}
+
+/// Who gets what: one address for each user from the user's own pool, the same one when asking
+/// again, and none for an account that is disabled or unknown.
+#[tokio::test]
+async fn test_ip_pool_gives_each_user_an_address() -> Result<(), String> {
+    let pool = Pool::new("ipa").await;
+    let (outcome, alice, attributes) = pool.allocate("alice").await;
+    assert_eq!(outcome, Outcome::Accept);
+    let alice = alice.ok_or("no address for alice")?;
+    assert!(in_range(&alice, "10.77.0."), "{alice}");
+    assert!(attributes.iter().any(|(name, value)| name == "Acct-Interim-Interval" && *value == number(300.0)), "{attributes:?}");
+    assert_eq!(pool.row(&alice).await[..2], [txt("reserved"), txt("alice")]);
+
+    // Again: the same address, and no second one taken.
+    assert_eq!(pool.allocate("alice").await.1.as_deref(), Some(alice.as_str()));
+    assert_eq!(pool.count("reserved").await, 1);
+
+    let bob = pool.allocate("bob").await.1.ok_or("no address for bob")?;
+    let carol = pool.allocate("carol").await.1.ok_or("no address for carol")?;
+    assert!(alice != bob && bob != carol && alice != carol, "{alice} {bob} {carol}");
+    let dave = pool.allocate("dave").await.1.ok_or("no address for dave")?;
+    assert!(in_range(&dave, "10.88.0."), "the business pool: {dave}");
+
+    assert_eq!(pool.allocate("erin").await.0, Outcome::Reject, "disabled");
+    assert_eq!(pool.allocate("nobody").await.0, Outcome::Reject, "unknown");
+    assert_eq!(pool.count("reserved").await, 4, "nothing was taken for erin or nobody");
+    Ok(())
+}
+
+/// Requests at the same time never get the same address, and when there are more of them than
+/// addresses, exactly as many as there are addresses succeed.
+#[tokio::test]
+async fn test_ip_pool_at_the_same_time() -> Result<(), String> {
+    let pool = Pool::new("ipc").await;
+    let users: Vec<String> = (1..=12).map(|n| format!("u{n}")).collect();
+    for user in &users {
+        pool.execute(&format!("INSERT INTO SUBS (username, password, pool, enabled) VALUES ('{user}', 'x', 'residential', 1)")).await;
+    }
+    // Five at once: all get one, none the same. Then seven at once for the three that are left.
+    let mut asked = futures::future::join_all(users[..5].iter().map(|user| pool.allocate(user))).await;
+    assert!(asked.iter().all(|(outcome, _, _)| *outcome == Outcome::Accept), "five of eight");
+    asked.extend(futures::future::join_all(users[5..].iter().map(|user| pool.allocate(user))).await);
+    let mut addresses: Vec<String> = asked.iter().filter(|(outcome, _, _)| *outcome == Outcome::Accept).filter_map(|(_, ip, _)| ip.clone()).collect();
+    assert_eq!(addresses.len(), 8, "eight addresses in the pool");
+    addresses.sort();
+    addresses.dedup();
+    assert_eq!(addresses.len(), 8, "no address twice");
+    let refused: Vec<_> = asked.iter().filter(|(outcome, _, _)| *outcome != Outcome::Accept).collect();
+    assert_eq!(refused.len(), 4);
+    assert!(refused.iter().all(|(_, ip, _)| ip.is_none()), "no address for the refused");
+    assert_eq!(pool.count("reserved").await, 8);
+    assert_eq!(pool.count("free").await, 3, "the business pool is untouched");
+    Ok(())
+}
+
+/// The life of an address: reserved at the login, active at the Start, kept by Interim-Updates,
+/// free at the Stop, and given back to the same user on the next login.
+#[tokio::test]
+async fn test_ip_pool_follows_the_session() -> Result<(), String> {
+    let pool = Pool::new("ipl").await;
+    let alice = pool.allocate("alice").await.1.ok_or("no address for alice")?;
+
+    assert_eq!(pool.account("10.0.0.1", 1.0, "alice", "s1", &alice).await, Outcome::Accept);
+    assert_eq!(pool.row(&alice).await, [txt("active"), txt("alice"), txt("s1"), txt("10.0.0.1")]);
+    // The same Start twice is one Start; an Interim-Update moves the expiry.
+    assert_eq!(pool.account("10.0.0.1", 1.0, "alice", "s1", &alice).await, Outcome::Accept);
+    pool.execute(&format!("UPDATE POOL SET expires = 5 WHERE ip = '{alice}'")).await;
+    assert_eq!(pool.account("10.0.0.1", 3.0, "alice", "s1", &alice).await, Outcome::Accept);
+    let expires = rows(&format!("SELECT expires > {} FROM {}_ip_pool WHERE ip = '{alice}'", now() + 800, pool.prefix)).await;
+    assert_eq!(expires, [vec![int(1)]], "about 15 minutes from now");
+    // Logging in again while the session is up gives the address it has.
+    assert_eq!(pool.allocate("alice").await.1.as_deref(), Some(alice.as_str()));
+
+    // A Stop of another session of the user does not take the address from this one.
+    assert_eq!(pool.account("10.0.0.1", 2.0, "alice", "old-session", &alice).await, Outcome::Accept);
+    assert_eq!(pool.row(&alice).await[0], txt("active"));
+    assert_eq!(pool.account("10.0.0.1", 2.0, "alice", "s1", &alice).await, Outcome::Accept);
+    assert_eq!(pool.row(&alice).await, [txt("free"), DbValue::Null, DbValue::Null, DbValue::Null]);
+    // The Stop again changes nothing.
+    assert_eq!(pool.account("10.0.0.1", 2.0, "alice", "s1", &alice).await, Outcome::Accept);
+    assert_eq!(pool.count("free").await, 11, "all eleven are free");
+
+    // Sticky: round after round, the same address.
+    for round in 0..4 {
+        let again = pool.allocate("alice").await.1.ok_or("no address for alice")?;
+        assert_eq!(again, alice, "round {round}");
+        assert_eq!(pool.account("10.0.0.1", 1.0, "alice", "s2", &again).await, Outcome::Accept);
+        assert_eq!(pool.account("10.0.0.1", 2.0, "alice", "s2", &again).await, Outcome::Accept);
+    }
+    // Someone else has it: alice gets another one, and is not refused.
+    pool.execute(&format!("UPDATE POOL SET state = 'reserved', username = 'bob', expires = {} WHERE ip = '{alice}'", now() + 100)).await;
+    let other = pool.allocate("alice").await.1.ok_or("no address for alice")?;
+    assert!(other != alice && in_range(&other, "10.77.0."), "{other}");
+    // After the hold time the address is nobody's in particular.
+    pool.execute(&format!("UPDATE POOL SET state = 'free', username = NULL, last_user = 'alice', released = {} WHERE ip = '{alice}'", now() - 90000)).await;
+    pool.execute(&format!("UPDATE POOL SET state = 'free', username = NULL WHERE ip = '{other}'")).await;
+    assert_eq!(pool.count("reserved").await, 0);
+    Ok(())
+}
+
+/// What is not confirmed or kept goes back: a reservation that never became a session, a session
+/// whose Interim-Updates stopped, and, at once, every session of a NAS that restarted.
+#[tokio::test]
+async fn test_ip_pool_takes_back_what_is_not_used() -> Result<(), String> {
+    let pool = Pool::new("ipr").await;
+    let alice = pool.allocate("alice").await.1.ok_or("no address for alice")?;
+    let bob = pool.allocate("bob").await.1.ok_or("no address for bob")?;
+    let carol = pool.allocate("carol").await.1.ok_or("no address for carol")?;
+    assert_eq!(pool.account("10.0.0.1", 1.0, "bob", "s-bob", &bob).await, Outcome::Accept);
+    assert_eq!(pool.account("10.0.0.2", 1.0, "carol", "s-carol", &carol).await, Outcome::Accept);
+
+    // Not yet: the reaper has run a moment ago.
+    assert_eq!(pool.allocate("dave").await.0, Outcome::Accept);
+    assert_eq!(pool.count("reserved").await + pool.count("active").await, 4);
+
+    // alice never started, bob's Interim-Updates stopped, carol is fine.
+    pool.execute(&format!("UPDATE POOL SET expires = 1 WHERE ip IN ('{alice}', '{bob}')")).await;
+    pool.execute("UPDATE HOUSE SET last_run = 0").await;
+    assert_eq!(pool.allocate("dave").await.0, Outcome::Accept);
+    assert_eq!(pool.row(&alice).await[0], txt("free"));
+    assert_eq!(pool.row(&bob).await[0], txt("free"));
+    assert_eq!(pool.row(&carol).await[0], txt("active"));
+    assert_eq!(rows(&format!("SELECT last_user FROM {}_ip_pool WHERE ip = '{bob}'", pool.prefix)).await, [vec![txt("bob")]], "the last user is kept");
+
+    // Late packet of bob's old session: the address is free, so it is taken back.
+    assert_eq!(pool.account("10.0.0.1", 3.0, "bob", "s-bob", &bob).await, Outcome::Accept);
+    assert_eq!(pool.row(&bob).await[..3], [txt("active"), txt("bob"), txt("s-bob")]);
+    // Late packet for an address someone else has: nothing changes, and the NAS is answered.
+    pool.execute(&format!("UPDATE POOL SET state = 'reserved', username = 'carol', expires = {} WHERE ip = '{alice}'", now() + 100)).await;
+    assert_eq!(pool.account("10.0.0.1", 3.0, "alice", "s-alice", &alice).await, Outcome::Accept);
+    assert_eq!(pool.row(&alice).await[..2], [txt("reserved"), txt("carol")]);
+
+    // The NAS 10.0.0.2 restarts: carol's address is free; bob's, on another NAS, is not touched.
+    assert_eq!(run(&pool.accounting, "radius", "accounting", "nas-a", None, vec![("Acct-Status-Type", number(7.0)), ("NAS-IP-Address", bytes("10.0.0.2"))]).await.0, Outcome::Accept);
+    assert_eq!(pool.row(&carol).await[0], txt("free"));
+    assert_eq!(pool.row(&bob).await[0], txt("active"));
     Ok(())
 }

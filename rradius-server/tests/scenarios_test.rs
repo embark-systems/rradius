@@ -88,6 +88,75 @@ fn test_quick_start() {
     assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
 }
 
+/// The Framed-IP-Address of an answer, as text.
+fn framed_ip(answer: &RadiusPacket) -> Option<String> {
+    let octets: [u8; 4] = answer.attribute(8)?.try_into().ok()?;
+    Some(std::net::Ipv4Addr::from(octets).to_string())
+}
+
+/// Chapter 14: the pool gives each user an address from the user's pool, the same one again, a
+/// Stop gives it back to the pool, and an empty pool refuses with a reason.
+#[test]
+fn test_ip_pool() -> TestResult {
+    let mut server = Server::start(SCENARIOS, "ip-pool", "rradius.toml", |text| text);
+    server.secret = secret_of(SCENARIOS, "ip-pool", "localhost.secret");
+
+    let alice = server.pap("alice", "alice-password");
+    assert_eq!(alice.code, ACCESS_ACCEPT, "{}", server.stderr());
+    let alice_ip = framed_ip(&alice).ok_or("no address for alice")?;
+    assert!(alice_ip.starts_with("10.77.0."), "{alice_ip}");
+    assert_eq!(number(&alice, 85), Some(300), "Acct-Interim-Interval");
+    // Logging in again gives the address she has.
+    assert_eq!(framed_ip(&server.pap("alice", "alice-password")), Some(alice_ip.clone()));
+    let bob_ip = framed_ip(&server.pap("bob", "bob-password")).ok_or("no address for bob")?;
+    assert_ne!(bob_ip, alice_ip);
+
+    // Not accepted, so no address is taken.
+    let wrong = server.pap("alice", "wrong");
+    assert_eq!(wrong.code, ACCESS_REJECT);
+    assert_eq!(framed_ip(&wrong), None);
+    for user in ["erin", "nobody"] {
+        assert_eq!(server.pap(user, "erin-password").code, ACCESS_REJECT, "{user}");
+    }
+
+    // The Start makes the session; `session list` shows it.
+    let nas = vec![(4u8, vec![10, 0, 0, 1]), (8u8, alice_ip.parse::<std::net::Ipv4Addr>()?.octets().to_vec())];
+    let answer = server.accounting(session("alice", "pool-1", 1, nas.clone()));
+    assert_eq!(answer.map(|answer| answer.code), Some(ACCOUNTING_RESPONSE), "{}", server.stderr());
+    let config = config_of(&server)?;
+    let listed = command(PROGRAM, &["session", "list", "--json", "--config", &config], "")?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&listed)?;
+    let shown: Vec<(&str, &str)> = rows.iter().map(|row| (row["username"].as_str().unwrap_or(""), row["ip"].as_str().unwrap_or(""))).collect();
+    assert_eq!(shown, vec![("alice", alice_ip.as_str())], "{listed}");
+
+    // The Stop gives the address back: no session is listed, and the next login of alice gets it again.
+    let answer = server.accounting(session("alice", "pool-1", 2, nas));
+    assert_eq!(answer.map(|answer| answer.code), Some(ACCOUNTING_RESPONSE), "{}", server.stderr());
+    assert!(command(PROGRAM, &["session", "list", "--json", "--config", &config], "").map_or(true, |output| output.trim() == "[]"));
+    assert_eq!(framed_ip(&server.pap("alice", "alice-password")), Some(alice_ip));
+
+    // The business pool has three addresses and four users.
+    let mut taken = Vec::new();
+    for user in ["dave", "frank", "gina"] {
+        taken.push(framed_ip(&server.pap(user, &format!("{user}-password"))).ok_or("no address")?);
+    }
+    let dave_ip = taken.first().cloned().ok_or("no address")?;
+    taken.sort();
+    taken.dedup();
+    assert_eq!(taken.len(), 3);
+    let hank = server.pap("hank", "hank-password");
+    assert_eq!(hank.code, ACCESS_REJECT, "the pool is empty");
+    // The NAS sees only the reject; the reason is in the log.
+    assert!(server.wait_for_log("ip pool business is exhausted").contains("hank"), "{}", server.stderr());
+    // A reservation that never became a session, ended by a Stop, makes room for hank.
+    let nas = vec![(4u8, vec![10, 0, 0, 1]), (8u8, dave_ip.parse::<std::net::Ipv4Addr>()?.octets().to_vec())];
+    let answer = server.accounting(session("dave", "pool-2", 2, nas));
+    assert_eq!(answer.map(|answer| answer.code), Some(ACCOUNTING_RESPONSE), "{}", server.stderr());
+    assert_eq!(framed_ip(&server.pap("hank", "hank-password")), Some(dave_ip));
+    assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
+    Ok(())
+}
+
 /// Chapter 2: `[sessions]` of the scenario shows the session a Start opened and not the one a
 /// Stop closed, in text and as JSON.
 #[test]
