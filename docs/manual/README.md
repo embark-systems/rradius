@@ -21,6 +21,7 @@
 | 管理誰能登入路由器、能下哪些指令 | [6](06-device-admin.md) |
 | 任何一台停機都不中斷服務 | [7](07-ha-cluster.md) |
 | 把叢集放在 Kubernetes 上 | [13](13-kubernetes.md) |
+| 由認證伺服器從池裡分配 IP 位址給用戶 | [14](14-ip-pool.md) |
 | 帳號已經在別的系統裡，不想複製 | 目錄（LDAP／AD）看 [5](05-remote-access.md)，HTTP API 看 [10](10-external-api.md)，MySQL／PostgreSQL 看 [9](09-migrate-users.md#帳號留在原本的資料庫) |
 | 從舊的認證系統搬過來，不想讓大家重設密碼 | [9](09-migrate-users.md) |
 | 上線之後的日常工作 | [11](11-operations.md) |
@@ -41,6 +42,7 @@
 | [9. 從舊系統搬帳號](09-migrate-users.md) | 舊的密碼雜湊原樣搬過來，之後逐步換成新格式 | 各種密碼格式、名稱正規化、`[accounts]` | `migrate-users/` |
 | [10. 帳號在別的系統](10-external-api.md) | 每次登入用 HTTPS 問會員系統的 API | `[lua.http]`、`http_request`、`verifies_password` | `external-api/` |
 | [13. Kubernetes](13-kubernetes.md) | 三個節點跑成 StatefulSet，NAS 經負載平衡器連入 | StatefulSet、headless Service、`/livez`、`/readyz` | `deploy/kubernetes/`（不在 scenarios 裡） |
+| [14. 位址池](14-ip-pool.md) | 登入時從資料表的池分配 IP，計費確認與釋放，黏著，過期回收 | `all_accept` 串接、`lua` 處理器、`sql_execute` 比較後更新、請求觸發的回收 | `ip-pool/` |
 
 ## 上線之後
 
