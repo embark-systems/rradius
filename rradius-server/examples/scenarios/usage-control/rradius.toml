@@ -1,0 +1,53 @@
+# 用戶資源控制：每個用戶有方案，限制同時連線數和一段時間的流量。單機。
+# 說明：docs/manual/15-usage-control.md
+#
+#   cd rradius-server
+#   cargo run --release -- server --config examples/scenarios/usage-control/rradius.toml
+#
+# 相對路徑都以這個檔案所在的目錄為準。
+
+dictionary = "../../../../share/dictionary"
+
+# 有 [auth] 時認證交給下面的串接；這個腳本只處理計費（記錄流量、確認和釋放連線位）。
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+# all_accept：依序執行，任一個拒絕就停。先由 sql 處理器驗密碼（密碼錯就不會往下，所以不會替
+# 沒通過的人佔連線位），再由 lua 處理器檢查方案的流量和同時連線數。
+[auth]
+policy = "all_accept"
+
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM subscribers WHERE username = ? AND enabled = 1"
+
+[[auth.handlers]]
+type = "lua"
+script = "limits.lua"
+
+[radius]
+bind = "127.0.0.1"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[[radius.clients]]
+name = "localhost"
+address = "127.0.0.1"
+secret_file = "localhost.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812
+
+# 現在在線的 session：rradius-server session list。連線位本身就記著誰在線，直接查它：
+# 狀態是 active 而且還沒到期的列。
+[sessions]
+list = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE state = 'active' AND expires > strftime('%s', 'now') ORDER BY username, slot"
+show = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY slot"
