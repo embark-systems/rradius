@@ -1389,8 +1389,13 @@ fn test_stopping_while_a_migration_runs_shuts_the_node_down() {
 
 #[test]
 fn test_stopping_during_a_migration_that_outlasts_the_wait() {
-    // About 15 seconds when this was written, within the 25 a stop waits for a clean shutdown.
-    let (code, stderr, elapsed, dir, config, auth_port) = stopped_while_applying(&big_table(40_000_000));
+    // A file that takes a few seconds on a fast machine, longer than the 5 million rows of the
+    // test above, and well within both the 25 seconds a stop waits for a clean shutdown and the
+    // 30 the cluster node gives one write: the next start has to apply the file once more, and
+    // 40 million rows took longer than that on a slow runner. A file that outlasts the 25
+    // seconds and still finishes within the 30 of the next start has a window of 5 seconds,
+    // too narrow for a test on machines of different speeds.
+    let (code, stderr, elapsed, dir, config, auth_port) = stopped_while_applying(&big_table(20_000_000));
     assert_eq!(code, Some(0), "{stderr}");
     assert!(stderr.contains("stopped during startup"), "{stderr}");
     assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
