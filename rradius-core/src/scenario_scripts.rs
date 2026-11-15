@@ -18,6 +18,10 @@ const IP_POOL_SCHEMA: &str = include_str!("../../rradius-server/examples/scenari
 const IP_POOL_DATA: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/migrations/2_demo_data.sql");
 const IP_POOL_ALLOCATE: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/allocate.lua");
 const IP_POOL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
+const USAGE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/1_schema.sql");
+const USAGE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/2_demo_data.sql");
+const USAGE_LIMITS: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/limits.lua");
+const USAGE_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/accounting.lua");
 
 /// `text` with each of `tables` renamed to `prefix_table`, whole words only, and not where the
 /// word is a quoted string of its own, such as the phase `'accounting'`.
@@ -510,5 +514,194 @@ async fn test_ip_pool_takes_back_what_is_not_used() -> Result<(), String> {
     assert_eq!(run(&pool.accounting, "radius", "accounting", "nas-a", None, vec![("Acct-Status-Type", number(7.0)), ("NAS-IP-Address", bytes("10.0.0.2"))]).await.0, Outcome::Accept);
     assert_eq!(pool.row(&carol).await[0], txt("free"));
     assert_eq!(pool.row(&bob).await[0], txt("active"));
+    Ok(())
+}
+
+// ---- The usage control of chapter 15 ----
+
+const USAGE_TABLES: [&str; 7] = ["plans", "subscribers", "session_slots", "accounting", "housekeeping", "session_slots_expiry", "accounting_user"];
+
+/// The scenario's schema and demo data under `prefix`, with its two scripts.
+struct Usage {
+    prefix: &'static str,
+    limits: String,
+    accounting: String,
+}
+
+impl Usage {
+    async fn new(prefix: &'static str) -> Usage {
+        apply(&renamed(USAGE_SCHEMA, prefix, &USAGE_TABLES)).await;
+        apply(&renamed(USAGE_DATA, prefix, &USAGE_TABLES)).await;
+        // The first request would reap the slots; the tests that look at a reap ask for it.
+        apply(&format!("UPDATE {prefix}_housekeeping SET last_run = {}", now())).await;
+        Usage { prefix, limits: renamed(USAGE_LIMITS, prefix, &USAGE_TABLES), accounting: renamed(USAGE_ACCOUNTING, prefix, &USAGE_TABLES) }
+    }
+
+    /// The chain's lua handler for `user`: the outcome and the Filter-Id it gave.
+    async fn login(&self, user: &str) -> (Outcome, Option<String>) {
+        let (outcome, attributes) = run(&self.limits, "radius", "authentication", "nas-a", Some(user), vec![("User-Name", bytes(user))]).await;
+        let filter = attributes.iter().find_map(|(name, value)| match value {
+            AttrValue::Bytes(found) if name == "Filter-Id" => Some(String::from_utf8_lossy(found).into_owned()),
+            _ => None,
+        });
+        (outcome, filter)
+    }
+
+    /// An accounting packet from the NAS `nas`, with `extra` attributes.
+    async fn account(&self, nas: &str, status: f64, user: &str, session: &str, extra: Vec<(&str, AttrValue)>) -> Outcome {
+        let mut attributes = vec![("User-Name", bytes(user)), ("Acct-Session-Id", bytes(session)), ("Acct-Status-Type", number(status)), ("NAS-IP-Address", bytes(nas))];
+        attributes.extend(extra);
+        run(&self.accounting, "radius", "accounting", "nas-a", None, attributes).await.0
+    }
+
+    /// The states of the user's slots, in the order of the slots.
+    async fn slots(&self, user: &str) -> Vec<String> {
+        rows(&format!("SELECT state FROM {}_session_slots WHERE username = '{user}' ORDER BY slot", self.prefix))
+            .await
+            .into_iter()
+            .filter_map(|row| match row.into_iter().next() {
+                Some(DbValue::Text(state)) => Some(state),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn execute(&self, sql: &str) {
+        let sql = sql
+            .replace("PLANS", &format!("{}_plans", self.prefix))
+            .replace("SUBS", &format!("{}_subscribers", self.prefix))
+            .replace("SLOTS", &format!("{}_session_slots", self.prefix))
+            .replace("ACCT", &format!("{}_accounting", self.prefix))
+            .replace("HOUSE", &format!("{}_housekeeping", self.prefix));
+        apply(&sql).await;
+    }
+}
+
+/// The octets of an Accounting-Interim-Update, as the NAS sends them: gigawords and octets.
+fn usage_of(input_gigawords: f64, input_octets: f64) -> Vec<(&'static str, AttrValue)> {
+    vec![("Acct-Input-Gigawords", number(input_gigawords)), ("Acct-Input-Octets", number(input_octets)), ("Acct-Session-Time", number(60.0))]
+}
+
+/// One session slot for a plan of one session: the second login is refused until the first
+/// session ends; a disabled or unknown account has none.
+#[tokio::test]
+async fn test_usage_control_limits_sessions() -> Result<(), String> {
+    let usage = Usage::new("ucl").await;
+    let (outcome, filter) = usage.login("alice").await;
+    assert_eq!((outcome, filter.as_deref()), (Outcome::Accept, Some("basic")));
+    assert_eq!(usage.slots("alice").await, ["reserved"]);
+    // Waiting for the NAS to start the session, a second login finds no slot.
+    assert_eq!(usage.login("alice").await.0, Outcome::Reject);
+    assert_eq!(usage.slots("alice").await, ["reserved"], "the refused login took nothing");
+
+    assert_eq!(usage.account("10.0.0.1", 1.0, "alice", "s1", vec![]).await, Outcome::Accept);
+    assert_eq!(usage.slots("alice").await, ["active"]);
+    assert_eq!(usage.login("alice").await.0, Outcome::Reject, "the session is up");
+    // The same Start twice is one Start.
+    assert_eq!(usage.account("10.0.0.1", 1.0, "alice", "s1", vec![]).await, Outcome::Accept);
+    assert_eq!(usage.slots("alice").await, ["active"]);
+
+    assert_eq!(usage.account("10.0.0.1", 2.0, "alice", "s1", vec![]).await, Outcome::Accept);
+    assert_eq!(usage.slots("alice").await, ["free"]);
+    assert_eq!(usage.account("10.0.0.1", 2.0, "alice", "s1", vec![]).await, Outcome::Accept, "the Stop again");
+    assert_eq!(usage.login("alice").await.0, Outcome::Accept, "room again");
+
+    assert_eq!(usage.login("erin").await.0, Outcome::Reject, "disabled");
+    assert_eq!(usage.login("nobody").await.0, Outcome::Reject, "unknown");
+    assert!(usage.slots("erin").await.is_empty() && usage.slots("nobody").await.is_empty(), "no slots for them");
+    Ok(())
+}
+
+/// Logins at the same time never go past the plan's limit.
+#[tokio::test]
+async fn test_usage_control_at_the_same_time() -> Result<(), String> {
+    let usage = Usage::new("ucc").await;
+    let asked = futures::future::join_all((0..6).map(|_| usage.login("bob"))).await;
+    let accepted = asked.iter().filter(|(outcome, _)| *outcome == Outcome::Accept).count();
+    assert_eq!(accepted, 2, "bob's plan has two sessions");
+    assert_eq!(usage.slots("bob").await, ["reserved", "reserved"], "two slots, once each");
+    Ok(())
+}
+
+/// The traffic of the last period decides: the plan's `Filter-Id` while there is some left, the
+/// slow one or a refusal once it is used up, at the byte; sessions still open count, old ones do not.
+#[tokio::test]
+async fn test_usage_control_quota() -> Result<(), String> {
+    let usage = Usage::new("ucq").await;
+    // The slots are freed by hand after each step, so that only the traffic decides.
+    let free = |user: &'static str| {
+        let sql = format!("UPDATE SLOTS SET state = 'free', session_id = NULL WHERE username = '{user}'");
+        let usage = &usage;
+        async move { usage.execute(&sql).await }
+    };
+    // dave: family plan, 100 GiB (25 gigawords) over 30 days, then slow.
+    assert_eq!(usage.login("dave").await.1.as_deref(), Some("family"), "nothing used yet");
+    free("dave").await;
+    // A session still open, one byte short of the quota.
+    assert_eq!(usage.account("10.0.0.1", 3.0, "dave", "d1", usage_of(24.0, 4294967295.0)).await, Outcome::Accept);
+    free("dave").await;
+    assert_eq!(usage.login("dave").await.1.as_deref(), Some("family"), "one byte short");
+    free("dave").await;
+    // At the quota: logged in, but slow.
+    assert_eq!(usage.account("10.0.0.1", 3.0, "dave", "d1", usage_of(25.0, 0.0)).await, Outcome::Accept);
+    free("dave").await;
+    let (outcome, filter) = usage.login("dave").await;
+    assert_eq!((outcome, filter.as_deref()), (Outcome::Accept, Some("family-slow")));
+    // The traffic of a session older than the period is not counted.
+    free("dave").await;
+    usage.execute(&format!("UPDATE ACCT SET started = {}, updated = {}, stopped = {} WHERE username = 'dave'", now() - 31 * 86400, now() - 31 * 86400 + 60, now() - 31 * 86400 + 60)).await;
+    assert_eq!(usage.login("dave").await.1.as_deref(), Some("family"), "old traffic is forgotten");
+
+    // carol: strict plan, 5 GiB (a gigaword and a GiB), then refused.
+    assert_eq!(usage.login("carol").await.0, Outcome::Accept);
+    free("carol").await;
+    assert_eq!(usage.account("10.0.0.2", 3.0, "carol", "c1", usage_of(1.0, 1073741823.0)).await, Outcome::Accept);
+    free("carol").await;
+    assert_eq!(usage.login("carol").await.0, Outcome::Accept, "one byte short");
+    free("carol").await;
+    assert_eq!(usage.account("10.0.0.2", 3.0, "carol", "c1", usage_of(1.0, 1073741824.0)).await, Outcome::Accept);
+    free("carol").await;
+    assert_eq!(usage.login("carol").await.0, Outcome::Reject, "used up");
+    assert_eq!(usage.slots("carol").await, ["free"], "a refusal for the quota takes no slot");
+    Ok(())
+}
+
+/// What the accounting does with slots: the traffic of the session, slots kept by Interim-Updates,
+/// taken back when nothing keeps them, and freed with the NAS that restarts.
+#[tokio::test]
+async fn test_usage_control_follows_the_session() -> Result<(), String> {
+    let usage = Usage::new("ucs").await;
+    assert_eq!(usage.login("bob").await.0, Outcome::Accept);
+    assert_eq!(usage.login("bob").await.0, Outcome::Accept);
+    assert_eq!(usage.account("10.0.0.1", 1.0, "bob", "b1", vec![]).await, Outcome::Accept);
+    assert_eq!(usage.slots("bob").await, ["active", "reserved"], "one session started, one waiting");
+
+    // An Interim-Update keeps the slot of its session.
+    usage.execute("UPDATE SLOTS SET expires = 5 WHERE username = 'bob' AND state = 'active'").await;
+    assert_eq!(usage.account("10.0.0.1", 3.0, "bob", "b1", usage_of(1.0, 10.0)).await, Outcome::Accept);
+    let kept = rows(&format!("SELECT expires > {} FROM {}_session_slots WHERE state = 'active'", now() + 800, usage.prefix)).await;
+    assert_eq!(kept, [vec![int(1)]], "about 15 minutes from now");
+    // The traffic of the session, a gigaword carried over.
+    let seen = rows(&format!("SELECT input_octets, stopped IS NULL FROM {}_accounting WHERE session_id = 'b1'", usage.prefix)).await;
+    assert_eq!(seen, [vec![int(4294967306), int(1)]]);
+
+    // Nothing keeps b1 and the other login never became a session: both are taken back.
+    usage.execute("UPDATE SLOTS SET expires = 1 WHERE username = 'bob'").await;
+    usage.execute("UPDATE HOUSE SET last_run = 0").await;
+    assert_eq!(usage.login("dave").await.0, Outcome::Accept, "any request does the reaping");
+    assert_eq!(usage.slots("bob").await, ["free", "free"]);
+
+    // An Interim-Update of b1 after that takes a slot back, if there is one free.
+    assert_eq!(usage.account("10.0.0.1", 3.0, "bob", "b1", vec![]).await, Outcome::Accept);
+    assert_eq!(usage.slots("bob").await, ["active", "free"]);
+    // An Interim-Update of a user who never logged in has no slot to take, and is answered anyway.
+    assert_eq!(usage.account("10.0.0.1", 3.0, "carol", "c9", vec![]).await, Outcome::Accept);
+    assert!(usage.slots("carol").await.is_empty());
+
+    // The NAS 10.0.0.1 restarts: its sessions end, the slots are free.
+    assert_eq!(run(&usage.accounting, "radius", "accounting", "nas-a", None, vec![("Acct-Status-Type", number(7.0)), ("NAS-IP-Address", bytes("10.0.0.1"))]).await.0, Outcome::Accept);
+    assert_eq!(usage.slots("bob").await, ["free", "free"]);
+    let ended = rows(&format!("SELECT count(*) FROM {}_accounting WHERE stopped IS NULL AND nas = '10.0.0.1'", usage.prefix)).await;
+    assert_eq!(ended, [vec![int(0)]]);
     Ok(())
 }

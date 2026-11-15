@@ -1493,7 +1493,7 @@ script = "vpn_rules.lua"
 
 兩種模式下，全部略過都視為拒絕。
 
-`all_accept` 也適合「先驗密碼、再做一件事」：例如 `sql` 處理器之後接一個 `lua` 處理器，替通過驗證的用戶從資料表的池分配 IP 位址（`Framed-IP-Address`）。密碼錯的人不會執行到後面的處理器。範例與說明見[手冊第 14 章](manual/14-ip-pool.md)。
+`all_accept` 也適合「先驗密碼、再做一件事」：例如 `sql` 處理器之後接一個 `lua` 處理器，替通過驗證的用戶從資料表的池分配 IP 位址（`Framed-IP-Address`）。密碼錯的人不會執行到後面的處理器。範例與說明見[手冊第 14 章](manual/14-ip-pool.md)。同樣的做法也用來限制每個用戶的同時連線數與流量上限（[第 15 章](manual/15-usage-control.md)）。
 
 **`first_match` 不會替你檢查密碼：** `sql`、`ldap` 或 `netlogon` 查不到名稱時回「略過」，交給下一個處理器。後面接只檢查政策的腳本時，不存在的使用者不用密碼就能通過，所以政策腳本要放進 `all_accept`，或設定 `verifies_password` 並自己比對。
 

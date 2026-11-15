@@ -157,6 +157,61 @@ fn test_ip_pool() -> TestResult {
     Ok(())
 }
 
+/// Chapter 15: the plan's session limit holds, a Stop makes room, and the traffic of the period
+/// decides between the plan's `Filter-Id`, the slow one and a refusal.
+#[test]
+fn test_usage_control() -> TestResult {
+    let mut server = Server::start(SCENARIOS, "usage-control", "rradius.toml", |text| text);
+    server.secret = secret_of(SCENARIOS, "usage-control", "localhost.secret");
+    let nas = |extra: Vec<(u8, Vec<u8>)>| [vec![(4u8, vec![10, 0, 0, 1])], extra].concat();
+    let account = |server: &Server, user: &str, id: &str, status: u32, extra: Vec<(u8, Vec<u8>)>| {
+        let answer = server.accounting(session(user, id, status, nas(extra)));
+        assert_eq!(answer.map(|answer| answer.code), Some(ACCOUNTING_RESPONSE), "{user} {id} {status}: {}", server.stderr());
+    };
+
+    // alice: one session. The login waits for the Start; a second login finds no room, with or without the Start.
+    let alice = server.pap("alice", "alice-password");
+    assert_eq!(alice.code, ACCESS_ACCEPT, "{}", server.stderr());
+    assert_eq!(text(&alice, 11).as_deref(), Some("basic"), "Filter-Id");
+    assert_eq!(number(&alice, 85), Some(300), "Acct-Interim-Interval");
+    assert_eq!(server.pap("alice", "alice-password").code, ACCESS_REJECT, "a login is waiting for its Start");
+    account(&server, "alice", "a-1", 1, vec![]);
+    assert_eq!(server.pap("alice", "alice-password").code, ACCESS_REJECT, "the session is up");
+    assert_eq!(server.pap("alice", "wrong").code, ACCESS_REJECT);
+    account(&server, "alice", "a-1", 2, vec![]);
+    assert_eq!(server.pap("alice", "alice-password").code, ACCESS_ACCEPT, "room again after the Stop");
+    for user in ["erin", "nobody"] {
+        assert_eq!(server.pap(user, "erin-password").code, ACCESS_REJECT, "{user}");
+    }
+
+    // bob: two sessions.
+    assert_eq!(server.pap("bob", "bob-password").code, ACCESS_ACCEPT);
+    assert_eq!(server.pap("bob", "bob-password").code, ACCESS_ACCEPT);
+    assert_eq!(server.pap("bob", "bob-password").code, ACCESS_REJECT, "the plan has two");
+
+    // dave: the quota is 100 GiB, 25 gigawords. Below it, `family`; at it, `family-slow`.
+    let dave = server.pap("dave", "dave-password");
+    assert_eq!(text(&dave, 11).as_deref(), Some("family"));
+    account(&server, "dave", "d-1", 1, vec![]);
+    account(&server, "dave", "d-1", 3, vec![(52, 24u32.to_be_bytes().to_vec()), (46, 600u32.to_be_bytes().to_vec())]);
+    assert_eq!(text(&server.pap("dave", "dave-password"), 11).as_deref(), Some("family"), "24 gigawords of 25");
+    account(&server, "dave", "d-2", 1, vec![]);
+    account(&server, "dave", "d-1", 3, vec![(52, 25u32.to_be_bytes().to_vec()), (46, 700u32.to_be_bytes().to_vec())]);
+    account(&server, "dave", "d-2", 2, vec![]);
+    let slow = server.pap("dave", "dave-password");
+    assert_eq!(slow.code, ACCESS_ACCEPT, "the plan slows down, not refuses");
+    assert_eq!(text(&slow, 11).as_deref(), Some("family-slow"));
+
+    // carol: 5 GiB, then refused; the reason is in the log.
+    assert_eq!(server.pap("carol", "carol-password").code, ACCESS_ACCEPT);
+    account(&server, "carol", "c-1", 1, vec![]);
+    account(&server, "carol", "c-1", 2, vec![(52, 1u32.to_be_bytes().to_vec()), (42, 1073741824u32.to_be_bytes().to_vec()), (46, 900u32.to_be_bytes().to_vec())]);
+    assert_eq!(server.pap("carol", "carol-password").code, ACCESS_REJECT, "used up");
+    assert!(server.wait_for_log("quota of plan strict is used up by carol").contains("carol"), "{}", server.stderr());
+    assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
+    Ok(())
+}
+
 /// Chapter 2: `[sessions]` of the scenario shows the session a Start opened and not the one a
 /// Stop closed, in text and as JSON.
 #[test]
