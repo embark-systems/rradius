@@ -274,6 +274,7 @@ const CHAPTERS: &[(&str, &str)] = &[
     ("databases", "#217-外部資料庫-databases"),
     ("log", "#210-記錄-log"),
     ("accounts", "#214-帳號管理-accounts"),
+    ("sessions", "#219-線上-session-sessions"),
     ("auth", "#3-認證串接-auth"),
 ];
 

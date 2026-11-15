@@ -180,7 +180,7 @@ fn prepare(args: &[String], input: &mut impl BufRead, terminal: bool) -> Result<
 }
 
 /// The name a login under the default chain would look up.
-fn account_name(config: &ServerConfig, given: &str) -> Result<String, String> {
+pub(crate) fn account_name(config: &ServerConfig, given: &str) -> Result<String, String> {
     let username = config.auth.as_ref().and_then(|auth| auth.default.as_ref()).and_then(|chain| chain.username.as_ref());
     match username {
         Some(settings) => crate::auth_chain::account_name(settings, given).map_err(|e| format!("'{given}': {e}")),
@@ -189,25 +189,70 @@ fn account_name(config: &ServerConfig, given: &str) -> Result<String, String> {
     }
 }
 
+/// A value of a column of a row a query returned.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Cell {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+impl Cell {
+    /// As the commands print it: a NULL empty, a BLOB as lowercase hexadecimal.
+    pub fn text(&self) -> String {
+        match self {
+            Self::Null => String::new(),
+            Self::Integer(v) => v.to_string(),
+            Self::Real(v) => v.to_string(),
+            Self::Text(v) => v.clone(),
+            Self::Blob(v) => v.iter().map(|byte| format!("{byte:02x}")).collect(),
+        }
+    }
+}
+
+/// A row a query returned: the name and value of each column, in the order selected.
+pub type Row = Vec<(String, Cell)>;
+
+/// A row as `column=value` lines.
+pub fn row_text(row: &Row) -> String {
+    row.iter().map(|(name, cell)| format!("{name}={}", cell.text())).collect::<Vec<_>>().join("\n")
+}
+
+/// Connects to the cluster through the api ports of `[cluster]`.
+async fn connect(cluster: &config::ClusterSettings) -> Result<hiqlite::Client, hiqlite::Error> {
+    let nodes = cluster.nodes.iter().map(|node| node.api.clone()).collect();
+    hiqlite::Client::remote(nodes, false, false, cluster.secret_api.clone(), false, None).await
+}
+
 /// Runs the statement through the cluster. `None` when nothing matched; otherwise what to print:
 /// the rows of a query, or `done` for a write.
 async fn send(cluster: &config::ClusterSettings, sql: &str, params: Vec<hiqlite::Param>, show: bool, done: &str) -> Result<Option<String>, hiqlite::Error> {
-    let nodes = cluster.nodes.iter().map(|node| node.api.clone()).collect();
-    let client = hiqlite::Client::remote(nodes, false, false, cluster.secret_api.clone(), false, None).await?;
-    let sql = sql.to_string();
-    let result = if show {
-        let rows = client.query_consistent(sql, params).await;
-        rows.and_then(|rows| rows.iter().map(row_lines).collect::<Result<Vec<_>, _>>()).map(|shown| (!shown.is_empty()).then(|| shown.join("\n\n")))
-    } else {
-        client.execute(sql, params).await.map(|affected| (affected > 0).then(|| done.to_string()))
-    };
+    if show {
+        let rows = query_rows(cluster, sql, params).await?;
+        return Ok((!rows.is_empty()).then(|| rows.iter().map(row_text).collect::<Vec<_>>().join("\n\n")));
+    }
+    let client = connect(cluster).await?;
+    let result = client.execute(sql.to_string(), params).await.map(|affected| (affected > 0).then(|| done.to_string()));
     let _ = client.shutdown().await;
     result
 }
 
-/// A row as `column=value` lines. A remote row keeps its column names to itself, except in
-/// its serialized form.
-fn row_lines(row: &hiqlite::Row<'_>) -> Result<String, hiqlite::Error> {
+/// Runs a query through the cluster, as a consistent read (it sees what was written a moment
+/// ago), and returns its rows with their column names and types. Through the cluster's api
+/// port: it starts no node and creates no data directory.
+pub async fn query_rows(cluster: &config::ClusterSettings, sql: &str, params: Vec<hiqlite::Param>) -> Result<Vec<Row>, hiqlite::Error> {
+    let client = connect(cluster).await?;
+    let rows = client.query_consistent(sql.to_string(), params).await;
+    let result = rows.and_then(|rows| rows.iter().map(columns).collect::<Result<Vec<_>, _>>());
+    let _ = client.shutdown().await;
+    result
+}
+
+/// The columns of a row. A remote row keeps its column names to itself, except in its
+/// serialized form.
+fn columns(row: &hiqlite::Row<'_>) -> Result<Row, hiqlite::Error> {
     #[derive(serde::Deserialize)]
     struct Columns {
         columns: Vec<Column>,
@@ -230,17 +275,20 @@ fn row_lines(row: &hiqlite::Row<'_>) -> Result<String, hiqlite::Error> {
     };
     let unreadable = |e: serde_json::Error| hiqlite::Error::Sqlite(format!("cannot read a row: {e}").into());
     let columns: Columns = serde_json::to_value(row).and_then(serde_json::from_value).map_err(unreadable)?;
-    let lines = columns.columns.into_iter().map(|column| {
-        let value = match column.value {
-            Value::Null => String::new(),
-            Value::Integer(v) => v.to_string(),
-            Value::Real(v) => v.to_string(),
-            Value::Text(v) => v,
-            Value::Blob(v) => v.iter().map(|byte| format!("{byte:02x}")).collect(),
-        };
-        format!("{}={value}", column.name)
-    });
-    Ok(lines.collect::<Vec<_>>().join("\n"))
+    Ok(columns
+        .columns
+        .into_iter()
+        .map(|column| {
+            let cell = match column.value {
+                Value::Null => Cell::Null,
+                Value::Integer(v) => Cell::Integer(v),
+                Value::Real(v) => Cell::Real(v),
+                Value::Text(v) => Cell::Text(v),
+                Value::Blob(v) => Cell::Blob(v),
+            };
+            (column.name, cell)
+        })
+        .collect())
 }
 
 /// The password, from a terminal asked twice without echo, or else the first line of `input`.
@@ -368,6 +416,37 @@ fn stored_password(scheme: PasswordScheme, password: &str) -> Result<Zeroizing<S
 mod tests {
     use super::*;
     use crate::passwords::verify_pap;
+
+    /// A row as the cluster sends it back, with the five types a column can have.
+    fn remote_row(columns: &[(&str, serde_json::Value)]) -> Result<hiqlite::Row<'static>, String> {
+        let columns: Vec<serde_json::Value> = columns.iter().map(|(name, value)| serde_json::json!({ "name": name, "value": value })).collect();
+        Ok(hiqlite::Row::Owned(serde_json::from_value(serde_json::json!({ "columns": columns })).map_err(|e| e.to_string())?))
+    }
+
+    #[test]
+    fn test_columns_keep_names_types_and_order() -> Result<(), String> {
+        let row = remote_row(&[
+            ("username", serde_json::json!({ "Text": "alice" })),
+            ("started", serde_json::json!({ "Integer": 1000 })),
+            ("ratio", serde_json::json!({ "Real": 1.5 })),
+            ("stopped", serde_json::json!("Null")),
+            ("token", serde_json::json!({ "Blob": [0, 171, 255] })),
+        ])?;
+        let columns = columns(&row).map_err(|e| e.to_string())?;
+        assert_eq!(
+            columns,
+            vec![
+                ("username".to_string(), Cell::Text("alice".to_string())),
+                ("started".to_string(), Cell::Integer(1000)),
+                ("ratio".to_string(), Cell::Real(1.5)),
+                ("stopped".to_string(), Cell::Null),
+                ("token".to_string(), Cell::Blob(vec![0, 171, 255])),
+            ]
+        );
+        // As `user show` has always printed it.
+        assert_eq!(row_text(&columns), "username=alice\nstarted=1000\nratio=1.5\nstopped=\ntoken=00abff");
+        Ok(())
+    }
 
     #[test]
     fn test_reports() {

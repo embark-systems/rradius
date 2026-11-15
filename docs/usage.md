@@ -116,6 +116,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | `[radius]` | 否 | 啟用 RADIUS |
 | `[radius.accounting_spool]` | 否 | 資料庫失敗時先把計費寫到本機（2.11 節） |
 | `[radius.accounting_log]` | 否 | 每一筆回覆過的計費寫成一行 JSON 到文字檔（2.18 節） |
+| `[sessions]` | 否 | `session list`、`session show` 查線上 session 用的 SQL（2.19 節） |
 | `[radius.eap]` | 否 | EAP，給 802.1X 和 WPA-Enterprise 用（2.12 節） |
 | `[tacacs]` | 否 | 啟用 TACACS+ |
 | `[metrics]` | 否 | 啟用統計端點（2.8 節） |
@@ -1377,6 +1378,71 @@ queue = 65536                               # 預設；等著寫進檔案的筆�
 | 停止時最多等 | 5 秒 | 2 秒 |
 
 **成本：** 2026-11-15 在 Apple M4 Max（14 核心，macOS）用 release 建置與 `rradius-bench` 量 `acct-start`（併發 64，腳本全收、不寫資料庫），開與不開交錯各量 4 次：吞吐 59414 → 59141 次/秒（約少 0.5%），伺服器每筆的 CPU 108.6 → 113.6 µs（約多 4.6%），沒有丟棄。這個工具的封包每行約 550 bytes，每秒 5.9 萬筆約 32 MB/s；實際大小隨 NAS 送的屬性變化。
+
+### 2.19 線上 session `[sessions]`
+
+要知道現在誰在線上，或某個使用者有哪些 session，用 `rradius-server session list` 與 `rradius-server session show`。rradius 本身沒有 session 表：session 是你的計費腳本寫進自己資料表的列，所以哪些列算「在線」、欄位叫什麼，都由你寫在查詢裡，和 `[accounts]`（2.14 節）一樣。**核心不內建 session 表，所以不會讓每一筆計費多寫一次。**
+
+```toml
+[sessions]
+list = "SELECT username, nas, session_id, started FROM accounting WHERE stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
+show = "SELECT username, nas, session_id, started FROM accounting WHERE username = ?1 AND stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
+```
+
+- **兩條語句都只讀。** 必須以 `SELECT` 或 `WITH` 開頭（不分大小寫，前面可以有空白），所以這兩個指令不會改資料。`list` 沒有參數；`show` 恰好用一個 `?1`，是使用者名稱，不能用沒有編號的 `?`、`?2` 或具名參數。寫錯時啟動、SIGHUP 和 `check` 都會失敗並指出 `sessions.list` 或 `sessions.show`。兩條都可以省略；沒有設的那個指令以狀態 2 結束，說明缺哪個設定。
+- **名稱和登入時一樣正規化。** `show Alice@Corp` 在 `strip_realm = "suffix"`、`lowercase = true` 時查的是 `alice`，被 `[auth.username]` 的 `allowed` 拒絕的名稱以狀態 2 結束（和 `user` 指令相同）。
+- **`[sessions]` 只有指令讀，** 伺服器執行中不看它，所以改它不必重啟，也不必送 SIGHUP（SIGHUP 仍會檢查它，寫錯會讓重新載入失敗）。
+- **經叢集的 api 埠執行，** 用 `[cluster]` 的 `nodes` 位址和 `secret_api` 連線，一致讀取（看得到剛寫進去的計費），不啟動節點、不建立資料目錄；叢集要在執行、多數節點要在線上，執行指令的主機要連得到 api 埠。`secret_api` 等於整個資料庫的鑰匙，請把設定檔設成只有管理者能讀（2.14 節）。
+
+```bash
+rradius-server session list --config /etc/rradius/rradius.toml
+rradius-server session show --config /etc/rradius/rradius.toml alice
+rradius-server session list --json
+```
+
+設定檔就是預設設定檔（第 1 節）時可以省略 `--config`。
+
+- **輸出：** 預設每列一個區塊，每行 `欄位=值`（和 `user show` 相同），區塊之間空一行，NULL 是空值：
+
+  ```
+  username=alice
+  nas=10.0.0.5
+  session_id=s-1
+  started=1794729600
+
+  username=alice
+  nas=10.0.0.5
+  session_id=s-3
+  started=1794729900
+  ```
+
+  `--json` 印成一個 JSON 陣列，每列一個物件，鍵是欄位名稱（依選的順序）：NULL 是 `null`，整數和小數是數字，文字是字串，二進位是小寫十六進位字串。列數由查詢自己的 `LIMIT` 決定，指令不另設上限。
+- **結束狀態：**
+
+  | 狀態 | 意思 |
+  | --- | --- |
+  | 0 | 印出至少一列 |
+  | 1 | 沒有列：`list` 印 `no sessions`，`show` 印 `no sessions for <名稱>`；加 `--json` 時印 `[]` |
+  | 2 | 指令或設定有誤（沒有 `[sessions]`、缺語句、缺名稱、名稱被拒絕）、或資料庫拒絕這條語句（例如表不存在），原因在標準錯誤 |
+  | 3 | 叢集連不上或 30 秒內沒有回答 |
+
+**兩個現成的查詢。** 都在測試裡對臨時叢集跑過（`rradius-server/tests/session_test.rs` 與 quick-start 情境）：
+
+- **情境用的 `accounting` 表**（`rradius-server/examples/scenarios/*/migrations/1_schema.sql`，每個 session 一列，`stopped` 是結束時間）：就是上面的範例，並用 `updated` 排除 NAS 當機、沒送 Stop 的列（15 分鐘沒更新就不算在線）。quick-start 情境的設定檔已經帶著這一節。
+- **`examples/simultaneous-use.lua` 的 `active_sessions` 表**（Stop 會刪掉那一列，`last_seen` 是最後一次看到的時間）：
+
+  ```toml
+  [sessions]
+  list = "SELECT username, nas, session_id, last_seen FROM active_sessions WHERE last_seen > strftime('%s', 'now') - 900 ORDER BY last_seen, session_id"
+  show = "SELECT username, nas, session_id, last_seen FROM active_sessions WHERE username = ?1 AND last_seen > strftime('%s', 'now') - 900 ORDER BY last_seen, session_id"
+  ```
+
+**寫自己的查詢時：**
+
+- **查到的是計費資料的快照，不是 NAS 的即時狀態。** NAS 當機沒送 Stop、計費晚到都會讓列和實際不同，所以查詢要排除已停止和太久沒更新的列。指令不另外確認 session 還在不在。
+- **要讓企業版的 `disconnect --user`、`coa --user` 用同一條 `show`，** 結果要有 `nas` 和 `session_id` 兩個欄位：`nas` 是 client 的名稱，或符合某個 client 的位址（和 `[radius.coa]` 的 `session_query` 相同的約定，見企業版文件）。可以另外選 `username`，沒選時用指令列的名稱。Session ID 只在同一台 NAS 內唯一，所以兩個欄位要一起用。
+- **`[databases]` 的外部資料庫這一版不支援：** 指令只查叢集的資料庫。
+- **指令是讀取，** 不會踢人；踢人和送 CoA 在企業版（`disconnect`、`coa` 指令，見企業版文件的 4.8 節）。
 
 ## 3. 認證串接 `[auth]`
 

@@ -249,6 +249,21 @@ rradius 太忙時不會回錯誤，而是**不回應**，讓 NAS 重送或改用
 
 暫存檔是原始封包，有使用者名稱和位址。目錄權限是 0700，備份和報廢磁碟時一併考慮。
 
+## 線上 session 的日常
+
+設了 `[sessions]`（[usage 2.19 節](../usage.md#219-線上-session-sessions)）之後，用兩個指令看現在誰在線上：
+
+| 要做的事 | 做法 |
+| --- | --- |
+| 現在有哪些 session | `rradius-server session list`；要給別的程式讀時加 `--json` |
+| 某個使用者在哪些設備上 | `rradius-server session show alice`；名稱像登入時一樣正規化（`Alice@Corp` 查 `alice`） |
+| 結束狀態 | 0 有列、1 沒有列、2 設定或名稱有誤、3 叢集連不上 |
+| 哪些列算「在線」 | 寫在 `[sessions]` 的查詢裡，不是指令決定：範例排除已停止、15 分鐘沒更新的列。NAS 當機沒送 Stop 的列就是這樣不留著 |
+| 改查詢 | 改檔案就生效，不必重啟或 SIGHUP；寫錯時 `check` 會指出 `sessions.list` 或 `sessions.show` |
+| 踢人或改授權 | 在企業版：`rradius-enterprise disconnect --user alice`、`coa --user alice Filter-Id=slow`（見企業版文件） |
+
+指令經叢集的 api 埠執行，所以在叢集的任何一台、或連得到 api 埠的主機上都能跑，不啟動節點。叢集失去多數節點時回狀態 3。
+
 ## 排查某個使用者的問題
 
 **1. 先看認證紀錄。** 每次登入一行：
@@ -269,7 +284,9 @@ minutes = 30
 
 送 SIGHUP 後，這個使用者的請求和回應會完整寫進記錄（密碼顯示為 `<hidden>`），30 分鐘後自動停止。也可以用 `clients = ["wlc"]` 追蹤一台設備。**記錄裡會有個人資料，** 用完就移除這個區段。
 
-**3. 腳本的問題** 看 `Lua script error (<protocol>/<phase>): <檔案>:<行號>: <訊息>`。腳本裡可以用 `log(...)` 印出自己的訊息。
+**3. 看他現在有沒有在線。** `rradius-server session show staff1` 列出他在哪些設備上有 session；沒設 `[sessions]` 時，用你的計費表自己查。
+
+**4. 腳本的問題** 看 `Lua script error (<protocol>/<phase>): <檔案>:<行號>: <訊息>`。腳本裡可以用 `log(...)` 印出自己的訊息。
 
 常見訊息的意思見 [usage 第 8 節](../usage.md#8-疑難排解)。
 

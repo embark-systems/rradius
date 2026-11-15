@@ -515,6 +515,22 @@ mod tests {
         Ok(())
     }
 
+    /// `[sessions]` is read by the `session` commands only: adding it, changing it and taking it
+    /// away need no restart, and a mistake in it fails the reload.
+    #[tokio::test]
+    async fn test_reload_needs_no_restart_for_sessions() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let (serving, _) = serving(dir.path(), "return 'accept'", &config_text(CLIENT));
+        for text in ["[sessions]\nlist = \"SELECT nas FROM accounting\"\n", "[sessions]\nlist = \"SELECT nas, session_id FROM accounting\"\nshow = \"SELECT nas FROM accounting WHERE username = ?1\"\n", ""] {
+            write_config(dir.path(), &format!("{}{text}", config_text(CLIENT)));
+            assert_eq!(serving.try_reload()?, Vec::<&str>::new(), "no restart needed for: {text}");
+        }
+        write_config(dir.path(), &format!("{}[sessions]\nshow = \"DELETE FROM accounting WHERE username = ?1\"\n", config_text(CLIENT)));
+        let error = serving.try_reload().err().ok_or("the reload took a statement that writes")?;
+        assert!(error.contains("sessions.show"), "{error}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_extensions_hear_of_reloads_and_name_restarts() -> Result<(), String> {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));

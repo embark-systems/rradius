@@ -2,6 +2,7 @@
 
 pub mod accounting_log;
 pub mod accounts;
+pub mod sessions;
 pub mod admin;
 pub mod aligned_alloc;
 pub mod auth_chain;

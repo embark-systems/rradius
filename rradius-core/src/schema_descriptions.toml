@@ -42,6 +42,16 @@ zh-TW = "`user delete` 執行的 SQL；?1 是帳號名稱。"
 en = "SQL that `user show` runs and prints as is; ?1 is the account name. Do not select the password."
 zh-TW = "`user show` 執行並原樣印出的 SQL；?1 是帳號名稱。不要選密碼欄。"
 
+# sessions
+
+[fields."sessions.list"]
+en = "SQL that `session list` runs and prints as is: the sessions online. It reads (SELECT or WITH) and takes no parameter."
+zh-TW = "`session list` 執行並原樣印出的 SQL：目前在線的 session。只能讀取（SELECT 或 WITH），沒有參數。"
+
+[fields."sessions.show"]
+en = "SQL that `session show` runs and prints as is, and `disconnect --user` and `coa --user` use to find sessions; ?1 is the user name. It reads (SELECT or WITH) and has to select `nas` and `session_id` for those two."
+zh-TW = "`session show` 執行並原樣印出的 SQL，`disconnect --user` 與 `coa --user` 也用它找 session；?1 是使用者名稱。只能讀取（SELECT 或 WITH），給那兩個指令用時要選出 `nas` 與 `session_id`。"
+
 # auth
 
 [fields."auth.chains"]

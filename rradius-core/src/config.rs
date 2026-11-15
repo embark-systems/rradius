@@ -29,6 +29,8 @@ pub struct ServerConfig {
     /// Where requests for other realms go. A reload applies it.
     /// What the `user` commands run; `None` without `[accounts]`.
     pub accounts: Option<AccountSettings>,
+    /// What the `session` commands run; `None` without `[sessions]`.
+    pub sessions: Option<SessionSettings>,
     /// `[runtime]`. A start applies it; a reload does not.
     pub runtime: RuntimeSettings,
     /// `[shutdown]`. The configuration running when the stop begins applies it.
@@ -185,6 +187,14 @@ pub struct AccountSettings {
     pub delete: Option<String>,
     pub show: Option<String>,
     pub scheme: PasswordScheme,
+}
+
+/// `[sessions]`: the statement each `session` command runs. They only read: both begin with
+/// SELECT or WITH. `show` has `?1` for the user name; `list` has no parameter.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SessionSettings {
+    pub list: Option<String>,
+    pub show: Option<String>,
 }
 
 /// How the `user` commands store a password; each is a form PAP can check.
@@ -564,6 +574,7 @@ struct RawConfig {
     #[schemars(skip)]
     proxy: Option<toml::Value>,
     accounts: Option<RawAccounts>,
+    sessions: Option<RawSessions>,
     /// `[accounting_export]`, which an extension reads.
     #[schemars(skip)]
     accounting_export: Option<toml::Value>,
@@ -649,6 +660,13 @@ struct RawAccounts {
     /// Read by the extension for EAP-AKA'.
     #[schemars(skip)]
     aka: Option<toml::Value>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawSessions {
+    list: Option<String>,
+    show: Option<String>,
 }
 
 
@@ -1450,6 +1468,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
         log,
         trace,
         accounts: raw.accounts.map(account_settings).transpose().map_err(fail)?,
+        sessions: raw.sessions.map(session_settings).transpose().map_err(fail)?,
         runtime: match raw.runtime {
             Some(runtime) if runtime.pin_threads && !cfg!(target_os = "linux") => {
                 return Err(fail("runtime.pin_threads is only supported on Linux".to_string()));
@@ -1614,6 +1633,36 @@ fn account_settings(raw: RawAccounts) -> Result<AccountSettings, String> {
         show: check("show", raw.show, false)?,
         scheme,
     })
+}
+
+/// Checks `[sessions]`: each statement reads (SELECT or WITH), `list` takes no parameter and
+/// `show` only `?1`, for the user name.
+fn session_settings(raw: RawSessions) -> Result<SessionSettings, String> {
+    let check = |name: &str, sql: Option<String>, takes_user: bool| -> Result<Option<String>, String> {
+        let Some(sql) = sql else { return Ok(None) };
+        let first = sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
+        if !(first.eq_ignore_ascii_case("select") || first.eq_ignore_ascii_case("with")) {
+            return Err(format!("sessions.{name}: must begin with SELECT or WITH: it only reads"));
+        }
+        let placeholders = crate::lua_engine::sql_placeholders(&sql).map_err(|e| format!("sessions.{name}: {e}"))?;
+        if !takes_user {
+            if !placeholders.is_empty() {
+                return Err(format!("sessions.{name}: takes no parameter"));
+            }
+            return Ok(Some(sql));
+        }
+        if placeholders.iter().any(|placeholder| placeholder.number.is_none()) {
+            return Err(format!("sessions.{name}: use ?1 for the user name, not ?"));
+        }
+        if placeholders.iter().any(|placeholder| placeholder.number != Some(1)) {
+            return Err(format!("sessions.{name}: only ?1 (the user name) can be used"));
+        }
+        if placeholders.is_empty() {
+            return Err(format!("sessions.{name}: must use ?1 for the user name"));
+        }
+        Ok(Some(sql))
+    };
+    Ok(SessionSettings { list: check("list", raw.list, false)?, show: check("show", raw.show, true)? })
 }
 
 /// How a statement of `[accounts.<sub-section>]` may use one numbered parameter.
@@ -3071,6 +3120,40 @@ mod tests {
         assert_eq!(result.unwrap().accounts.unwrap().scheme, PasswordScheme::Bcrypt);
         let (_dir, result) = load_str(&base(RADIUS_CLIENT));
         assert!(result.unwrap().accounts.is_none());
+    }
+
+    #[test]
+    fn test_sessions_settings() -> Result<(), String> {
+        let load = |text: &str| load_str(&base(&format!("{RADIUS_CLIENT}\n{text}"))).1.map_err(|e| e.to_string());
+        let section = "list = \"SELECT username, nas, session_id FROM accounting WHERE stopped IS NULL\"\nshow = \"  with s AS (SELECT * FROM accounting) SELECT nas, session_id FROM s WHERE username = ?1\"\n";
+        let sessions = load(&format!("[sessions]\n{section}"))?.sessions.ok_or("no [sessions]")?;
+        assert_eq!(sessions.list.as_deref(), Some("SELECT username, nas, session_id FROM accounting WHERE stopped IS NULL"));
+        assert!(sessions.show.as_deref().is_some_and(|show| show.contains("?1")));
+        // Either may be left out, and the section may be empty; without it there are none.
+        assert_eq!(load("[sessions]\n")?.sessions, Some(SessionSettings::default()));
+        assert!(load("")?.sessions.is_none());
+        // Text and comments are not parameters.
+        let quoted = load("[sessions]\nshow = \"SELECT nas FROM accounting WHERE note = '?' AND username = ?1 -- ?2\"\n")?;
+        assert!(quoted.sessions.ok_or("no [sessions]")?.show.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_sessions_settings_refused() {
+        for (sessions, expected) in [
+            ("show = \"SELECT nas FROM accounting WHERE username = ?\"", "sessions.show: use ?1"),
+            ("show = \"SELECT nas FROM accounting WHERE username = ?2\"", "sessions.show: only ?1"),
+            ("show = \"SELECT nas FROM accounting\"", "sessions.show: must use ?1"),
+            ("list = \"SELECT nas FROM accounting WHERE username = ?1\"", "sessions.list: takes no parameter"),
+            ("list = \"DELETE FROM accounting\"", "sessions.list: must begin with SELECT or WITH"),
+            ("show = \"UPDATE accounting SET stopped = 1 WHERE username = ?1\"", "sessions.show: must begin with SELECT or WITH"),
+            ("show = \"SELECT nas FROM accounting WHERE username = :name\"", "sessions.show"),
+            ("list = \"\"", "sessions.list: must begin with SELECT or WITH"),
+            ("shell = \"x\"", "shell"),
+        ] {
+            let error = error(&base(&format!("{RADIUS_CLIENT}\n[sessions]\n{sessions}\n")));
+            assert!(error.contains(expected), "{sessions}: {error}");
+        }
     }
 
     #[test]

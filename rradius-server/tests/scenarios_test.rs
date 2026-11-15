@@ -88,6 +88,29 @@ fn test_quick_start() {
     assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
 }
 
+/// Chapter 2: `[sessions]` of the scenario shows the session a Start opened and not the one a
+/// Stop closed, in text and as JSON.
+#[test]
+fn test_quick_start_sessions() -> TestResult {
+    let mut server = Server::start(SCENARIOS, "quick-start", "rradius.toml", |text| text);
+    server.secret = secret_of(SCENARIOS, "quick-start", "localhost.secret");
+    assert_eq!(server.pap("alice", "alice-password").code, ACCESS_ACCEPT, "{}", server.stderr());
+    for (user, id, status) in [("alice", "qs-1", 1), ("bob", "qs-2", 1), ("bob", "qs-2", 2), ("alice", "qs-3", 1)] {
+        let answer = server.accounting(session(user, id, status, vec![]));
+        assert_eq!(answer.map(|answer| answer.code), Some(ACCOUNTING_RESPONSE), "{user} {id} {status}: {}", server.stderr());
+    }
+    let config = config_of(&server)?;
+    let listed = command(PROGRAM, &["session", "list", "--json", "--config", &config], "")?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&listed)?;
+    let shown: Vec<(&str, &str, &str)> = rows.iter().map(|row| (row["username"].as_str().unwrap_or(""), row["nas"].as_str().unwrap_or(""), row["session_id"].as_str().unwrap_or(""))).collect();
+    assert_eq!(shown, vec![("alice", "localhost", "qs-1"), ("alice", "localhost", "qs-3")], "{listed}");
+    assert!(rows.iter().all(|row| row["started"].is_i64() && row["updated"].is_i64()), "{listed}");
+    let alice = command(PROGRAM, &["session", "show", "--config", &config, "alice"], "")?;
+    assert!(alice.starts_with("username=alice\nnas=localhost\nsession_id=qs-1\nstarted="), "{alice}");
+    assert!(command(PROGRAM, &["session", "show", "--config", &config, "bob"], "").is_err(), "bob has none");
+    Ok(())
+}
+
 /// Chapter 3: the certificates from make-certs.sh load, and the chain gives each group its
 /// VLAN. EAP itself is covered by the interop tests with eapol_test; here the chain is asked
 /// with PAP, which takes the same queries.
