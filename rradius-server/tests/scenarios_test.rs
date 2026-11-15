@@ -275,6 +275,16 @@ fn test_migrate_users() -> TestResult {
     Ok(())
 }
 
+/// Chapter 9, accounts left in the old system's PostgreSQL: the example passes `check` and
+/// serves, though the database it names is not there; only the logins that need it fail.
+#[test]
+fn test_migrate_users_external_database() -> TestResult {
+    let mut server = Server::start(SCENARIOS, "migrate-users", "external-db.toml", |text| text.replacen("address = \"10.90.0.0/24\"", "address = \"127.0.0.1\"", 1));
+    server.secret = secret_of(SCENARIOS, "migrate-users", "nas.secret");
+    assert!(!server.stderr().contains("ERROR"), "{}", server.stderr());
+    Ok(())
+}
+
 /// A member system for chapter 18: answers each `POST /v1/radius/login` that carries the API
 /// key with 200 and a plan for dave's password, 401 for another, and nothing at all for `slow`.
 fn member_api() -> Result<u16, Box<dyn std::error::Error>> {

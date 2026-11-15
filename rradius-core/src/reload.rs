@@ -41,6 +41,8 @@ pub struct Shared {
     pub metrics: Arc<Metrics>,
     /// The program's extensions, which give what a configuration's servers use of theirs.
     pub extensions: crate::extension::Extensions,
+    /// `[databases.<name>]` as the process started with them: a reload keeps them.
+    pub databases: crate::external_db::ExternalDatabases,
 }
 
 /// Everything built from one reading of the configuration.
@@ -96,13 +98,14 @@ pub fn build(config: &ServerConfig, shared: &Shared) -> Result<Generation, Strin
             .with_script_name(script.display().to_string())
             .with_query_timeout(config.lua.query_timeout)
             .with_max_execution(config.lua.max_execution)
-            .with_dynamic_auth(dynamic_auth.clone()),
+            .with_dynamic_auth(dynamic_auth.clone())
+            .with_databases(shared.databases.clone()),
     );
 
     // With [auth], each client is authenticated by the chain it selects (or the default
     // chain); clients without one fall back to the top-level script. Both protocols share
     // the chains, so each handler, LDAP pools included, exists once.
-    let limits = LuaLimits { dynamic_auth, http, ..LuaLimits::from_settings(&config.lua) };
+    let limits = LuaLimits { dynamic_auth, http, databases: shared.databases.clone(), ..LuaLimits::from_settings(&config.lua) };
     let chains = match &config.auth {
         Some(auth) => Some(Arc::new(AuthChains::from_settings(auth, &shared.db, &shared.vms, &limits)?)),
         None => None,
@@ -209,6 +212,9 @@ pub fn needs_restart(running: &ServerConfig, new: &ServerConfig, extensions: &cr
     if running.runtime != new.runtime {
         names.push("[runtime]");
     }
+    if running.databases != new.databases {
+        names.push("[databases]");
+    }
     let (running_config, new_config) = (running, new);
     match (&running.radius, &new.radius) {
         (Some(running), Some(new)) => {
@@ -283,7 +289,7 @@ mod tests {
         std::fs::write(dir.join("auth.lua"), script).unwrap();
         let config_path = write_config(dir, text);
         let running = config::load(&config_path).unwrap();
-        let shared = Shared { db: test_db(), vms: test_vms(), dictionary: crate::radius::share_test_dictionary(), metrics: Arc::default(), extensions };
+        let shared = Shared { db: test_db(), vms: test_vms(), dictionary: crate::radius::share_test_dictionary(), metrics: Arc::default(), extensions, databases: Default::default() };
         let generation = build(&running, &shared).unwrap();
         let settings = running.radius.as_ref().unwrap();
         let server = Arc::new(RadiusServer::from_state(settings.auth_addr, settings.acct_addr, generation.radius.unwrap(), crate::radius::share_test_dictionary()));
@@ -302,12 +308,15 @@ mod tests {
     #[tokio::test]
     async fn test_failures_keep_the_current_state() {
         let good = config_text(CLIENT);
-        let cases: [(&str, String, &str, &str); 5] = [
+        // [databases] is opened at startup only, so a handler cannot use one a reload adds.
+        let new_database = format!("{}[databases.billing]\nkind = \"postgresql\"\nhost = \"127.0.0.1\"\ndatabase = \"d\"\nuser = \"u\"\n[[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE name = ?\"\ndatabase = \"billing\"\n", config_text(CLIENT));
+        let cases: [(&str, String, &str, &str); 6] = [
             ("invalid TOML", "not = = toml".to_string(), "return 'accept'", "rradius.toml"),
             ("script syntax error", good.clone(), "return 'accept", "auth.lua"),
             ("bad EAP settings", config_text(&format!("{CLIENT}[radius.eap]\nmethods = []\n")), "return 'accept'", "radius.eap.methods"),
             ("missing secret_file", config_text("[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret_file = \"missing.secret\"\n"), "return 'accept'", "127.0.0.1"),
             ("unknown chain", config_text("[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\nauth = \"vpn\"\n"), "return 'accept'", "vpn"),
+            ("database a reload adds", new_database, "return 'accept'", "'billing' is not open; [databases] takes a restart"),
         ];
         for (what, text, script, names) in cases {
             let dir = tempfile::tempdir().unwrap();
@@ -319,6 +328,23 @@ mod tests {
             assert!(error.contains(names), "{what}: {error}");
             assert!(Arc::ptr_eq(&before, &server.state()), "{what} replaced something");
         }
+    }
+
+    /// spec Change needs a restart: a reload that changes `[databases]` says so, keeps the pools
+    /// the process started with, and builds handlers on them.
+    #[tokio::test]
+    async fn test_reload_keeps_the_running_pools() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let database = |pool_size: usize| format!("[databases.billing]\nkind = \"postgresql\"\nhost = \"127.0.0.1\"\ndatabase = \"d\"\nuser = \"u\"\npool_size = {pool_size}\n");
+        let (mut serving, _server) = serving(dir.path(), "return 'accept'", &format!("{}{}", config_text(CLIENT), database(8)));
+        serving.shared.databases = crate::external_db::ExternalDatabases::open(&serving.running.databases);
+        let before = serving.shared.databases.get("billing").cloned().ok_or("not open")?;
+        let handler = "[[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE name = ?\"\ndatabase = \"billing\"\n";
+        write_config(dir.path(), &format!("{}{}{handler}", config_text(CLIENT), database(32)));
+        assert_eq!(serving.try_reload()?, ["[databases]"]);
+        let after = serving.shared.databases.get("billing").ok_or("gone")?;
+        assert!(Arc::ptr_eq(&before, after), "the running pool stays");
+        Ok(())
     }
 
     #[tokio::test]
@@ -389,6 +415,11 @@ mod tests {
         // TACACS+ authorization groups come with the client list.
         let groups = |rule: &str| format!("{}[tacacs]\n[tacacs.authorize_groups]\ng = ['{rule}']\n{TACACS}authorize_group = \"g\"\n", config_text(CLIENT));
         assert!(restart_names(&groups("permit service=shell"), &groups("deny service=shell")).is_empty());
+        // spec Change needs a restart.
+        let database = |pool: usize| format!("{plain}[databases.billing]\nkind = \"postgresql\"\nhost = \"h\"\ndatabase = \"d\"\nuser = \"u\"\npool_size = {pool}\n");
+        assert_eq!(restart_names(&database(8), &database(16)), ["[databases]"]);
+        assert_eq!(restart_names(&plain, &database(8)), ["[databases]"]);
+        assert_eq!(restart_names(&database(8), &format!("{}required_for_ready = true\n", database(8))), ["[databases]"]);
         // The script and the secret are applied, so they are not reported.
         assert!(restart_names(&plain, &plain.replace("auth.lua", "other.lua")).is_empty());
         assert!(restart_names(&plain, &plain.replace("secret = \"s\"", "secret = \"t\"")).is_empty());

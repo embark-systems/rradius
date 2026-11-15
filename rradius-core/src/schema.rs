@@ -84,9 +84,33 @@ impl Descriptions {
         })
     }
 
-    /// Whether the setting at `path` is marked `secret`, its own entry or the one it shares.
+    /// Whether the setting at `path` is marked `secret`. The names under a map are not in the
+    /// table, which has `*` in their place (`databases.*.password`), so a segment may also stand
+    /// for one. The path is walked a segment at a time, keeping only the prefixes the table has.
     pub fn is_secret(&self, path: &str) -> bool {
-        self.entry(path).is_some_and(|texts| texts.secret)
+        let segments: Vec<&str> = path.split('.').collect();
+        self.secret_under(String::new(), &segments, 0)
+    }
+
+    /// Whether `prefix` followed by `rest` names a secret setting, `rest` matched segment by
+    /// segment. `hops` bounds the `same_as` steps, in case two prefixes point at each other.
+    fn secret_under(&self, prefix: String, rest: &[&str], hops: usize) -> bool {
+        let Some((first, rest)) = rest.split_first() else {
+            return self.entry(&prefix).is_some_and(|texts| texts.secret);
+        };
+        let choices: &[&str] = if *first == "*" { &["*"] } else { &[first, "*"] };
+        choices.iter().any(|segment| {
+            let next = if prefix.is_empty() { (*segment).to_string() } else { format!("{prefix}.{segment}") };
+            let shared = hops < 8 && self.same_as.get(&next).is_some_and(|to| self.secret_under(to.clone(), rest, hops + 1));
+            shared || (self.has_prefix(&next) && self.secret_under(next, rest, hops))
+        })
+    }
+
+    /// Whether `prefix` is a path of the table, or the start of one.
+    fn has_prefix(&self, prefix: &str) -> bool {
+        let under = format!("{prefix}.");
+        let starts = |keys: &mut dyn Iterator<Item = &String>| keys.next().is_some_and(|key| key.starts_with(&under));
+        self.fields.contains_key(prefix) || self.same_as.contains_key(prefix) || starts(&mut self.fields.range(under.clone()..).map(|(key, _)| key)) || starts(&mut self.same_as.range(under.clone()..).map(|(key, _)| key))
     }
 
     /// The entry of `path`: its own, or through `same_as` that of the path it shares.
@@ -247,6 +271,7 @@ const CHAPTERS: &[(&str, &str)] = &[
     ("runtime", "#24-過載與重送"),
     ("metrics", "#28-統計-metrics"),
     ("shutdown", "#216-停止-shutdown"),
+    ("databases", "#217-外部資料庫-databases"),
     ("log", "#210-記錄-log"),
     ("accounts", "#214-帳號管理-accounts"),
     ("auth", "#3-認證串接-auth"),
@@ -559,7 +584,12 @@ mod tests {
         for path in ["radius.clients.secret", "tacacs.clients.secret", "cluster.secret_raft", "cluster.secret_api", "auth.handlers.bind_password"] {
             assert!(table.is_secret(path), "{path}");
         }
+        // Names under a map stand for the `*` the table has, through `same_as` too.
+        for path in ["databases.main.password", "auth.chains.office.handlers.bind_password", "auth.chains.*.handlers.bind_password"] {
+            assert!(table.is_secret(path), "{path}");
+        }
         assert!(!table.is_secret("radius.clients.secret_file") && !table.is_secret("radius.auth_port"));
+        assert!(!table.is_secret("databases.main.host") && !table.is_secret("databases") && !table.is_secret(""));
         Ok(())
     }
 

@@ -22,6 +22,23 @@ pub fn core_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
+/// `[databases.<name>]` for `host`, database `radius`, a pool of 4 and a connect timeout of 5 s.
+pub fn database_settings(kind: crate::config::DatabaseKind, host: &str, port: u16, user: &str, password: &str, tls: crate::config::DatabaseTls, ca_file: Option<PathBuf>) -> crate::config::DatabaseSettings {
+    crate::config::DatabaseSettings {
+        kind,
+        host: host.to_string(),
+        port,
+        database: "radius".to_string(),
+        user: user.to_string(),
+        password: Some(zeroize::Zeroizing::new(password.to_string())),
+        tls,
+        ca_file,
+        pool_size: 4,
+        connect_timeout: Duration::from_secs(5),
+        required_for_ready: false,
+    }
+}
+
 /// The core's RADIUS dictionary, `share/dictionary`.
 pub fn dictionary() -> PathBuf {
     core_root().join("share").join("dictionary")

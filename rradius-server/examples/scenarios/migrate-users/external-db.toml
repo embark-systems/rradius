@@ -1,0 +1,52 @@
+# 帳號留在原本的 PostgreSQL：舊系統繼續維護帳號表，rradius 只讀。計費仍寫進 rradius 自己的資料表。
+# 說明：docs/manual/09-migrate-users.md〈帳號留在原本的資料庫〉；欄位見 docs/usage.md 2.17 節。
+
+dictionary = "../../../../share/dictionary"
+
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+# 舊系統的資料庫。只給 rradius 一個唯讀帳號，能讀 radcheck 和 radreply 就好。
+[databases.legacy]
+kind = "postgresql"
+host = "db.example.com"
+database = "radius"
+user = "rradius_ro"
+password_file = "legacy-db.secret"
+# tls = "verify" 是預設：驗證資料庫的憑證和主機名稱。用自己的 CA 時加 ca_file。
+pool_size = 8
+
+[auth]
+policy = "first_match"
+
+[[auth.handlers]]
+type = "sql"
+database = "legacy"
+# 密碼欄一樣是 {格式}值，見 docs/usage.md 第 5 節。佔位符寫 ?，送到 PostgreSQL 時改成 $1。
+user_query = "SELECT password FROM radcheck WHERE username = ?"
+reply_query = "SELECT attribute, value FROM radreply WHERE username = ?"
+
+[auth.username]
+strip_realm = "both"
+lowercase = true
+
+[radius]
+bind = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[[radius.clients]]
+name = "nas"
+address = "10.90.0.0/24"
+secret_file = "nas.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

@@ -1658,7 +1658,7 @@ pub(crate) mod tests {
         db.execute("CREATE TABLE IF NOT EXISTS tacacs_ascii_users (username TEXT, password TEXT)").await.unwrap();
         db.execute("INSERT INTO tacacs_ascii_users VALUES ('alice', 'secret')").await.unwrap();
         let handler = Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: "SELECT password FROM tacacs_ascii_users WHERE username = ?".to_string(),
             reply_query: None,
             certificate_query: None, default_user: None,
@@ -1763,7 +1763,7 @@ pub(crate) mod tests {
         db.execute("DELETE FROM tacacs_chap_users").await?;
         db.execute("INSERT INTO tacacs_chap_users VALUES ('alice', 'secret')").await?;
         let handler = Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: "SELECT password FROM tacacs_chap_users WHERE username = ?".to_string(),
             reply_query: None,
             certificate_query: None, default_user: None,
@@ -1852,7 +1852,7 @@ pub(crate) mod tests {
         let script = Handler::Lua(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "set_attr('server_msg', 'Welcome, admin') return 'accept'")?);
         let db = crate::test_support::test_db();
         db.execute("CREATE TABLE IF NOT EXISTS tacacs_chap_proof (username TEXT, password TEXT)").await?;
-        let sql = Handler::Sql { db, user_query: "SELECT password FROM tacacs_chap_proof WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: std::time::Duration::from_secs(5) };
+        let sql = Handler::Sql { source: crate::auth_chain::SqlSource::Cluster(db), user_query: "SELECT password FROM tacacs_chap_proof WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: std::time::Duration::from_secs(5) };
         let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![script, sql]);
         let chains = Arc::new(AuthChains::new(Some(chain), Vec::new()));
         let challenge = [0x22; 16];
@@ -3010,7 +3010,7 @@ pub(crate) mod tests {
         db.execute("CREATE TABLE tacacs_norm_users (username TEXT, password TEXT)").await.unwrap();
         db.execute("INSERT INTO tacacs_norm_users VALUES ('alice', 'secret')").await.unwrap();
         let handler = crate::auth_chain::Handler::Sql {
-            db,
+            source: crate::auth_chain::SqlSource::Cluster(db),
             user_query: "SELECT password FROM tacacs_norm_users WHERE username = ?".to_string(),
             reply_query: None,
             certificate_query: None, default_user: None,
@@ -3029,7 +3029,7 @@ pub(crate) mod tests {
         db.execute("CREATE TABLE IF NOT EXISTS tacacs_all_users (username TEXT, password TEXT)").await.unwrap();
         db.execute("INSERT INTO tacacs_all_users VALUES ('alice', 'secret')").await.unwrap();
         let handler = crate::auth_chain::Handler::Sql {
-            db: db.clone(),
+            source: crate::auth_chain::SqlSource::Cluster(db.clone()),
             user_query: "SELECT password FROM tacacs_all_users WHERE username = ?".to_string(),
             reply_query: None,
             certificate_query: None, default_user: None,
@@ -3074,7 +3074,7 @@ pub(crate) mod tests {
             })
             .await;
         let handler = crate::auth_chain::Handler::Sql {
-            db: crate::test_support::test_db(),
+            source: crate::auth_chain::SqlSource::Cluster(crate::test_support::test_db()),
             user_query: "SELECT password FROM tacacs_chain_users WHERE username = ?".to_string(),
             reply_query: None,
             certificate_query: None, default_user: None,
