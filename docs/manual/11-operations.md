@@ -165,6 +165,7 @@ systemctl reload rradius        # 服務檔有 ExecReload=/bin/kill -HUP $MAINPI
 | `rradius_cluster_leader` | 這台有沒有可用的 leader | 0 超過幾秒：這台被隔開或叢集沒有多數 |
 | `rradius_radius_duplicates_total` 的增加速度 | NAS 在重送 | 持續增加：處理比 NAS 的重送間隔慢 |
 | `rradius_acct_spool_rejected_total` | 重放時被放棄的計費 | 大於 0 就去看暫存目錄的 `rejected.log` |
+| `rradius_accounting_log_dropped_total`、`rradius_accounting_log_failures_total` | 計費紀錄檔沒寫進去的 | 增加：磁碟太慢、滿了或不能寫 |
 | `rradius_eap_sessions_total{result="timeout"}`、`{result="evicted"}` | 沒走完的、被擠掉的 802.1X 對話 | 持續增加，見[第 12 章](12-troubleshooting.md#wi-fi8021x) |
 | `rradius_script_http_requests_total{result="timeout"}` | 腳本呼叫的 API 逾時 | 增加：API 有問題 |
 | `rradius_reload_total{result="error"}` | 重新載入失敗 | 大於 0 就要看記錄 |
@@ -227,6 +228,19 @@ rradius 太忙時不會回錯誤，而是**不回應**，讓 NAS 重送或改用
 | 停機維護 | SIGTERM 會停止重放，資料留在磁碟，下次啟動繼續 |
 | 換掉節點 | 先等這台的暫存清空（指標為 0）再關機，否則它還沒重放的就留在舊磁碟上 |
 | 改設定 | 暫存的設定要重啟才套用 |
+
+## 計費紀錄檔的日常
+
+設了 `[radius.accounting_log]`（[usage 2.17 節](../usage.md#217-計費紀錄檔-radiusaccounting_log)）之後，每一筆回覆過的計費都會寫成檔案裡的一行 JSON：
+
+| 要做的事 | 做法 |
+| --- | --- |
+| 確認有在寫 | `rradius_accounting_log_written_total` 跟著計費增加；`rradius-server status` 的 Accounting log 段落列出每秒寫入、丟棄和兩種失敗 |
+| 知道有沒有漏寫 | `rradius_accounting_log_dropped_total` 是佇列滿了沒寫的，`failures_total{stage="write"}` 是寫入失敗的次數（一次是一批），大於 0 就去看記錄的 `accounting log` 開頭訊息和磁碟 |
+| 換檔 | 用 logrotate 搬檔加 `postrotate` 送 SIGHUP，例子在 usage 2.17 節。**不要用 `copytruncate`** |
+| 換檔後確認 | `failures_total{stage="open"}` 增加或 `rradius_reload_total{result="error"}` 增加時，rradius 還在寫搬走的檔案 |
+| 停機維護 | SIGTERM 時處理中的請求回應完才寫完佇列再結束，回覆過的都在檔案裡 |
+| 改設定 | `file` 送 SIGHUP 就套用；新增、移除這一節或改 `queue` 要重啟 |
 
 暫存檔是原始封包，有使用者名稱和位址。目錄權限是 0700，備份和報廢磁碟時一併考慮。
 

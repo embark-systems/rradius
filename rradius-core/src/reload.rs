@@ -138,6 +138,8 @@ pub struct Serving {
     pub extensions: Vec<Arc<dyn crate::extension::Served>>,
     /// `[shutdown]` of the configuration last applied: a reload changes it.
     pub shutdown: Live<config::ShutdownSettings>,
+    /// `[radius.accounting_log]` as started: a reload opens its file again.
+    pub accounting_log: Option<Arc<crate::accounting_log::AccountingLog>>,
 }
 
 impl Serving {
@@ -181,6 +183,10 @@ impl Serving {
             served.reload(&config);
         }
         self.shutdown.set(config.shutdown);
+        // A file moved away by rotation is followed by a new one, and a new name is taken.
+        if let (Some(log), Some(settings)) = (&self.accounting_log, config.radius.as_ref().and_then(|radius| radius.accounting_log.as_ref())) {
+            log.reopen(&settings.file);
+        }
         Ok(needs_restart(&self.running, &config, &self.shared.extensions))
     }
 }
@@ -226,6 +232,8 @@ pub fn needs_restart(running: &ServerConfig, new: &ServerConfig, extensions: &cr
             differs("radius.sockets", running.sockets != new.sockets);
             differs("radius.recv_buffer_bytes", running.recv_buffer_bytes != new.recv_buffer_bytes);
             differs("[radius.accounting_spool]", running.accounting_spool != new.accounting_spool);
+            // Its writer starts with the server; a reload only opens the file again.
+            differs("[radius.accounting_log]", running.accounting_log.as_ref().map(|log| log.queue) != new.accounting_log.as_ref().map(|log| log.queue));
             names.extend(extensions.needs_restart(running_config, new_config));
         }
         (None, None) => names.extend(extensions.needs_restart(running_config, new_config)),
@@ -288,7 +296,7 @@ mod tests {
         let settings = running.radius.as_ref().unwrap();
         let server = Arc::new(RadiusServer::from_state(settings.auth_addr, settings.acct_addr, generation.radius.unwrap(), crate::radius::share_test_dictionary()));
         let shutdown = Live::new(running.shutdown);
-        (Serving { config_path, running, shared, radius: Some(server.clone()), tacacs: None, extensions: Vec::new(), shutdown }, server)
+        (Serving { config_path, running, shared, radius: Some(server.clone()), tacacs: None, extensions: Vec::new(), shutdown, accounting_log: None }, server)
     }
 
     fn request(identifier: u8) -> Vec<u8> {
@@ -391,6 +399,8 @@ mod tests {
         assert!(restart_names(&groups("permit service=shell"), &groups("deny service=shell")).is_empty());
         // The script and the secret are applied, so they are not reported.
         assert!(restart_names(&plain, &plain.replace("auth.lua", "other.lua")).is_empty());
+        // The accounting log's file is opened again on reload.
+        assert!(restart_names(&radius("[radius.accounting_log]\nfile = \"a.jsonl\"\n"), &radius("[radius.accounting_log]\nfile = \"b.jsonl\"\n")).is_empty());
         assert!(restart_names(&plain, &plain.replace("secret = \"s\"", "secret = \"t\"")).is_empty());
 
         let dictionary = plain.replace("dictionary = \"d\"", "dictionary = \"e\"");
@@ -404,6 +414,9 @@ mod tests {
             (plain.clone(), readers, "[cluster]"),
             (plain.clone(), format!("{plain}[log]\nlevel = \"debug\"\n"), "[log]"),
             (plain.clone(), radius("[radius.accounting_spool]\ndir = \"spool\"\n"), "[radius.accounting_spool]"),
+            (plain.clone(), radius("[radius.accounting_log]\nfile = \"acct.jsonl\"\n"), "[radius.accounting_log]"),
+            (radius("[radius.accounting_log]\nfile = \"acct.jsonl\"\n"), plain.clone(), "[radius.accounting_log]"),
+            (radius("[radius.accounting_log]\nfile = \"acct.jsonl\"\n"), radius("[radius.accounting_log]\nfile = \"acct.jsonl\"\nqueue = 10\n"), "[radius.accounting_log]"),
             (plain.clone(), format!("{plain}[metrics]\n"), "[metrics]"),
             (plain.clone(), radius("bind = \"127.0.0.1\""), "radius.bind"),
             (plain.clone(), radius("bind = [\"0.0.0.0\", \"::\"]"), "radius.bind"),

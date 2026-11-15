@@ -386,6 +386,7 @@ pub struct RadiusSettings {
     /// How many times those functions send a request, the first time included.
     pub coa_attempts: u32,
     pub accounting_spool: Option<SpoolSettings>,
+    pub accounting_log: Option<AccountingLogSettings>,
     pub eap: Option<Arc<EapSettings>>,
     /// `require_message_authenticator` and `limit_proxy_state`, for clients a client source finds.
     pub client_policies: (MessageAuthenticatorPolicy, MessageAuthenticatorPolicy),
@@ -435,6 +436,19 @@ pub struct SpoolSettings {
     /// and 1, strictly in order, for `[radius.accounting_spool]`.
     pub replay_window: usize,
 }
+
+/// `[radius.accounting_log]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountingLogSettings {
+    /// Where the lines are appended, relative paths taken from the configuration's directory.
+    pub file: PathBuf,
+    /// How many requests may wait to be written; more are dropped.
+    pub queue: usize,
+}
+
+/// `queue` of `[radius.accounting_log]` when it is not set, and the most it may be.
+const DEFAULT_ACCOUNTING_LOG_QUEUE: usize = 65536;
+const MAX_ACCOUNTING_LOG_QUEUE: usize = 16_777_216;
 
 /// `replay_window` of `[proxy.accounting_spool]` when it is not set, and the most it may be.
 const DEFAULT_REPLAY_WINDOW: usize = 32;
@@ -898,6 +912,7 @@ struct RawRadius {
     #[schemars(skip)]
     tls: Option<toml::Value>,
     accounting_spool: Option<RawSpool>,
+    accounting_log: Option<RawAccountingLog>,
     eap: Option<RawEap>,
     /// `[radius.coa]`, which an extension reads.
     #[schemars(skip)]
@@ -978,6 +993,36 @@ fn default_eap_max_sessions_per_device() -> usize {
 
 fn default_eap_max_sessions() -> usize {
     4096
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawAccountingLog {
+    file: PathBuf,
+    #[serde(default = "default_accounting_log_queue")]
+    queue: usize,
+}
+
+fn default_accounting_log_queue() -> usize {
+    DEFAULT_ACCOUNTING_LOG_QUEUE
+}
+
+/// `[radius.accounting_log]`: its directory must exist, and a file already there must take
+/// appending. Loading creates nothing.
+fn accounting_log_settings(raw: RawAccountingLog, base: &Path) -> Result<AccountingLogSettings, String> {
+    if !(1..=MAX_ACCOUNTING_LOG_QUEUE).contains(&raw.queue) {
+        return Err(format!("radius.accounting_log.queue must be from 1 to {MAX_ACCOUNTING_LOG_QUEUE}"));
+    }
+    let file = base.join(raw.file);
+    // A config path with no directory part ("rradius.toml") gives an empty base: that is ".".
+    let directory = file.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    if !directory.is_dir() {
+        return Err(format!("radius.accounting_log.file: directory {} does not exist", directory.display()));
+    }
+    if file.exists() {
+        fs::OpenOptions::new().append(true).open(&file).map_err(|e| format!("radius.accounting_log.file: {} cannot be opened for appending: {e}", file.display()))?;
+    }
+    Ok(AccountingLogSettings { file, queue: raw.queue })
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -1225,6 +1270,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
             coa_timeout: Duration::from_millis(above_zero("radius.coa_timeout_ms", r.coa_timeout_ms as usize).map_err(fail)? as u64),
             coa_attempts: above_zero("radius.coa_attempts", r.coa_attempts as usize).map_err(fail)? as u32,
             accounting_spool: r.accounting_spool.map(|spool| spool_settings(spool, base, "radius.accounting_spool")).transpose().map_err(fail)?,
+            accounting_log: r.accounting_log.map(|log| accounting_log_settings(log, base)).transpose().map_err(fail)?,
             eap: r.eap.map(|eap| eap_settings(eap, base, extensions).map(Arc::new)).transpose().map_err(fail)?,
             client_policies: (r.require_message_authenticator, r.limit_proxy_state),
         }),
@@ -3573,6 +3619,33 @@ mod tests {
             let err = error(&base(&format!("\n[radius]\n[radius.accounting_spool]\ndir = \"spool\"\n{setting}\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n")));
             assert!(err.contains(expected), "{setting}: {err}");
         }
+    }
+
+    /// spec Accounting Log Settings.
+    #[test]
+    fn test_accounting_log_settings() -> Result<(), String> {
+        let section = |lines: &str| base(&format!("\n[radius]\n[radius.accounting_log]\n{lines}\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n"));
+        let (dir, result) = load_str(&section("file = \"acct.jsonl\""));
+        let log = result.map_err(|e| e.to_string())?.radius.ok_or("no radius")?.accounting_log.ok_or("no accounting_log")?;
+        assert_eq!(log, AccountingLogSettings { file: dir.path().join("acct.jsonl"), queue: 65536 });
+        assert!(!dir.path().join("acct.jsonl").exists(), "loading creates nothing");
+        let (_dir, result) = load_str(&section("file = \"acct.jsonl\"\nqueue = 16777216"));
+        assert_eq!(result.map_err(|e| e.to_string())?.radius.ok_or("no radius")?.accounting_log.map(|log| log.queue), Some(16_777_216));
+        for (lines, expected) in [
+            ("queue = 5", "file"),
+            ("file = \"missing-dir/acct.jsonl\"", "radius.accounting_log.file"),
+            ("file = \"acct.jsonl\"\nqueue = 0", "radius.accounting_log.queue"),
+            ("file = \"acct.jsonl\"\nqueue = 16777217", "radius.accounting_log.queue"),
+            ("file = \"acct.jsonl\"\nformat = \"csv\"", "format"),
+        ] {
+            let (_dir, result) = load_str(&section(lines));
+            let err = result.err().ok_or_else(|| format!("{lines}: loaded"))?.to_string();
+            assert!(err.contains(expected), "{lines}: {err}");
+        }
+        // A config path with no directory part, as in `server --config rradius.toml`.
+        let raw = RawAccountingLog { file: PathBuf::from("not-written.jsonl"), queue: 1 };
+        assert_eq!(accounting_log_settings(raw, Path::new(""))?.file, PathBuf::from("not-written.jsonl"));
+        Ok(())
     }
 
     #[test]

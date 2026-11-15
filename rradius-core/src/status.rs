@@ -317,6 +317,16 @@ fn core_sections_last() -> Vec<StatusSection> {
             ],
         },
         StatusSection {
+            title: "Accounting log",
+            key: "acct_log",
+            items: vec![
+                item("Written", "written", "rradius_accounting_log_written_total", &[], Show::Rate),
+                item("Dropped", "dropped", "rradius_accounting_log_dropped_total", &[], Show::Rate),
+                item("Failed opens", "failures_open", "rradius_accounting_log_failures_total", &[("stage", "open")], Show::Rate),
+                item("Failed writes", "failures_write", "rradius_accounting_log_failures_total", &[("stage", "write")], Show::Rate),
+            ],
+        },
+        StatusSection {
             title: "Netlogon",
             key: "netlogon",
             items: vec![
@@ -1128,6 +1138,37 @@ mod tests {
         let without_netlogon = sample_of("rradius_tacacs_connections_open 2\n", start)?;
         let keys: Vec<String> = view(address(), &without_netlogon, &without_netlogon, &[], 0.0).sections.into_iter().map(|section| section.key).collect();
         assert_eq!(keys, ["node", "tacacs"], "no Netlogon section without its metrics");
+        Ok(())
+    }
+
+    /// spec Accounting Log Metrics: the families only with `[radius.accounting_log]`, and the
+    /// Accounting log section after the accounting spool's.
+    #[test]
+    fn test_accounting_log_section() -> Result<(), String> {
+        let start = Instant::now();
+        let keys_of = |text: &str| -> Result<Vec<String>, String> {
+            let (before, after) = (sample_of(text, start)?, sample_of(text, start + Duration::from_secs(1))?);
+            Ok(view(address(), &before, &after, &[], 0.0).sections.into_iter().map(|section| section.key).collect())
+        };
+        let without = crate::metrics::Metrics::default().render();
+        assert!(!without.contains("rradius_accounting_log_"), "{without}");
+        assert!(!keys_of(&without)?.iter().any(|key| key == "acct_log"));
+        let metrics = crate::metrics::Metrics::default();
+        let counters = std::sync::Arc::new(crate::metrics::AccountingLogCounters::default());
+        metrics.watch_accounting_log(counters.clone());
+        counters.written.add(3);
+        let text = metrics.render();
+        for line in ["rradius_accounting_log_written_total 3", "rradius_accounting_log_dropped_total 0", "rradius_accounting_log_failures_total{stage=\"open\"} 0", "rradius_accounting_log_failures_total{stage=\"write\"} 0"] {
+            assert!(text.lines().any(|have| have == line), "no {line}");
+        }
+        let keys = keys_of(&text)?;
+        let spool = keys.iter().position(|key| key == "acct_spool").ok_or("no acct_spool")?;
+        assert_eq!(keys.get(spool + 1).map(String::as_str), Some("acct_log"), "{keys:?}");
+        let (before, after) = (sample_of(&text, start)?, sample_of(&text, start + Duration::from_secs(1))?);
+        let shown = view(address(), &before, &after, &[], 0.0);
+        let section = shown.sections.iter().find(|section| section.key == "acct_log").ok_or("no section")?;
+        let items: Vec<&str> = section.items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(items, ["written", "dropped", "failures_open", "failures_write"]);
         Ok(())
     }
 

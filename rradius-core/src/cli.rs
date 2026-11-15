@@ -462,7 +462,18 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     let mut radius_running = None;
     let mut spool_replay = None;
     let mut radius_serving = None;
+    let mut accounting_log = None;
     if let (Some(radius), Some(state)) = (&config.radius, generation.radius) {
+        if let Some(settings) = &radius.accounting_log {
+            let counters = Arc::new(crate::metrics::AccountingLogCounters::default());
+            match crate::accounting_log::AccountingLog::start(&settings.file, settings.queue, counters.clone()) {
+                Ok(log) => {
+                    metrics.watch_accounting_log(counters);
+                    accounting_log = Some(log);
+                }
+                Err(e) => stop_node_and_exit_with(&db, e).await,
+            }
+        }
         let radius_server = RadiusServer::from_state(radius.auth_addr, radius.acct_addr, state, dictionary)
             .with_more_binds(radius.more_binds.clone())
             .with_sockets(radius.sockets)
@@ -471,6 +482,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             .with_status_server(radius.status_server)
             .with_eap(radius.eap.clone())
             .with_accounting_observer(extensions.accounting_observer(&config))
+            .with_accounting_observer(accounting_log.clone().map(|log| log as Arc<dyn crate::extension::AccountingObserver>))
             .with_stopping(stopping.clone())
             .with_metrics(metrics.clone());
         let radius_server = match &radius.accounting_spool {
@@ -556,7 +568,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Servers started. Press Ctrl+C to stop.");
     let shutdown = reload::Live::new(config.shutdown);
-    let serving = Serving { config_path: config_path.into(), running: config, shared, radius: radius_running, tacacs: tacacs_running, extensions: extensions_serving, shutdown };
+    let serving = Serving { config_path: config_path.into(), running: config, shared, radius: radius_running, tacacs: tacacs_running, extensions: extensions_serving, shutdown, accounting_log };
     let mut checked = tokio::time::interval(Duration::from_secs(1));
     let mut failed = false;
     loop {
@@ -588,6 +600,9 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     // accounting packet log, is in.
     for served in &serving.extensions {
         served.stop();
+    }
+    if let Some(log) = &serving.accounting_log {
+        log.stop();
     }
     // A node whose core stopped is shut down within a limit: a shutdown that hangs would leave it
     // neither serving nor ended, and so never restarted.

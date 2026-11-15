@@ -1515,7 +1515,7 @@ pub struct RadiusServer {
     /// Where accounting goes while the database cannot take it.
     spool: Option<Arc<Spool>>,
     /// What is told of each accounting request answered.
-    accounting_observer: Option<Arc<dyn crate::extension::AccountingObserver>>,
+    accounting_observers: Vec<Arc<dyn crate::extension::AccountingObserver>>,
     eap: EapService,
     policy_discards: Mutex<DiscardLog>,
     /// EAP conversations refused for overload, logged a line a second at most, for each reason.
@@ -1560,7 +1560,7 @@ impl RadiusServer {
             status_server: true,
             learned: Mutex::default(),
             spool: None,
-            accounting_observer: None,
+            accounting_observers: Vec::new(),
             eap: EapService::default(),
             policy_discards: Mutex::default(),
             eap_overload_lines: Mutex::default(),
@@ -1631,9 +1631,10 @@ impl RadiusServer {
         self.eap.set_settings(settings);
     }
 
-    /// Tells `observer` of each accounting request answered from now on.
+    /// Tells `observer`, besides those added before, of each accounting request answered from
+    /// now on; `None` adds none.
     pub fn with_accounting_observer(mut self, observer: Option<Arc<dyn crate::extension::AccountingObserver>>) -> Self {
-        self.accounting_observer = observer;
+        self.accounting_observers.extend(observer);
         self
     }
 
@@ -2054,15 +2055,18 @@ impl RadiusServer {
         if state.trace.as_ref().is_some_and(|trace| trace.covers(&client.name, packet.attribute(1).unwrap_or_default())) {
             trace_exchange(&self.dictionary, client, source.ip(), &packet, response.as_deref());
         }
-        if let Some(observer) = self.accounting_observer.as_ref().filter(|_| kind == PacketKind::Acct && response.as_ref().and_then(|response| response.first()) == Some(&ACCOUNTING_RESPONSE)) {
-            observer.observe(&crate::extension::AccountingRecord {
+        if !self.accounting_observers.is_empty() && kind == PacketKind::Acct && response.as_ref().and_then(|response| response.first()) == Some(&ACCOUNTING_RESPONSE) {
+            let record = crate::extension::AccountingRecord {
                 time: std::time::SystemTime::now(),
                 client: client.name.clone(),
                 source: source.ip(),
                 transport: if client.secret == crate::clients::RADSEC_SECRET { "radsec" } else { "udp" },
                 handling,
                 attributes: accounting_attributes(&packet, &self.dictionary, &client.secret),
-            });
+            };
+            for observer in &self.accounting_observers {
+                observer.observe(&record);
+            }
         }
         // Without a response the ticket is dropped, so a retransmission runs again.
         if let (Some(ticket), Some(response)) = (ticket, &response) {
@@ -8550,7 +8554,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_accounting_observer_sees_each_answer_once() -> Result<(), String> {
         let observed = Arc::new(Observed::default());
-        let server = script_server("xyzzy5461", "if get_attr('Acct-Session-Id') == 'refused' then return 'reject' end return 'accept'").await.with_accounting_observer(Some(observed.clone()));
+        let second = Arc::new(Observed::default());
+        let server = script_server("xyzzy5461", "if get_attr('Acct-Session-Id') == 'refused' then return 'reject' end return 'accept'").await.with_accounting_observer(Some(observed.clone())).with_accounting_observer(None).with_accounting_observer(Some(second.clone()));
         let unnamed = (1..=255u8).find(|number| share_dictionary().get(0, &[u32::from(*number)]).is_none()).ok_or("the dictionary names every attribute")?;
         let start = RadiusPacket::create_accounting_request(1, vec![(40, vec![0, 0, 0, 1]), (1, b"alice".to_vec()), (44, b"s1".to_vec()), (unnamed, vec![0xde, 0xad]), (4, vec![192, 0, 2, 1])], b"xyzzy5461");
         let stop = RadiusPacket::create_accounting_request(2, vec![(40, vec![0, 0, 0, 2]), (1, b"alice".to_vec()), (44, b"s1".to_vec()), (46, 3600u32.to_be_bytes().to_vec())], b"xyzzy5461");
@@ -8560,6 +8565,7 @@ pub(crate) mod tests {
         }
         let records = observed.taken();
         assert_eq!(records.len(), 2, "{records:?}");
+        assert_eq!(second.taken(), records, "a second observer is told the same");
         assert_eq!((records[0].client.as_str(), records[0].source, records[0].transport, records[0].handling), ("local", LOCALHOST, "udp", "script"));
         fn named(record: &crate::extension::AccountingRecord) -> Vec<(&str, &str)> {
             record.attributes.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect()
