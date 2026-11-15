@@ -22,6 +22,15 @@ const MAX_CONNECTIONS: usize = 16;
 #[derive(Debug, Default)]
 pub struct Counter(AtomicU64);
 
+/// What `[radius.accounting_log]` counts.
+#[derive(Debug, Default)]
+pub struct AccountingLogCounters {
+    pub written: Counter,
+    pub dropped: Counter,
+    pub failed_open: Counter,
+    pub failed_write: Counter,
+}
+
 /// What one accounting spool counts: `[radius.accounting_spool]` and `[proxy.accounting_spool]`
 /// each have their own.
 #[derive(Debug, Default)]
@@ -277,6 +286,8 @@ pub struct Metrics {
     radius_slots: std::sync::OnceLock<RadiusSlots>,
     /// What `with_version` was given: the program's version and when it started.
     started: std::sync::OnceLock<Started>,
+    /// The accounting log's counts, once `[radius.accounting_log]` starts one.
+    accounting_log: std::sync::OnceLock<Arc<AccountingLogCounters>>,
     /// `[databases]`, once the server has opened them.
     databases: std::sync::OnceLock<crate::external_db::ExternalDatabases>,
 }
@@ -334,6 +345,11 @@ impl Metrics {
     /// Reports the RADIUS requests being handled from now on: those holding a place of `auth` or
     /// `acct`, out of their capacities. Only the first call counts; the places last as long as
     /// the process.
+    /// Reports `counters` as the accounting log's; without a call its families are not written.
+    pub fn watch_accounting_log(&self, counters: Arc<AccountingLogCounters>) {
+        let _ = self.accounting_log.set(counters);
+    }
+
     pub fn watch_radius_slots(&self, auth: Arc<Semaphore>, auth_capacity: usize, acct: Arc<Semaphore>, acct_capacity: usize) {
         let _ = self.radius_slots.set(RadiusSlots { auth, auth_capacity, acct, acct_capacity });
     }
@@ -496,6 +512,14 @@ impl Metrics {
         write_family(&mut out, "rradius_acct_spool_full_total", "counter", "Accounting requests not spooled because the spool is full or the disk failed.", &[("", self.acct_spool.full.get())]);
         write_family(&mut out, "rradius_acct_spool_corrupt_total", "counter", "Damaged spool files set aside.", &[("", self.acct_spool.corrupt.get())]);
         write_family(&mut out, "rradius_acct_spool_bytes", "gauge", "Bytes of accounting requests waiting to be replayed.", &[("", self.acct_spool.bytes.get())]);
+        if let Some(log) = self.accounting_log.get() {
+            write_family(&mut out, "rradius_accounting_log_written_total", "counter", "Accounting requests written to the accounting log.", &[("", log.written.get())]);
+            write_family(&mut out, "rradius_accounting_log_dropped_total", "counter", "Accounting requests not written because the accounting log's queue was full.", &[("", log.dropped.get())]);
+            write_family(&mut out, "rradius_accounting_log_failures_total", "counter", "Failures of the accounting log by stage: opening its file or writing to it.", &[
+                ("{stage=\"open\"}", log.failed_open.get()),
+                ("{stage=\"write\"}", log.failed_write.get()),
+            ]);
+        }
         write_family(&mut out, "rradius_reload_total", "counter", "Reloads by result.", &[
             ("{result=\"ok\"}", self.reload_ok.get()),
             ("{result=\"error\"}", self.reload_error.get()),

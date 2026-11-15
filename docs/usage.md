@@ -115,6 +115,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | `[auth]` | 否 | 認證串接；沒有時由 `[lua].script` 認證 |
 | `[radius]` | 否 | 啟用 RADIUS |
 | `[radius.accounting_spool]` | 否 | 資料庫失敗時先把計費寫到本機（2.11 節） |
+| `[radius.accounting_log]` | 否 | 每一筆回覆過的計費寫成一行 JSON 到文字檔（2.18 節） |
 | `[radius.eap]` | 否 | EAP，給 802.1X 和 WPA-Enterprise 用（2.12 節） |
 | `[tacacs]` | 否 | 啟用 TACACS+ |
 | `[metrics]` | 否 | 啟用統計端點（2.8 節） |
@@ -780,6 +781,9 @@ port = 9812         # 預設
 | `rradius_acct_spool_full_total` | 暫存已滿或寫入失敗，沒有回覆的請求 |
 | `rradius_acct_spool_corrupt_total` | 損壞而改名保留的暫存檔 |
 | `rradius_acct_spool_bytes` | 等待重放的位元組數；持續大於 0 代表資料庫的資料落後 |
+| `rradius_accounting_log_written_total` | 寫進計費紀錄檔的筆數（2.18 節） |
+| `rradius_accounting_log_dropped_total` | 佇列滿了而沒寫進計費紀錄檔的筆數 |
+| `rradius_accounting_log_failures_total{stage="open\|write"}` | 計費紀錄檔重新開檔（`open`）或寫入（`write`）失敗的次數；`write` 每次是一批 |
 | `rradius_netlogon_logons_total`、`rradius_netlogon_channel_setups_total`、`rradius_netlogon_open_connections` | `netlogon` 處理器（3.7 節） |
 | `rradius_external_db_failures_total{database="...",reason="unavailable\|mistake\|unknown"}` | 每個外部資料庫失敗的呼叫（2.17 節），`sql` 處理器和 `db_query`、`db_execute` 都算。`unavailable` 是資料庫無法使用（含逾時），`mistake` 是陳述式或值的錯（含送出前就被拒的，例如值的數量不符），`unknown` 是其他。`db_query` 寫了不存在的名稱不算；請求的時間（`[lua].query_timeout_ms`）已經用完後才呼叫的 `db_query`、`db_execute` 沒有送到資料庫，也不算；`required_for_ready` 的檢查也不算。沒有 `[databases]` 時不輸出 |
 | `rradius_external_db_connections{database="...",state="in_use\|idle"}` | 每個外部資料庫連線池的連線：`in_use` 是交給呼叫正在用的，加上正在建立的（還沒連上的連線也佔一個名額），`idle` 是開著閒置的。不含 `required_for_ready` 的檢查連線 |
@@ -819,6 +823,7 @@ rradius-server status [--config <path>] [--watch] [--json] [--cluster]
 | TACACS+（`tacacs`） | 開著的連線、三種請求與格式錯誤的每秒量，以及三種請求這段時間回應時間的 p50、p99（毫秒） |
 | EAP（`eap`） | 進行中的 EAP 對話 |
 | Accounting spool（`acct_spool`） | 等待重放的位元組、重放、放棄與沒寫入暫存的每秒量 |
+| Accounting log（`acct_log`） | 計費紀錄檔寫入、丟棄、開檔失敗與寫入失敗的每秒量（`written`、`dropped`、`failures_open`、`failures_write`）；沒有 `[radius.accounting_log]` 時不列 |
 | Netlogon（`netlogon`） | 開著的連線、四種登入結果的每秒量 |
 | Log（`log`） | 遺失記錄行的每秒量 |
 
@@ -911,8 +916,8 @@ docker compose kill -s HUP rradius
 
 收到 SIGHUP 時重讀設定檔（包含 `secret_file`）並套用，結果寫一行到記錄：`configuration reloaded from ...` 或 `reload failed, keeping the running configuration: ...`。
 
-- **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）與 `[lua.http]`。
-- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`，以及新增或移除 `[radius]`、`[tacacs]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
+- **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）、`[lua.http]`，以及 `[radius.accounting_log]` 的 `file`（重新開檔，見 2.18 節）。
+- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
 - **全部成功才會套用。** 檢查和啟動時相同，任何一項有誤就全部維持原狀，程序繼續服務；修正後再送一次 SIGHUP 即可。
 - 進行中的請求用舊內容做完，不會中斷。已開啟的 TACACS+ 連線不會因此斷線，但下一個封包會依新名單處理：client 被移除時關閉連線，密碼更換後要用新密碼。
 - `auto` 學到的值和重送快取會保留。每次重新載入都會重建 LDAP 連線池。
@@ -1261,7 +1266,7 @@ rradius-server user show --config /etc/rradius/rradius.toml alice
 1. **`/readyz` 回 503 `stopping`，** 但 RADIUS 和 TACACS+ 照常回應 `ready_delay_ms`，讓負載平衡器或 Kubernetes 有時間把這個節點移出、改送別台。`/livez` 不變。
 2. **停止接收：** 不再讀 RADIUS 的 UDP 埠，關閉 TACACS+ 的埠（新連線被拒），已開的 TACACS+ 連線送出手上請求的回應後關閉，不再讀下一個（進行中的 ASCII 登入可以做完，最多到它的 60 秒期限；這時連線上的其他請求不回應、直接關閉）；計費暫存停止重放，資料留在磁碟。
 3. **等處理中的請求，** 最多 `drain_ms`。全部回應完時記 `stopping: every request taken was answered`；時間到還沒做完時記 WARN，例如 `stopping: after 5000 ms, 1 RADIUS requests were still being handled and 0 TACACS+ connections open; they are cut off`，那些請求不會回應，設備會重送到別台。
-4. 關閉資料庫（多節點時 hiqlite 還會等 9.5 秒，見 1. 節）、寫出記錄，以狀態碼 0 結束。
+4. 設了 `[radius.accounting_log]` 時寫完它的佇列（最多 5 秒，見 2.18 節），再關閉資料庫（多節點時 hiqlite 還會等 9.5 秒，見 1. 節）、寫出記錄，以狀態碼 0 結束。
 
 ```toml
 [shutdown]
@@ -1311,6 +1316,65 @@ required_for_ready = false       # 預設；true 時連不上就讓 /readyz 回 
 - **佔位符。** 只用 `?`，依序綁定；PostgreSQL 會改成 `$1`、`$2` 送出，MySQL 原樣送出。單引號字串、雙引號名稱和註解（`--`、`/* */`）裡的 `?` 不算；PostgreSQL 的 `::text` 轉型可以用。`?1`、`:name`、`$name` 啟動或呼叫時就會出錯。不支援的寫法：方括號裡的 `?`（例如 PostgreSQL 陣列的 `a[?]`，方括號會被當成名稱的引號，數量不符而出錯）、PostgreSQL 的 `$$` 字串（裡面的 `?` 會被當成佔位符）、PostgreSQL 的 `?` 運算子（jsonb 的 `?`、`?|`、`?&`，請改用 `jsonb_exists()` 這類函式）、MySQL 用反斜線跳脫的引號（`'it\'s'`，請寫成 `'it''s'`）。
 - **PostgreSQL 的參數有型別，不會自動轉換：** 字串綁成 `text`，整數和 `true`、`false` 綁成 `bigint`（1、0），其他數字綁成 `double precision`。欄位是 `boolean`、`inet`、`timestamp` 等型別時要在 SQL 裡轉，例如 `CAST(? AS inet)`、`?::inet`，布林欄位寫 `active = (? <> 0)`。不轉時 PostgreSQL 回型別錯誤，算陳述式的錯。MySQL 會自己轉換。
 - **值型別。** 整數（含 MySQL 的 `UNSIGNED`，超過 2^63−1 時出錯）、浮點數 → 數字；布林 → 1、0；文字 → 字串；二進位 → 字串；`NUMERIC`／`DECIMAL`（`SUM`、`AVG` 的結果）→ 十進位數字的字串，例如 `"12.50"`，要計算時用 `tonumber`；NULL → `nil`。其他型別（日期時間、幾何型別等）會出錯並指出欄名，請在 SQL 裡 `CAST` 成文字或數字。
+
+### 2.18 計費紀錄檔 `[radius.accounting_log]`
+
+把每一筆回覆過的計費請求寫成一行 JSON，附加到一個文字檔，給要直接讀檔的系統用（例如記錄收集程式或自己的帳務腳本）。不需要資料庫，也不影響腳本怎麼寫資料庫。沒有這個區段時不寫任何檔案。
+
+```toml
+[radius.accounting_log]
+file = "/var/log/rradius/accounting.jsonl"  # 必填，相對路徑以設定檔所在目錄為準
+queue = 65536                               # 預設；等著寫進檔案的筆數上限，1 到 16777216
+```
+
+- **檢查：** 欄位名稱拼錯、`queue` 超出範圍、`file` 的目錄不存在、檔案已經存在卻不能附加寫入時，啟動、SIGHUP 和 `check` 都失敗，並指出欄位。`check` 不會建立檔案。
+- **一行的內容：** 例如
+
+  ```json
+  {"time":"2026-11-15T08:00:00.123Z","client":"nas1","source":"10.0.0.5","transport":"udp","handling":"script","attributes":{"Acct-Status-Type":"Start","User-Name":"alice","Acct-Session-Id":"s-1","Class":["a","b"]}}
+  ```
+
+  `time` 是收到的時間（RFC 3339、UTC、到毫秒），`client` 是 client 的名稱，`source` 是來源位址，`transport` 是 `udp`（企業版的 RadSec 是 `radsec`），`handling` 是 `script`（腳本收下）或 `spool`（放進計費暫存，2.11 節；企業版的代理是 `proxy`）。`attributes` 是一個物件，鍵是字典裡的屬性名稱，字典裡沒有的屬性寫成 `Attr-<編號>`、值是 `0x` 開頭的十六進位，出現不只一次的屬性寫成陣列。
+- **只記回覆過的請求。** 送出 Accounting-Response 的才記；NAS 重送、由重送快取回答的不再記一次；腳本拒絕或沒有回覆的不記。
+- **檔案：** 以附加模式開啟，不存在時建立，權限 0640（再受 umask 限制）。不壓縮、不依日期換檔、不上傳，也不刪舊檔，換檔交給 logrotate 這類工具（見下面的例子）。叢集裡每個節點各寫自己機器上的檔案，行裡沒有節點編號，要合併時請用路徑或檔名區分節點。
+- **不會拖慢回覆。** 回覆後只把這一筆放進佇列，由專門的執行緒每 10 ms 取出一批寫進檔案（不 fsync），所以一行最晚約 10 ms 後才出現在檔案裡。佇列滿了（超過 `queue` 筆）時，新的那一筆不寫，計入 `rradius_accounting_log_dropped_total`，計費照常回覆。寫入失敗時（例如磁碟滿了），那一批不寫，計入 `rradius_accounting_log_failures_total{stage="write"}` 並記一行 WARN（同樣的錯誤一分鐘最多一行），下一批照常再試。
+- **停止時寫完。** SIGTERM 時（2.16 節），處理中的請求都回應完之後，才把佇列裡的寫完再結束，所以 `ready_delay_ms` 和 `drain_ms` 期間回覆的計費也在檔案裡。最多等 5 秒，等不完時記 WARN，剩下的不寫。被 SIGKILL 時，還在佇列裡的（正常約 10 ms 的量）會遺失。
+- **重新載入：** SIGHUP 成功時，先寫完手上的一批，再以（可能是新的）`file` 重新開檔，所以改 `file` 不用重啟，logrotate 也靠這個。開不了時計入 `failures_total{stage="open"}`、記 WARN，繼續寫原來的檔案。新 `file` 的目錄不存在時，整個重新載入失敗（2.9 節）。新增、移除這個區段或改 `queue` 要重啟。
+- **個人資料：** 行裡有 `User-Name`、位址等個人資料，權限和保存期間請自行管理。
+
+**換檔：** 用 logrotate 時，先搬走檔案，再送 SIGHUP 讓 rradius 開新檔：
+
+```
+/var/log/rradius/accounting.jsonl {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    nocreate
+    compress
+    delaycompress
+    postrotate
+        systemctl kill -s HUP rradius.service
+    endscript
+}
+```
+
+- **`nocreate`：** 新檔由 rradius 重新開檔時建立，權限是 0640。
+- **`delaycompress`：** 搬走之後、SIGHUP 之前寫的幾行會進入搬走的檔案，不會遺失；延到下一次才壓縮，就不會壓到還在寫的檔案。SIGHUP 的重新載入因為設定檔有別的錯誤而失敗時，也不會重新開檔，會繼續寫搬走的檔案，所以要留意 `rradius_reload_total{result="error"}`。
+- **不要用 `copytruncate`。** 複製之後、截斷之前寫進去的行會遺失。
+- 不是用 systemd 時，把 `postrotate` 換成對 rradius-server 程序送 SIGHUP 的指令（2.9 節）。
+
+**和企業版流水帳的差別：** rradius-enterprise 的 `[accounting_export.packets]` 記的是同樣的請求，每行的欄位相同，另外多了 `node`。兩個可以同時開，同一筆在兩邊都會寫。
+
+| | 這一節 | 企業版流水帳 |
+| --- | --- | --- |
+| 格式 | JSON Lines，不壓縮 | CSV 或 JSON Lines，gzip |
+| 換檔 | 外部工具搬檔加 SIGHUP | 每天自動換檔 |
+| 放到哪裡 | `file` 這一個檔案 | 目錄與 S3，依 `keep_days` 刪舊檔 |
+| `node` 欄位 | 沒有 | 有 |
+| 停止時最多等 | 5 秒 | 2 秒 |
+
+**成本：** 2026-11-15 在 Apple M4 Max（14 核心，macOS）用 release 建置與 `rradius-bench` 量 `acct-start`（併發 64，腳本全收、不寫資料庫），開與不開交錯各量 4 次：吞吐 59414 → 59141 次/秒（約少 0.5%），伺服器每筆的 CPU 108.6 → 113.6 µs（約多 4.6%），沒有丟棄。這個工具的封包每行約 550 bytes，每秒 5.9 萬筆約 32 MB/s；實際大小隨 NAS 送的屬性變化。
 
 ## 3. 認證串接 `[auth]`
 

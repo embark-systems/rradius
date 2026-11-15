@@ -565,6 +565,18 @@ zh-TW = "資料庫失敗後再次補寫前的等待，毫秒。"
 en = "Spooled records replayed at once, 1 to 1024."
 zh-TW = "同時補寫的暫存筆數，1 到 1024。"
 
+[fields."radius.accounting_log"]
+en = "Appends one line of JSON for each accounting request answered to a local file."
+zh-TW = "每回覆一筆計費請求，就在本機檔案附加一行 JSON。"
+
+[fields."radius.accounting_log.file"]
+en = "File the lines are appended to, relative to the configuration file; its directory must exist. Opened again on SIGHUP."
+zh-TW = "附加寫入的檔案，相對於設定檔；目錄要已存在。收到 SIGHUP 時重新開檔。"
+
+[fields."radius.accounting_log.queue"]
+en = "Requests that may wait to be written, 1 to 16777216; more are dropped and counted."
+zh-TW = "等著寫入的筆數上限，1 到 16777216；超過的丟棄並計數。"
+
 [fields."radius.eap"]
 en = "EAP settings: certificates, methods and session limits."
 zh-TW = "EAP 設定：憑證、方法與對話上限。"
