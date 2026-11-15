@@ -43,3 +43,10 @@ secret_file = "localhost.secret"
 [metrics]
 bind = "127.0.0.1"
 port = 9812
+
+# 現在在線的 session：rradius-server session list，或某個使用者的 session：
+# rradius-server session show alice。查詢由你決定哪些列算在線：這裡是還沒結束、而且最近
+# 15 分鐘內有更新的列（NAS 當機沒送 Stop 的列不會一直留著）。
+[sessions]
+list = "SELECT username, nas, session_id, started, updated FROM accounting WHERE stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
+show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE username = ?1 AND stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
