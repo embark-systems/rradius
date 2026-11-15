@@ -35,6 +35,73 @@ pub struct ServerConfig {
     pub shutdown: ShutdownSettings,
     /// What the program's extensions read from their sections.
     pub extensions: crate::extension::ExtensionSettings,
+    /// `[databases.<name>]`: the external databases, by name. A start applies it; a reload does
+    /// not.
+    pub databases: BTreeMap<String, DatabaseSettings>,
+}
+
+/// Which server an external database is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseKind {
+    Mysql,
+    Postgresql,
+}
+
+impl DatabaseKind {
+    /// What `kind` says.
+    pub fn name(self) -> &'static str {
+        match self {
+            DatabaseKind::Mysql => "mysql",
+            DatabaseKind::Postgresql => "postgresql",
+        }
+    }
+}
+
+/// How the connections to an external database are protected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseTls {
+    /// Encrypted, with the certificate chain and host name verified.
+    Verify,
+    /// Not encrypted.
+    Off,
+}
+
+/// One `[databases.<name>]`.
+#[derive(Clone, PartialEq)]
+pub struct DatabaseSettings {
+    pub kind: DatabaseKind,
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub user: String,
+    /// From `password` or `password_file`; `None` sends none.
+    pub password: Option<zeroize::Zeroizing<String>>,
+    pub tls: DatabaseTls,
+    /// The CA certificates that `tls = "verify"` trusts; `None` trusts the system roots.
+    pub ca_file: Option<PathBuf>,
+    pub pool_size: usize,
+    pub connect_timeout: Duration,
+    /// Whether `/readyz` answers 503 while the database cannot be reached.
+    pub required_for_ready: bool,
+}
+
+// By hand, so that a debug print of the configuration does not show the password.
+impl fmt::Debug for DatabaseSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DatabaseSettings")
+            .field("kind", &self.kind)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "hidden"))
+            .field("tls", &self.tls)
+            .field("ca_file", &self.ca_file)
+            .field("pool_size", &self.pool_size)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("required_for_ready", &self.required_for_ready)
+            .finish()
+    }
 }
 
 impl ServerConfig {
@@ -190,7 +257,8 @@ pub enum AuthPolicy {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthHandlerSettings {
-    Sql { user_query: String, certificate_query: Option<String>, reply_query: Option<String>, default_user: Option<String>, timeout: Duration },
+    /// `database`: the `[databases.<name>]` the queries go to; `None` is the cluster's own.
+    Sql { user_query: String, certificate_query: Option<String>, reply_query: Option<String>, default_user: Option<String>, timeout: Duration, database: Option<String> },
     /// `verifies_password`: the script compares passwords, so its accept proves one inside EAP.
     Lua { script: PathBuf, verifies_password: bool },
     Ldap(LdapSettings),
@@ -505,6 +573,41 @@ struct RawConfig {
     /// `[diameter]`, which an extension reads.
     #[schemars(skip)]
     diameter: Option<toml::Value>,
+    #[serde(default)]
+    databases: BTreeMap<String, RawDatabase>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawDatabase {
+    kind: String,
+    host: String,
+    port: Option<u16>,
+    database: String,
+    user: String,
+    password: Option<String>,
+    password_file: Option<PathBuf>,
+    #[serde(default = "default_database_tls")]
+    tls: String,
+    ca_file: Option<PathBuf>,
+    #[serde(default = "default_database_pool_size")]
+    pool_size: usize,
+    #[serde(default = "default_database_connect_timeout_ms")]
+    connect_timeout_ms: u64,
+    #[serde(default)]
+    required_for_ready: bool,
+}
+
+fn default_database_tls() -> String {
+    "verify".to_string()
+}
+
+fn default_database_pool_size() -> usize {
+    8
+}
+
+fn default_database_connect_timeout_ms() -> u64 {
+    5000
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -691,6 +794,7 @@ enum RawAuthHandler {
         default_user: Option<String>,
         #[serde(default = "default_sql_timeout_ms")]
         timeout_ms: u64,
+        database: Option<String>,
     },
     Lua {
         script: PathBuf,
@@ -1355,7 +1459,11 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
         },
         shutdown: shutdown_settings(raw.shutdown, cluster_nodes).map_err(fail)?,
         extensions: extension_settings,
+        databases: databases(raw.databases, base).map_err(fail)?,
     };
+    if let Some(auth) = &config.auth {
+        sql_databases_known(auth, &config.databases).map_err(fail)?;
+    }
     // What the program's extensions need of the rest of the configuration.
     extensions.check(&config).map_err(fail)?;
     // The EAP methods of the extensions, made from it, go with the EAP settings.
@@ -1365,6 +1473,107 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
         eap.extra = methods;
     }
     Ok(config)
+}
+
+/// Checks that every `sql` handler's `database` is one of `[databases.<name>]`.
+fn sql_databases_known(auth: &AuthSettings, databases: &BTreeMap<String, DatabaseSettings>) -> Result<(), String> {
+    let chains = auth.default.iter().map(|chain| ("auth.handlers".to_string(), chain)).chain(auth.chains.iter().map(|(name, chain)| (format!("auth.chains.{name}.handlers"), chain)));
+    for (prefix, chain) in chains {
+        for (index, handler) in chain.handlers.iter().enumerate() {
+            let AuthHandlerSettings::Sql { database: Some(name), user_query, certificate_query, reply_query, .. } = handler else { continue };
+            let Some(database) = databases.get(name) else {
+                return Err(format!("{prefix}[{index}].database: there is no [databases.{name}]"));
+            };
+            let queries = [("user_query", Some(user_query)), ("certificate_query", certificate_query.as_ref()), ("reply_query", reply_query.as_ref())];
+            for (field, query) in queries.into_iter().filter_map(|(field, query)| Some((field, query?))) {
+                crate::external_db::statement_for(database.kind, query).map_err(|e| format!("{prefix}[{index}].{field}: {e}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks `[databases.<name>]`; errors name the setting.
+fn databases(raw: BTreeMap<String, RawDatabase>, base: &Path) -> Result<BTreeMap<String, DatabaseSettings>, String> {
+    let mut databases = BTreeMap::new();
+    for (name, raw) in raw {
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!("databases.{name}: a database name may only have ASCII letters, digits and _"));
+        }
+        let field = |field: &str| format!("databases.{name}.{field}");
+        let kind = match raw.kind.as_str() {
+            "mysql" => DatabaseKind::Mysql,
+            "postgresql" => DatabaseKind::Postgresql,
+            other => return Err(format!("{} must be \"mysql\" or \"postgresql\", not \"{other}\"", field("kind"))),
+        };
+        let tls = match raw.tls.as_str() {
+            "verify" => DatabaseTls::Verify,
+            "off" => DatabaseTls::Off,
+            other => return Err(format!("{} must be \"verify\" or \"off\", not \"{other}\"", field("tls"))),
+        };
+        for (value, what) in [(&raw.host, "host"), (&raw.database, "database"), (&raw.user, "user")] {
+            if value.is_empty() {
+                return Err(format!("{} must not be empty", field(what)));
+            }
+        }
+        let password = match (raw.password, raw.password_file) {
+            (Some(_), Some(_)) => return Err(format!("{}: at most one of password and password_file may be set", field("password"))),
+            (Some(password), None) => Some(zeroize::Zeroizing::new(password)),
+            (None, Some(file)) => {
+                let path = base.join(file);
+                let text = zeroize::Zeroizing::new(fs::read_to_string(&path).map_err(|e| format!("{}: cannot read '{}': {}", field("password_file"), path.display(), e))?);
+                let password = text.trim_end_matches(['\r', '\n']);
+                if password.is_empty() {
+                    return Err(format!("{}: '{}' is empty", field("password_file"), path.display()));
+                }
+                Some(zeroize::Zeroizing::new(password.to_string()))
+            }
+            (None, None) => None,
+        };
+        let pool_size = above_zero(&field("pool_size"), raw.pool_size)?;
+        if raw.connect_timeout_ms == 0 {
+            return Err(format!("{} must be greater than 0", field("connect_timeout_ms")));
+        }
+        let port = raw.port.unwrap_or(match kind {
+            DatabaseKind::Mysql => 3306,
+            DatabaseKind::Postgresql => 5432,
+        });
+        if port == 0 {
+            return Err(format!("{} must not be 0", field("port")));
+        }
+        let ca_file = raw.ca_file.map(|file| base.join(file));
+        if let Some(path) = &ca_file {
+            if tls == DatabaseTls::Off {
+                return Err(format!("{} is only used with tls = \"verify\"", field("ca_file")));
+            }
+            // Read now, so that a missing or broken file stops `check` and the start, not the
+            // first login, where it would look like the database being down.
+            use rustls::pki_types::pem::PemObject;
+            let certificates = rustls::pki_types::CertificateDer::pem_file_iter(path)
+                .and_then(|certificates| certificates.collect::<Result<Vec<_>, _>>())
+                .map_err(|e| format!("{}: cannot read '{}': {e}", field("ca_file"), path.display()))?;
+            if certificates.is_empty() {
+                return Err(format!("{}: no certificate in '{}'", field("ca_file"), path.display()));
+            }
+        }
+        databases.insert(
+            name,
+            DatabaseSettings {
+                kind,
+                host: raw.host,
+                port,
+                database: raw.database,
+                user: raw.user,
+                password,
+                tls,
+                ca_file,
+                pool_size,
+                connect_timeout: Duration::from_millis(raw.connect_timeout_ms),
+                required_for_ready: raw.required_for_ready,
+            },
+        );
+    }
+    Ok(databases)
 }
 
 /// Checks `[accounts]`: numbered parameters only, `?2` exactly where a password goes.
@@ -1782,7 +1991,7 @@ fn chain_handlers(prefix: &str, raw: Vec<RawAuthHandler>, base: &Path) -> Result
     let mut handlers = Vec::with_capacity(raw.len());
     for (index, handler) in raw.into_iter().enumerate() {
         handlers.push(match handler {
-            RawAuthHandler::Sql { user_query, certificate_query, reply_query, default_user, timeout_ms } => {
+            RawAuthHandler::Sql { user_query, certificate_query, reply_query, default_user, timeout_ms, database } => {
                 one_placeholder(index, "user_query", &user_query)?;
                 if let Some(certificate_query) = &certificate_query {
                     one_placeholder(index, "certificate_query", certificate_query)?;
@@ -1794,7 +2003,7 @@ fn chain_handlers(prefix: &str, raw: Vec<RawAuthHandler>, base: &Path) -> Result
                     return Err(format!("{}[{}].timeout_ms must be greater than 0", prefix, index));
                 }
                 let timeout = Duration::from_millis(timeout_ms);
-                AuthHandlerSettings::Sql { user_query, certificate_query, reply_query, default_user, timeout }
+                AuthHandlerSettings::Sql { user_query, certificate_query, reply_query, default_user, timeout, database }
             }
             RawAuthHandler::Lua { script, verifies_password } => AuthHandlerSettings::Lua { script: base.join(script), verifies_password },
             RawAuthHandler::Ldap(ldap) => AuthHandlerSettings::Ldap(
@@ -2246,6 +2455,72 @@ mod tests {
 
     fn error(body: &str) -> String {
         load_str(body).1.unwrap_err().to_string()
+    }
+
+    /// `[databases.<name>]`: defaults, the port of each kind, a password file.
+    #[test]
+    fn test_databases() -> Result<(), String> {
+        let body = base(&format!(
+            "{RADIUS_CLIENT}[databases.billing]\nkind = \"postgresql\"\nhost = \"db.example.com\"\ndatabase = \"radius\"\nuser = \"rradius\"\npassword_file = \"db.secret\"\nca_file = \"ca.pem\"\n\
+             [databases.my_2]\nkind = \"mysql\"\nhost = \"127.0.0.1\"\ndatabase = \"radius\"\nuser = \"rradius\"\ntls = \"off\"\npool_size = 3\nconnect_timeout_ms = 900\nrequired_for_ready = true\n"
+        ));
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        fs::write(dir.path().join("db.secret"), "s3cret\n").map_err(|e| e.to_string())?;
+        crate::test_support::certs::ca(dir.path(), "ca");
+        let path = dir.path().join("rradius.toml");
+        fs::write(&path, body).map_err(|e| e.to_string())?;
+        let config = load(&path).map_err(|e| e.to_string())?;
+        let billing = config.databases.get("billing").ok_or("no billing")?;
+        assert_eq!((billing.kind, billing.port, billing.tls, billing.pool_size), (DatabaseKind::Postgresql, 5432, DatabaseTls::Verify, 8));
+        assert_eq!(billing.connect_timeout, Duration::from_millis(5000));
+        assert_eq!(billing.password.as_ref().map(|password| password.as_str()), Some("s3cret"), "the line end is not part of it");
+        assert!(!format!("{billing:?}").contains("s3cret"), "a debug print hides it");
+        let my = config.databases.get("my_2").ok_or("no my_2")?;
+        assert_eq!((my.kind, my.port, my.tls, my.pool_size, my.password.is_none()), (DatabaseKind::Mysql, 3306, DatabaseTls::Off, 3, true));
+        assert_eq!(billing.ca_file.as_deref(), Some(dir.path().join("ca.pem").as_path()));
+        assert!(my.ca_file.is_none());
+        assert_eq!(my.connect_timeout, Duration::from_millis(900));
+        assert_eq!((billing.required_for_ready, my.required_for_ready), (false, true));
+        Ok(())
+    }
+
+    /// The invalid settings of the spec, each named in the error.
+    #[test]
+    fn test_invalid_databases() {
+        let database = |name: &str, fields: &str| base(&format!("{RADIUS_CLIENT}[databases.{name}]\nhost = \"h\"\ndatabase = \"d\"\nuser = \"u\"\n{fields}"));
+        for (body, named) in [
+            (database("billing", "kind = \"oracle\"\n"), "databases.billing.kind"),
+            (database("bill-ing", "kind = \"mysql\"\n"), "databases.bill-ing"),
+            (database("billing", "kind = \"mysql\"\npassword = \"p\"\npassword_file = \"f\"\n"), "databases.billing.password"),
+            (database("billing", "kind = \"mysql\"\npool_size = 0\n"), "databases.billing.pool_size"),
+            (database("billing", "kind = \"mysql\"\ntls = \"prefer\"\n"), "databases.billing.tls"),
+            (database("billing", "kind = \"mysql\"\nconnect_timeout_ms = 0\n"), "databases.billing.connect_timeout_ms"),
+            (database("billing", "kind = \"mysql\"\nca_file = \"missing.pem\"\n"), "databases.billing.ca_file"),
+            (database("billing", "kind = \"mysql\"\ntls = \"off\"\nca_file = \"missing.pem\"\n"), "databases.billing.ca_file"),
+        ] {
+            let error = error(&body);
+            assert!(error.contains(named), "{named}: {error}");
+        }
+        assert!(error(&database("billing", "kind = \"mysql\"\nurl = \"mysql://u:p@h/d\"\n")).contains("url"), "no connection URL");
+    }
+
+    #[test]
+    fn test_sql_handler_database() -> Result<(), String> {
+        let handler = |database: &str, query: &str| base(&format!("{RADIUS_CLIENT}[databases.billing]\nkind = \"postgresql\"\nhost = \"h\"\ndatabase = \"d\"\nuser = \"u\"\n[auth]\n[[auth.chains.vpn.handlers]]\ntype = \"sql\"\nuser_query = \"{query}\"\n{database}"));
+        let (_dir, result) = load_str(&handler("database = \"billing\"\n", "SELECT password FROM users WHERE name = ?"));
+        let config = result.map_err(|e| e.to_string())?;
+        let auth = config.auth.ok_or("no [auth]")?;
+        let Some(AuthHandlerSettings::Sql { database, .. }) = auth.chains.get("vpn").and_then(|chain| chain.handlers.first()) else { return Err("no sql handler".into()) };
+        assert_eq!(database.as_deref(), Some("billing"));
+        let (_dir, result) = load_str(&handler("", "SELECT password FROM users WHERE name = ?"));
+        let auth = result.map_err(|e| e.to_string())?.auth.ok_or("no [auth]")?;
+        assert!(matches!(auth.chains.get("vpn").and_then(|chain| chain.handlers.first()), Some(AuthHandlerSettings::Sql { database: None, .. })), "without database it is the cluster's");
+
+        let unknown = error(&handler("database = \"crm\"\n", "SELECT password FROM users WHERE name = ?"));
+        assert!(unknown.contains("auth.chains.vpn.handlers[0].database") && unknown.contains("[databases.crm]"), "{unknown}");
+        let numbered = error(&handler("database = \"billing\"\n", "SELECT password FROM users WHERE name = ?1"));
+        assert!(numbered.contains("auth.chains.vpn.handlers[0].user_query") && numbered.contains("?1"), "{numbered}");
+        Ok(())
     }
 
     #[test]

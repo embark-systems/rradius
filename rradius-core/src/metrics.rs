@@ -115,6 +115,38 @@ pub fn write_family(out: &mut String, name: &str, kind: &str, help: &str, sample
     }
 }
 
+/// The families of `[databases]`; none without a database.
+fn write_external_databases(out: &mut String, databases: &crate::external_db::ExternalDatabases) {
+    let all: Vec<(String, &crate::external_db::ExternalDatabase)> = databases.iter().map(|database| (label_value(database.name()), database.as_ref())).collect();
+    if all.is_empty() {
+        return;
+    }
+    let family = |out: &mut String, name: &str, kind: &str, help: &str, samples: Vec<(String, u64)>| {
+        let samples: Vec<(&str, u64)> = samples.iter().map(|(labels, value)| (labels.as_str(), *value)).collect();
+        write_family(out, name, kind, help, &samples);
+    };
+    let failures = all
+        .iter()
+        .flat_map(|(name, database)| {
+            let counted = database.failures();
+            [("unavailable", counted.unavailable), ("mistake", counted.mistake), ("unknown", counted.unknown)].map(|(reason, value)| (format!("{{database=\"{name}\",reason=\"{reason}\"}}"), value))
+        })
+        .collect();
+    family(out, "rradius_external_db_failures_total", "counter", "Failed calls on each external database, by class: unavailable (including calls out of time), mistake (the statement or its values) and unknown.", failures);
+    let connections: Vec<_> = all.iter().map(|(name, database)| (name, database.connections())).collect();
+    let in_use_idle = connections
+        .iter()
+        .flat_map(|(name, now)| [("in_use", now.in_use), ("idle", now.idle)].map(|(state, value)| (format!("{{database=\"{name}\",state=\"{state}\"}}"), value as u64)))
+        .collect();
+    family(out, "rradius_external_db_connections", "gauge", "Connections of each external database's pool: in_use handed to a call or being opened, idle open and free.", in_use_idle);
+    let max = connections.iter().map(|(name, now)| (format!("{{database=\"{name}\"}}"), now.max as u64)).collect();
+    family(out, "rradius_external_db_connections_max", "gauge", "The most connections each external database's pool keeps: its pool_size.", max);
+    let reachable: Vec<(String, u64)> = all.iter().filter_map(|(name, database)| Some((format!("{{database=\"{name}\"}}"), u64::from(database.reachable()?)))).collect();
+    if !reachable.is_empty() {
+        family(out, "rradius_external_db_reachable", "gauge", "1 while the readiness check reaches a database with required_for_ready, else 0.", reachable);
+    }
+}
+
 /// The upper bounds, in seconds, of the response time buckets; `+Inf` comes after them. From
 /// well under a millisecond, where local logins answer, to 10 s, past which a NAS has given up.
 pub const RESPONSE_BUCKETS: [f64; 17] = [0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
@@ -256,6 +288,8 @@ pub struct Metrics {
     started: std::sync::OnceLock<Started>,
     /// The accounting log's counts, once `[radius.accounting_log]` starts one.
     accounting_log: std::sync::OnceLock<Arc<AccountingLogCounters>>,
+    /// `[databases]`, once the server has opened them.
+    databases: std::sync::OnceLock<crate::external_db::ExternalDatabases>,
 }
 
 /// The places RADIUS requests take while handled, over UDP or RadSec, and how many there are.
@@ -318,6 +352,11 @@ impl Metrics {
 
     pub fn watch_radius_slots(&self, auth: Arc<Semaphore>, auth_capacity: usize, acct: Arc<Semaphore>, acct_capacity: usize) {
         let _ = self.radius_slots.set(RadiusSlots { auth, auth_capacity, acct, acct_capacity });
+    }
+
+    /// Reports `databases` from now on. Only the first call counts.
+    pub fn watch_databases(&self, databases: crate::external_db::ExternalDatabases) {
+        let _ = self.databases.set(databases);
     }
 
     /// The counters of an EAP method, by its EAP type.
@@ -415,6 +454,9 @@ impl Metrics {
         write_family(&mut out, "rradius_cluster_caught_up", "gauge", "1 once this node's replica has caught up with the cluster after it started; 0 while it serves from a replica that may be behind.", &[("", u64::from(cluster.caught_up))]);
         write_family(&mut out, "rradius_db_batched_writes_total", "counter", "Script writes committed in one transaction together with others.", &[("", batched)]);
         write_family(&mut out, "rradius_db_split_batches_total", "counter", "Transactions of script writes that failed and were split to find the statement that failed.", &[("", split)]);
+        if let Some(databases) = self.databases.get() {
+            write_external_databases(&mut out, databases);
+        }
         write_family(&mut out, "rradius_script_http_requests_total", "counter", "http_request calls by result.", &[
             ("{result=\"ok\"}", self.script_http_ok.get()),
             ("{result=\"timeout\"}", self.script_http_timeout.get()),
@@ -524,20 +566,33 @@ pub fn set_stopping() {
 }
 
 /// What `/readyz` answers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Readiness {
     Ready,
     /// Authentication goes unanswered for want of a leader.
     NoLeader,
     /// The server is stopping.
     Stopping,
+    /// These databases with `required_for_ready` cannot be reached, in name order.
+    Unreachable(Vec<String>),
 }
 
-fn readiness() -> Readiness {
-    if STOPPING.load(std::sync::atomic::Ordering::Relaxed) {
+/// What `/readyz` answers now.
+fn readiness(metrics: &Metrics) -> Readiness {
+    let unreachable = metrics.databases.get().map_or_else(Vec::new, |databases| {
+        databases.iter().filter(|database| database.reachable() == Some(false)).map(|database| database.name().to_string()).collect()
+    });
+    decide_readiness(STOPPING.load(std::sync::atomic::Ordering::Relaxed), crate::lua_engine::stopped_without_leader(), unreachable)
+}
+
+/// Stopping comes first, then a missing leader, then the databases.
+fn decide_readiness(stopping: bool, no_leader: bool, unreachable: Vec<String>) -> Readiness {
+    if stopping {
         Readiness::Stopping
-    } else if crate::lua_engine::stopped_without_leader() {
+    } else if no_leader {
         Readiness::NoLeader
+    } else if !unreachable.is_empty() {
+        Readiness::Unreachable(unreachable)
     } else {
         Readiness::Ready
     }
@@ -548,7 +603,7 @@ async fn answer<S: AsyncRead + AsyncWrite + Unpin>(mut socket: S, metrics: &Metr
     let Ok(Ok(Some(head))) = tokio::time::timeout(read_timeout, read_head(&mut socket)).await else {
         return Ok(());
     };
-    let response = respond(&head, metrics, readiness());
+    let response = respond(&head, metrics, readiness(metrics));
     // A client that does not read must not keep its place, any more than one that does not write.
     let writing = async {
         socket.write_all(response.as_bytes()).await?;
@@ -575,8 +630,9 @@ async fn read_head<S: AsyncRead + Unpin>(socket: &mut S) -> io::Result<Option<Ve
 }
 
 /// The response to one request head. `/livez` answers while the process serves at all; `/readyz`
-/// answers 503 while the node has stopped answering authentication for want of a leader, or is
-/// stopping, so that a load balancer sends requests to the other nodes meanwhile.
+/// answers 503 while the node has stopped answering authentication for want of a leader, is
+/// stopping, or cannot reach a database with `required_for_ready`, so that a load balancer sends
+/// requests to the other nodes meanwhile.
 fn respond(head: &[u8], metrics: &Metrics, readiness: Readiness) -> String {
     let line = head.split(|byte| *byte == b'\r').next().unwrap_or_default();
     let line = String::from_utf8_lossy(line);
@@ -593,6 +649,7 @@ fn respond(head: &[u8], metrics: &Metrics, readiness: Readiness) -> String {
             Readiness::Ready => reply("200 OK", "text/plain", "ok\n"),
             Readiness::NoLeader => reply("503 Service Unavailable", "text/plain", "no leader\n"),
             Readiness::Stopping => reply("503 Service Unavailable", "text/plain", "stopping\n"),
+            Readiness::Unreachable(names) => reply("503 Service Unavailable", "text/plain", &format!("database {} unreachable\n", names.join(", "))),
         },
         ("GET", _) => reply("404 Not Found", "text/plain", "not found\n"),
         _ => reply("405 Method Not Allowed", "text/plain", "method not allowed\n"),
@@ -684,6 +741,56 @@ mod tests {
         Ok(())
     }
 
+    /// spec No databases and Before any call: the families appear only with `[databases]`, every
+    /// series from the start.
+    #[tokio::test]
+    async fn test_external_databases() -> Result<(), String> {
+        use crate::config::{DatabaseKind, DatabaseTls};
+        let none = Metrics::default();
+        none.watch_databases(crate::external_db::ExternalDatabases::default());
+        assert!(!none.render().contains("rradius_external_db_"), "no databases, no families");
+        assert!(!Metrics::default().render().contains("rradius_external_db_"));
+        let port = crate::external_db::test_support::closed_port()?;
+        let mut all = std::collections::BTreeMap::new();
+        all.insert("billing".to_string(), crate::external_db::test_support::settings(DatabaseKind::Postgresql, "127.0.0.1", port, DatabaseTls::Off));
+        all.insert("legacy".to_string(), crate::external_db::test_support::settings(DatabaseKind::Mysql, "127.0.0.1", port, DatabaseTls::Off));
+        let databases = crate::external_db::ExternalDatabases::open(&all);
+        let metrics = Metrics::default();
+        metrics.watch_databases(databases.clone());
+        databases.get("billing").ok_or("not open")?.note_timeout();
+        let rendered = metrics.render();
+        for line in [
+            "# TYPE rradius_external_db_failures_total counter\n",
+            "rradius_external_db_failures_total{database=\"billing\",reason=\"unavailable\"} 1\n",
+            "rradius_external_db_failures_total{database=\"billing\",reason=\"mistake\"} 0\n",
+            "rradius_external_db_failures_total{database=\"billing\",reason=\"unknown\"} 0\n",
+            "rradius_external_db_failures_total{database=\"legacy\",reason=\"unavailable\"} 0\n",
+            "# TYPE rradius_external_db_connections gauge\n",
+            "rradius_external_db_connections{database=\"billing\",state=\"in_use\"} 0\n",
+            "rradius_external_db_connections{database=\"billing\",state=\"idle\"} 0\n",
+            "rradius_external_db_connections{database=\"legacy\",state=\"in_use\"} 0\n",
+            "rradius_external_db_connections_max{database=\"billing\"} 2\n",
+            "rradius_external_db_connections_max{database=\"legacy\"} 2\n",
+        ] {
+            assert!(rendered.contains(line), "{line}: {rendered}");
+        }
+        assert!(!rendered.contains("rradius_external_db_reachable"), "neither is required: {rendered}");
+        let mut required = crate::external_db::test_support::settings(DatabaseKind::Postgresql, "127.0.0.1", port, DatabaseTls::Off);
+        required.required_for_ready = true;
+        all.insert("billing".to_string(), required);
+        let metrics = Metrics::default();
+        metrics.watch_databases(crate::external_db::ExternalDatabases::open(&all));
+        let rendered = metrics.render();
+        assert!(rendered.contains("# TYPE rradius_external_db_reachable gauge\nrradius_external_db_reachable{database=\"billing\"} 0\n"), "{rendered}");
+        assert!(!rendered.contains("rradius_external_db_reachable{database=\"legacy\"}"), "{rendered}");
+        // spec Not required: only billing, which cannot be reached, keeps the node from being ready.
+        assert_eq!(readiness(&metrics), Readiness::Unreachable(vec!["billing".to_string()]));
+        let none_required = Metrics::default();
+        none_required.watch_databases(databases);
+        assert_eq!(readiness(&none_required), Readiness::Ready);
+        Ok(())
+    }
+
     #[test]
     fn test_version_and_start_time() -> Result<(), String> {
         let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
@@ -742,20 +849,28 @@ mod tests {
             ("GET /livez HTTP/1.1", 0, None, true, "200 OK", Some("ok\n")),
         ] {
             let status_now = crate::lua_engine::ClusterStatus { without_leader: without_ms.map(Duration::from_millis), ..Default::default() };
-            let readiness = match (stopping, crate::lua_engine::stops_without_leader(limit_ms, &status_now)) {
-                (true, _) => Readiness::Stopping,
-                (false, true) => Readiness::NoLeader,
-                (false, false) => Readiness::Ready,
-            };
+            let readiness = decide_readiness(stopping, crate::lua_engine::stops_without_leader(limit_ms, &status_now), Vec::new());
             let response = respond(format!("{request}\r\nHost: x\r\n\r\n").as_bytes(), &metrics, readiness);
             assert!(response.starts_with(&format!("HTTP/1.1 {status}\r\n")), "{request} {limit_ms} {without_ms:?} {stopping}: {response}");
             if let Some(body) = body {
                 assert!(response.ends_with(&format!("\r\n\r\n{body}")), "{request}: {response}");
             }
         }
+        // The rows with required databases that cannot be reached.
+        for (request, no_leader, stopping, unreachable, status, body) in [
+            ("GET /readyz HTTP/1.1", false, false, &["billing"][..], "503 Service Unavailable", "database billing unreachable\n"),
+            ("GET /readyz HTTP/1.1", false, false, &["billing", "legacy"][..], "503 Service Unavailable", "database billing, legacy unreachable\n"),
+            ("GET /readyz HTTP/1.1", true, false, &["billing"][..], "503 Service Unavailable", "no leader\n"),
+            ("GET /readyz HTTP/1.1", false, true, &["billing"][..], "503 Service Unavailable", "stopping\n"),
+            ("GET /livez HTTP/1.1", false, false, &["billing"][..], "200 OK", "ok\n"),
+        ] {
+            let readiness = decide_readiness(stopping, no_leader, unreachable.iter().map(|name| name.to_string()).collect());
+            let response = respond(format!("{request}\r\nHost: x\r\n\r\n").as_bytes(), &metrics, readiness);
+            assert!(response.starts_with(&format!("HTTP/1.1 {status}\r\n")) && response.ends_with(&format!("\r\n\r\n{body}")), "{request} {unreachable:?}: {response}");
+        }
         // The other paths are unchanged by readiness.
-        for readiness in [Readiness::NoLeader, Readiness::Stopping] {
-            assert!(respond(b"GET /metrics HTTP/1.1\r\n\r\n", &metrics, readiness).starts_with("HTTP/1.1 200 OK"));
+        for readiness in [Readiness::NoLeader, Readiness::Stopping, Readiness::Unreachable(vec!["billing".to_string()])] {
+            assert!(respond(b"GET /metrics HTTP/1.1\r\n\r\n", &metrics, readiness.clone()).starts_with("HTTP/1.1 200 OK"));
             assert!(respond(b"GET /livez HTTP/1.1\r\n\r\n", &metrics, readiness).starts_with("HTTP/1.1 200 OK"));
         }
         assert!(respond(b"GET /ready HTTP/1.1\r\n\r\n", &metrics, Readiness::Ready).starts_with("HTTP/1.1 404"));

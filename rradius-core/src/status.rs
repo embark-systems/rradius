@@ -499,6 +499,45 @@ fn clients_section(before: &Scrape, after: &Scrape, seconds: f64, reset: &mut bo
     (!items.is_empty()).then(|| ShownSection { key: "radius_top_clients".to_string(), title: "Busiest RADIUS clients".to_string(), items })
 }
 
+/// The external databases section: each database's pool, failures by class and, for one the
+/// node checks for readiness, whether it reaches it. Names come from the configuration, so the
+/// keys stay the same from one print to the next.
+fn databases_section(before: &Scrape, after: &Scrape, seconds: f64, reset: &mut bool) -> Option<ShownSection> {
+    let mut names: Vec<&String> = after.samples("rradius_external_db_connections_max").iter().filter_map(|(labels, _)| labels.get("database")).collect();
+    names.sort();
+    names.dedup();
+    let mut items = Vec::new();
+    for name in names {
+        let value = |metric: &str, extra: &[(&str, &str)]| {
+            let mut labels = vec![("database", name.as_str())];
+            labels.extend_from_slice(extra);
+            after.value(metric, &labels)
+        };
+        for (key, label, metric, extra) in [
+            ("in_use", "in use", "rradius_external_db_connections", &[("state", "in_use")][..]),
+            ("idle", "idle", "rradius_external_db_connections", &[("state", "idle")][..]),
+            ("max", "max", "rradius_external_db_connections_max", &[][..]),
+        ] {
+            if let Some(now) = value(metric, extra) {
+                items.push(ShownItem { key: format!("{name}.{key}"), label: format!("{name} connections {label}"), reading: Reading::Value(Value::Number(now)) });
+            }
+        }
+        for reason in ["unavailable", "mistake", "unknown"] {
+            let labels = [("database", name.as_str()), ("reason", reason)];
+            if let Some(total) = after.value("rradius_external_db_failures_total", &labels) {
+                let (rate, went_down) = before.value("rradius_external_db_failures_total", &labels).map_or((0.0, false), |then| rate(then, total, seconds));
+                *reset |= went_down;
+                items.push(ShownItem { key: format!("{name}.failures_{reason}"), label: format!("{name} failures ({reason})"), reading: Reading::Rate { rate, total } });
+            }
+        }
+        if let Some(reachable) = value("rradius_external_db_reachable", &[]) {
+            let text = if reachable > 0.0 { "yes" } else { "no" };
+            items.push(ShownItem { key: format!("{name}.reachable"), label: format!("{name} reachable"), reading: Reading::Value(Value::Text(text.to_string())) });
+        }
+    }
+    (!items.is_empty()).then(|| ShownSection { key: "databases".to_string(), title: "External databases".to_string(), items })
+}
+
 /// What to print for two samples of the node at `address`; `extra` are the extensions' sections.
 pub fn view(address: SocketAddr, before: &Sample, after: &Sample, extra: &[StatusSection], now_unix: f64) -> View {
     let seconds = after.at.saturating_duration_since(before.at).as_secs_f64();
@@ -508,6 +547,7 @@ pub fn view(address: SocketAddr, before: &Sample, after: &Sample, extra: &[Statu
         sections.extend(show_section(&section, &before.scrape, &after.scrape, seconds, &mut reset));
     }
     sections.extend(clients_section(&before.scrape, &after.scrape, seconds, &mut reset));
+    sections.extend(databases_section(&before.scrape, &after.scrape, seconds, &mut reset));
     for section in core_sections_last().iter().chain(extra) {
         sections.extend(show_section(section, &before.scrape, &after.scrape, seconds, &mut reset));
     }
@@ -1113,6 +1153,46 @@ mod tests {
         }
         let names: Vec<String> = top_clients(clients).into_iter().map(|(name, _, _)| name).collect();
         assert_eq!(names, ["wlc", "ap-1", "ap-2", "c1", "c2"]);
+    }
+
+    /// spec Two databases: the item keys in order, rates of the failures, and yes or no only for
+    /// the database checked for readiness.
+    #[test]
+    fn test_databases_section() -> Result<(), String> {
+        let start = Instant::now();
+        let text = |unavailable: u64, reachable: u64| {
+            let mut out = String::new();
+            for name in ["legacy", "billing"] {
+                let failures = if name == "billing" { unavailable } else { 0 };
+                out += &format!("rradius_external_db_failures_total{{database=\"{name}\",reason=\"unavailable\"}} {failures}\n");
+                out += &format!("rradius_external_db_failures_total{{database=\"{name}\",reason=\"mistake\"}} 0\n");
+                out += &format!("rradius_external_db_failures_total{{database=\"{name}\",reason=\"unknown\"}} 0\n");
+                out += &format!("rradius_external_db_connections{{database=\"{name}\",state=\"in_use\"}} 2\n");
+                out += &format!("rradius_external_db_connections{{database=\"{name}\",state=\"idle\"}} 1\n");
+                out += &format!("rradius_external_db_connections_max{{database=\"{name}\"}} 8\n");
+            }
+            out + &format!("rradius_external_db_reachable{{database=\"billing\"}} {reachable}\n")
+        };
+        let before = sample_of(&text(10, 1), start)?;
+        let after = sample_of(&text(30, 0), start + Duration::from_secs(2))?;
+        let shown = view(address(), &before, &after, &[], 0.0);
+        let at = shown.sections.iter().position(|section| section.key == "databases").ok_or("no databases section")?;
+        let section = &shown.sections[at];
+        assert_eq!(section.title, "External databases");
+        let keys: Vec<&str> = section.items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, [
+            "billing.in_use", "billing.idle", "billing.max", "billing.failures_unavailable", "billing.failures_mistake", "billing.failures_unknown", "billing.reachable",
+            "legacy.in_use", "legacy.idle", "legacy.max", "legacy.failures_unavailable", "legacy.failures_mistake", "legacy.failures_unknown",
+        ]);
+        let reading = |key: &str| section.items.iter().find(|item| item.key == key).map(|item| item.reading.clone());
+        assert_eq!(reading("billing.in_use"), Some(Reading::Value(Value::Number(2.0))));
+        assert_eq!(reading("billing.failures_unavailable"), Some(Reading::Rate { rate: 10.0, total: 30.0 }));
+        assert_eq!(reading("billing.reachable"), Some(Reading::Value(Value::Text("no".to_string()))));
+        let json = json(&shown);
+        assert!(json.to_string().contains("\"databases\""), "{json}");
+        let without = sample_of("rradius_radius_packets_total{kind=\"auth\"} 1\n", start)?;
+        assert!(view(address(), &without, &without, &[], 0.0).sections.iter().all(|section| section.key != "databases"), "no databases, no section");
+        Ok(())
     }
 
     #[test]

@@ -80,6 +80,10 @@ zh-TW = "sql：查無使用者時改用這個帳號的密碼驗證，知道該�
 en = "sql, ldap and netlogon: how long one lookup or domain controller call may take, in milliseconds."
 zh-TW = "sql、ldap 與 netlogon：一次查詢或一次網域控制站呼叫的時限，毫秒。"
 
+[fields."auth.handlers.database"]
+en = "sql: name of a [databases.<name>] to run the queries on, with ? placeholders. Without it, the cluster's own database."
+zh-TW = "sql：在哪個 [databases.<name>] 執行查詢，佔位符一樣用 ?。沒有設定時用叢集自己的資料庫。"
+
 [fields."auth.handlers.script"]
 en = "lua: the script file of this handler."
 zh-TW = "lua：這個處理器的腳本檔。"
@@ -276,6 +280,61 @@ zh-TW = "兩次快照之間的 Raft 記錄筆數。"
 [fields."cluster.read_connections"]
 en = "Connections that read the local database, 1 to 128; default twice the worker threads, at most 32."
 zh-TW = "讀本機資料庫的連線數，1 到 128；預設是工作執行緒數的兩倍，最多 32。"
+
+# databases
+
+[fields."databases"]
+en = "External MySQL and PostgreSQL databases, by name (letters, digits and _), for the sql handler's database and the scripts' db_query and db_execute. A change needs a restart."
+zh-TW = "外部 MySQL 與 PostgreSQL 資料庫，以名稱區分（英數與底線），給 sql 處理器的 database 與腳本的 db_query、db_execute 使用。修改後要重啟才套用。"
+
+[fields."databases.*.kind"]
+en = "Which server it is: mysql or postgresql."
+zh-TW = "資料庫種類：mysql 或 postgresql。"
+
+[fields."databases.*.host"]
+en = "Host name or address of the database server; with tls = verify, the name its certificate must have."
+zh-TW = "資料庫伺服器的主機名稱或位址；tls = verify 時，憑證上必須是這個名稱。"
+
+[fields."databases.*.port"]
+en = "Port of the database server; 3306 for mysql and 5432 for postgresql by default."
+zh-TW = "資料庫伺服器的埠；預設 mysql 為 3306，postgresql 為 5432。"
+
+[fields."databases.*.database"]
+en = "Name of the database to use on the server."
+zh-TW = "要使用的資料庫名稱。"
+
+[fields."databases.*.user"]
+en = "Account to log in to the database with."
+zh-TW = "登入資料庫用的帳號。"
+
+[fields."databases.*.password"]
+en = "Password of user; at most one of it and password_file. With MySQL and tls = off, the account needs mysql_native_password."
+zh-TW = "user 的密碼；和 password_file 最多設一個。MySQL 搭配 tls = off 時，帳號要用 mysql_native_password。"
+secret = true
+
+[fields."databases.*.password_file"]
+en = "File holding the password of user, relative to this file; at most one of it and password."
+zh-TW = "存放 user 密碼的檔案，相對於這個設定檔；和 password 最多設一個。"
+
+[fields."databases.*.tls"]
+en = "verify (default): encrypt and verify the certificate chain and host name; off: no encryption, with a warning when host is not a loopback address."
+zh-TW = "verify（預設）：加密並驗證憑證鏈與主機名稱；off：不加密，host 不是 loopback 位址時會記警告。"
+
+[fields."databases.*.ca_file"]
+en = "PEM file of the CA certificates that tls = verify trusts; the system roots when not set."
+zh-TW = "tls = verify 信任的 CA 憑證（PEM 檔）；沒設時用系統的根憑證。"
+
+[fields."databases.*.pool_size"]
+en = "Most connections kept open to the database; at least 1."
+zh-TW = "對這個資料庫最多保持的連線數，至少 1。"
+
+[fields."databases.*.connect_timeout_ms"]
+en = "How long opening one connection may take, in milliseconds."
+zh-TW = "建立一條連線的時限，毫秒。"
+
+[fields."databases.*.required_for_ready"]
+en = "Whether /readyz answers 503 while this database cannot be reached. A check runs SELECT 1 on a connection of its own every 5 seconds; two failures in a row make it unreachable, one success reachable again."
+zh-TW = "這個資料庫連不上時 /readyz 是否回 503。每 5 秒用一條專用連線執行 SELECT 1；連續兩次失敗算連不上，一次成功就恢復。"
 
 # log
 

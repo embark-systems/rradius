@@ -21,7 +21,7 @@
 | 管理誰能登入路由器、能下哪些指令 | [6](06-device-admin.md) |
 | 任何一台停機都不中斷服務 | [7](07-ha-cluster.md) |
 | 把叢集放在 Kubernetes 上 | [13](13-kubernetes.md) |
-| 帳號已經在別的系統裡，不想複製 | 目錄（LDAP／AD）看 [5](05-remote-access.md)，HTTP API 看 [10](10-external-api.md) |
+| 帳號已經在別的系統裡，不想複製 | 目錄（LDAP／AD）看 [5](05-remote-access.md)，HTTP API 看 [10](10-external-api.md)，MySQL／PostgreSQL 看 [9](09-migrate-users.md#帳號留在原本的資料庫) |
 | 從舊的認證系統搬過來，不想讓大家重設密碼 | [9](09-migrate-users.md) |
 | 上線之後的日常工作 | [11](11-operations.md) |
 | 出了問題，從現象找原因 | [12](12-troubleshooting.md) |

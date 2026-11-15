@@ -102,7 +102,7 @@ impl AuthResult {
 #[allow(clippy::large_enum_variant)]
 pub enum Handler {
     Sql {
-        db: Db,
+        source: SqlSource,
         user_query: String,
         /// What a verified certificate is looked up with instead.
         certificate_query: Option<String>,
@@ -115,6 +115,15 @@ pub enum Handler {
     LuaVerifying(LuaAuthEngine),
     Ldap(LdapHandler),
     Netlogon(NetlogonHandler),
+}
+
+/// Where a `sql` handler's queries go.
+#[derive(Clone)]
+pub enum SqlSource {
+    /// The cluster's own database.
+    Cluster(Db),
+    /// A `[databases.<name>]`.
+    External(Arc<crate::external_db::ExternalDatabase>),
 }
 
 pub struct AuthChain {
@@ -148,8 +157,12 @@ impl AuthChain {
         let mut handlers = Vec::with_capacity(settings.handlers.len());
         for handler in &settings.handlers {
             handlers.push(match handler {
-                AuthHandlerSettings::Sql { user_query, certificate_query, reply_query, default_user, timeout } => Handler::Sql {
-                    db: db.clone(),
+                AuthHandlerSettings::Sql { user_query, certificate_query, reply_query, default_user, timeout, database } => Handler::Sql {
+                    source: match database {
+                        // Pools are opened at startup only, so a reload cannot add one.
+                        Some(name) => SqlSource::External(lua.databases.get(name).cloned().ok_or_else(|| format!("database '{name}' is not open; [databases] takes a restart to change"))?),
+                        None => SqlSource::Cluster(db.clone()),
+                    },
                     user_query: user_query.clone(),
                     certificate_query: certificate_query.clone(),
                     reply_query: reply_query.clone(),
@@ -161,7 +174,7 @@ impl AuthChain {
                         .map_err(|e| format!("cannot read auth handler script '{}': {}", script.display(), e))?;
                     let engine = LuaAuthEngine::new(vms.clone(), db.clone(), source)
                         .map_err(|e| format!("cannot compile auth handler script '{}': {}", script.display(), e))?;
-                    let engine = engine.with_script_name(script.display().to_string()).with_query_timeout(lua.query_timeout).with_max_execution(lua.max_execution).with_dynamic_auth(lua.dynamic_auth.clone()).with_script_http(lua.http.clone());
+                    let engine = engine.with_script_name(script.display().to_string()).with_query_timeout(lua.query_timeout).with_max_execution(lua.max_execution).with_dynamic_auth(lua.dynamic_auth.clone()).with_script_http(lua.http.clone()).with_databases(lua.databases.clone());
                     if *verifies_password {
                         Handler::LuaVerifying(engine)
                     } else {
@@ -258,18 +271,20 @@ pub struct LuaLimits {
     pub dynamic_auth: Option<Arc<dyn crate::dynamic_authorization::DynamicAuthorization>>,
     /// What `http_request` sends through.
     pub http: Option<Arc<crate::script_http::ScriptHttp>>,
+    /// The `[databases.<name>]` opened at startup: `sql` handlers and `db_query` use them.
+    pub databases: crate::external_db::ExternalDatabases,
 }
 
 impl LuaLimits {
     pub fn from_settings(lua: &crate::config::LuaSettings) -> Self {
-        Self { query_timeout: lua.query_timeout, max_execution: lua.max_execution, dynamic_auth: None, http: None }
+        Self { query_timeout: lua.query_timeout, max_execution: lua.max_execution, dynamic_auth: None, http: None, databases: Default::default() }
     }
 }
 
 #[cfg(test)]
 impl Default for LuaLimits {
     fn default() -> Self {
-        Self { query_timeout: Duration::from_secs(5), max_execution: Duration::from_secs(1), dynamic_auth: None, http: None }
+        Self { query_timeout: Duration::from_secs(5), max_execution: Duration::from_secs(1), dynamic_auth: None, http: None, databases: Default::default() }
     }
 }
 
@@ -397,11 +412,11 @@ impl Handler {
                 let (outcome, attributes, unavailable) = netlogon.authenticate(credentials, account).await;
                 (outcome, attributes, None, unavailable)
             }
-            Handler::Sql { db, user_query, certificate_query, reply_query, default_user, timeout } => {
+            Handler::Sql { source, user_query, certificate_query, reply_query, default_user, timeout } => {
                 // Inside EAP the name is what gets logged and given back to the device, and it would
                 // be any name at all for those who know the default account's password.
                 let default_user = default_user.as_deref().filter(|_| request.eap_method.is_none());
-                match sql_handler(db, SqlQueries { user: user_query, certificate: certificate_query.as_deref(), reply: reply_query.as_deref() }, default_user, *timeout, credentials, account).await {
+                match sql_handler(source, SqlQueries { user: user_query, certificate: certificate_query.as_deref(), reply: reply_query.as_deref() }, default_user, *timeout, credentials, account).await {
                     Ok((outcome, attributes, account)) => (outcome, attributes, account, false),
                     Err(e) => {
                         tracing::error!("auth sql handler error: {}", e);
@@ -413,10 +428,20 @@ impl Handler {
     }
 }
 
-async fn timed_query(db: &Db, sql: &str, param: &str, timeout: Duration) -> Result<Vec<Vec<(String, DbValue)>>, crate::lua_engine::DbFailure> {
-    tokio::time::timeout(timeout, db.query_classified(sql, &[param]))
-        .await
-        .map_err(|_| crate::lua_engine::DbFailure::timed_out(timeout))?
+/// `timeout` also covers waiting for a connection of an external database's pool.
+async fn timed_query(source: &SqlSource, sql: &str, param: &str, timeout: Duration) -> Result<Vec<Vec<(String, DbValue)>>, crate::lua_engine::DbFailure> {
+    let rows = async {
+        match source {
+            SqlSource::Cluster(db) => db.query_classified(sql, &[param]).await,
+            SqlSource::External(database) => database.query(sql, &[hiqlite::Param::Text(param.to_string())]).await,
+        }
+    };
+    tokio::time::timeout(timeout, rows).await.map_err(|_| {
+        if let SqlSource::External(database) = source {
+            database.note_timeout();
+        }
+        crate::lua_engine::DbFailure::timed_out(timeout)
+    })?
 }
 
 fn text(value: &DbValue) -> Option<String> {
@@ -490,7 +515,7 @@ struct SqlQueries<'a> {
 /// Looks the user up (falling back to `default_user`), verifies the secret and
 /// collects reply attributes. Database errors are returned as `Err`.
 async fn sql_handler(
-    db: &Db,
+    db: &SqlSource,
     queries: SqlQueries<'_>,
     default_user: Option<&str>,
     timeout: Duration,
@@ -703,7 +728,7 @@ mod tests {
             })
             .await;
         let handler = Handler::Sql {
-            db: test_db(),
+            source: SqlSource::Cluster(test_db()),
             user_query: "SELECT password FROM norm_users WHERE username = ?".to_string(),
             reply_query: Some("SELECT attribute, value FROM norm_reply WHERE username = ?".to_string()),
             certificate_query: None, default_user: None,
@@ -725,7 +750,7 @@ mod tests {
     async fn test_mschapv2_uses_the_received_name() {
         let chain = normalized_sql_chain().await;
         let handler = Handler::Sql {
-            db: test_db(),
+            source: SqlSource::Cluster(test_db()),
             user_query: "SELECT nt FROM norm_users WHERE username = ?".to_string(),
             reply_query: None,
             certificate_query: None, default_user: None,
@@ -789,7 +814,7 @@ mod tests {
 
         setup_users().await;
         let sql = Handler::Sql {
-            db: test_db(),
+            source: SqlSource::Cluster(test_db()),
             user_query: format!("SELECT password FROM {USERS} WHERE username = ?"),
             reply_query: None,
             certificate_query: None, default_user: None,
@@ -859,7 +884,7 @@ mod tests {
         let db = test_db();
         db.execute("CREATE TABLE unavailable_users (username TEXT, password TEXT)").await?;
         db.execute("INSERT INTO unavailable_users VALUES ('alice', '{clear}secret')").await?;
-        let sql = |query: &str, timeout: Duration| Handler::Sql { db: test_db(), user_query: query.to_string(), reply_query: None, certificate_query: None, default_user: None, timeout };
+        let sql = |query: &str, timeout: Duration| Handler::Sql { source: SqlSource::Cluster(test_db()), user_query: query.to_string(), reply_query: None, certificate_query: None, default_user: None, timeout };
         let slow = "SELECT password FROM unavailable_users, (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500000) SELECT max(x) FROM c) WHERE username = ?";
         let timed_out = AuthChain::new(AuthPolicy::FirstMatch, vec![sql(slow, Duration::from_millis(5))]).authenticate(&pap("alice", "secret"), &request()).await;
         assert!(!timed_out.accepted() && timed_out.unavailable, "{timed_out:?}");
@@ -897,7 +922,7 @@ mod tests {
         db.execute("CREATE TABLE slow_hash_users (username TEXT, password TEXT)").await.unwrap();
         db.execute("INSERT INTO slow_hash_users VALUES ('alice', '{argon2}$argon2id$v=19$m=262144,t=2,p=1$c29tZXNhbHQ$eP4eyR+zqlZX1y5xCFTkw9m5GYx0L5YWwvCFvtlbLow')").await.unwrap();
         let query = "SELECT password FROM slow_hash_users WHERE username = ?";
-        let result = sql_handler(&db, SqlQueries { user: query, certificate: None, reply: None }, None, Duration::from_millis(300), &pap("alice", "password"), Some("alice")).await;
+        let result = sql_handler(&SqlSource::Cluster(db.clone()), SqlQueries { user: query, certificate: None, reply: None }, None, Duration::from_millis(300), &pap("alice", "password"), Some("alice")).await;
         let error = result.unwrap_err();
         assert!(error.to_string().contains("verifying the password timed out"), "{error}");
     }
@@ -946,7 +971,7 @@ mod tests {
     async fn test_all_accept_needs_a_password_check() {
         setup_users().await;
         let sql = || Handler::Sql {
-            db: test_db(),
+            source: SqlSource::Cluster(test_db()),
             user_query: format!("SELECT password FROM {USERS} WHERE username = ?"),
             reply_query: None,
             certificate_query: None,
@@ -974,7 +999,7 @@ mod tests {
         assert_eq!(chain.authenticate(&certificate("nosuchuser"), &request()).await.decision, Outcome::Reject);
         assert_eq!(chain.authenticate(&certificate("alice"), &request()).await.decision, Outcome::Accept);
         let disabled = Handler::Sql {
-            db: test_db(),
+            source: SqlSource::Cluster(test_db()),
             user_query: format!("SELECT password FROM {USERS} WHERE username = ?"),
             reply_query: None,
             certificate_query: Some(format!("SELECT 1 FROM {USERS} WHERE username = ? AND 0")),
@@ -1009,7 +1034,7 @@ mod tests {
         let db = test_db();
         db.execute("CREATE TABLE IF NOT EXISTS policy_writes (who TEXT)").await.unwrap();
         let sql = || Handler::Sql {
-            db: test_db(),
+            source: SqlSource::Cluster(test_db()),
             user_query: format!("SELECT password FROM {USERS} WHERE username = ?"),
             reply_query: None,
             certificate_query: None,
@@ -1088,7 +1113,7 @@ mod tests {
 
     fn sql(default_user: Option<&str>) -> Handler {
         Handler::Sql {
-            db: test_db(),
+            source: SqlSource::Cluster(test_db()),
             user_query: format!("SELECT password FROM {USERS} WHERE username = ?"),
             reply_query: Some("SELECT attribute, value FROM chain_reply WHERE username = ?".to_string()),
             certificate_query: None, default_user: default_user.map(str::to_string),
@@ -1100,6 +1125,86 @@ mod tests {
         setup_users().await;
         let (outcome, attributes, _, _) = handler.run(credentials, credentials.user.as_deref(), &request()).await;
         (outcome, attributes)
+    }
+
+    /// spec Database stopped during login: the handler fails as the database being unavailable,
+    /// which leaves the request unanswered, not as a wrong password.
+    #[tokio::test]
+    async fn test_sql_handler_external_database_down() -> Result<(), String> {
+        use crate::config::{DatabaseKind, DatabaseTls};
+        use crate::external_db::test_support::{closed_port, settings};
+        let mut all = std::collections::BTreeMap::new();
+        all.insert("billing".to_string(), settings(DatabaseKind::Postgresql, "127.0.0.1", closed_port()?, DatabaseTls::Off));
+        let databases = crate::external_db::ExternalDatabases::open(&all);
+        let handler = Handler::Sql {
+            source: SqlSource::External(databases.get("billing").cloned().ok_or("not open")?),
+            user_query: "SELECT password FROM users WHERE username = ?".to_string(),
+            certificate_query: None,
+            reply_query: None,
+            default_user: None,
+            timeout: Duration::from_secs(5),
+        };
+        let (outcome, attributes, _, unavailable) = handler.run(&pap("alice", "pw"), Some("alice"), &request()).await;
+        assert_eq!(outcome, Outcome::Reject);
+        assert!(attributes.is_empty());
+        assert!(unavailable, "a database that is down is not a wrong password");
+        assert_eq!(databases.get("billing").ok_or("not open")?.failures().unavailable, 1);
+        Ok(())
+    }
+
+    /// spec Failures by class: a login the handler's time limit cut short counts as the database
+    /// being unavailable.
+    #[tokio::test]
+    async fn test_sql_handler_external_timeout_counted() -> Result<(), String> {
+        use crate::config::{DatabaseKind, DatabaseTls};
+        use crate::external_db::test_support::{settings, silent_port};
+        let mut all = std::collections::BTreeMap::new();
+        let mut silent = settings(DatabaseKind::Postgresql, "127.0.0.1", silent_port().await?, DatabaseTls::Off);
+        silent.connect_timeout = Duration::from_secs(30);
+        all.insert("billing".to_string(), silent);
+        let databases = crate::external_db::ExternalDatabases::open(&all);
+        let database = databases.get("billing").cloned().ok_or("not open")?;
+        let handler = Handler::Sql {
+            source: SqlSource::External(database.clone()),
+            user_query: "SELECT password FROM users WHERE username = ?".to_string(),
+            certificate_query: None,
+            reply_query: None,
+            default_user: None,
+            timeout: Duration::from_millis(200),
+        };
+        let (_, _, _, unavailable) = handler.run(&pap("alice", "pw"), Some("alice"), &request()).await;
+        assert!(unavailable);
+        assert_eq!(database.failures(), crate::external_db::FailureTotals { unavailable: 1, mistake: 0, unknown: 0 });
+        Ok(())
+    }
+
+    /// A reload builds chains with the databases opened at startup; a name among them is used,
+    /// one that is not fails the build.
+    #[test]
+    fn test_sql_handler_names_open_database() -> Result<(), String> {
+        use crate::config::{DatabaseKind, DatabaseTls};
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+        let _guard = rt.enter();
+        let mut all = std::collections::BTreeMap::new();
+        all.insert("billing".to_string(), crate::external_db::test_support::settings(DatabaseKind::Mysql, "127.0.0.1", 3306, DatabaseTls::Off));
+        let limits = LuaLimits { databases: crate::external_db::ExternalDatabases::open(&all), ..LuaLimits::default() };
+        let chain = |database: &str| ChainSettings {
+            policy: AuthPolicy::FirstMatch,
+            handlers: vec![AuthHandlerSettings::Sql { user_query: "SELECT p FROM u WHERE n = ?".to_string(), certificate_query: None, reply_query: None, default_user: None, timeout: Duration::from_secs(1), database: Some(database.to_string()) }],
+            username: None,
+        };
+        let built = AuthChain::from_settings(&chain("billing"), &test_db(), &crate::test_support::test_vms(), &limits)?;
+        assert!(matches!(built.handlers.first(), Some(Handler::Sql { source: SqlSource::External(database), .. }) if database.name() == "billing"));
+        // spec Handler without database: the cluster's own.
+        let mut cluster = chain("billing");
+        if let Some(AuthHandlerSettings::Sql { database, .. }) = cluster.handlers.first_mut() {
+            *database = None;
+        }
+        let built = AuthChain::from_settings(&cluster, &test_db(), &crate::test_support::test_vms(), &limits)?;
+        assert!(matches!(built.handlers.first(), Some(Handler::Sql { source: SqlSource::Cluster(_), .. })));
+        let error = AuthChain::from_settings(&chain("crm"), &test_db(), &crate::test_support::test_vms(), &limits).err().ok_or("built")?;
+        assert!(error.contains("'crm' is not open"), "{error}");
+        Ok(())
     }
 
     fn attr(name: &str, value: &str) -> (String, AttrValue) {
@@ -1149,17 +1254,17 @@ mod tests {
     #[tokio::test]
     async fn test_certificate_query_is_not_read_as_a_password() {
         for column in ["NULL", "''", "'{clear}'"] {
-            let Handler::Sql { db, user_query, reply_query, timeout, .. } = sql(None) else { panic!() };
-            let handler = Handler::Sql { db, user_query, certificate_query: Some(format!("SELECT {column} FROM {USERS} WHERE username = ?")), reply_query, default_user: None, timeout };
+            let Handler::Sql { source, user_query, reply_query, timeout, .. } = sql(None) else { panic!() };
+            let handler = Handler::Sql { source, user_query, certificate_query: Some(format!("SELECT {column} FROM {USERS} WHERE username = ?")), reply_query, default_user: None, timeout };
             assert_eq!(sql_outcome(&handler, &by_certificate("alice")).await.0, Outcome::Accept, "{column}");
         }
     }
 
     #[tokio::test]
     async fn test_certificate_query() {
-        let Handler::Sql { db, user_query, reply_query, timeout, .. } = sql(None) else { panic!() };
+        let Handler::Sql { source, user_query, reply_query, timeout, .. } = sql(None) else { panic!() };
         let handler = Handler::Sql {
-            db,
+            source,
             user_query,
             certificate_query: Some(format!("SELECT 1 FROM {USERS} WHERE username = ? AND username <> 'alice'")),
             reply_query,
@@ -1240,7 +1345,7 @@ mod tests {
         setup_users().await;
         let chain = AuthChain::new(AuthPolicy::AllAccept, vec![
             Handler::Sql {
-                db: test_db(),
+                source: SqlSource::Cluster(test_db()),
                 user_query: format!("SELECT password FROM {USERS} WHERE username = ?"),
                 reply_query: Some("SELECT attribute, value FROM chain_reply WHERE username = ? AND attribute = 'Filter-Id'".to_string()),
                 certificate_query: None, default_user: None,

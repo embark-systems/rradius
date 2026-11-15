@@ -115,13 +115,14 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | `[auth]` | 否 | 認證串接；沒有時由 `[lua].script` 認證 |
 | `[radius]` | 否 | 啟用 RADIUS |
 | `[radius.accounting_spool]` | 否 | 資料庫失敗時先把計費寫到本機（2.11 節） |
-| `[radius.accounting_log]` | 否 | 每一筆回覆過的計費寫成一行 JSON 到文字檔（2.17 節） |
+| `[radius.accounting_log]` | 否 | 每一筆回覆過的計費寫成一行 JSON 到文字檔（2.18 節） |
 | `[radius.eap]` | 否 | EAP，給 802.1X 和 WPA-Enterprise 用（2.12 節） |
 | `[tacacs]` | 否 | 啟用 TACACS+ |
 | `[metrics]` | 否 | 啟用統計端點（2.8 節） |
 | `[log]` | 否 | 記錄的等級、格式與認證紀錄（2.10 節） |
 | `[accounts]` | 否 | `rradius-server user` 管理帳號時執行的 SQL（2.14 節） |
 | `[shutdown]` | 否 | 收到 SIGTERM 後的兩段等待（2.16 節） |
+| `[databases.<name>]` | 否 | 外部的 MySQL、PostgreSQL，給 `sql` 處理器和 `db_query` 用（2.17 節） |
 | `[runtime]` | 否 | `pin_threads`：把工作執行緒各綁在一顆 CPU 上，只在 Linux（2.4 節） |
 
 `[radius]` 與 `[tacacs]` 至少要有一個。所有區段都拒絕不認得的欄位，拼錯的欄位會讓啟動失敗並指出欄位名稱。
@@ -747,7 +748,7 @@ port = 9812         # 預設
 | 路徑 | 回應 |
 | --- | --- |
 | `GET /livez` | 一律 200 `ok`：程序還在回應。不看資料庫或叢集 |
-| `GET /readyz` | 收到 SIGTERM 或 SIGINT、正在停止時是 503 `stopping`（2.16 節）；設了 `[cluster] stop_without_leader_ms`、而且沒有可用的 leader 超過這段時間時是 503 `no leader`，也就是節點故意不回應認證的時候（2.2 節〈資料庫不能用時〉）；其他時候 200 `ok` |
+| `GET /readyz` | 收到 SIGTERM 或 SIGINT、正在停止時是 503 `stopping`（2.16 節）；設了 `[cluster] stop_without_leader_ms`、而且沒有可用的 leader 超過這段時間時是 503 `no leader`，也就是節點故意不回應認證的時候（2.2 節〈資料庫不能用時〉）；設了 `required_for_ready` 的外部資料庫連不上時是 503 `database <名稱> unreachable`，多個時名稱依字母排序、以 `, ` 分隔（2.17 節）；其他時候 200 `ok`。三者同時成立時依序只回 `stopping`、`no leader`、資料庫 |
 
 - 內容都是 `text/plain` 的一行字。查詢字串不影響結果；GET 以外的方法回 405，其他路徑回 404。連線數、逾時和標頭大小的限制和 `/metrics` 共用。
 - 沒設 `stop_without_leader_ms` 時，除了停止中以外 `/readyz` 一直是 200：這時節點沒有 leader 也會用本機副本回應只讀的登入，算成未就緒反而會讓負載平衡器把所有節點都移出。
@@ -780,10 +781,14 @@ port = 9812         # 預設
 | `rradius_acct_spool_full_total` | 暫存已滿或寫入失敗，沒有回覆的請求 |
 | `rradius_acct_spool_corrupt_total` | 損壞而改名保留的暫存檔 |
 | `rradius_acct_spool_bytes` | 等待重放的位元組數；持續大於 0 代表資料庫的資料落後 |
-| `rradius_accounting_log_written_total` | 寫進計費紀錄檔的筆數（2.17 節） |
+| `rradius_accounting_log_written_total` | 寫進計費紀錄檔的筆數（2.18 節） |
 | `rradius_accounting_log_dropped_total` | 佇列滿了而沒寫進計費紀錄檔的筆數 |
 | `rradius_accounting_log_failures_total{stage="open\|write"}` | 計費紀錄檔重新開檔（`open`）或寫入（`write`）失敗的次數；`write` 每次是一批 |
 | `rradius_netlogon_logons_total`、`rradius_netlogon_channel_setups_total`、`rradius_netlogon_open_connections` | `netlogon` 處理器（3.7 節） |
+| `rradius_external_db_failures_total{database="...",reason="unavailable\|mistake\|unknown"}` | 每個外部資料庫失敗的呼叫（2.17 節），`sql` 處理器和 `db_query`、`db_execute` 都算。`unavailable` 是資料庫無法使用（含逾時），`mistake` 是陳述式或值的錯（含送出前就被拒的，例如值的數量不符），`unknown` 是其他。`db_query` 寫了不存在的名稱不算；請求的時間（`[lua].query_timeout_ms`）已經用完後才呼叫的 `db_query`、`db_execute` 沒有送到資料庫，也不算；`required_for_ready` 的檢查也不算。沒有 `[databases]` 時不輸出 |
+| `rradius_external_db_connections{database="...",state="in_use\|idle"}` | 每個外部資料庫連線池的連線：`in_use` 是交給呼叫正在用的，加上正在建立的（還沒連上的連線也佔一個名額），`idle` 是開著閒置的。不含 `required_for_ready` 的檢查連線 |
+| `rradius_external_db_connections_max{database="..."}` | 連線池的上限，也就是 `pool_size`。`in_use` 一直等於它時，呼叫在排隊等連線 |
+| `rradius_external_db_reachable{database="..."}` | 只有設了 `required_for_ready` 的資料庫才有：檢查連得上是 1，否則 0（2.17 節） |
 | `rradius_reload_total{result="ok\|error"}` | 重新載入的結果 |
 | `rradius_reload_last_success_timestamp_seconds` | 上次成功重新載入的時間，還沒有時是 0 |
 | `rradius_radius_requests_in_progress{kind="auth\|acct"}` | 目前正在處理的登入、計費請求數 |
@@ -810,10 +815,11 @@ rradius-server status [--config <path>] [--watch] [--json] [--cluster]
 
 | 段落（`key`） | 內容 |
 | --- | --- |
-| Node（`node`） | `/readyz` 的回答（`ok`、`stopping`、`no leader`）、叢集狀態（是不是 leader、有沒有 leader、追上了沒、applied index、沒有 leader 的秒數）、版本、已執行秒數 |
+| Node（`node`） | `/readyz` 的回答（`ok`、`stopping`、`no leader`、`database ... unreachable`）、叢集狀態（是不是 leader、有沒有 leader、追上了沒、applied index、沒有 leader 的秒數）、版本、已執行秒數 |
 | Reload（`reload`） | 重新載入成功與失敗的次數、上次成功的時間 |
 | RADIUS（`radius`） | 登入與計費請求、四種回應、重送、五種丟棄原因的每秒量，正在處理的請求數與上限，以及這段時間登入與計費回應時間的 p50、p99（毫秒） |
 | Busiest RADIUS clients（`radius_top_clients`） | 這段時間回應最多的 5 個 client 與它們的每秒回應量 |
+| External databases（`databases`） | 有 `[databases]` 時才有。每個資料庫（依名稱）的連線使用中、閒置、上限（`<名稱>.in_use`、`.idle`、`.max`），三類失敗的每秒量（`<名稱>.failures_unavailable`、`.failures_mistake`、`.failures_unknown`），以及設了 `required_for_ready` 時連不連得上（`<名稱>.reachable`，`yes` 或 `no`） |
 | TACACS+（`tacacs`） | 開著的連線、三種請求與格式錯誤的每秒量，以及三種請求這段時間回應時間的 p50、p99（毫秒） |
 | EAP（`eap`） | 進行中的 EAP 對話 |
 | Accounting spool（`acct_spool`） | 等待重放的位元組、重放、放棄與沒寫入暫存的每秒量 |
@@ -857,7 +863,7 @@ RADIUS
 
 | 結束碼 | 意思 |
 | --- | --- |
-| 0 | 印出了結果。`/readyz` 回 503（停止中、沒有 leader）也是 0，狀態寫在輸出裡 |
+| 0 | 印出了結果。`/readyz` 回 503（停止中、沒有 leader、必要的資料庫連不上）也是 0，狀態寫在輸出裡 |
 | 2 | 參數錯誤、設定檔讀不了，或設定檔沒有 `[metrics]` |
 | 3 | 連不上 metrics 埠、2 秒內沒有回答，或回答不像 rradius 的格式。`--watch` 時不會因此結束，而是每秒重試並在 stderr 說明；恢復後第一次的每秒量是從上一次成功取樣起算的平均，開頭的秒數就是這段時間 |
 
@@ -910,8 +916,8 @@ docker compose kill -s HUP rradius
 
 收到 SIGHUP 時重讀設定檔（包含 `secret_file`）並套用，結果寫一行到記錄：`configuration reloaded from ...` 或 `reload failed, keeping the running configuration: ...`。
 
-- **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）、`[lua.http]`，以及 `[radius.accounting_log]` 的 `file`（重新開檔，見 2.17 節）。
-- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
+- **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）、`[lua.http]`，以及 `[radius.accounting_log]` 的 `file`（重新開檔，見 2.18 節）。
+- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
 - **全部成功才會套用。** 檢查和啟動時相同，任何一項有誤就全部維持原狀，程序繼續服務；修正後再送一次 SIGHUP 即可。
 - 進行中的請求用舊內容做完，不會中斷。已開啟的 TACACS+ 連線不會因此斷線，但下一個封包會依新名單處理：client 被移除時關閉連線，密碼更換後要用新密碼。
 - `auto` 學到的值和重送快取會保留。每次重新載入都會重建 LDAP 連線池。
@@ -1260,7 +1266,7 @@ rradius-server user show --config /etc/rradius/rradius.toml alice
 1. **`/readyz` 回 503 `stopping`，** 但 RADIUS 和 TACACS+ 照常回應 `ready_delay_ms`，讓負載平衡器或 Kubernetes 有時間把這個節點移出、改送別台。`/livez` 不變。
 2. **停止接收：** 不再讀 RADIUS 的 UDP 埠，關閉 TACACS+ 的埠（新連線被拒），已開的 TACACS+ 連線送出手上請求的回應後關閉，不再讀下一個（進行中的 ASCII 登入可以做完，最多到它的 60 秒期限；這時連線上的其他請求不回應、直接關閉）；計費暫存停止重放，資料留在磁碟。
 3. **等處理中的請求，** 最多 `drain_ms`。全部回應完時記 `stopping: every request taken was answered`；時間到還沒做完時記 WARN，例如 `stopping: after 5000 ms, 1 RADIUS requests were still being handled and 0 TACACS+ connections open; they are cut off`，那些請求不會回應，設備會重送到別台。
-4. 設了 `[radius.accounting_log]` 時寫完它的佇列（最多 5 秒，見 2.17 節），再關閉資料庫（多節點時 hiqlite 還會等 9.5 秒，見 1. 節）、寫出記錄，以狀態碼 0 結束。
+4. 設了 `[radius.accounting_log]` 時寫完它的佇列（最多 5 秒，見 2.18 節），再關閉資料庫（多節點時 hiqlite 還會等 9.5 秒，見 1. 節）、寫出記錄，以狀態碼 0 結束。
 
 ```toml
 [shutdown]
@@ -1274,7 +1280,44 @@ drain_ms = 5000       # 第 3 段；預設 5000
 - **寬限時間要夠：** 多節點時最多約 `ready_delay_ms` + `drain_ms` + 9.5 秒 + 記錄寫出（最多 5 秒），預設約 25 秒，所以 `docker stop -t 30`、`stop_grace_period: 30s`、Kubernetes 的 `terminationGracePeriodSeconds: 30` 都夠。調大這兩個值時一起調大寬限時間，否則被 SIGKILL，下次啟動要重建本機資料庫。
 - 啟動途中（等叢集或套用 migration 時）收到訊號不走這幾段，見 1. 節〈停止〉。
 
-### 2.17 計費紀錄檔 `[radius.accounting_log]`
+### 2.17 外部資料庫 `[databases]`
+
+帳號表或計費表已經在 MySQL 或 PostgreSQL 裡，而且要繼續由別的系統維護時，不必搬進叢集：在這裡列出資料庫，`sql` 處理器用 `database` 指定它（3.3 節），腳本用 `db_query`、`db_execute`（4.3 節）。
+
+```toml
+[databases.billing]
+kind = "postgresql"              # 必填，"mysql" 或 "postgresql"
+host = "db.example.com"          # 必填
+port = 5432                      # 預設 mysql 3306、postgresql 5432
+database = "radius"              # 必填
+user = "rradius"                 # 必填
+password_file = "billing.secret" # 或 password = "..."，只能設一個
+tls = "verify"                   # 預設；"verify" 或 "off"
+ca_file = "db-ca.pem"            # 選填；沒有時信任系統的根憑證
+pool_size = 8                    # 預設，每個節點最多幾條連線
+connect_timeout_ms = 5000        # 預設，建立一條連線的時限
+required_for_ready = false       # 預設；true 時連不上就讓 /readyz 回 503
+```
+
+- **名稱**只能有 ASCII 字母、數字和 `_`，例如 `billing`。不支援連線 URL。
+- **密碼。** `password_file` 去掉結尾的換行，不能是空的；相對路徑以設定檔所在目錄為準。`password` 和 `password_file` 都沒有時不送密碼。`rradius-server config show` 不顯示 `password`。PostgreSQL 不讀 `~/.pgpass`，但會讀 `PGPASSWORD` 這類環境變數：設定檔沒寫密碼而環境有 `PGPASSWORD` 時，會送出它。
+- **TLS。** `verify` 驗證憑證鏈和主機名稱（PostgreSQL 的 `verify-full`、MySQL 的 `VERIFY_IDENTITY`），憑證不是 `ca_file` 簽發的就連不上，算資料庫無法使用。`ca_file` 在 `check` 和啟動時就讀，讀不到或裡面沒有憑證時啟動失敗；`tls = "off"` 時不能設。`off` 不加密，`host` 不是本機時啟動會記 WARN，因為密碼和資料都以明文送出。
+- **MySQL 不用 TLS 時，帳號要用 `mysql_native_password`。** MySQL 8 預設的 `caching_sha2_password` 在沒有 TLS 時要用 RSA 交換密碼，rradius 沒有這部分。MySQL 8.4 預設關閉 `mysql_native_password`，要以 `--mysql-native-password=ON` 啟動，再用 `CREATE USER ... IDENTIFIED WITH mysql_native_password BY '...'` 建帳號。走 TLS 時沒有這個限制。
+- **連線池。** 啟動時只建立連線池、不連線，第一個用到的請求才連。所以資料庫沒開也能啟動，只有用到它的請求失敗。每個節點各有一個池，資料庫允許的連線數至少要是節點數 × `pool_size`。
+- **要重啟才套用。** 重新載入（SIGHUP）會列出 `[databases]` 需要重啟，執行中的連線池繼續用。處理器用到重啟前不存在的名稱時，重新載入失敗並說要重啟。
+- **`pool_size` 決定滿載時的吞吐，** 約為 `pool_size` ÷ 一次查詢的來回時間。量測（Apple M4 Max，PostgreSQL 17 在本機 Docker，`sql` 處理器的 PAP，明文密碼）：`pool_size = 8` 約 13300 次/秒，32 約 19900 次/秒；同一台機器用內建資料庫約 48000 次/秒。每秒 2000 次時兩者的 p99 都約 0.35 ms。網路較遠時每次來回較久，要更多連線才有同樣吞吐。
+- **`required_for_ready` 與 `/readyz`。** 設為 `true` 的資料庫，節點從啟動起在背景檢查：用一條不在連線池裡的連線，每 5 秒（從上一次開始算）執行 `SELECT 1`，沒有連線或上次失敗時先重新連線，每次以 `connect_timeout_ms` 為上限。連續 2 次失敗算連不上，1 次成功就恢復；啟動後第一次檢查成功前也算連不上，所以帳號資料庫連不上的新節點不會先收到流量。連不上時 `/readyz` 回 503 `database <名稱> unreachable`（2.8 節），`/livez` 不受影響，請求照常處理（用到它的照樣失敗）；狀態改變時記 WARN（連不上）或 INFO（恢復），其他失敗的檢查只在 debug 記錄。
+  - **多久會發現：** 最壞約 2 ×（5 秒 + `connect_timeout_ms`），預設約 20 秒；恢復最多 5 秒 + `connect_timeout_ms`。量測（OrbStack Docker 的 PostgreSQL 17，`connect_timeout_ms = 1000`，停止容器）：9.7 秒後回 503，資料庫回應後 0.4 秒回 200。資料庫主機斷線、封包被丟棄時每次檢查會用滿 `connect_timeout_ms`，接近最壞值。間隔與次數目前不能設定。
+  - **為什麼另開連線、在背景檢查：** 連線池滿了（流量大、查詢慢）不代表資料庫連不上，用池裡的連線檢查會讓所有節點在尖峰時一起變成未就緒；看請求的失敗則在負載平衡器停止送流量後就沒有機會恢復；在每次 `/readyz` 時才連線又可能超過 Kubernetes 探針預設的 1 秒。
+  - **何時該設：** 只有「沒有這個資料庫就無法正確回應」時。所有節點共用同一個資料庫，它停止時所有節點都會未就緒，負載平衡器沒有地方可送；只用在少數請求的資料庫不要設。每個節點會多佔它一條連線，資料庫允許的連線數要加上。
+  - **指標：** `rradius_external_db_failures_total`、`rradius_external_db_connections`、`rradius_external_db_connections_max` 每個資料庫都有，`rradius_external_db_reachable` 只有設了的才有（2.8 節）；`status` 的 External databases 段落也會列出。
+- **時限。** `sql` 處理器的 `timeout_ms` 包括等連線池給連線的時間。腳本的 `db_query`、`db_execute` 和 `sql_query`、`sql_execute` 共用一個請求的 `[lua] query_timeout_ms`。
+- **失敗時。** 連不上、逾時、TLS 失敗，以及表示資料庫忙的錯誤（PostgreSQL 的 SQLSTATE 08、53、57 類和 40001、40P01；MySQL 的 1040、1053、1205、1213、1317）算資料庫無法使用：登入不回應，讓設備重送或改送別台；設了計費暫存（2.11 節）時計費寫進暫存，恢復後重放。語法錯誤、約束違反（例如主鍵重複）這類陳述式本身的錯誤，登入時拒絕；計費時不回應，從暫存重放時移到 `rejected.log`。
+- **佔位符。** 只用 `?`，依序綁定；PostgreSQL 會改成 `$1`、`$2` 送出，MySQL 原樣送出。單引號字串、雙引號名稱和註解（`--`、`/* */`）裡的 `?` 不算；PostgreSQL 的 `::text` 轉型可以用。`?1`、`:name`、`$name` 啟動或呼叫時就會出錯。不支援的寫法：方括號裡的 `?`（例如 PostgreSQL 陣列的 `a[?]`，方括號會被當成名稱的引號，數量不符而出錯）、PostgreSQL 的 `$$` 字串（裡面的 `?` 會被當成佔位符）、PostgreSQL 的 `?` 運算子（jsonb 的 `?`、`?|`、`?&`，請改用 `jsonb_exists()` 這類函式）、MySQL 用反斜線跳脫的引號（`'it\'s'`，請寫成 `'it''s'`）。
+- **PostgreSQL 的參數有型別，不會自動轉換：** 字串綁成 `text`，整數和 `true`、`false` 綁成 `bigint`（1、0），其他數字綁成 `double precision`。欄位是 `boolean`、`inet`、`timestamp` 等型別時要在 SQL 裡轉，例如 `CAST(? AS inet)`、`?::inet`，布林欄位寫 `active = (? <> 0)`。不轉時 PostgreSQL 回型別錯誤，算陳述式的錯。MySQL 會自己轉換。
+- **值型別。** 整數（含 MySQL 的 `UNSIGNED`，超過 2^63−1 時出錯）、浮點數 → 數字；布林 → 1、0；文字 → 字串；二進位 → 字串；`NUMERIC`／`DECIMAL`（`SUM`、`AVG` 的結果）→ 十進位數字的字串，例如 `"12.50"`，要計算時用 `tonumber`；NULL → `nil`。其他型別（日期時間、幾何型別等）會出錯並指出欄名，請在 SQL 裡 `CAST` 成文字或數字。
+
+### 2.18 計費紀錄檔 `[radius.accounting_log]`
 
 把每一筆回覆過的計費請求寫成一行 JSON，附加到一個文字檔，給要直接讀檔的系統用（例如記錄收集程式或自己的帳務腳本）。不需要資料庫，也不影響腳本怎麼寫資料庫。沒有這個區段時不寫任何檔案。
 
@@ -1389,7 +1432,8 @@ script = "vpn_rules.lua"
 | `certificate_query` | 無 | EAP-TLS 憑證通過後改用這個查詢找使用者，剛好一個 `?`，查到就接受，不看第一欄。沒有設定時用 `user_query`，第一欄是 NULL、只有前綴或空值就拒絕（2.12 節） |
 | `reply_query` | 無 | 取得回應屬性的查詢，剛好一個 `?`，回傳 `(attribute, value)` 兩欄 |
 | `default_user` | 無 | 查無使用者時改用這個帳號的密碼驗證（知道該密碼的人都會通過，請謹慎使用）。通過時認證紀錄的 `account` 是這個帳號，`user` 是對方送來的名稱 |
-| `timeout_ms` | 5000 | 每次查詢的時限，必須大於 0 |
+| `timeout_ms` | 5000 | 每次查詢的時限，必須大於 0；用 `database` 時包括等連線的時間 |
+| `database` | 無 | `[databases.<name>]` 的名稱（2.17 節），查詢在那個 MySQL 或 PostgreSQL 執行，佔位符一樣寫 `?`。沒有設定時查叢集自己的資料庫。名稱不存在時啟動失敗 |
 
 - 查無使用者 → 略過；查到多筆 → 拒絕並記錄；密碼欄為 NULL、空字串或只有 `{clear}` 這類前綴 → 拒絕。
 - `?` 的數量以字元計算，不要在查詢的字串常值中使用 `?`。
@@ -1609,6 +1653,8 @@ DC 回覆的對應：
 | `set_attr(name, value)` | 加入一個回應屬性（字串或數字），依呼叫順序保留。tagged 屬性可以在名稱後加 tag，例如 `Tunnel-Type:1` |
 | `sql_query(sql [, params])` | 讀取本機資料庫副本，回傳列的陣列，每列是「欄名 → 值」的表；只能讀取 |
 | `sql_execute(sql [, params])` | 透過叢集寫入並複寫，回傳受影響的列數 |
+| `db_query(name, sql [, params])` | 在 `[databases.<name>]`（2.17 節）執行查詢，回傳格式和 `sql_query` 相同；也可以寫入，但回傳的是列 |
+| `db_execute(name, sql [, params])` | 在 `[databases.<name>]` 執行寫入，回傳受影響的列數 |
 | `now_unix()` | 目前的 Unix 時間（秒） |
 | `totp_verify(secret, code)` | 以 RFC 6238 驗證 TOTP 驗證碼（HMAC-SHA-1、6 位數、30 秒一步，前後各容許一步）。符合時回傳時間步，否則回傳 `nil`；`secret` 不是 Base32 時腳本出錯 |
 | `random_token()` | 回傳 32 個十六進位字元的隨機值，可用來產生 `State` |
@@ -1640,6 +1686,13 @@ local rows = sql_query("SELECT plan FROM users WHERE username = ?", {get_attr('U
 - 表、函式、NaN 和無限大都會讓腳本出錯。`nil` 在陣列中間會出錯，在結尾會被丟掉，只有 SQL 還需要那個值時才會因數量不符而出錯。**值可能不存在時要先檢查：** `{get_attr('User-Name')}` 在沒有這個屬性時是空陣列，會因數量不符而出錯。要比對或寫入 NULL，請直接寫在 SQL 裡（`IS NULL`、`NULL`）。
 - 不傳 `params` 或傳 `nil` 時視為沒有值，所以 SQL 裡有 `?` 就會出錯。字串、引號內的名稱和註解裡的 `?` 不算。
 - 上面對各節點結果不同的寫法的檢查只看 SQL 文字，不看參數值。
+
+**外部資料庫：** `db_query`、`db_execute` 的參數規則和上面相同，數量不符時一樣不送出。`name` 不在 `[databases]` 時腳本出錯。外部資料庫不經叢集複寫，所以 `db_execute` 不檢查 `now()` 這類寫法。失敗時的處理和佔位符、值型別的限制見 2.17 節。
+
+```lua
+local rows = db_query('billing', 'SELECT plan FROM users WHERE username = ?', {get_attr('User-Name')})
+db_execute('billing', 'INSERT INTO acct (id, octets) VALUES (?, ?)', {get_attr('Acct-Session-Id'), get_attr('Acct-Output-Octets')})
+```
 
 ### 4.4 回傳值
 

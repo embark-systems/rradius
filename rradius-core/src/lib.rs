@@ -17,6 +17,7 @@ pub mod eap;
 pub mod eap_method;
 pub mod extension;
 pub mod extensions;
+pub mod external_db;
 pub mod forwarding;
 pub mod ldap_handler;
 pub mod logging;

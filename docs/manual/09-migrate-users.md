@@ -6,7 +6,7 @@
 - **舊的雜湊多半很弱**（MD5、SHA-1）。搬過來之後，改密碼時改存新的格式，舊格式逐漸消失。
 - 舊系統的帳號名稱大小寫不一、有的帶網域，要統一。
 
-如果舊的 LDAP 目錄會繼續留著，不必搬：讓 rradius 直接問目錄（[第 5 章](05-remote-access.md)）。這一章是要把帳號放進 rradius 自己的資料表。
+如果舊的 LDAP 目錄會繼續留著，不必搬：讓 rradius 直接問目錄（[第 5 章](05-remote-access.md)）。帳號在 MySQL 或 PostgreSQL 裡、而且要繼續由舊系統維護時，也可以不搬，見下面〈帳號留在原本的資料庫〉。這一章其他部分是要把帳號放進 rradius 自己的資料表。
 
 範例目錄：[`rradius-server/examples/scenarios/migrate-users/`](../../rradius-server/examples/scenarios/migrate-users/)
 
@@ -15,6 +15,8 @@
 | `rradius.toml` | `sql` 處理器、名稱正規化、`[accounts]` |
 | `migrations/1_schema.sql` | `users`（多一欄 `origin` 記來源）、`user_reply`、`accounting` |
 | `migrations/2_imported_users.sql` | 八個示範帳號，各用一種舊格式 |
+| `external-db.toml` | 不搬帳號，直接讀舊系統的 PostgreSQL（〈帳號留在原本的資料庫〉） |
+| `legacy-db.secret` | 那個資料庫帳號的示範密碼，請換掉 |
 
 ## 怎麼運作
 
@@ -143,6 +145,44 @@ rradius-server user passwd --config rradius.toml mail1    # 問兩次新密碼
 - **rradius 不會在登入時自動把舊雜湊換成新的，** 也沒有讓使用者自己改密碼的介面。要由管理者、或你的入口網站呼叫 `user passwd`（密碼從標準輸入給）。
 - **看還剩多少：** `user show <帳號>` 會印出這個帳號的 `origin`。rradius 沒有查詢整張資料表的指令；要統計總數，可以在計費腳本裡偶爾用 `sql_query` 算一次、用 `log()` 寫進記錄（本章沒有附這樣的腳本）。
 - **訂一個期限。** 期限到了還沒改密碼的帳號，用 migration 檔把密碼設成 `NULL`（密碼欄是 `NULL` 的帳號一律登不進來），請他們找管理者重設。
+
+## 帳號留在原本的資料庫
+
+舊系統的帳號表在 MySQL 或 PostgreSQL，而且帳號還要由舊系統新增、停用時，可以讓 rradius 直接查那個資料庫，不搬過來。密碼欄的格式規則和上面相同。
+
+範例是 `external-db.toml`：
+
+```toml
+[databases.legacy]
+kind = "postgresql"
+host = "db.example.com"
+database = "radius"
+user = "rradius_ro"
+password_file = "legacy-db.secret"
+
+[[auth.handlers]]
+type = "sql"
+database = "legacy"
+user_query = "SELECT password FROM radcheck WHERE username = ?"
+reply_query = "SELECT attribute, value FROM radreply WHERE username = ?"
+```
+
+把 `host`、`database`、`user` 和 `legacy-db.secret` 換成自己的，資料表和欄位名稱換成舊系統的，再檢查設定：
+
+```bash
+./target/release/rradius-server check --config examples/scenarios/migrate-users/external-db.toml
+```
+
+`check` 不會連線到資料庫，只檢查設定，所以印出 `configuration ok` 還不代表連得上。啟動後用 PAP 登入一個帳號試，確認連線、密碼格式和回覆屬性都對。
+
+- **給 rradius 一個唯讀帳號，** 只能讀這兩張表。計費仍寫進 rradius 自己的資料表（`accounting.lua`）；要寫回舊系統的計費表，在計費腳本用 `db_execute`（[usage.md 4.3 節](../usage.md#43-函式)）。
+- **連線預設走 TLS 並驗證憑證。** 資料庫用自己的 CA 簽的憑證時加 `ca_file`。MySQL 不走 TLS 時，帳號要用 `mysql_native_password`，見 [usage.md 2.17 節](../usage.md#217-外部資料庫-databases)。
+- **資料庫停了，登入就不回應，** 設備會重送或改送別台伺服器；不會把所有人拒絕。要能撐過資料庫停機，還是要把帳號搬進來。
+- **改 `[databases]` 要重啟，** SIGHUP 不會套用。
+- **佔位符寫 `?`。** 送到 PostgreSQL 時會改成 `$1`。PostgreSQL 的 `$$` 字串和 jsonb 的 `?` 運算子不能用。
+- **舊系統存明文時，** 例如 `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password'`，可以直接用：沒有前綴的值當成明文。只有明文本身以 `{` 開頭時才會被誤認成格式，這時在 SQL 裡加前綴：`SELECT '{clear}' || value FROM ...`（MySQL 用 `CONCAT('{clear}', value)`），見 [usage.md 第 5 節](../usage.md#5-密碼格式)。
+
+**沒有測過的：** 範例只由情境測試確認設定通過 `check`、伺服器能啟動。查詢真的 MySQL 和 PostgreSQL（登入、回覆屬性、TLS、資料庫停止時的行為）由另外的 Docker 測試（`rradius-server/tests/external_db_test.rs`）驗證，用的是測試自己的資料表，不是任何一套特定舊系統的資料表。
 
 ## 上線前
 
