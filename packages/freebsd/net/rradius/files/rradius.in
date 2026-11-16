@@ -1,0 +1,48 @@
+#!/bin/sh
+
+# PROVIDE: rradius
+# REQUIRE: NETWORKING DAEMON
+# KEYWORD: shutdown
+#
+# Add these lines to /etc/rc.conf.local or /etc/rc.conf to enable rradius:
+#
+# rradius_enable (bool):  Set to YES to enable. Default: NO
+# rradius_config (path):  The configuration. Default: %%PREFIX%%/etc/rradius/rradius.toml
+# rradius_user (str):     The user to run as. Default: %%USER%%
+#
+# SIGHUP (service rradius reload) reloads the configuration and reopens the accounting log.
+
+. /etc/rc.subr
+
+name=rradius
+rcvar=rradius_enable
+
+load_rc_config $name
+
+: ${rradius_enable:=NO}
+: ${rradius_config:=%%PREFIX%%/etc/rradius/rradius.toml}
+: ${rradius_user:=%%USER%%}
+
+required_files=${rradius_config}
+pidfile=/var/run/rradius.pid
+child_pidfile=/var/run/rradius_child.pid
+command=/usr/sbin/daemon
+# daemon(8) restarts the program when it exits: a node whose database cannot be recovered
+# exits with status 1 and a restart recovers it.
+command_args="-P ${pidfile} -p ${child_pidfile} -r -R 2 -S -T rradius -u ${rradius_user} \
+    %%PREFIX%%/bin/rradius-server server --config ${rradius_config}"
+
+extra_commands=reload
+reload_cmd=rradius_reload
+
+rradius_reload()
+{
+    if [ -f ${child_pidfile} ]; then
+        kill -HUP $(cat ${child_pidfile})
+    else
+        echo "${name} is not running"
+        return 1
+    fi
+}
+
+run_rc_command "$1"

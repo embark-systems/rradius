@@ -1,0 +1,5 @@
+bin/rradius-server
+etc/newsyslog.conf.d/rradius.conf.sample
+@dir(%%USER%%,%%USER%%,750) /var/db/rradius
+@dir(%%USER%%,%%USER%%,750) /var/log/rradius
+@dir etc/rradius

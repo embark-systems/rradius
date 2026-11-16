@@ -1,0 +1,14 @@
+# The accounting log of [radius.accounting_log] (usage.md, section 2.18). rradius opens a new
+# file on SIGHUP; copytruncate would lose lines.
+/var/log/rradius/*.jsonl {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    nocreate
+    compress
+    delaycompress
+    postrotate
+        systemctl kill -s HUP rradius.service >/dev/null 2>&1 || true
+    endscript
+}

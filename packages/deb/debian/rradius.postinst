@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+    if ! getent passwd rradius >/dev/null; then
+        adduser --system --group --home /var/lib/rradius --no-create-home \
+            --gecos "rradius RADIUS and TACACS+ server" rradius
+    fi
+    chown rradius:rradius /var/lib/rradius /var/log/rradius
+    chmod 0750 /var/lib/rradius /var/log/rradius
+fi
+#DEBHELPER#

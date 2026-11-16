@@ -1,0 +1,39 @@
+rradius installed from a package
+================================
+
+The package installs the program, the RADIUS dictionaries and the documentation, and creates
+the system user "rradius" and the directories /var/lib/rradius (data) and /var/log/rradius.
+It does not create a configuration and does not start the service: the service starts only
+once /etc/rradius/rradius.toml exists.
+
+First start
+-----------
+
+  1. Print a starting configuration; it has random cluster and client secrets:
+
+       rradius-server config init > /etc/rradius/rradius.toml
+
+  2. Edit it. The service can write only below /var/lib/rradius and /var/log/rradius, and
+     a relative path in the file is taken from the directory of the file, so set:
+
+       [cluster] data_dir = "/var/lib/rradius"
+       [radius.accounting_spool] dir  (if used) below /var/lib/rradius
+       [radius.accounting_log] file   (if used) below /var/log/rradius
+
+     "dictionary" already points at /usr/share/rradius/dictionary. Add the [lua] script and
+     your clients, and keep the file readable by the "rradius" user only:
+
+       chown root:rradius /etc/rradius/rradius.toml && chmod 640 /etc/rradius/rradius.toml
+
+  3. Check, then start:
+
+       rradius-server check
+       systemctl enable --now rradius
+
+     The package does not enable the service by itself.
+
+The default configuration path is fixed when the program is built; "rradius-server --version"
+shows it on the second line.
+
+Documentation: /usr/share/doc/rradius/manual/README.md (start there) and usage.md.
+The examples of the manual are in /usr/share/doc/rradius/examples.

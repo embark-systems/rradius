@@ -1,0 +1,7 @@
+rradius answers RADIUS and TACACS+ requests. Authentication and accounting
+logic is written in Luau scripts and SQL; the data lives in an embedded
+hiqlite cluster, so a cluster needs no external database.
+
+The port installs the program, the RADIUS dictionaries and the documentation.
+It does not create a configuration: see the README.packages file in the
+documentation directory.
