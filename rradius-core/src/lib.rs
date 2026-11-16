@@ -23,6 +23,8 @@ pub mod forwarding;
 pub mod ldap_handler;
 pub mod logging;
 pub mod metrics;
+pub mod named_queries;
+pub mod query_command;
 pub mod radius;
 pub mod records;
 pub mod reload;

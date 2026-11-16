@@ -51,3 +51,12 @@ port = 9812
 [sessions]
 list = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE state = 'active' AND expires > strftime('%s', 'now') ORDER BY username, slot"
 show = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY slot"
+
+# 監控：每個狀態的連線位數，成為指標 rradius_query_slot_usage{state}（free 是空的、reserved 是預留、
+# active 是在線）。每個節點每 30 秒對自己的副本查一次；說明見手冊第 15 章「監控」。
+# 這個查詢走 session_slots_expiry 索引，不掃整個表。
+[queries.slot_usage]
+sql = "SELECT state, count(*) AS slots FROM session_slots GROUP BY state"
+help = "Session slots by state: free, reserved or active."
+labels = ["state"]
+value = "slots"

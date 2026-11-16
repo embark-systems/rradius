@@ -78,13 +78,14 @@ fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
 /// `--config`: what no arguments and `help` print, and what a mistake prints.
 fn full_usage(extensions: &crate::extension::Extensions, default: &str) -> String {
     named(&format!(
-        "{USAGE}\n{}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}\n{}\n{}",
+        "{USAGE}\n{}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}\n{}\n{}\n{}",
         admin::CHECK_USAGE,
         crate::status::USAGE,
         crate::config_tools::USAGE,
         crate::tuning::USAGE,
         accounts::USAGE,
         crate::sessions::USAGE,
+        crate::query_command::USAGE,
         crate::cluster_commands::USAGE
     )) + &extensions.usage().iter().map(|usage| format!("\n{usage}")).collect::<String>()
         + &format!("\nwithout --config, the configuration is {default}")
@@ -224,6 +225,9 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     }
     if args.get(1).is_some_and(|command| command == "session") {
         std::process::exit(crate::sessions::run(&args[2..]).await);
+    }
+    if args.get(1).is_some_and(|command| command == "query") {
+        std::process::exit(crate::query_command::run(&args[2..]).await);
     }
     if args.get(1).is_some_and(|command| command == "status") {
         std::process::exit(crate::status::run(&args[2..], extensions).await);
@@ -458,6 +462,10 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     let databases = crate::external_db::ExternalDatabases::open(&config.databases);
     databases.start_checks();
     metrics.watch_databases(databases.clone());
+    // The named queries: each runs now and then every interval, on this node's copy of the data.
+    let queries: Vec<Arc<crate::named_queries::QueryState>> = config.queries.iter().map(|(name, settings)| Arc::new(crate::named_queries::QueryState::new(name, settings.clone()))).collect();
+    metrics.watch_queries(queries.clone());
+    crate::named_queries::start(&queries, &db);
     let shared = Shared { db: db.clone(), vms, dictionary: dictionary.clone(), metrics: metrics.clone(), extensions: extensions.clone(), databases };
     let generation = match reload::build(&config, &shared) {
         Ok(generation) => generation,

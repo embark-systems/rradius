@@ -147,6 +147,33 @@ SELECT pool, state, count(*) FROM ip_pool GROUP BY pool, state;
 
 新增位址就是新增列（`INSERT INTO ip_pool (pool, ip, n) VALUES (...)`，`n` 的編法見「換成自己的資料」，寫成新編號的 migration 檔）；縮小池要先確認那些位址是 `free`，再刪列。
 
+## 監控
+
+範例設定檔有一個查詢 `pool_usage`（[usage 2.20 節](../usage.md#220-命名查詢-queries)）：每個節點每 30 秒數一次每個池、每個狀態的位址，成為指標 `rradius_query_pool_usage{pool,state}`。
+
+```toml
+[queries.pool_usage]
+sql = "SELECT pool, state, count(*) AS addresses FROM ip_pool GROUP BY pool, state"
+help = "Addresses of each pool by state: free, reserved or active."
+labels = ["pool", "state"]
+value = "addresses"
+```
+
+```bash
+rradius-server query pool_usage --config examples/scenarios/ip-pool/rradius.toml
+```
+
+**池快用完的告警**（叢集用 `max()`，各節點的數字一樣）：
+
+```promql
+max by (pool) (rradius_query_pool_usage{state="free"}) < 100
+```
+
+用掉幾成：`1 - (max by (pool) (rradius_query_pool_usage{state="free"}) / sum by (pool) (max by (pool, state) (rradius_query_pool_usage)))`。`reserved` 一直很多而 `active` 很少，代表 NAS 沒有送 Accounting-Start（預留要 120 秒才回收）。某個池連一列都沒有（全部位址都不是這三種狀態）時沒有樣本，告警式用 `absent()` 補。
+
+- **成本：** 這個查詢走 `ip_pool_state` 的覆蓋索引（`EXPLAIN QUERY PLAN`：`SCAN ip_pool USING COVERING INDEX ip_pool_state`），在 11 萬位址的資料上實測中位數約 3.7 毫秒，30 秒一次可以忽略。寫成 `WHERE state = 'free' GROUP BY pool` 反而較慢（走 `ip_pool_expiry`，每列要回表，約 9.5 毫秒）：一次取出每個池的每個狀態比較好。
+- **每個節點輸出同樣的數字**，所以不要 `sum()` 各節點。查詢失敗時 gauge 保留上一次的值；用 `rradius_query_last_success_timestamp_seconds{query="pool_usage"}` 看是不是太久沒更新。
+
 ## 換成自己的資料
 
 1. 刪掉 `migrations/2_demo_data.sql`，改成自己的用戶和位址；**正式環境第一次啟動前就決定好，** 套用過的 migration 檔不能再改，要改結構就新增下一個編號的檔案。
@@ -173,7 +200,7 @@ SELECT pool, state, count(*) FROM ip_pool GROUP BY pool, state;
 
 - **一個用戶一個位址。** 同一個帳號同時有兩個 session（例如兩台設備）會拿到同一個位址；要限制同時登入數是另一回事，需要自己加計數。
 - **沒有 IPv6 前綴池。** DHCPv6-PD 的 /56、/60、/64 要對齊分配，這個範例不處理。
-- **沒有內建的使用率指標和管理指令。** 現在靠上面的 SQL 查；之後如果需要，會考慮內建函式、指標和指令。
+- **沒有內建的池函式和專用的管理指令。** 使用率用上面「監控」的命名查詢和 `rradius-server query`；挑位址、釋放這些仍是腳本。
 - **一次一個位址。** 沒有「分配一整段」。
 - **NAS 當機到位址回收之間，** 位址最多保留到期限（預設 15 分鐘），之後才會給別人；NAS 回來送 Accounting-On 會立刻釋放。
 - **用盡時 NAS 只看到 Reject。** 原因在 rradius 的記錄，監控記錄裡的 `is exhausted`。

@@ -145,6 +145,27 @@ SELECT sum(input_octets + output_octets) FROM accounting WHERE username = 'bob' 
 
 換方案就是改 `subscribers.plan`；改方案的上限就是改 `plans`。縮小 `max_sessions` 時，編號超過新上限的連線位不再被分配，在線的 session 不受影響，結束後自然消失。
 
+## 監控
+
+範例設定檔有一個查詢 `slot_usage`（[usage 2.20 節](../usage.md#220-命名查詢-queries)）：每個節點每 30 秒數一次每個狀態的連線位，成為指標 `rradius_query_slot_usage{state}`。
+
+```toml
+[queries.slot_usage]
+sql = "SELECT state, count(*) AS slots FROM session_slots GROUP BY state"
+help = "Session slots by state: free, reserved or active."
+labels = ["state"]
+value = "slots"
+```
+
+```bash
+rradius-server query slot_usage --config examples/scenarios/usage-control/rradius.toml
+```
+
+- **現在有多少連線在線：** `max(rradius_query_slot_usage{state="active"})`；`reserved` 是登入了但 NAS 還沒送 Accounting-Start 的。叢集用 `max()`，不要 `sum()`。
+- **連線位只有第一次登入才建立**，所以 `free` 的數字是「登入過的用戶沒用到的位」，不是全部用戶的容量。
+- **成本：** 這個查詢走 `session_slots_expiry` 的覆蓋索引（`SCAN session_slots USING COVERING INDEX session_slots_expiry`），在 20 萬列的資料上實測中位數約 4.3 毫秒。
+- 流量用掉多少是另一回事（`accounting` 的加總會隨用戶的 session 數變慢，見已知限制），不要放進 30 秒一次的指標。
+
 ## 換成自己的資料
 
 1. 刪掉 `migrations/2_demo_data.sql`，改成自己的方案和用戶；**正式環境第一次啟動前就決定好，** 套用過的 migration 檔不能再改，要改結構就新增下一個編號的檔案。
@@ -158,7 +179,7 @@ SELECT sum(input_octets + output_octets) FROM accounting WHERE username = 'bob' 
 - **計量期間是滾動的最近 N 天，** 不是日曆月，沒有帳單日和時區。
 - **流量加總隨用戶的 session 數變慢。** 有 `accounting_user` 索引、只看一個用戶，但用戶多、session 多時要先實測；必要時另存每個用戶的累計表。
 - **用盡時 NAS 只看到 Reject，** 原因在 rradius 的記錄，監控記錄裡的 `session limit` 與 `quota`。
-- **沒有預付餘額和線上計費，** 沒有內建函式、指標和管理指令。
+- **沒有預付餘額和線上計費，** 也沒有內建函式；連線位的使用率用上面「監控」的命名查詢。
 - **NAS 當機沒送 Stop，** 連線位佔到期限（預設 15 分鐘）才回收；NAS 回來送 Accounting-On 會立刻釋放。
 
 ## 常見問題

@@ -221,6 +221,9 @@ pub fn needs_restart(running: &ServerConfig, new: &ServerConfig, extensions: &cr
     if running.databases != new.databases {
         names.push("[databases]");
     }
+    if running.queries != new.queries {
+        names.push("[queries]");
+    }
     let (running_config, new_config) = (running, new);
     match (&running.radius, &new.radius) {
         (Some(running), Some(new)) => {
@@ -528,6 +531,31 @@ mod tests {
         write_config(dir.path(), &format!("{}[sessions]\nshow = \"DELETE FROM accounting WHERE username = ?1\"\n", config_text(CLIENT)));
         let error = serving.try_reload().err().ok_or("the reload took a statement that writes")?;
         assert!(error.contains("sessions.show"), "{error}");
+        Ok(())
+    }
+
+    /// spec Queries Need a Restart: a change to `[queries]` is named and the other changes of the
+    /// file apply. (The queries themselves are started once, at start, from the configuration the
+    /// process began with: a reload never starts, stops or changes one.)
+    #[tokio::test]
+    async fn test_reload_needs_a_restart_for_queries() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let first = format!("{}[queries.pool_free]\nsql = \"SELECT 1 AS value\"\ninterval_ms = 30000\n", config_text(CLIENT));
+        let (serving, _) = serving(dir.path(), "return 'accept'", &first);
+        assert_eq!(serving.running.queries.get("pool_free").map(|query| query.interval), Some(Duration::from_millis(30_000)));
+        // The same file again.
+        write_config(dir.path(), &first);
+        assert_eq!(serving.try_reload()?, Vec::<&str>::new(), "nothing changed");
+        // The interval and another setting change together: the query needs a restart and the
+        // other setting applies.
+        write_config(dir.path(), &format!("{}[shutdown]\ndrain_ms = 200\n", first.replace("interval_ms = 30000", "interval_ms = 10000")));
+        assert_eq!(serving.try_reload()?, vec!["[queries]"]);
+        assert_eq!(serving.shutdown.get().drain, Duration::from_millis(200), "the rest of the file applied");
+        // Added and removed.
+        write_config(dir.path(), &format!("{first}[queries.more]\nsql = \"SELECT 2 AS value\"\n"));
+        assert_eq!(serving.try_reload()?, vec!["[queries]"]);
+        write_config(dir.path(), &config_text(CLIENT));
+        assert_eq!(serving.try_reload()?, vec!["[queries]"]);
         Ok(())
     }
 

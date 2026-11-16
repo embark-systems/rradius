@@ -78,7 +78,7 @@ fn statement(config: &ServerConfig, config_path: &str, action: Action, name: Opt
 }
 
 /// Runs `sql` through the cluster, giving it 30 seconds.
-async fn query(config: &ServerConfig, sql: &str, params: Vec<hiqlite::Param>) -> Result<Vec<Row>, SessionError> {
+pub(crate) async fn query(config: &ServerConfig, sql: &str, params: Vec<hiqlite::Param>) -> Result<Vec<Row>, SessionError> {
     match tokio::time::timeout(CLUSTER_WAIT, query_rows(&config.cluster, sql, params)).await {
         Ok(Ok(rows)) => Ok(rows),
         Ok(Err(e)) if crate::lua_engine::cluster_unavailable(&e) => Err(SessionError { status: STATUS_UNREACHABLE, message: format!("cannot reach the cluster: {e}") }),
@@ -147,7 +147,7 @@ fn text(rows: &[Row]) -> String {
 }
 
 /// The rows as a JSON array of objects, the keys in the order selected.
-fn json(rows: &[Row]) -> String {
+pub(crate) fn json(rows: &[Row]) -> String {
     let string = |text: &str| serde_json::to_string(text).unwrap_or_else(|_| "null".to_string());
     let objects: Vec<String> = rows
         .iter()
