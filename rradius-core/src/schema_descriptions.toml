@@ -346,6 +346,40 @@ zh-TW = "建立一條連線的時限，毫秒。"
 en = "Whether /readyz answers 503 while this database cannot be reached. A check runs SELECT 1 on a connection of its own every 5 seconds; two failures in a row make it unreachable, one success reachable again."
 zh-TW = "這個資料庫連不上時 /readyz 是否回 503。每 5 秒用一條專用連線執行 SELECT 1；連續兩次失敗算連不上，一次成功就恢復。"
 
+# queries
+
+[fields."queries"]
+en = "Named read-only queries, by name (lower-case letters, digits and _, starting with a letter). Each node runs each one in the background and reports its rows as the gauge rradius_query_<name>; `rradius-server query <name>` runs it once. A change needs a restart. The names list, failures_total, dropped_rows_total and last_success_timestamp_seconds are taken."
+zh-TW = "命名的唯讀查詢，以名稱區分（小寫英文字母、數字與底線，以字母開頭）。每個節點在背景執行每一個，把結果的列報成 gauge rradius_query_<名稱>；`rradius-server query <名稱>` 執行一次。修改後要重啟才套用。名稱 list、failures_total、dropped_rows_total、last_success_timestamp_seconds 不能用。"
+
+[fields."queries.*.sql"]
+en = "The statement. It reads (SELECT or WITH) and takes no parameter."
+zh-TW = "要執行的 SQL。只能讀（SELECT 或 WITH），沒有參數。"
+
+[fields."queries.*.help"]
+en = "The HELP text of the gauge; a text naming the query when not set."
+zh-TW = "gauge 的 HELP 說明；沒設時用一段寫著查詢名稱的文字。"
+
+[fields."queries.*.labels"]
+en = "Columns whose values are the labels of a sample, named as the columns are. Not the value column, no repeats."
+zh-TW = "值當作樣本標籤的欄位，標籤名稱就是欄位名稱。不能是數值欄位，不能重複。"
+
+[fields."queries.*.value"]
+en = "The column that holds the value of a sample, an integer or a real number; a row where it is NULL is left out. Default value."
+zh-TW = "存放樣本數值的欄位，整數或實數；這個欄位是 NULL 的列會略過。預設 value。"
+
+[fields."queries.*.interval_ms"]
+en = "Milliseconds from the start of one run to the start of the next; at least 5000. Default 30000."
+zh-TW = "一次執行開始到下一次開始的間隔，毫秒，至少 5000。預設 30000。"
+
+[fields."queries.*.timeout_ms"]
+en = "How long one run may take, in milliseconds; at most interval_ms. Default 5000."
+zh-TW = "一次執行最久多久，毫秒，不能大於 interval_ms。預設 5000。"
+
+[fields."queries.*.max_rows"]
+en = "Most rows of a run that become samples, 1 to 10000; the rest are dropped and counted. Default 200."
+zh-TW = "一次執行最多有幾列成為樣本，1 到 10000；多的丟掉並計數。預設 200。"
+
 # log
 
 [fields."log.level"]

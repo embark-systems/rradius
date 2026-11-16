@@ -538,6 +538,33 @@ fn databases_section(before: &Scrape, after: &Scrape, seconds: f64, reset: &mut 
     (!items.is_empty()).then(|| ShownSection { key: "databases".to_string(), title: "External databases".to_string(), items })
 }
 
+/// The named queries section: for each query how long ago it last succeeded (`never` before a
+/// first success), how many samples it has now and its failed runs over all reasons. Names come
+/// from the configuration, so the keys stay the same from one print to the next.
+fn queries_section(before: &Scrape, after: &Scrape, seconds: f64, reset: &mut bool, now_unix: f64) -> Option<ShownSection> {
+    let mut names: Vec<&String> = after.samples("rradius_query_last_success_timestamp_seconds").iter().filter_map(|(labels, _)| labels.get("query")).collect();
+    names.sort();
+    names.dedup();
+    let mut items = Vec::new();
+    for name in names {
+        let last = after.value("rradius_query_last_success_timestamp_seconds", &[("query", name.as_str())]).unwrap_or(0.0);
+        let age = if last > 0.0 { Reading::Value(Value::Number((now_unix - last).max(0.0).round())) } else { Reading::Value(Value::Text("never".to_string())) };
+        items.push(ShownItem { key: format!("{name}.last_success_age_seconds"), label: format!("{name} last success (seconds ago)"), reading: age });
+        let rows = after.samples(&format!("rradius_query_{name}")).len();
+        items.push(ShownItem { key: format!("{name}.rows"), label: format!("{name} rows"), reading: Reading::Value(Value::Number(rows as f64)) });
+        let failures = |scrape: &Scrape| -> Option<f64> {
+            let totals: Vec<f64> = ["timeout", "error", "shape"].iter().filter_map(|reason| scrape.value("rradius_query_failures_total", &[("query", name.as_str()), ("reason", reason)])).collect();
+            (!totals.is_empty()).then(|| totals.iter().sum())
+        };
+        if let Some(total) = failures(after) {
+            let (rate, went_down) = failures(before).map_or((0.0, false), |then| rate(then, total, seconds));
+            *reset |= went_down;
+            items.push(ShownItem { key: format!("{name}.failures"), label: format!("{name} failed runs"), reading: Reading::Rate { rate, total } });
+        }
+    }
+    (!items.is_empty()).then(|| ShownSection { key: "queries".to_string(), title: "Queries".to_string(), items })
+}
+
 /// What to print for two samples of the node at `address`; `extra` are the extensions' sections.
 pub fn view(address: SocketAddr, before: &Sample, after: &Sample, extra: &[StatusSection], now_unix: f64) -> View {
     let seconds = after.at.saturating_duration_since(before.at).as_secs_f64();
@@ -548,6 +575,7 @@ pub fn view(address: SocketAddr, before: &Sample, after: &Sample, extra: &[Statu
     }
     sections.extend(clients_section(&before.scrape, &after.scrape, seconds, &mut reset));
     sections.extend(databases_section(&before.scrape, &after.scrape, seconds, &mut reset));
+    sections.extend(queries_section(&before.scrape, &after.scrape, seconds, &mut reset, now_unix));
     for section in core_sections_last().iter().chain(extra) {
         sections.extend(show_section(section, &before.scrape, &after.scrape, seconds, &mut reset));
     }
@@ -1192,6 +1220,41 @@ mod tests {
         assert!(json.to_string().contains("\"databases\""), "{json}");
         let without = sample_of("rradius_radius_packets_total{kind=\"auth\"} 1\n", start)?;
         assert!(view(address(), &without, &without, &[], 0.0).sections.iter().all(|section| section.key != "databases"), "no databases, no section");
+        Ok(())
+    }
+
+    /// spec Status Section of Queries: one group of items for each query, keyed by its name; the
+    /// age of the last success, `never` before one; none without `[queries]`.
+    #[test]
+    fn test_queries_section() -> Result<(), String> {
+        let start = Instant::now();
+        let text = |slot_failures: u64| {
+            let mut out = String::new();
+            out += "rradius_query_pool_usage{pool=\"residential\",state=\"free\"} 8\nrradius_query_pool_usage{pool=\"residential\",state=\"reserved\"} 2\nrradius_query_pool_usage{pool=\"business\",state=\"free\"} 5\n";
+            out += "# TYPE rradius_query_slot_usage gauge\n";
+            for query in ["pool_usage", "slot_usage"] {
+                let failures = if query == "slot_usage" { slot_failures } else { 0 };
+                out += &format!("rradius_query_failures_total{{query=\"{query}\",reason=\"timeout\"}} 0\nrradius_query_failures_total{{query=\"{query}\",reason=\"error\"}} {failures}\nrradius_query_failures_total{{query=\"{query}\",reason=\"shape\"}} 0\n");
+            }
+            out + "rradius_query_last_success_timestamp_seconds{query=\"pool_usage\"} 988\nrradius_query_last_success_timestamp_seconds{query=\"slot_usage\"} 0\n"
+        };
+        let before = sample_of(&text(0), start)?;
+        let after = sample_of(&text(2), start + Duration::from_secs(2))?;
+        let shown = view(address(), &before, &after, &[], 1000.0);
+        let section = shown.sections.iter().find(|section| section.key == "queries").ok_or("no queries section")?;
+        assert_eq!(section.title, "Queries");
+        let keys: Vec<&str> = section.items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, ["pool_usage.last_success_age_seconds", "pool_usage.rows", "pool_usage.failures", "slot_usage.last_success_age_seconds", "slot_usage.rows", "slot_usage.failures"]);
+        let reading = |key: &str| section.items.iter().find(|item| item.key == key).map(|item| item.reading.clone());
+        assert_eq!(reading("pool_usage.last_success_age_seconds"), Some(Reading::Value(Value::Number(12.0))));
+        assert_eq!(reading("pool_usage.rows"), Some(Reading::Value(Value::Number(3.0))));
+        assert_eq!(reading("pool_usage.failures"), Some(Reading::Rate { rate: 0.0, total: 0.0 }));
+        assert_eq!(reading("slot_usage.last_success_age_seconds"), Some(Reading::Value(Value::Text("never".to_string()))));
+        assert_eq!(reading("slot_usage.rows"), Some(Reading::Value(Value::Number(0.0))));
+        assert_eq!(reading("slot_usage.failures"), Some(Reading::Rate { rate: 1.0, total: 2.0 }));
+        assert!(json(&shown).to_string().contains("\"queries\""));
+        let without = sample_of("rradius_radius_packets_total{kind=\"auth\"} 1\n", start)?;
+        assert!(view(address(), &without, &without, &[], 0.0).sections.iter().all(|section| section.key != "queries"), "no queries, no section");
         Ok(())
     }
 

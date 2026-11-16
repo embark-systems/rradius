@@ -451,6 +451,49 @@ fn test_rate_limit() -> TestResult {
     Ok(())
 }
 
+/// spec First run: with the example's own interval of 30 seconds the gauge is there long before
+/// the second run could be, since the first run is made as soon as the database is ready.
+#[test]
+fn test_queries_run_at_once() -> TestResult {
+    let pool = Server::start(SCENARIOS, "ip-pool", "rradius.toml", |text| text);
+    wait_for(15, "the first run of the pool query", || metric(&pool, "rradius_query_pool_usage{pool=\"residential\",state=\"free\"}").is_ok_and(|value| value == 8.0))?;
+    assert!(metric(&pool, "rradius_query_last_success_timestamp_seconds{query=\"pool_usage\"}")? > 0.0);
+    Ok(())
+}
+
+/// Chapters 14 and 15, monitoring: the queries of the pool and usage-control examples become
+/// gauges that follow the tables, and the same definitions run as `query` commands.
+#[test]
+fn test_pool_and_slot_metrics() -> TestResult {
+    // The examples ask every 30 seconds; the test every 5.
+    let faster = |query: &'static str| move |text: String| text.replacen(&format!("[queries.{query}]\n"), &format!("[queries.{query}]\ninterval_ms = 5000\n"), 1);
+    let mut pool = Server::start(SCENARIOS, "ip-pool", "rradius.toml", faster("pool_usage"));
+    pool.secret = secret_of(SCENARIOS, "ip-pool", "localhost.secret");
+    // 8 residential and 3 business addresses, all free; the first run shows them.
+    wait_for(30, "the pool in /metrics", || metric(&pool, "rradius_query_pool_usage{pool=\"residential\",state=\"free\"}").is_ok_and(|value| value == 8.0))?;
+    assert_eq!(metric(&pool, "rradius_query_pool_usage{pool=\"business\",state=\"free\"}")?, 3.0);
+    assert_eq!(pool.pap("alice", "alice-password").code, ACCESS_ACCEPT, "{}", pool.stderr());
+    wait_for(30, "one address reserved", || metric(&pool, "rradius_query_pool_usage{pool=\"residential\",state=\"reserved\"}").is_ok_and(|value| value == 1.0))?;
+    assert_eq!(metric(&pool, "rradius_query_pool_usage{pool=\"residential\",state=\"free\"}")?, 7.0);
+    assert_eq!(metric(&pool, "rradius_query_failures_total{query=\"pool_usage\",reason=\"error\"}")?, 0.0);
+    let config = config_of(&pool)?;
+    let counted = command(PROGRAM, &["query", "pool_usage", "--json", "--config", &config], "")?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&counted)?;
+    let reserved: Vec<&serde_json::Value> = rows.iter().filter(|row| row["pool"] == "residential" && row["state"] == "reserved").collect();
+    assert_eq!(reserved.len(), 1, "{counted}");
+    assert_eq!(reserved[0]["addresses"], 1);
+    assert!(!pool.stderr().contains("Lua script error"), "{}", pool.stderr());
+
+    let mut slots = Server::start(SCENARIOS, "usage-control", "rradius.toml", faster("slot_usage"));
+    slots.secret = secret_of(SCENARIOS, "usage-control", "localhost.secret");
+    // alice has one slot and bob two; both log in, so three slots exist and two are taken.
+    assert_eq!(slots.pap("alice", "alice-password").code, ACCESS_ACCEPT, "{}", slots.stderr());
+    assert_eq!(slots.pap("bob", "bob-password").code, ACCESS_ACCEPT, "{}", slots.stderr());
+    wait_for(30, "the slots in /metrics", || metric(&slots, "rradius_query_slot_usage{state=\"reserved\"}").is_ok_and(|value| value == 2.0))?;
+    assert_eq!(metric(&slots, "rradius_query_slot_usage{state=\"free\"}")?, 1.0);
+    Ok(())
+}
+
 /// Chapter 6: PAP login against the bcrypt hashes, authorization by role, and accounting.
 #[test]
 fn test_device_admin() {

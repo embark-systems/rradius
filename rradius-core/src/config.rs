@@ -40,6 +40,24 @@ pub struct ServerConfig {
     /// `[databases.<name>]`: the external databases, by name. A start applies it; a reload does
     /// not.
     pub databases: BTreeMap<String, DatabaseSettings>,
+    /// `[queries.<name>]`: the named queries, by name. A start applies it; a reload does not.
+    pub queries: BTreeMap<String, QuerySettings>,
+}
+
+/// One `[queries.<name>]`: a read-only statement each node runs in the background, whose rows
+/// are the samples of the gauge `rradius_query_<name>`, and which `rradius-server query` runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuerySettings {
+    pub sql: String,
+    pub help: String,
+    /// The columns whose values are the labels of a sample, and their names.
+    pub labels: Vec<String>,
+    /// The column whose value is the sample's.
+    pub value: String,
+    pub interval: Duration,
+    pub timeout: Duration,
+    /// The most rows of a run that become samples.
+    pub max_rows: usize,
 }
 
 /// Which server an external database is.
@@ -586,6 +604,42 @@ struct RawConfig {
     diameter: Option<toml::Value>,
     #[serde(default)]
     databases: BTreeMap<String, RawDatabase>,
+    #[serde(default)]
+    queries: BTreeMap<String, RawQuery>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawQuery {
+    sql: String,
+    #[serde(default)]
+    help: String,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default = "default_query_value")]
+    value: String,
+    #[serde(default = "default_query_interval_ms")]
+    interval_ms: u64,
+    #[serde(default = "default_named_query_timeout_ms")]
+    timeout_ms: u64,
+    #[serde(default = "default_query_max_rows")]
+    max_rows: usize,
+}
+
+fn default_query_value() -> String {
+    "value".to_string()
+}
+
+fn default_query_interval_ms() -> u64 {
+    30_000
+}
+
+fn default_named_query_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_query_max_rows() -> usize {
+    200
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -1479,6 +1533,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
         shutdown: shutdown_settings(raw.shutdown, cluster_nodes).map_err(fail)?,
         extensions: extension_settings,
         databases: databases(raw.databases, base).map_err(fail)?,
+        queries: queries(raw.queries).map_err(fail)?,
     };
     if let Some(auth) = &config.auth {
         sql_databases_known(auth, &config.databases).map_err(fail)?;
@@ -1633,6 +1688,71 @@ fn account_settings(raw: RawAccounts) -> Result<AccountSettings, String> {
         show: check("show", raw.show, false)?,
         scheme,
     })
+}
+
+/// The shortest time between two runs of a query.
+const MIN_QUERY_INTERVAL_MS: u64 = 5_000;
+
+/// Checks `[queries.<name>]`; errors name the query and the setting as `queries.<name>.<field>`.
+fn queries(raw: BTreeMap<String, RawQuery>) -> Result<BTreeMap<String, QuerySettings>, String> {
+    let mut queries = BTreeMap::new();
+    for (name, raw) in raw {
+        let mut chars = name.chars();
+        if !chars.next().is_some_and(|c| c.is_ascii_lowercase()) || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return Err(format!("queries.{name}: name: a query name starts with a lower-case letter and has only lower-case letters, digits and _"));
+        }
+        // `list` is the command that lists the queries; the others would give a gauge the name of
+        // one of the families that report on all queries: rradius_query_<name> would be twice in /metrics.
+        if matches!(name.as_str(), "list" | "failures_total" | "dropped_rows_total" | "last_success_timestamp_seconds") {
+            return Err(format!("queries.{name}: name: \"{name}\" is taken: it is the query command's \"list\" or the name of a family the queries report on, rradius_query_{name}"));
+        }
+        let field = |field: &str| format!("queries.{name}.{field}");
+        let first = raw.sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
+        if !(first.eq_ignore_ascii_case("select") || first.eq_ignore_ascii_case("with")) {
+            return Err(format!("{}: must begin with SELECT or WITH: it only reads", field("sql")));
+        }
+        let placeholders = crate::lua_engine::sql_placeholders(&raw.sql).map_err(|e| format!("{}: {e}", field("sql")))?;
+        if !placeholders.is_empty() {
+            return Err(format!("{}: takes no parameter", field("sql")));
+        }
+        if raw.interval_ms < MIN_QUERY_INTERVAL_MS {
+            return Err(format!("{} must be at least {MIN_QUERY_INTERVAL_MS}, not {}", field("interval_ms"), raw.interval_ms));
+        }
+        if raw.timeout_ms == 0 || raw.timeout_ms > raw.interval_ms {
+            return Err(format!("{} must be from 1 to interval_ms ({}), not {}", field("timeout_ms"), raw.interval_ms, raw.timeout_ms));
+        }
+        if raw.max_rows == 0 || raw.max_rows > 10_000 {
+            return Err(format!("{} must be from 1 to 10000, not {}", field("max_rows"), raw.max_rows));
+        }
+        let column = |text: &str| !text.is_empty() && !text.starts_with("__") && text.chars().enumerate().all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()));
+        for (i, label) in raw.labels.iter().enumerate() {
+            if !column(label) {
+                return Err(format!("{}: \"{label}\" cannot be the name of a label: letters, digits and _, not starting with a digit or __", field("labels")));
+            }
+            if label == &raw.value {
+                return Err(format!("{}: \"{label}\" is also the value column", field("labels")));
+            }
+            if raw.labels[..i].contains(label) {
+                return Err(format!("{}: \"{label}\" is given twice", field("labels")));
+            }
+        }
+        if raw.value.is_empty() {
+            return Err(format!("{} must name a column", field("value")));
+        }
+        queries.insert(
+            name,
+            QuerySettings {
+                sql: raw.sql,
+                help: raw.help,
+                labels: raw.labels,
+                value: raw.value,
+                interval: Duration::from_millis(raw.interval_ms),
+                timeout: Duration::from_millis(raw.timeout_ms),
+                max_rows: raw.max_rows,
+            },
+        );
+    }
+    Ok(queries)
 }
 
 /// Checks `[sessions]`: each statement reads (SELECT or WITH), `list` takes no parameter and
@@ -2504,6 +2624,58 @@ mod tests {
 
     fn error(body: &str) -> String {
         load_str(body).1.unwrap_err().to_string()
+    }
+
+    /// `[queries.<name>]`: defaults and what is set.
+    #[test]
+    fn test_query_settings_defaults() -> Result<(), String> {
+        let (_dir, result) = load_str(&base(&format!("{RADIUS_CLIENT}[queries.pool_free]\nsql = \"SELECT 1 AS value\"\n[queries.pool_usage]\nsql = \"SELECT pool, count(*) AS n FROM ip_pool GROUP BY pool\"\nhelp = \"Addresses by pool\"\nlabels = [\"pool\"]\nvalue = \"n\"\ninterval_ms = 10000\ntimeout_ms = 2000\nmax_rows = 50\n")));
+        let config = result.map_err(|e| e.to_string())?;
+        let free = config.queries.get("pool_free").ok_or("no pool_free")?;
+        assert_eq!((free.help.as_str(), free.labels.len(), free.value.as_str()), ("", 0, "value"));
+        assert_eq!((free.interval, free.timeout, free.max_rows), (Duration::from_millis(30_000), Duration::from_millis(5_000), 200));
+        let usage = config.queries.get("pool_usage").ok_or("no pool_usage")?;
+        assert_eq!((usage.help.as_str(), usage.labels.as_slice(), usage.value.as_str()), ("Addresses by pool", &["pool".to_string()][..], "n"));
+        assert_eq!((usage.interval, usage.timeout, usage.max_rows), (Duration::from_millis(10_000), Duration::from_millis(2_000), 50));
+        let (_dir, result) = load_str(&base(RADIUS_CLIENT));
+        assert!(result.map_err(|e| e.to_string())?.queries.is_empty(), "no section, no queries");
+        Ok(())
+    }
+
+    /// `[queries.<name>]`: what is refused, and what the message starts with.
+    #[test]
+    fn test_query_settings_refused() -> Result<(), String> {
+        let sql = "sql = \"SELECT 1 AS value\"\n";
+        for (section, message) in [
+            (format!("[queries.Pool]\n{sql}"), "queries.Pool: name"),
+            (format!("[queries.1pool]\n{sql}"), "queries.1pool: name"),
+            (format!("[queries.list]\n{sql}"), "queries.list: name"),
+            (format!("[queries.failures_total]\n{sql}"), "queries.failures_total: name"),
+            (format!("[queries.dropped_rows_total]\n{sql}"), "queries.dropped_rows_total: name"),
+            (format!("[queries.last_success_timestamp_seconds]\n{sql}"), "queries.last_success_timestamp_seconds: name"),
+            ("[queries.q]\nsql = \"DELETE FROM ip_pool\"\n".to_string(), "queries.q.sql: must begin with SELECT or WITH"),
+            ("[queries.q]\nsql = \"SELECT 1 AS value WHERE ? = 1\"\n".to_string(), "queries.q.sql: takes no parameter"),
+            ("[queries.q]\nsql = \"SELECT 1 AS value WHERE ?1 = 1\"\n".to_string(), "queries.q.sql: takes no parameter"),
+            (format!("[queries.q]\n{sql}interval_ms = 1000\n"), "queries.q.interval_ms"),
+            (format!("[queries.q]\n{sql}timeout_ms = 60000\n"), "queries.q.timeout_ms"),
+            (format!("[queries.q]\n{sql}timeout_ms = 0\n"), "queries.q.timeout_ms"),
+            (format!("[queries.q]\n{sql}max_rows = 0\n"), "queries.q.max_rows"),
+            (format!("[queries.q]\n{sql}max_rows = 10001\n"), "queries.q.max_rows"),
+            (format!("[queries.q]\n{sql}labels = [\"pool\", \"pool\"]\n"), "queries.q.labels"),
+            (format!("[queries.q]\n{sql}labels = [\"value\"]\n"), "queries.q.labels"),
+            (format!("[queries.q]\n{sql}labels = [\"__name\"]\n"), "queries.q.labels"),
+            (format!("[queries.q]\n{sql}labels = [\"1st\"]\n"), "queries.q.labels"),
+            (format!("[queries.q]\n{sql}labels = [\"a-b\"]\n"), "queries.q.labels"),
+            (format!("[queries.q]\n{sql}value = \"\"\n"), "queries.q.value"),
+            ("[queries.q]\nhelp = \"no sql\"\n".to_string(), "sql"),
+        ] {
+            let (_dir, result) = load_str(&base(&format!("{RADIUS_CLIENT}{section}")));
+            let error = result.err().ok_or_else(|| format!("{section:?} loaded"))?.to_string();
+            // The spec says what a message starts with, after the path of the file.
+            let said = error.split_once(": ").map_or(error.as_str(), |(_, said)| said);
+            assert!(said.starts_with(message) || error.contains(message) && message == "sql", "{section:?}: {error}");
+        }
+        Ok(())
     }
 
     /// `[databases.<name>]`: defaults, the port of each kind, a password file.

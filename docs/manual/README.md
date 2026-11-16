@@ -46,8 +46,8 @@
 | [9. 從舊系統搬帳號](09-migrate-users.md) | 舊的密碼雜湊原樣搬過來，之後逐步換成新格式 | 各種密碼格式、名稱正規化、`[accounts]` | `migrate-users/` |
 | [10. 帳號在別的系統](10-external-api.md) | 每次登入用 HTTPS 問會員系統的 API | `[lua.http]`、`http_request`、`verifies_password` | `external-api/` |
 | [13. Kubernetes](13-kubernetes.md) | 三個節點跑成 StatefulSet，NAS 經負載平衡器連入 | StatefulSet、headless Service、`/livez`、`/readyz` | `deploy/kubernetes/`（不在 scenarios 裡） |
-| [14. 位址池](14-ip-pool.md) | 登入時從資料表的池分配 IP，計費確認與釋放，黏著，過期回收 | `all_accept` 串接、`lua` 處理器、`sql_execute` 比較後更新、請求觸發的回收 | `ip-pool/` |
-| [15. 用戶資源控制](15-usage-control.md) | 方案：同時連線數與一段時間的流量上限，超過降速或拒絕 | `all_accept` 串接、連線位的比較後更新、`Acct-*-Gigawords` 流量加總、請求觸發的回收 | `usage-control/` |
+| [14. 位址池](14-ip-pool.md) | 登入時從資料表的池分配 IP，計費確認與釋放，黏著，過期回收，使用率指標 | `all_accept` 串接、`lua` 處理器、`sql_execute` 比較後更新、請求觸發的回收 | `ip-pool/` |
+| [15. 用戶資源控制](15-usage-control.md) | 方案：同時連線數與一段時間的流量上限，超過降速或拒絕，連線位使用率指標 | `all_accept` 串接、連線位的比較後更新、`Acct-*-Gigawords` 流量加總、請求觸發的回收 | `usage-control/` |
 | [16. 線路身分認證](16-line-identity.md) | 依 BNG 轉送的 Option 82（circuit-id、remote-id）認證，回方案；可選的 MAC 鎖 | 沒有 `[auth]` 的最上層腳本、RFC 4679 屬性、正規化、比較後更新綁定 | `line-identity/` |
 | [17. 固定位址與前綴](17-static-ip.md) | 依用戶回固定的 IPv4、路由網段（`Framed-Route`）、IPv6 的 /64 與委派前綴，沒有的回池名稱；唯一索引防重複 | `all_accept` 串接、`set_attr` 的字典檢查、唯一索引 | `static-ip/` |
 | [18. 速率屬性](18-rate-limit.md) | 同一個方案，依 BNG 的廠商送設定檔名稱或速率數值（五種風格） | `all_accept` 串接、`lua` 處理器的風格表、依 client 名稱選風格 | `rate-limit/` |

@@ -115,6 +115,52 @@ pub fn write_family(out: &mut String, name: &str, kind: &str, help: &str, sample
     }
 }
 
+/// A sample's value as text: a whole number without a fraction.
+fn sample_value(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
+    }
+}
+
+/// A HELP text on one line, as the text format wants it.
+fn help_text(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('\n', "\\n")
+}
+
+/// The families of `[queries]`: a gauge for each query, then the failures, the dropped rows and
+/// the time of the last success of all of them. None without a query.
+fn write_queries(out: &mut String, queries: &[Arc<crate::named_queries::QueryState>]) {
+    use crate::named_queries::Reason;
+    if queries.is_empty() {
+        return;
+    }
+    let snapshots: Vec<_> = queries.iter().map(|query| (query.name(), query.settings(), query.snapshot())).collect();
+    for (name, settings, snapshot) in &snapshots {
+        let help = if settings.help.is_empty() { format!("Rows of the named query {name}.") } else { help_text(&settings.help) };
+        let _ = writeln!(out, "# HELP rradius_query_{name} {help}\n# TYPE rradius_query_{name} gauge");
+        for sample in &snapshot.samples {
+            let labels: Vec<String> = settings.labels.iter().zip(&sample.labels).map(|(label, value)| format!("{label}=\"{}\"", label_value(value))).collect();
+            let labels = if labels.is_empty() { String::new() } else { format!("{{{}}}", labels.join(",")) };
+            let _ = writeln!(out, "rradius_query_{name}{labels} {}", sample_value(sample.value));
+        }
+    }
+    let failures: Vec<(String, u64)> = snapshots.iter().flat_map(|(name, _, snapshot)| Reason::ALL.map(|reason| (format!("{{query=\"{name}\",reason=\"{}\"}}", reason.name()), snapshot.failures[reason as usize]))).collect();
+    let dropped: Vec<(String, u64)> = snapshots
+        .iter()
+        .flat_map(|(name, _, snapshot)| [("null_value", snapshot.null_rows), ("over_limit", snapshot.over_limit_rows)].map(|(reason, value)| (format!("{{query=\"{name}\",reason=\"{reason}\"}}"), value)))
+        .collect();
+    let last: Vec<(String, u64)> = snapshots.iter().map(|(name, _, snapshot)| (format!("{{query=\"{name}\"}}"), snapshot.last_success)).collect();
+    let family = |out: &mut String, name: &str, kind: &str, help: &str, samples: Vec<(String, u64)>| {
+        let samples: Vec<(&str, u64)> = samples.iter().map(|(labels, value)| (labels.as_str(), *value)).collect();
+        write_family(out, name, kind, help, &samples);
+    };
+    family(out, "rradius_query_failures_total", "counter", "Failed runs of each named query, by reason: timeout (no answer in time), error (the database refused the statement or could not be reached) and shape (the rows lack a column or hold a value of a type a label or a value cannot be).", failures);
+    family(out, "rradius_query_dropped_rows_total", "counter", "Rows of the successful runs of each named query that are not in the gauge, by reason: null_value (the value column is NULL) and over_limit (beyond max_rows).", dropped);
+    family(out, "rradius_query_last_success_timestamp_seconds", "gauge", "The Unix time of the last successful run of each named query; 0 before the first.", last);
+}
+
 /// The families of `[databases]`; none without a database.
 fn write_external_databases(out: &mut String, databases: &crate::external_db::ExternalDatabases) {
     let all: Vec<(String, &crate::external_db::ExternalDatabase)> = databases.iter().map(|database| (label_value(database.name()), database.as_ref())).collect();
@@ -290,6 +336,8 @@ pub struct Metrics {
     accounting_log: std::sync::OnceLock<Arc<AccountingLogCounters>>,
     /// `[databases]`, once the server has opened them.
     databases: std::sync::OnceLock<crate::external_db::ExternalDatabases>,
+    /// `[queries]`, once the server has started their runs.
+    queries: std::sync::OnceLock<Vec<Arc<crate::named_queries::QueryState>>>,
 }
 
 /// The places RADIUS requests take while handled, over UDP or RadSec, and how many there are.
@@ -357,6 +405,17 @@ impl Metrics {
     /// Reports `databases` from now on. Only the first call counts.
     pub fn watch_databases(&self, databases: crate::external_db::ExternalDatabases) {
         let _ = self.databases.set(databases);
+    }
+
+    /// Reports `queries`, in the order given, from now on. Only the first call counts; with no
+    /// queries nothing is reported.
+    pub fn watch_queries(&self, queries: Vec<Arc<crate::named_queries::QueryState>>) {
+        let _ = self.queries.set(queries);
+    }
+
+    /// The queries `watch_queries` was given.
+    pub fn queries(&self) -> &[Arc<crate::named_queries::QueryState>] {
+        self.queries.get().map_or(&[], Vec::as_slice)
     }
 
     /// The counters of an EAP method, by its EAP type.
@@ -457,6 +516,7 @@ impl Metrics {
         if let Some(databases) = self.databases.get() {
             write_external_databases(&mut out, databases);
         }
+        write_queries(&mut out, self.queries());
         write_family(&mut out, "rradius_script_http_requests_total", "counter", "http_request calls by result.", &[
             ("{result=\"ok\"}", self.script_http_ok.get()),
             ("{result=\"timeout\"}", self.script_http_timeout.get()),
@@ -788,6 +848,66 @@ mod tests {
         let none_required = Metrics::default();
         none_required.watch_databases(databases);
         assert_eq!(readiness(&none_required), Readiness::Ready);
+        Ok(())
+    }
+
+    /// spec Query Gauges and Query Failure Reporting: the gauge of each query, the families of the
+    /// failures from the start at 0, escaped labels and help, and nothing without `[queries]`.
+    #[tokio::test]
+    async fn test_query_metrics() -> Result<(), String> {
+        use crate::config::QuerySettings;
+        use crate::named_queries::QueryState;
+        assert!(!Metrics::default().render().contains("rradius_query_"), "no queries, no families");
+        let none = Metrics::default();
+        none.watch_queries(Vec::new());
+        assert!(!none.render().contains("rradius_query_"));
+
+        let db = crate::test_support::test_db();
+        db.execute("CREATE TABLE mq_pools (pool TEXT, state TEXT, n INTEGER, x REAL)").await?;
+        db.execute("INSERT INTO mq_pools VALUES ('residential', 'free', 8, 0.25), ('residential', 'reserved', 2, 1.5), ('we\"ird\\one', 'free', 3, 2.0)").await?;
+        let settings = |sql: &str, labels: &[&str], value: &str, help: &str| QuerySettings {
+            sql: sql.to_string(),
+            help: help.to_string(),
+            labels: labels.iter().map(|label| label.to_string()).collect(),
+            value: value.to_string(),
+            interval: std::time::Duration::from_secs(30),
+            timeout: std::time::Duration::from_secs(5),
+            max_rows: 200,
+        };
+        let usage = Arc::new(QueryState::new("pool_usage", settings("SELECT pool, state, n FROM mq_pools ORDER BY rowid", &["pool", "state"], "n", "Addresses by pool\nand state")));
+        let ratio = Arc::new(QueryState::new("ratio", settings("SELECT x FROM mq_pools WHERE n = 2", &[], "x", "")));
+        let broken = Arc::new(QueryState::new("broken", settings("SELECT n FROM mq_no_such_table", &[], "n", "")));
+        for query in [&usage, &ratio, &broken] {
+            let _ = query.run_once(&db).await;
+        }
+        let metrics = Metrics::default();
+        metrics.watch_queries(vec![broken.clone(), usage.clone(), ratio.clone()]);
+        let rendered = metrics.render();
+        let expect = |text: &str| -> Result<(), String> { if rendered.contains(text) { Ok(()) } else { Err(format!("{text:?} is not in\n{rendered}")) } };
+        expect("# HELP rradius_query_pool_usage Addresses by pool\\nand state\n# TYPE rradius_query_pool_usage gauge\n")?;
+        expect("rradius_query_pool_usage{pool=\"residential\",state=\"free\"} 8\n")?;
+        expect("rradius_query_pool_usage{pool=\"residential\",state=\"reserved\"} 2\n")?;
+        expect("rradius_query_pool_usage{pool=\"we\\\"ird\\\\one\",state=\"free\"} 3\n")?;
+        expect("# HELP rradius_query_ratio Rows of the named query ratio.\n# TYPE rradius_query_ratio gauge\nrradius_query_ratio 1.5\n")?;
+        // A query that has failed has the family and no sample.
+        expect("# TYPE rradius_query_broken gauge\n# HELP rradius_query_pool_usage")?;
+        // Every reason of every query from the start, whatever has happened.
+        for query in ["broken", "pool_usage", "ratio"] {
+            for reason in ["timeout", "error", "shape"] {
+                expect(&format!("rradius_query_failures_total{{query=\"{query}\",reason=\"{reason}\"}} "))?;
+            }
+            for reason in ["null_value", "over_limit"] {
+                expect(&format!("rradius_query_dropped_rows_total{{query=\"{query}\",reason=\"{reason}\"}} "))?;
+            }
+            expect(&format!("rradius_query_last_success_timestamp_seconds{{query=\"{query}\"}} "))?;
+        }
+        expect("rradius_query_failures_total{query=\"broken\",reason=\"error\"} 1\n")?;
+        expect("rradius_query_last_success_timestamp_seconds{query=\"broken\"} 0\n")?;
+        assert!(!rendered.contains("rradius_query_last_success_timestamp_seconds{query=\"pool_usage\"} 0\n"), "a success has a time");
+        // The text format: every line is a comment or a sample.
+        for line in rendered.lines().filter(|line| line.contains("rradius_query_")) {
+            assert!(line.starts_with("# HELP rradius_query_") || line.starts_with("# TYPE rradius_query_") || line.starts_with("rradius_query_"), "{line}");
+        }
         Ok(())
     }
 

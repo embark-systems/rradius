@@ -117,6 +117,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | `[radius.accounting_spool]` | 否 | 資料庫失敗時先把計費寫到本機（2.11 節） |
 | `[radius.accounting_log]` | 否 | 每一筆回覆過的計費寫成一行 JSON 到文字檔（2.18 節） |
 | `[sessions]` | 否 | `session list`、`session show` 查線上 session 用的 SQL（2.19 節） |
+| `[queries.<名稱>]` | 否 | 命名的唯讀查詢：每個節點在背景定期執行，結果成為 gauge 指標，也能用 `query` 指令執行一次（2.20 節） |
 | `[radius.eap]` | 否 | EAP，給 802.1X 和 WPA-Enterprise 用（2.12 節） |
 | `[tacacs]` | 否 | 啟用 TACACS+ |
 | `[metrics]` | 否 | 啟用統計端點（2.8 節） |
@@ -792,6 +793,10 @@ port = 9812         # 預設
 | `rradius_accounting_log_failures_total{stage="open\|write"}` | 計費紀錄檔重新開檔（`open`）或寫入（`write`）失敗的次數；`write` 每次是一批 |
 | `rradius_netlogon_logons_total`、`rradius_netlogon_channel_setups_total`、`rradius_netlogon_open_connections` | `netlogon` 處理器（3.7 節） |
 | `rradius_external_db_failures_total{database="...",reason="unavailable\|mistake\|unknown"}` | 每個外部資料庫失敗的呼叫（2.17 節），`sql` 處理器和 `db_query`、`db_execute` 都算。`unavailable` 是資料庫無法使用（含逾時），`mistake` 是陳述式或值的錯（含送出前就被拒的，例如值的數量不符），`unknown` 是其他。`db_query` 寫了不存在的名稱不算；請求的時間（`[lua].query_timeout_ms`）已經用完後才呼叫的 `db_query`、`db_execute` 沒有送到資料庫，也不算；`required_for_ready` 的檢查也不算。沒有 `[databases]` 時不輸出 |
+| `rradius_query_<名稱>{<標籤>="..."}` | 有 `[queries.<名稱>]` 時，每個查詢一個 gauge：查詢最後一次成功的結果，每一列一個樣本，數值是 `value` 欄位，標籤是 `labels` 的欄位（2.20 節） |
+| `rradius_query_failures_total{query="...",reason="timeout\|error\|shape"}` | 每個查詢失敗的次數：`timeout` 逾時，`error` 資料庫拒絕或連不上，`shape` 結果的欄位或型別不對。失敗時 gauge 保留上一次的值。沒有 `[queries]` 時不輸出 |
+| `rradius_query_dropped_rows_total{query="...",reason="null_value\|over_limit"}` | 成功的執行中沒有進 gauge 的列：數值欄位是 NULL，或超過 `max_rows`。沒有 `[queries]` 時不輸出 |
+| `rradius_query_last_success_timestamp_seconds{query="..."}` | 每個查詢最後一次成功的時間（Unix 秒），還沒有成功過是 0。沒有 `[queries]` 時不輸出 |
 | `rradius_external_db_connections{database="...",state="in_use\|idle"}` | 每個外部資料庫連線池的連線：`in_use` 是交給呼叫正在用的，加上正在建立的（還沒連上的連線也佔一個名額），`idle` 是開著閒置的。不含 `required_for_ready` 的檢查連線 |
 | `rradius_external_db_connections_max{database="..."}` | 連線池的上限，也就是 `pool_size`。`in_use` 一直等於它時，呼叫在排隊等連線 |
 | `rradius_external_db_reachable{database="..."}` | 只有設了 `required_for_ready` 的資料庫才有：檢查連得上是 1，否則 0（2.17 節） |
@@ -826,6 +831,7 @@ rradius-server status [--config <path>] [--watch] [--json] [--cluster]
 | RADIUS（`radius`） | 登入與計費請求、四種回應、重送、五種丟棄原因的每秒量，正在處理的請求數與上限，以及這段時間登入與計費回應時間的 p50、p99（毫秒） |
 | Busiest RADIUS clients（`radius_top_clients`） | 這段時間回應最多的 5 個 client 與它們的每秒回應量 |
 | External databases（`databases`） | 有 `[databases]` 時才有。每個資料庫（依名稱）的連線使用中、閒置、上限（`<名稱>.in_use`、`.idle`、`.max`），三類失敗的每秒量（`<名稱>.failures_unavailable`、`.failures_mistake`、`.failures_unknown`），以及設了 `required_for_ready` 時連不連得上（`<名稱>.reachable`，`yes` 或 `no`） |
+| Queries（`queries`） | 有 `[queries]` 時才有。每個查詢（依名稱）最後一次成功是幾秒前（`<名稱>.last_success_age_seconds`，還沒有成功過是 `never`）、現在有幾個樣本（`<名稱>.rows`）、失敗的每秒量與總數（`<名稱>.failures`，三種原因加總） |
 | TACACS+（`tacacs`） | 開著的連線、三種請求與格式錯誤的每秒量，以及三種請求這段時間回應時間的 p50、p99（毫秒） |
 | EAP（`eap`） | 進行中的 EAP 對話 |
 | Accounting spool（`acct_spool`） | 等待重放的位元組、重放、放棄與沒寫入暫存的每秒量 |
@@ -923,7 +929,7 @@ docker compose kill -s HUP rradius
 收到 SIGHUP 時重讀設定檔（包含 `secret_file`）並套用，結果寫一行到記錄：`configuration reloaded from ...` 或 `reload failed, keeping the running configuration: ...`。
 
 - **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）、`[lua.http]`，以及 `[radius.accounting_log]` 的 `file`（重新開檔，見 2.18 節）。
-- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
+- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[queries]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
 - **全部成功才會套用。** 檢查和啟動時相同，任何一項有誤就全部維持原狀，程序繼續服務；修正後再送一次 SIGHUP 即可。
 - 進行中的請求用舊內容做完，不會中斷。已開啟的 TACACS+ 連線不會因此斷線，但下一個封包會依新名單處理：client 被移除時關閉連線，密碼更換後要用新密碼。
 - `auto` 學到的值和重送快取會保留。每次重新載入都會重建 LDAP 連線池。
@@ -1446,6 +1452,46 @@ rradius-server session list --json
 - **要讓企業版的 `disconnect --user`、`coa --user` 用同一條 `show`，** 結果要有 `nas` 和 `session_id` 兩個欄位：`nas` 是 client 的名稱，或符合某個 client 的位址（和 `[radius.coa]` 的 `session_query` 相同的約定，見企業版文件）。可以另外選 `username`，沒選時用指令列的名稱。Session ID 只在同一台 NAS 內唯一，所以兩個欄位要一起用。
 - **`[databases]` 的外部資料庫這一版不支援：** 指令只查叢集的資料庫。
 - **指令是讀取，** 不會踢人；踢人和送 CoA 在企業版（`disconnect`、`coa` 指令，見企業版文件的 4.8 節）。
+
+### 2.20 命名查詢 `[queries]`
+
+核心不知道你的資料表：位址池、連線位、方案這些是範例裡的表，營運商會改名或換掉。要監控它們（池還剩幾個位址、有幾個連線位被佔住），在設定檔寫唯讀的 SQL，每個節點在背景定期執行，結果成為 Prometheus 的 gauge；同一份定義也能用 `rradius-server query` 執行一次。
+
+```toml
+[queries.pool_usage]
+sql = "SELECT pool, state, count(*) AS addresses FROM ip_pool GROUP BY pool, state"
+help = "Addresses of each pool by state."
+labels = ["pool", "state"]
+value = "addresses"
+```
+
+| 欄位 | 說明 |
+| --- | --- |
+| 名稱（`[queries.<名稱>]` 的 `<名稱>`） | 小寫英文字母、數字與底線，以字母開頭；指標名是 `rradius_query_<名稱>`。`list`（指令）和 `failures_total`、`dropped_rows_total`、`last_success_timestamp_seconds`（會和彙總的指標撞名）不能用 |
+| `sql` | 必填。以 SELECT 或 WITH 開頭，沒有參數（`?`、`?1`） |
+| `help` | 指標的 HELP 說明；沒設時是一句寫著查詢名稱的文字 |
+| `labels` | 值當作標籤的欄位，標籤名稱就是欄位名稱，欄位必須是文字或整數；不能重複，也不能是數值欄位。預設沒有標籤 |
+| `value` | 數值欄位，整數或實數。預設 `value`。這個欄位是 NULL 的列會略過 |
+| `interval_ms` | 一次執行開始到下一次開始的間隔，毫秒，至少 5000，預設 30000 |
+| `timeout_ms` | 一次執行最久多久，毫秒，不能大於 `interval_ms`，預設 5000 |
+| `max_rows` | 一次執行最多有幾列成為樣本，1 到 10000，預設 200；多的丟掉，計入 `rradius_query_dropped_rows_total`。限制的是樣本數，不是資料庫做的工作：列是資料庫全部回傳之後才截斷，沒有 `GROUP BY` 的大結果要在 SQL 裡自己 `LIMIT` |
+
+- **在背景執行：** 伺服器啟動、資料庫就緒後立即跑第一次，之後每個間隔一次，對**這個節點自己的副本**讀（和 `sql_query` 一樣）。上一次還沒跑完不會開始下一次；逾時（`timeout_ms`）只是不再等，資料庫那邊的讀取可能還在跑，所以查詢要有索引、要快。`/metrics` 只讀存好的結果，不查資料庫，所以不會拖慢指標端點。
+- **結果的形狀：** 每一列是 gauge 的一個樣本。同一組標籤不能出現在兩列（會算 `shape` 失敗），所以 SQL 要用 `GROUP BY` 或讓標籤欄位唯一。
+- **失敗時：** 逾時、資料庫拒絕、結果的欄位名稱或型別不對，這一次不更新，**保留上一次成功的值**，`rradius_query_failures_total{query,reason}` 加一，記一行 WARN（同一個查詢、同一個原因一分鐘最多一行）。過期的值用 `rradius_query_last_success_timestamp_seconds` 判斷：`time() - rradius_query_last_success_timestamp_seconds{query="pool_usage"} > 120` 就是兩分鐘沒有成功了。
+- **叢集：** 每個節點都讀自己的副本、輸出同樣的數字。Prometheus 的式子要用 `max()`，不要用 `sum()`（會把同一個數字重複算 N 次）：`max by (pool) (rradius_query_pool_usage{state="free"})`。
+- **成本：** 查詢要有索引可用，不然會掃整個表（SQLite 沒有統計資料時，索引只涵蓋條件的一部分可能改走主鍵）；用 `EXPLAIN QUERY PLAN` 檢查。範例的兩個查詢（第 14、15 章）都走覆蓋索引，在 11 萬位址、20 萬連線位的資料上每次不到 5 毫秒。對 11 萬位址的位址池範例送 64 並行的登入各跑 60 秒（每種設定 3 次，7 個 CPU 的伺服器），不開查詢的中位數是每秒 19,125 個登入，開了（30 秒或 5 秒間隔）是 19,254 和 19,251，沒有可量到的差別（p50 都約 2.9 毫秒）。
+- **要重啟才會套用：** 新增、移除或修改 `[queries]` 都要重啟（2.9 節）。
+
+**指令：**
+
+```bash
+rradius-server query list --config /etc/rradius/rradius.toml        # 有哪些查詢：名稱、說明、間隔、SQL（換行寫成 \n）
+rradius-server query pool_usage --config /etc/rradius/rradius.toml  # 執行一次，印成表格
+rradius-server query pool_usage --json                              # 同一份結果，JSON 陣列
+```
+
+`query <名稱>` 經叢集的 API 埠**即時**執行那個查詢，不讀快取，所以不受 `max_rows` 限制，也看得到 NULL；名稱不在設定檔、設定檔有誤、連不上叢集是非零的結束狀態和一行說明（和 `session` 指令相同）。`status` 有 Queries 段落（2.8 節）。
 
 ## 3. 認證串接 `[auth]`
 

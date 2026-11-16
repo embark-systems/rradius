@@ -51,3 +51,12 @@ port = 9812
 [sessions]
 list = "SELECT username, nas, session_id, ip, updated FROM ip_pool WHERE state = 'active' AND expires > strftime('%s', 'now') ORDER BY ip"
 show = "SELECT username, nas, session_id, ip, updated FROM ip_pool WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY ip"
+
+# 監控：每個池、每個狀態的位址數，成為指標 rradius_query_pool_usage{pool,state}（free 是空閒、
+# reserved 是預留、active 是在用）。每個節點每 30 秒對自己的副本查一次；說明見手冊第 14 章「監控」。
+# 這個查詢走 ip_pool_state 索引，不掃整個表。
+[queries.pool_usage]
+sql = "SELECT pool, state, count(*) AS addresses FROM ip_pool GROUP BY pool, state"
+help = "Addresses of each pool by state: free, reserved or active."
+labels = ["pool", "state"]
+value = "addresses"
