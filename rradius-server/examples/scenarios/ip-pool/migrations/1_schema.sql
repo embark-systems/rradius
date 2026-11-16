@@ -14,6 +14,7 @@ CREATE TABLE subscribers (
 CREATE TABLE ip_pool (
   pool TEXT NOT NULL,
   ip TEXT NOT NULL,
+  n INTEGER NOT NULL,                     -- 位址在池裡的序號（同一個池內從 1 起連續編號；不連續會讓隨機起點集中）；挑位址靠它走索引，不用掃全部空閒列
   state TEXT NOT NULL DEFAULT 'free' CHECK (state IN ('free', 'reserved', 'active')),
   username TEXT,
   session_id TEXT,
@@ -24,8 +25,10 @@ CREATE TABLE ip_pool (
   released INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (pool, ip)
 );
-CREATE INDEX ip_pool_user ON ip_pool (username);
-CREATE INDEX ip_pool_state ON ip_pool (pool, state);
+-- 索引的欄位要涵蓋查詢的條件：SQLite 沒有統計時，條件只用到索引前面幾欄的話，可能改走主鍵掃整個池。
+CREATE INDEX ip_pool_user ON ip_pool (username, pool, state);
+CREATE INDEX ip_pool_state ON ip_pool (pool, state, n);
+CREATE INDEX ip_pool_last_user ON ip_pool (last_user, pool, state, released);
 CREATE INDEX ip_pool_expiry ON ip_pool (state, expires);
 
 -- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual/11-operations.md）。

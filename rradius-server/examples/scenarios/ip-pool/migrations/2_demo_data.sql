@@ -12,7 +12,8 @@ INSERT INTO subscribers (username, password, pool, enabled) VALUES
   ('hank', 'hank-password', 'business', 1),
   ('erin', 'erin-password', 'residential', 0);
 
-INSERT INTO ip_pool (pool, ip) VALUES
-  ('residential', '10.77.0.2'), ('residential', '10.77.0.3'), ('residential', '10.77.0.4'), ('residential', '10.77.0.5'),
-  ('residential', '10.77.0.6'), ('residential', '10.77.0.7'), ('residential', '10.77.0.8'), ('residential', '10.77.0.9'),
-  ('business', '10.88.0.2'), ('business', '10.88.0.3'), ('business', '10.88.0.4');
+-- n 是位址在池裡的序號，新增位址時接著往下編。
+INSERT INTO ip_pool (pool, ip, n) VALUES
+  ('residential', '10.77.0.2', 1), ('residential', '10.77.0.3', 2), ('residential', '10.77.0.4', 3), ('residential', '10.77.0.5', 4),
+  ('residential', '10.77.0.6', 5), ('residential', '10.77.0.7', 6), ('residential', '10.77.0.8', 7), ('residential', '10.77.0.9', 8),
+  ('business', '10.88.0.2', 1), ('business', '10.88.0.3', 2), ('business', '10.88.0.4', 3);

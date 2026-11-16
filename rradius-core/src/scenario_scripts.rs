@@ -313,7 +313,7 @@ async fn test_member_api_script() -> Result<(), String> {
 
 // ---- The address pool of chapter 14 ----
 
-const POOL_TABLES: [&str; 6] = ["subscribers", "ip_pool", "housekeeping", "ip_pool_user", "ip_pool_state", "ip_pool_expiry"];
+const POOL_TABLES: [&str; 7] = ["subscribers", "ip_pool", "housekeeping", "ip_pool_user", "ip_pool_state", "ip_pool_expiry", "ip_pool_last_user"];
 
 /// The pool's schema and demo data under `prefix`, with the two scripts.
 struct Pool {
@@ -430,6 +430,25 @@ async fn test_ip_pool_at_the_same_time() -> Result<(), String> {
     assert!(refused.iter().all(|(_, ip, _)| ip.is_none()), "no address for the refused");
     assert_eq!(pool.count("reserved").await, 8);
     assert_eq!(pool.count("free").await, 3, "the business pool is untouched");
+    Ok(())
+}
+
+/// Only the lowest and the highest address are free: whatever start the pick draws, both are found,
+/// and the third user finds the pool used up.
+#[tokio::test]
+async fn test_ip_pool_finds_free_addresses_at_both_ends() -> Result<(), String> {
+    let pool = Pool::new("ipe").await;
+    pool.execute("UPDATE POOL SET state = 'reserved', username = 'other', expires = 4102444800 WHERE pool = 'residential' AND n NOT IN (1, 8)").await;
+    let mut given = Vec::new();
+    for user in ["alice", "bob"] {
+        let (outcome, ip, _) = pool.allocate(user).await;
+        assert_eq!(outcome, Outcome::Accept, "{user} gets one of the two free addresses");
+        given.push(ip.ok_or("no address given")?);
+    }
+    given.sort();
+    assert_eq!(given, ["10.77.0.2", "10.77.0.9"], "the lowest and the highest");
+    let (outcome, _, _) = pool.allocate("carol").await;
+    assert_eq!(outcome, Outcome::Reject, "nothing left for the third");
     Ok(())
 }
 
