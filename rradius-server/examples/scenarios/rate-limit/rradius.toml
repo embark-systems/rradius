@@ -1,0 +1,69 @@
+# 速率（固網寬頻）：同一個方案，依 BNG 的廠商送不同的速率屬性。
+# 密碼由 sql 處理器驗，速率屬性由 lua 處理器依方案與 client 的風格回。
+# 說明：docs/manual/18-rate-limit.md
+#
+#   cd rradius-server
+#   cargo run --release -- server --config examples/scenarios/rate-limit/rradius.toml
+#
+# 相對路徑都以這個檔案所在的目錄為準。
+
+dictionary = "../../../../share/dictionary"
+
+# 有 [auth] 時認證交給下面的串接；這個腳本只處理計費（一律回覆）。
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+# all_accept：依序執行，任一個拒絕就停。先驗密碼，再回速率屬性。
+[auth]
+policy = "all_accept"
+
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM subscribers WHERE username = ? AND enabled = 1"
+
+[[auth.handlers]]
+type = "lua"
+script = "rate.lua"
+
+[radius]
+bind = "127.0.0.1"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+# 每個 BNG 一個 client。回哪一種屬性看 nas_styles 表裡這個 client 的風格；
+# 名稱要和那張表的 client 欄位一樣。沒有列在表裡的 client 回 Filter-Id。
+[[radius.clients]]
+name = "bng-default"
+address = "127.0.0.1"
+secret_file = "localhost.secret"
+
+[[radius.clients]]
+name = "bng-nokia"
+address = "10.70.0.1"
+secret_file = "nokia.secret"
+
+[[radius.clients]]
+name = "bng-mikrotik"
+address = "10.70.0.2"
+secret_file = "mikrotik.secret"
+
+[[radius.clients]]
+name = "bng-wispr"
+address = "10.70.0.3"
+secret_file = "wispr.secret"
+
+[[radius.clients]]
+name = "bng-erx"
+address = "10.70.0.4"
+secret_file = "erx.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812

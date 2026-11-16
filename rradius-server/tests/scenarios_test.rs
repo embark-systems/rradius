@@ -383,6 +383,74 @@ fn test_static_ip() -> TestResult {
     Ok(())
 }
 
+/// The sub-attribute `sub_type` of the vendor-specific attributes of `vendor` in an answer.
+fn vendor_attribute(answer: &RadiusPacket, vendor: u32, sub_type: u8) -> Option<Vec<u8>> {
+    for (attr_type, value) in &answer.attributes {
+        if *attr_type != 26 || value.len() < 6 || value[..4] != vendor.to_be_bytes() {
+            continue;
+        }
+        let mut rest = &value[4..];
+        while rest.len() >= 2 && rest[1] as usize >= 2 && rest[1] as usize <= rest.len() {
+            if rest[0] == sub_type {
+                return Some(rest[2..rest[1] as usize].to_vec());
+            }
+            rest = &rest[rest[1] as usize..];
+        }
+    }
+    None
+}
+
+/// Chapter 18: the same plan, as the BNG's own attributes: the style comes from the RADIUS client
+/// that asked, here by moving each client's address to 127.0.0.1 in turn.
+#[test]
+fn test_rate_limit() -> TestResult {
+    let text_of = |value: Option<Vec<u8>>| value.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let number_of = |value: Option<Vec<u8>>| value.and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()).map(u32::from_be_bytes);
+    // (client's address in the configuration, its secret file, its style)
+    for (address, secret_file, style) in [("127.0.0.1", "localhost.secret", "profile"), ("10.70.0.1", "nokia.secret", "alc_sla"), ("10.70.0.2", "mikrotik.secret", "mikrotik"), ("10.70.0.3", "wispr.secret", "wispr"), ("10.70.0.4", "erx.secret", "erx")] {
+        let mut server = Server::start(SCENARIOS, "rate-limit", "rradius.toml", |config| {
+            if address == "127.0.0.1" {
+                return config;
+            }
+            // The default client (the first with this address) steps aside for the one that takes 127.0.0.1.
+            config.replacen("address = \"127.0.0.1\"", "address = \"127.0.0.9\"", 1).replacen(&format!("address = \"{address}\""), "address = \"127.0.0.1\"", 1)
+        });
+        server.secret = secret_of(SCENARIOS, "rate-limit", secret_file);
+        let bob = server.pap("bob", "bob-password");
+        assert_eq!(bob.code, ACCESS_ACCEPT, "{secret_file}: {}", server.stderr());
+        assert_eq!(number(&bob, 85), Some(300), "{secret_file}: Acct-Interim-Interval");
+        match style {
+            "profile" => assert_eq!(text(&bob, 11).as_deref(), Some("fiber-500"), "Filter-Id"),
+            "alc_sla" => {
+                assert_eq!(text_of(vendor_attribute(&bob, 6527, 13)).as_deref(), Some("fiber-500"), "Alc-SLA-Prof-Str");
+                assert_eq!(text(&bob, 11), None, "no Filter-Id for this style");
+            }
+            "mikrotik" => assert_eq!(text_of(vendor_attribute(&bob, 14988, 8)).as_deref(), Some("250000k/500000k"), "Mikrotik-Rate-Limit"),
+            "wispr" => {
+                assert_eq!(number_of(vendor_attribute(&bob, 14122, 8)), Some(500_000_000), "WISPr-Bandwidth-Max-Down");
+                assert_eq!(number_of(vendor_attribute(&bob, 14122, 7)), Some(250_000_000), "WISPr-Bandwidth-Max-Up");
+            }
+            "erx" => {
+                assert_eq!(text_of(vendor_attribute(&bob, 4874, 10)).as_deref(), Some("fiber-500-up"), "ERX-Ingress-Policy-Name");
+                assert_eq!(text_of(vendor_attribute(&bob, 4874, 11)).as_deref(), Some("fiber-500-down"), "ERX-Egress-Policy-Name");
+            }
+            other => return Err(format!("the test does not know the style {other}").into()),
+        }
+        // Not accepted: no rate attributes. A plan that is not there: refused, and the log says whose.
+        let wrong = server.pap("bob", "wrong");
+        assert_eq!(wrong.code, ACCESS_REJECT);
+        assert_eq!(text(&wrong, 11), None);
+        if secret_file == "localhost.secret" {
+            assert_eq!(server.pap("dave", "dave-password").code, ACCESS_REJECT, "plan missing");
+            let log = server.wait_for_log("rate limit: the plan of dave does not exist");
+            assert!(log.contains("rate limit: the plan of dave does not exist"), "{log}");
+            assert_eq!(server.pap("erin", "erin-password").code, ACCESS_REJECT, "disabled");
+        }
+        assert!(!server.stderr().contains("Lua script error"), "{secret_file}: {}", server.stderr());
+    }
+    Ok(())
+}
+
 /// Chapter 6: PAP login against the bcrypt hashes, authorization by role, and accounting.
 #[test]
 fn test_device_admin() {
