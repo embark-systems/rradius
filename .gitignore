@@ -19,5 +19,5 @@ rradius-server/benchmarks/eap-certs/
 # Created by docker/init-secrets.sh
 docker/secrets/
 
-# Built by packaging/release.sh
+# Built by packages/tarball/release.sh
 dist/

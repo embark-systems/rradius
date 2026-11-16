@@ -1,5 +1,5 @@
 # License check of every dependency: `cargo deny --locked check licenses`, here and with
-# `--manifest-path rradius-server/fuzz/Cargo.toml`. packaging/release.sh runs it before it
+# `--manifest-path rradius-server/fuzz/Cargo.toml`. packages/tarball/release.sh runs it before it
 # packages anything. Only licenses are checked; advisories, bans and sources are not.
 
 [licenses]

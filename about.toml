@@ -1,4 +1,4 @@
-# The third-party license lists of the release archives, made by packaging/release.sh with
+# The third-party license lists of the release archives, made by packages/tarball/release.sh with
 # cargo-about for each program and platform. `accepted` is deny.toml's `allow`: change both.
 accepted = [
     "Apache-2.0",

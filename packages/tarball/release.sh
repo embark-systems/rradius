@@ -4,7 +4,7 @@
 # repository so that every relative path in them still holds. Everything packaged comes from one
 # commit, through `git archive`.
 #
-#   packaging/release.sh [--target macos-aarch64|linux-x86_64|linux-aarch64]... [--out <dir>] [--commit <rev>]
+#   packages/tarball/release.sh [--target macos-aarch64|linux-x86_64|linux-aarch64]... [--out <dir>] [--commit <rev>]
 #
 # Each archive is rradius-<version>-<platform>.tar.gz. Without --target it builds for this
 # machine. Linux builds use the Dockerfile's build stage. It needs cargo-about
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: packaging/release.sh [--target macos-aarch64|linux-x86_64|linux-aarch64]... [--out <dir>] [--commit <rev>]" >&2
+    echo "usage: packages/tarball/release.sh [--target macos-aarch64|linux-x86_64|linux-aarch64]... [--out <dir>] [--commit <rev>]" >&2
     exit 2
 }
 
@@ -218,7 +218,7 @@ package() {
     (cd "$work/src" && tar -cf - $docs) | tar -xf - -C "$stage"
     cp "$work/notices-$program-$target.md" "$stage/THIRD-PARTY-LICENSES.md"
     cp "$work/src/LICENSE" "$stage/LICENSE"
-    cp "$work/src/packaging/README.md" "$stage/README.md"
+    cp "$work/src/packages/tarball/README.md" "$stage/README.md"
     printf '%s %s\ncommit %s\n' "$program" "$version" "$hash" >"$stage/VERSION"
     if [ "${target#linux-}" != "$target" ]; then
         # The newest glibc symbol version the binary asks for is the oldest glibc it runs on.

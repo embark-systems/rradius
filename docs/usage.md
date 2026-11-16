@@ -40,7 +40,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 
 - **Linux 版的 glibc：** 它在 Debian 12（bookworm）建置，需要的版本寫在壓縮檔的 `VERSION` 和 `README.md`。0.1.0 需要 glibc 2.34 以上，2026-11-08 在 Debian 12、Ubuntu 22.04（2.35）和 Rocky Linux 9（2.34）上確認過可以執行。更舊的發行版請用 Docker 映像（1.1 節）或自己建置。
 - **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡；執行檔放到 `PATH` 裡。
-- **自己產生發行檔：** `packaging/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
+- **自己產生發行檔：** `packages/tarball/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
 
 - **啟動服務要用 `server` 子命令：** `rradius-server server [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`server` 後面接其他參數時印出它的用法，狀態碼 2。
 - **不帶參數只印用法：** `rradius-server`、`rradius-server help`（或 `-h`、`--help`）把所有子命令的用法印到 stdout，最後一行寫出預設設定檔，狀態碼 0，不讀設定檔也不啟動任何東西。參數不對時印出同樣的用法到 stderr，狀態碼 2；第一個參數是 `--config` 或 `--check` 時（舊的寫法）多一行提示改用 `server --config <path>` 或 `check --config <path>`，不會啟動也不會檢查。
@@ -48,7 +48,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 - 設定檔錯誤（欄位拼錯、缺少必填項、腳本語法錯誤等）一律在啟動時失敗，狀態碼 2，錯誤訊息會指出設定檔路徑與出錯的欄位或檔案。
 - 設定檔中的相對路徑都以設定檔所在目錄為準，與啟動時的工作目錄無關。
 - 建置不需要另外安裝 Lua 或 LuaJIT：Luau 會隨程式一起編譯。
-- **SQLite 以 `SQLITE_ENABLE_QPSG` 建置。** 資料庫用的 SQLite 隨程式一起編譯，repo 的 `.cargo/config.toml` 設了 `LIBSQLITE3_FLAGS="-DSQLITE_ENABLE_QPSG"`，在 repo 裡用 `cargo` 建置就會套用；`Dockerfile` 和 `packaging/release.sh` 也一樣。在 repo 外建置（例如只複製 `rradius-server/` 目錄）時要自己設這個環境變數；shell 裡已經有 `LIBSQLITE3_FLAGS` 時，`.cargo/config.toml` 不會蓋掉它，要自己把 `-DSQLITE_ENABLE_QPSG` 加進去。`packaging/release.sh` 會檢查發行檔裡的執行檔有沒有開，沒有就不打包。原因：SQLite 3.54 起，有 JOIN 又用參數篩選的查詢（例如寬頻情境的 `session-limit.lua`）、以及 `LIMIT ?`，每次綁定參數都會重新規劃，而每次讀取都會重新綁定。2026-11-08 在 Apple M4 Max 上量測寬頻情境的 PAP 登入（併發 64），沒有這個旗標時每秒約 17,000 次，有的話約 46,000–47,000 次，和 SQLite 3.53 相同。這個旗標讓查詢計畫不依參數值改變，只有在跑過 `ANALYZE`、有統計資料時才看得出差別，伺服器不會產生統計資料。`cargo test` 裡的 `test_sqlite_built_to_keep_query_plans` 會確認建出來的 SQLite 有開。
+- **SQLite 以 `SQLITE_ENABLE_QPSG` 建置。** 資料庫用的 SQLite 隨程式一起編譯，repo 的 `.cargo/config.toml` 設了 `LIBSQLITE3_FLAGS="-DSQLITE_ENABLE_QPSG"`，在 repo 裡用 `cargo` 建置就會套用；`Dockerfile` 和 `packages/tarball/release.sh` 也一樣。在 repo 外建置（例如只複製 `rradius-server/` 目錄）時要自己設這個環境變數；shell 裡已經有 `LIBSQLITE3_FLAGS` 時，`.cargo/config.toml` 不會蓋掉它，要自己把 `-DSQLITE_ENABLE_QPSG` 加進去。`packages/tarball/release.sh` 會檢查發行檔裡的執行檔有沒有開，沒有就不打包。原因：SQLite 3.54 起，有 JOIN 又用參數篩選的查詢（例如寬頻情境的 `session-limit.lua`）、以及 `LIMIT ?`，每次綁定參數都會重新規劃，而每次讀取都會重新綁定。2026-11-08 在 Apple M4 Max 上量測寬頻情境的 PAP 登入（併發 64），沒有這個旗標時每秒約 17,000 次，有的話約 46,000–47,000 次，和 SQLite 3.53 相同。這個旗標讓查詢計畫不依參數值改變，只有在跑過 `ANALYZE`、有統計資料時才看得出差別，伺服器不會產生統計資料。`cargo test` 裡的 `test_sqlite_built_to_keep_query_plans` 會確認建出來的 SQLite 有開。
 
 **只檢查設定：**
 

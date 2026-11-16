@@ -20,7 +20,7 @@ cd rradius-server
 ../target/release/rradius-server server --config examples/scenarios/quick-start/rradius.toml
 ```
 
-也可以用 Docker：先執行 `docker/init-secrets.sh`，再 `docker compose up --build`（單機）或用 `compose.cluster.yaml`（三台），見[使用文件 1.1 節](docs/usage.md#11-docker)。發行檔用 `packaging/release.sh` 產生，見 [`packaging/README.md`](packaging/README.md)。
+也可以用 Docker：先執行 `docker/init-secrets.sh`，再 `docker compose up --build`（單機）或用 `compose.cluster.yaml`（三台），見[使用文件 1.1 節](docs/usage.md#11-docker)。發行檔用 `packages/tarball/release.sh` 產生，見 [`packages/tarball/README.md`](packages/tarball/README.md)。
 
 ## 文件
 
