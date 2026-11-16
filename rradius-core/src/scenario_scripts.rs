@@ -27,6 +27,10 @@ const STATIC_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scen
 const RATE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/migrations/1_schema.sql");
 const RATE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/migrations/2_demo_data.sql");
 const RATE_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/rate.lua");
+const PREFIX_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/migrations/1_schema.sql");
+const PREFIX_DATA: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/migrations/2_demo_data.sql");
+const PREFIX_ALLOCATE: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/allocate.lua");
+const PREFIX_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/accounting.lua");
 const IP_POOL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
 const USAGE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/1_schema.sql");
 const USAGE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/2_demo_data.sql");
@@ -1107,5 +1111,502 @@ async fn test_rate_limit_wispr_upper_bound() -> Result<(), String> {
     }
     let (_, reply) = rates.ask("bng-wispr", "u-fits").await;
     assert_eq!(reply_number(&reply, "WISPr-Bandwidth-Max-Down"), Some(4_294_967_000.0));
+    Ok(())
+}
+
+// ---- The IPv6 prefix pool of chapter 19 ----
+
+const PREFIX_TABLES: [&str; 10] = ["subscribers", "prefix_pools", "prefix_leases", "housekeeping", "prefix_leases_user", "prefix_leases_prefix", "prefix_leases_expiry", "prefix_leases_nas", "prefix_leases_pool_state", "prefix_leases_released"];
+
+/// FNV-1a, 32 bits: what allocate.lua starts from, written here independently of the script.
+fn fnv1a32(text: &str) -> u32 {
+    text.bytes().fold(2166136261u32, |h, byte| (h ^ u32::from(byte)).wrapping_mul(16777619))
+}
+
+/// The prefix the pool (`base`, `dlen`) has as its `n`th, as the server writes an attribute's
+/// value as text (the address, compressed and in lower case, and the length): worked out here
+/// with 128-bit integers, not with the script's SQL.
+fn prefix_text(base: i64, dlen: u32, n: u64) -> String {
+    let high = (base as u64) | (n << (64 - dlen));
+    format!("{}/{dlen}", std::net::Ipv6Addr::from(u128::from(high) << 64))
+}
+
+/// The prefix pool's schema and demo data under `prefix`, with its two scripts.
+struct Prefixes {
+    prefix: &'static str,
+    allocate: String,
+    accounting: String,
+}
+
+impl Prefixes {
+    async fn new(prefix: &'static str) -> Prefixes {
+        apply(&renamed(PREFIX_SCHEMA, prefix, &PREFIX_TABLES)).await;
+        apply(&renamed(PREFIX_DATA, prefix, &PREFIX_TABLES)).await;
+        // The first request would reap the table; the tests that look at a reap ask for it.
+        apply(&format!("UPDATE {prefix}_housekeeping SET last_run = {}", now())).await;
+        Prefixes { prefix, allocate: renamed(PREFIX_ALLOCATE, prefix, &PREFIX_TABLES), accounting: renamed(PREFIX_ACCOUNTING, prefix, &PREFIX_TABLES) }
+    }
+
+    /// A pool of `plen` to `dlen`, and `users` (named `<pool>-<i>`) that belong to it.
+    async fn add_pool(&self, pool: &str, base: i64, plen: u32, dlen: u32, users: usize) -> Result<(), String> {
+        self.sql(&format!("INSERT INTO PREFIX_POOLS (pool, base, plen, dlen) VALUES ('{pool}', {base}, {plen}, {dlen})")).await?;
+        for i in 0..users {
+            self.sql(&format!("INSERT INTO SUBS (username, password, pool, enabled) VALUES ('{pool}-{i}', 'x', '{pool}', 1)")).await?;
+        }
+        Ok(())
+    }
+
+    /// The chain's lua handler for `user`: the outcome and the Delegated-IPv6-Prefix it gave.
+    async fn allocate(&self, user: &str) -> (Outcome, Option<String>, Vec<(String, AttrValue)>) {
+        let (outcome, attributes) = run(&self.allocate, "radius", "authentication", "nas-a", Some(user), vec![("User-Name", bytes(user))]).await;
+        let prefix = reply_text(&attributes, "Delegated-IPv6-Prefix");
+        (outcome, prefix, attributes)
+    }
+
+    /// An accounting packet from the NAS `nas` for `user`'s session `session`; the prefix is in it or not.
+    async fn account(&self, nas: &str, status: f64, user: &str, session: &str, prefix: Option<&str>) -> Outcome {
+        let mut attributes = vec![("User-Name", bytes(user)), ("Acct-Session-Id", bytes(session)), ("Acct-Status-Type", number(status)), ("NAS-IP-Address", bytes(nas))];
+        if let Some(prefix) = prefix {
+            attributes.push(("Delegated-IPv6-Prefix", bytes(prefix)));
+        }
+        run(&self.accounting, "radius", "accounting", "nas-a", None, attributes).await.0
+    }
+
+    /// (state, session, nas, prefix) of the user's lease; nothing when there is none.
+    async fn lease(&self, user: &str) -> Vec<DbValue> {
+        rows(&format!("SELECT state, session_id, nas, prefix FROM {}_prefix_leases WHERE username = '{user}'", self.prefix)).await.into_iter().next().unwrap_or_default()
+    }
+
+    async fn count(&self) -> i64 {
+        match rows(&format!("SELECT count(*) FROM {}_prefix_leases", self.prefix)).await.first().and_then(|row| row.first()) {
+            Some(DbValue::Integer(count)) => *count,
+            _ => -1,
+        }
+    }
+
+    async fn sql(&self, sql: &str) -> Result<(), String> {
+        let sql = sql.replace("PREFIX_POOLS", &format!("{}_prefix_pools", self.prefix)).replace("SUBS", &format!("{}_subscribers", self.prefix)).replace("LEASES", &format!("{}_prefix_leases", self.prefix)).replace("HOUSE", &format!("{}_housekeeping", self.prefix));
+        test_db().execute(&sql).await.map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+/// Usernames of the pool that all start at `start` (the hash of the name modulo `capacity`).
+fn starting_at(pool: &str, capacity: u32, start: u32, count: usize) -> Vec<String> {
+    (0..).map(|i| format!("{pool}-{i}")).filter(|name| fnv1a32(name) % capacity == start).take(count).collect()
+}
+
+/// The prefix of every lease is the text the server decodes an attribute to: for pools of every
+/// shape, each `n` of the small ones and some forty of a big one, the base with the top bit set
+/// (a negative number to SQLite) and all zeros among them.
+#[tokio::test]
+async fn test_prefix_pool_text_matches_what_the_server_decodes() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxa").await;
+    // (pool, base, plen, dlen): /56 with an inner zero group, /52 and /60 and /64, a ULA, the
+    // lowest base, a base that is negative, and a big pool of which only some of the n are used.
+    let shapes: [(&str, i64, u32, u32); 9] = [
+        ("inner", 0x20010db800000000, 48, 52),
+        ("plain", 0x20010db801000000, 48, 52),
+        ("ulatwo", 0xfd123456789a0000u64 as i64, 48, 52),
+        ("sixty", 0x20010db8000a0100, 56, 60),
+        ("sixtyfour", 0x20010db8000a0100, 60, 64),
+        ("zero", 0, 60, 64),
+        ("negative", 0x8000000000000000u64 as i64, 60, 64),
+        ("high", 0xffff000000000000u64 as i64, 48, 52),
+        ("big", 0x20010db800000000, 32, 56),
+    ];
+    for (pool, base, plen, dlen) in shapes {
+        let capacity = 1u64 << (dlen - plen);
+        let users = if pool == "big" { 40 } else { capacity as usize };
+        prefixes.add_pool(pool, base, plen, dlen, users).await?;
+        for i in 0..users {
+            let (outcome, given, _) = prefixes.allocate(&format!("{pool}-{i}")).await;
+            assert_eq!(outcome, Outcome::Accept, "{pool}-{i}");
+            assert!(given.is_some(), "{pool}-{i}");
+        }
+        let stored = rows(&format!("SELECT n, prefix FROM pxa_prefix_leases WHERE pool = '{pool}' ORDER BY n")).await;
+        assert_eq!(stored.len(), users, "{pool}: one lease for each user");
+        for row in &stored {
+            let (DbValue::Integer(n), DbValue::Text(text)) = (&row[0], &row[1]) else { return Err(format!("{pool}: {row:?}")) };
+            assert!((*n as u64) < capacity, "{pool}: n {n} is outside the pool");
+            assert_eq!(text, &prefix_text(base, dlen, *n as u64), "{pool}: n {n}");
+        }
+        if pool != "big" {
+            assert_eq!(stored.len() as u64, capacity, "{pool}: every n was given out once");
+        }
+    }
+    // The spec's three examples, by name.
+    async fn named(pool: &str, n: u64) -> Vec<Vec<DbValue>> {
+        rows(&format!("SELECT prefix FROM pxa_prefix_leases WHERE pool = '{pool}' AND n = {n}")).await
+    }
+    assert_eq!(named("inner", 0).await, [vec![txt("2001:db8::/52")]]);
+    assert_eq!(named("sixty", 3).await, [vec![txt("2001:db8:a:130::/60")]]);
+    assert_eq!(named("zero", 0).await, [vec![txt("::/64")]]);
+    assert_eq!(named("negative", 5).await, [vec![txt("8000:0:0:5::/64")]]);
+    assert_eq!(prefix_text(0x20010db800000000, 56, 1), "2001:db8:0:100::/56");
+    assert_eq!(prefix_text(0x20010db801000000, 56, 1), "2001:db8:100:100::/56");
+    Ok(())
+}
+
+/// A pool has to be aligned and its lengths have to make sense: the table refuses the rest.
+#[tokio::test]
+async fn test_prefix_pool_misaligned_pool_is_refused() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxb").await;
+    async fn pool(prefixes: &Prefixes, pool: &str, base: i64, plen: u32, dlen: u32) -> Result<(), String> {
+        prefixes.sql(&format!("INSERT INTO PREFIX_POOLS (pool, base, plen, dlen) VALUES ('{pool}', {base}, {plen}, {dlen})")).await
+    }
+    let add = |name: &'static str, base: i64, plen: u32, dlen: u32| {
+        let prefixes = &prefixes;
+        async move { pool(prefixes, name, base, plen, dlen).await }
+    };
+    add("ok", 0x20010db801000000, 48, 56).await?;
+    assert!(add("low-bit", 0x20010db801000100, 48, 56).await.is_err(), "a base that is not aligned to the pool");
+    assert!(add("low-bit-too", 0x20010db801000001, 63, 64).await.is_err());
+    assert!(add("too-long", 0x20010db801000000, 48, 65).await.is_err(), "dlen above 64");
+    assert!(add("backwards", 0x20010db801000000, 56, 48).await.is_err(), "dlen below plen");
+    assert!(add("huge", 0x20010db800000000, 8, 48).await.is_err(), "more than 2^30 prefixes");
+    assert!(add("zero-length", 0, 0, 0).await.is_err(), "dlen of 0");
+    add("whole", 0, 0, 30).await?;
+    add("last-aligned", 0x20010db801000100, 56, 64).await?;
+    Ok(())
+}
+
+/// Each user gets one prefix, the same again, from where the name's hash starts; an account that
+/// is disabled or unknown gets none.
+#[tokio::test]
+async fn test_prefix_pool_gives_each_user_a_prefix() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxc").await;
+    let (outcome, alice, attributes) = prefixes.allocate("alice").await;
+    assert_eq!(outcome, Outcome::Accept);
+    // An empty pool: the first free n is the start itself, the hash of the name modulo the capacity.
+    let capacity = 256;
+    let n = fnv1a32("alice") % capacity;
+    assert_eq!(alice, Some(prefix_text(0x20010db801000000, 56, u64::from(n))), "alice starts at {n}");
+    assert_eq!(reply_text(&attributes, "Framed-IPv6-Pool").as_deref(), Some("residential"));
+    assert_eq!(reply_number(&attributes, "Acct-Interim-Interval"), Some(300.0));
+    assert_eq!(prefixes.lease("alice").await[0], txt("reserved"));
+    // Again: the one she has, and no second row.
+    assert_eq!(prefixes.allocate("alice").await.1, alice);
+    assert_eq!(prefixes.count().await, 1);
+    let bob = prefixes.allocate("bob").await.1;
+    assert!(bob.is_some() && bob != alice);
+    // Another pool: its own range, the ULA's with the top bit set.
+    let carol = prefixes.allocate("carol").await.1.ok_or("no prefix for carol")?;
+    assert!(carol.starts_with("2001:db8:200:"), "{carol}");
+    let dave = prefixes.allocate("dave").await.1.ok_or("no prefix for dave")?;
+    assert!(dave.starts_with("fd12:3456:789a:"), "{dave}");
+    for user in ["erin", "nobody"] {
+        let (outcome, given, _) = prefixes.allocate(user).await;
+        assert_eq!((outcome, given), (Outcome::Reject, None), "{user}");
+    }
+    assert_eq!(prefixes.count().await, 4, "a refusal takes no prefix");
+    Ok(())
+}
+
+/// The first free n from the start, going forward, wrapping to 0, and a refusal only when no n is free.
+#[tokio::test]
+async fn test_prefix_pool_goes_forward_wraps_and_runs_out() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxd").await;
+    prefixes.add_pool("four", 0x20010db803000000, 62, 64, 0).await?;
+    // Six users whose names all start at 3.
+    let names = starting_at("four", 4, 3, 6);
+    for name in &names {
+        prefixes.sql(&format!("INSERT INTO SUBS (username, password, pool, enabled) VALUES ('{name}', 'x', 'four', 1)")).await?;
+    }
+    let mut taken = Vec::new();
+    for name in &names[..4] {
+        let (outcome, given, _) = prefixes.allocate(name).await;
+        assert_eq!(outcome, Outcome::Accept, "{name}");
+        taken.push(given.ok_or("no prefix")?);
+    }
+    // 3 is the start; then the pool wraps to 0, 1, 2.
+    let expected: Vec<String> = [3u64, 0, 1, 2].iter().map(|n| prefix_text(0x20010db803000000, 64, *n)).collect();
+    assert_eq!(taken, expected);
+    // The pool is full: the fifth and the sixth are refused, and the log says why.
+    for name in &names[4..] {
+        let (outcome, given, _) = prefixes.allocate(name).await;
+        assert_eq!((outcome, given), (Outcome::Reject, None), "{name}");
+    }
+    assert_eq!(prefixes.count().await, 4);
+    Ok(())
+}
+
+/// A prefix that is given back is kept for the user who had it: she gets it again, even when
+/// another user asks first; the pool gives it to someone else only when nothing else is free.
+#[tokio::test]
+async fn test_prefix_pool_released_prefix_is_kept_for_its_user() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxe").await;
+    prefixes.add_pool("two", 0x20010db804000000, 63, 64, 0).await?;
+    let names = starting_at("two", 2, 0, 3);
+    for name in &names {
+        prefixes.sql(&format!("INSERT INTO SUBS (username, password, pool, enabled) VALUES ('{name}', 'x', 'two', 1)")).await?;
+    }
+    let first = prefixes.allocate(&names[0]).await.1.ok_or("no prefix")?;
+    let second = prefixes.allocate(&names[1]).await.1.ok_or("no prefix")?;
+    assert_ne!(first, second);
+    assert_eq!(prefixes.allocate(&names[2]).await.0, Outcome::Reject, "full: both are reserved");
+    // The first user's Stop gives hers back: released, kept for her, with no session.
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, &names[0], "s-1", Some(&first)).await, Outcome::Accept);
+    assert_eq!(prefixes.account("10.0.0.5", 2.0, &names[0], "s-1", Some(&first)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease(&names[0]).await, [txt("released"), DbValue::Null, DbValue::Null, txt(&first)]);
+    // She comes back: the same prefix, reserved again.
+    assert_eq!(prefixes.allocate(&names[0]).await.1, Some(first.clone()));
+    assert_eq!(prefixes.lease(&names[0]).await[0], txt("reserved"));
+    // Nothing is free for the third: the pool is full of reserved prefixes.
+    assert_eq!(prefixes.allocate(&names[2]).await.0, Outcome::Reject);
+    Ok(())
+}
+
+/// Nothing is free in the window: the oldest released prefix is taken, and its user, who comes
+/// back, is given another one; with a free n in the window, a released prefix is not touched.
+#[tokio::test]
+async fn test_prefix_pool_takes_the_oldest_released_only_when_nothing_is_free() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxk").await;
+    let base = 0x20010db807000000;
+    prefixes.add_pool("tiny", base, 62, 64, 0).await?;
+    for name in ["old", "newer", "busy", "late", "later"] {
+        prefixes.sql(&format!("INSERT INTO SUBS (username, password, pool, enabled) VALUES ('{name}', 'x', 'tiny', 1)")).await?;
+    }
+    // n 0 and 1 are released (0 the older), n 2 is in use, n 3 is free.
+    let held = |n: u64, state: &str, user: &str, updated: i64| format!("INSERT INTO LEASES (pool, n, prefix, state, username, expires, updated) VALUES ('tiny', {n}, '{}', '{state}', '{user}', 4102444800, {updated})", prefix_text(base, 64, n));
+    prefixes.sql(&held(0, "released", "old", 100)).await?;
+    prefixes.sql(&held(1, "released", "newer", 200)).await?;
+    prefixes.sql(&held(2, "active", "busy", 300)).await?;
+    // A free n (3) in the window: it is taken, and neither released one is touched.
+    let late = prefixes.allocate("late").await.1.ok_or("no prefix")?;
+    assert_eq!(late, prefix_text(base, 64, 3));
+    assert_eq!(prefixes.lease("old").await[0], txt("released"));
+    assert_eq!(prefixes.lease("newer").await[0], txt("released"));
+    // Now nothing is free: the oldest released one goes, at random among the oldest eight, so
+    // either of the two; the user who had it gets nothing back of it.
+    let later = prefixes.allocate("later").await.1.ok_or("no prefix")?;
+    assert!([prefix_text(base, 64, 0), prefix_text(base, 64, 1)].contains(&later), "{later}");
+    assert_eq!(prefixes.lease("later").await[0], txt("reserved"));
+    let taken_from = if later == prefix_text(base, 64, 0) { "old" } else { "newer" };
+    assert!(prefixes.lease(taken_from).await.is_empty(), "{taken_from} lost it");
+    // The user who lost it comes back: the other released one is taken, and its user, who comes
+    // back too, finds the pool full of prefixes in use.
+    assert_eq!(prefixes.allocate(taken_from).await.0, Outcome::Accept);
+    assert_eq!(prefixes.count().await, 4);
+    let other = if taken_from == "old" { "newer" } else { "old" };
+    assert_eq!(prefixes.allocate(other).await.0, Outcome::Reject);
+    Ok(())
+}
+
+/// Users who ask at the same time, some from the same start: each gets one prefix, no prefix twice.
+#[tokio::test]
+async fn test_prefix_pool_at_the_same_time() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxf").await;
+    prefixes.add_pool("many", 0x20010db805000000, 56, 64, 0).await?;
+    // Twelve that all start at 7 and twelve that start at 9, in a pool of 256.
+    let mut names = starting_at("many", 256, 7, 12);
+    names.extend(starting_at("many", 256, 9, 12));
+    for name in &names {
+        prefixes.sql(&format!("INSERT INTO SUBS (username, password, pool, enabled) VALUES ('{name}', 'x', 'many', 1)")).await?;
+    }
+    let asked = futures::future::join_all(names.iter().map(|name| prefixes.allocate(name))).await;
+    assert!(asked.iter().all(|(outcome, _, _)| *outcome == Outcome::Accept), "all of them: {:?}", asked.iter().map(|(outcome, _, _)| *outcome).collect::<Vec<_>>());
+    let mut given: Vec<String> = asked.iter().filter_map(|(_, prefix, _)| prefix.clone()).collect();
+    assert_eq!(given.len(), names.len());
+    given.sort();
+    given.dedup();
+    assert_eq!(given.len(), names.len(), "no prefix twice");
+    assert_eq!(prefixes.count().await as usize, names.len());
+    // The same user twice at once: one lease.
+    let twice = futures::future::join_all((0..4).map(|_| prefixes.allocate(&names[0]))).await;
+    assert!(twice.iter().all(|(outcome, prefix, _)| *outcome == Outcome::Accept && *prefix == twice[0].1));
+    assert_eq!(prefixes.count().await as usize, names.len());
+    Ok(())
+}
+
+/// A pool that is nearly full, whose free n are single and scattered, with more users asking at
+/// once than the script has tries: they all get one. (When each lost race sent the user to "the
+/// next free n", they all chased the same one and only one of them won each round: found by the
+/// test with the server at 90% use, where 2.5% of the logins were refused with free n left.)
+#[tokio::test]
+async fn test_prefix_pool_single_free_n_and_many_at_once() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxj").await;
+    let base = 0x20010db806000000;
+    prefixes.add_pool("dense", base, 58, 64, 0).await?;
+    // The even n are taken, by users who are not in the test.
+    for n in (0..64u64).step_by(2) {
+        prefixes.sql(&format!("INSERT INTO LEASES (pool, n, prefix, state, username, expires, updated) VALUES ('dense', {n}, '{}', 'active', 'held-{n}', 4102444800, 0)", prefix_text(base, 64, n))).await?;
+    }
+    // Twenty-four users who all start at 5, with 32 free n in the pool.
+    let names = starting_at("dense", 64, 5, 24);
+    for name in &names {
+        prefixes.sql(&format!("INSERT INTO SUBS (username, password, pool, enabled) VALUES ('{name}', 'x', 'dense', 1)")).await?;
+    }
+    let asked = futures::future::join_all(names.iter().map(|name| prefixes.allocate(name))).await;
+    let outcomes: Vec<Outcome> = asked.iter().map(|(outcome, _, _)| *outcome).collect();
+    assert!(outcomes.iter().all(|outcome| *outcome == Outcome::Accept), "all of them: {outcomes:?}");
+    let mut given: Vec<String> = asked.iter().filter_map(|(_, prefix, _)| prefix.clone()).collect();
+    given.sort();
+    given.dedup();
+    assert_eq!(given.len(), names.len(), "no prefix twice");
+    assert_eq!(prefixes.count().await as usize, 32 + names.len());
+    Ok(())
+}
+
+/// A pool that is full of released prefixes, and more users asking at once than the script has
+/// tries: each takes one, none the same, and each of the old users is left with nothing.
+#[tokio::test]
+async fn test_prefix_pool_many_take_released_at_once() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxm").await;
+    let base = 0x20010db808000000;
+    prefixes.add_pool("full", base, 58, 64, 0).await?;
+    for n in 0..64u64 {
+        prefixes.sql(&format!("INSERT INTO LEASES (pool, n, prefix, state, username, expires, updated) VALUES ('full', {n}, '{}', 'released', 'gone-{n}', 4102444800, {})", prefix_text(base, 64, n), 100 + n)).await?;
+    }
+    let names = starting_at("full", 64, 5, 24);
+    for name in &names {
+        prefixes.sql(&format!("INSERT INTO SUBS (username, password, pool, enabled) VALUES ('{name}', 'x', 'full', 1)")).await?;
+    }
+    let asked = futures::future::join_all(names.iter().map(|name| prefixes.allocate(name))).await;
+    let outcomes: Vec<Outcome> = asked.iter().map(|(outcome, _, _)| *outcome).collect();
+    assert!(outcomes.iter().all(|outcome| *outcome == Outcome::Accept), "all of them: {outcomes:?}");
+    let mut given: Vec<String> = asked.iter().filter_map(|(_, prefix, _)| prefix.clone()).collect();
+    given.sort();
+    given.dedup();
+    assert_eq!(given.len(), names.len(), "no prefix twice");
+    assert_eq!(prefixes.count().await, 64, "the rows are the same ones, with other users");
+    Ok(())
+}
+
+/// Start and Interim confirm the lease the prefix names, with the user or without the prefix in
+/// the packet; a prefix that is not the user's changes nothing.
+#[tokio::test]
+async fn test_prefix_pool_accounting_confirms_and_extends() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxg").await;
+    let alice = prefixes.allocate("alice").await.1.ok_or("no prefix")?;
+    let bob = prefixes.allocate("bob").await.1.ok_or("no prefix")?;
+    // A packet with a prefix that is not hers: the lease stays reserved.
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "alice", "s-1", Some(&bob)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("alice").await[0], txt("reserved"));
+    // Her own: active, with the session and the NAS, and the time three Interim intervals on.
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "alice", "s-1", Some(&alice)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("alice").await, [txt("active"), txt("s-1"), txt("10.0.0.5"), txt(&alice)]);
+    let expires = rows(&format!("SELECT expires >= {} AND expires <= {} FROM pxg_prefix_leases WHERE username = 'alice'", now() + 890, now() + 910)).await;
+    assert_eq!(expires, [vec![int(1)]], "900 seconds from now");
+    // No prefix in the packet: found by the user.
+    assert_eq!(prefixes.account("10.0.0.6", 1.0, "bob", "s-2", None).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("bob").await, [txt("active"), txt("s-2"), txt("10.0.0.6"), txt(&bob)]);
+    // An Interim extends it; the same packet twice is the same as once.
+    prefixes.sql("UPDATE LEASES SET expires = 5 WHERE username = 'alice'").await?;
+    for _ in 0..2 {
+        assert_eq!(prefixes.account("10.0.0.5", 3.0, "alice", "s-1", Some(&alice)).await, Outcome::Accept);
+    }
+    let expires = rows(&format!("SELECT expires > {} FROM pxg_prefix_leases WHERE username = 'alice'", now() + 800)).await;
+    assert_eq!(expires, [vec![int(1)]]);
+    assert_eq!(prefixes.count().await, 2);
+    // Not a user of the pool, or a packet with no session: answered, nothing changes.
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "nobody", "s-9", Some(&alice)).await, Outcome::Accept);
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "alice", "", Some(&alice)).await, Outcome::Accept);
+    // An authentication is refused (the chain's other handlers do that); the status of a packet
+    // this script has no use for is answered.
+    let (outcome, _) = run(&prefixes.accounting, "radius", "authentication", "nas-a", None, vec![]).await;
+    assert_eq!(outcome, Outcome::Reject);
+    assert_eq!(prefixes.account("10.0.0.5", 9.0, "alice", "s-1", None).await, Outcome::Accept);
+    Ok(())
+}
+
+/// A Stop releases the lease of its own session (kept for the user); the Stop of an older
+/// session does not touch the new one; an Accounting-On or -Off releases what a NAS had; a late
+/// Interim does not bring a released prefix back, a Start does.
+#[tokio::test]
+async fn test_prefix_pool_accounting_releases() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxh").await;
+    let alice = prefixes.allocate("alice").await.1.ok_or("no prefix")?;
+    let bob = prefixes.allocate("bob").await.1.ok_or("no prefix")?;
+    let carol = prefixes.allocate("carol").await.1.ok_or("no prefix")?;
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "alice", "s-new", Some(&alice)).await, Outcome::Accept);
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "bob", "s-b", Some(&bob)).await, Outcome::Accept);
+    assert_eq!(prefixes.account("10.0.0.6", 1.0, "carol", "s-c", Some(&carol)).await, Outcome::Accept);
+    // The Stop of an older session of alice's: nothing.
+    assert_eq!(prefixes.account("10.0.0.5", 2.0, "alice", "s-old", Some(&alice)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("alice").await[0], txt("active"));
+    // Her own Stop: released, for her, with no session and no NAS, for HOLD_SECONDS from now.
+    assert_eq!(prefixes.account("10.0.0.5", 2.0, "alice", "s-new", Some(&alice)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("alice").await, [txt("released"), DbValue::Null, DbValue::Null, txt(&alice)]);
+    let expires = rows(&format!("SELECT expires >= {} AND expires <= {} FROM pxh_prefix_leases WHERE username = 'alice'", now() + 86390, now() + 86410)).await;
+    assert_eq!(expires, [vec![int(1)]], "a day from now");
+    assert_eq!(prefixes.count().await, 3, "the row stays");
+    // A late Interim of that session does not make it active again.
+    assert_eq!(prefixes.account("10.0.0.5", 3.0, "alice", "s-new", Some(&alice)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("alice").await[0], txt("released"));
+    // The NAS 10.0.0.5 restarts: bob's, which it had, is released; carol's, on another NAS, stays.
+    assert_eq!(prefixes.account("10.0.0.5", 7.0, "", "", None).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("bob").await[0], txt("released"));
+    assert_eq!(prefixes.lease("carol").await[0], txt("active"));
+    assert_eq!(prefixes.account("10.0.0.6", 8.0, "", "", None).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("carol").await[0], txt("released"));
+    // A reserved lease that was never confirmed is not touched by anyone's Stop (the reap takes it when it runs out).
+    let dave = prefixes.allocate("dave").await.1.ok_or("no prefix")?;
+    assert_eq!(prefixes.account("10.0.0.5", 2.0, "dave", "s-d", Some(&dave)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("dave").await[0], txt("reserved"));
+    // A late Interim of an older session does not take the row from the newer one.
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "dave", "s-new", Some(&dave)).await, Outcome::Accept);
+    assert_eq!(prefixes.account("10.0.0.5", 3.0, "dave", "s-old", Some(&dave)).await, Outcome::Accept);
+    assert_eq!(prefixes.account("10.0.0.5", 2.0, "dave", "s-new", Some(&dave)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("dave").await[0], txt("released"));
+    // A quick reconnect: the old session's Stop comes after the new login and before the new Start;
+    // the Start brings the prefix back to active.
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "bob", "s-b2", Some(&bob)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("bob").await, [txt("active"), txt("s-b2"), txt("10.0.0.5"), txt(&bob)]);
+    Ok(())
+}
+
+/// A user whose prefix is released and who logs in again and then confirms it (Start) has it
+/// active; the Stop of the session that ended in between does not release the new one.
+#[tokio::test]
+async fn test_prefix_pool_quick_reconnect_keeps_the_prefix() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxl").await;
+    let alice = prefixes.allocate("alice").await.1.ok_or("no prefix")?;
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "alice", "s-1", Some(&alice)).await, Outcome::Accept);
+    // The new login comes first, finding the prefix active: the same one, no write.
+    assert_eq!(prefixes.allocate("alice").await.1, Some(alice.clone()));
+    // The old session's Stop comes next: released (it is the session on the row).
+    assert_eq!(prefixes.account("10.0.0.5", 2.0, "alice", "s-1", Some(&alice)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("alice").await[0], txt("released"));
+    // The new session's Start: the same prefix is hers, active again.
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "alice", "s-2", Some(&alice)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("alice").await, [txt("active"), txt("s-2"), txt("10.0.0.5"), txt(&alice)]);
+    Ok(())
+}
+
+/// The reap: leases that ran out are taken back, once by one request, and what has not run out
+/// stays: reserved and released ones are deleted, an active one whose Interims stopped is released.
+#[tokio::test]
+async fn test_prefix_pool_takes_back_what_is_not_used() -> Result<(), String> {
+    let prefixes = Prefixes::new("pxi").await;
+    let alice = prefixes.allocate("alice").await.1.ok_or("no prefix")?;
+    let bob = prefixes.allocate("bob").await.1.ok_or("no prefix")?;
+    let dave = prefixes.allocate("dave").await.1.ok_or("no prefix")?;
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "bob", "s-b", Some(&bob)).await, Outcome::Accept);
+    assert_eq!(prefixes.account("10.0.0.5", 1.0, "dave", "s-d", Some(&dave)).await, Outcome::Accept);
+    assert_eq!(prefixes.account("10.0.0.5", 2.0, "dave", "s-d", Some(&dave)).await, Outcome::Accept);
+    // Alice never got her Start (reserved, ran out); bob's Interims stopped (active, ran out); dave's
+    // hold ran out (released); and carol is a new one.
+    prefixes.sql("UPDATE LEASES SET expires = 5").await?;
+    prefixes.sql("UPDATE HOUSE SET last_run = 0").await?;
+    let carol = prefixes.allocate("carol").await.1.ok_or("no prefix")?;
+    assert!(prefixes.lease("alice").await.is_empty(), "reserved that ran out is deleted");
+    assert!(prefixes.lease("dave").await.is_empty(), "released that ran out is deleted");
+    assert_eq!(prefixes.lease("bob").await, [txt("released"), txt("s-b"), txt("10.0.0.5"), txt(&bob)], "active that ran out is released, with its session");
+    // Its NAS was still there, only the Interims did not come: the next one brings it back.
+    assert_eq!(prefixes.account("10.0.0.5", 3.0, "bob", "s-b", Some(&bob)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("bob").await[0], txt("active"));
+    // An Interim of another session does not.
+    prefixes.sql("UPDATE LEASES SET state = 'released' WHERE username = 'bob'").await?;
+    assert_eq!(prefixes.account("10.0.0.5", 3.0, "bob", "s-other", Some(&bob)).await, Outcome::Accept);
+    assert_eq!(prefixes.lease("bob").await[0], txt("released"));
+    assert_eq!(prefixes.count().await, 2, "bob's, kept, and carol's");
+    assert_eq!(prefixes.lease("carol").await[3], txt(&carol));
+    // The reap ran once: the time of the last run is now, so the next request does not.
+    prefixes.sql("INSERT INTO LEASES (pool, n, prefix, state, username, expires, updated) VALUES ('residential', 200, 'x', 'active', 'late', 5, 5)").await?;
+    prefixes.allocate("carol").await;
+    assert_eq!(prefixes.count().await, 3, "not again within a minute");
+    // A prefix is free again: alice, who lost hers, is given one, and gets hers again when the start is free.
+    let again = prefixes.allocate("alice").await.1.ok_or("no prefix")?;
+    assert_eq!(again, alice, "the same start, free again");
     Ok(())
 }

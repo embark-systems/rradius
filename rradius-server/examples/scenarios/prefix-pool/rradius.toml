@@ -1,0 +1,74 @@
+# IPv6 前綴池（DHCPv6-PD）：單機，認證時從池分配委派前綴，計費確認與釋放。
+# 說明：docs/manual/19-prefix-pool.md
+#
+#   cd rradius-server
+#   cargo run --release -- server --config examples/scenarios/prefix-pool/rradius.toml
+#
+# 相對路徑都以這個檔案所在的目錄為準。
+
+dictionary = "../../../../share/dictionary"
+
+# 有 [auth] 時認證交給下面的串接；這個腳本只處理計費（確認、延長、釋放前綴）。
+[lua]
+script = "accounting.lua"
+
+[cluster]
+data_dir = "data"
+secret_raft_file = "raft.secret"
+secret_api_file = "api.secret"
+migrations_dir = "migrations"
+
+# all_accept：依序執行，任一個拒絕就停。先由 sql 處理器驗密碼（密碼錯就不會往下，所以不會替沒通過的人
+# 分配前綴），再由 lua 處理器分配前綴。
+[auth]
+policy = "all_accept"
+
+[[auth.handlers]]
+type = "sql"
+user_query = "SELECT password FROM subscribers WHERE username = ? AND enabled = 1"
+
+[[auth.handlers]]
+type = "lua"
+script = "allocate.lua"
+
+[radius]
+bind = "127.0.0.1"
+auth_port = 1812
+acct_port = 1813
+status_server = true
+
+[[radius.clients]]
+name = "localhost"
+address = "127.0.0.1"
+secret_file = "localhost.secret"
+
+[metrics]
+bind = "127.0.0.1"
+port = 9812
+
+# 現在在線的 session：rradius-server session list。前綴池本身就記著誰在用哪個前綴，
+# 所以直接查它：狀態是 active 而且還沒到期的列。
+[sessions]
+list = "SELECT username, nas, session_id, prefix, updated FROM prefix_leases WHERE state = 'active' AND expires > strftime('%s', 'now') ORDER BY pool, n"
+show = "SELECT username, nas, session_id, prefix, updated FROM prefix_leases WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY pool, n"
+
+# 監控：每個池各狀態的前綴數（reserved、active、released）、池的容量、最舊的 released 的年齡，成為指標
+# rradius_query_prefix_leases{pool,state}、rradius_query_prefix_capacity{pool}、rradius_query_prefix_hold_age{pool}。
+# 使用率只算 reserved 與 active：released 是留給離線用戶的，要用時可以被搶；說明見手冊第 19 章「池很滿的時候」。
+[queries.prefix_leases]
+sql = "SELECT pool, state, count(*) AS prefixes FROM prefix_leases GROUP BY pool, state"
+help = "Prefixes of each pool by state: reserved, active, or released (kept for a user who went offline)."
+labels = ["pool", "state"]
+value = "prefixes"
+
+[queries.prefix_capacity]
+sql = "SELECT pool, 1 << (dlen - plen) AS capacity FROM prefix_pools"
+help = "Prefixes each pool can give out."
+labels = ["pool"]
+value = "capacity"
+
+[queries.prefix_hold_age]
+sql = "SELECT pool, strftime('%s', 'now') - min(updated) AS age FROM prefix_leases WHERE state = 'released' GROUP BY pool"
+help = "Seconds since the oldest released prefix of each pool was released: the hold time that is guaranteed at the moment."
+labels = ["pool"]
+value = "age"

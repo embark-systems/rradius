@@ -26,6 +26,7 @@
 | 光纖、DSL 用戶不輸入密碼，依 BNG 轉送的 Option 82（哪個設備的哪個埠）認證 | [16](16-line-identity.md) |
 | 商業用戶固定的 IPv4 位址、路由網段、IPv6 前綴 | [17](17-static-ip.md) |
 | 同一個速率方案，依 BNG 的廠商送不同的速率屬性 | [18](18-rate-limit.md) |
+| IPv6 用戶（DHCPv6-PD）的委派前綴，從池動態分配、計費確認與釋放 | [19](19-prefix-pool.md) |
 | 帳號已經在別的系統裡，不想複製 | 目錄（LDAP／AD）看 [5](05-remote-access.md)，HTTP API 看 [10](10-external-api.md)，MySQL／PostgreSQL 看 [9](09-migrate-users.md#帳號留在原本的資料庫) |
 | 從舊的認證系統搬過來，不想讓大家重設密碼 | [9](09-migrate-users.md) |
 | 上線之後的日常工作 | [11](11-operations.md) |
@@ -51,6 +52,7 @@
 | [16. 線路身分認證](16-line-identity.md) | 依 BNG 轉送的 Option 82（circuit-id、remote-id）認證，回方案；可選的 MAC 鎖 | 沒有 `[auth]` 的最上層腳本、RFC 4679 屬性、正規化、比較後更新綁定 | `line-identity/` |
 | [17. 固定位址與前綴](17-static-ip.md) | 依用戶回固定的 IPv4、路由網段（`Framed-Route`）、IPv6 的 /64 與委派前綴，沒有的回池名稱；唯一索引防重複 | `all_accept` 串接、`set_attr` 的字典檢查、唯一索引 | `static-ip/` |
 | [18. 速率屬性](18-rate-limit.md) | 同一個方案，依 BNG 的廠商送設定檔名稱或速率數值（五種風格） | `all_accept` 串接、`lua` 處理器的風格表、依 client 名稱選風格 | `rate-limit/` |
+| [19. IPv6 前綴池](19-prefix-pool.md) | 委派前綴（/56、/60、/64）從池分配，表只放在線與剛離線的前綴，雜湊起點，離線後暫時保留（released），計費確認與釋放，池很滿時的行為 | `all_accept` 串接、SQL 算 64 位元前綴與文字、`INSERT OR IGNORE` 搶佔、請求觸發的回收、命名查詢監控 | `prefix-pool/` |
 
 ## 上線之後
 

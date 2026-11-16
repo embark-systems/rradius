@@ -451,6 +451,62 @@ fn test_rate_limit() -> TestResult {
     Ok(())
 }
 
+/// Chapter 19: a login gets a delegated prefix of the pool, the accounting Start names it as the
+/// NAS writes it (so the text in the table is the one the server decodes), `session list` shows
+/// it, and the Stop releases it (kept for her: she gets it again). A pool that is empty refuses, with the reason in the log.
+#[test]
+fn test_prefix_pool() -> TestResult {
+    // The example asks every 30 seconds for its gauges; the test every 5.
+    let mut server = Server::start(SCENARIOS, "prefix-pool", "rradius.toml", |text| text.replacen("[queries.prefix_leases]\n", "[queries.prefix_leases]\ninterval_ms = 5000\n", 1));
+    server.secret = secret_of(SCENARIOS, "prefix-pool", "localhost.secret");
+    // 18 octets: a reserved one, the length, the 16 of the address (RFC 3162 allows fewer; the server sends them all).
+    let decoded = |answer: &RadiusPacket| -> Result<String, String> {
+        let value = answer.attribute(123).ok_or("no Delegated-IPv6-Prefix")?;
+        let (length, octets) = (value[1], <[u8; 16]>::try_from(&value[2..]).map_err(|_| format!("{} octets", value.len()))?);
+        Ok(format!("{}/{length}", std::net::Ipv6Addr::from(octets)))
+    };
+
+    let alice = server.pap("alice", "alice-password");
+    assert_eq!(alice.code, ACCESS_ACCEPT, "{}", server.stderr());
+    let value = alice.attribute(123).ok_or("no prefix")?.to_vec();
+    assert_eq!((value.len(), value[0], value[1]), (18, 0, 56), "a /56 in 18 octets");
+    assert_eq!(&value[2..8], &[0x20, 0x01, 0x0d, 0xb8, 0x01, 0x00], "inside 2001:db8:100::/48");
+    let alice_prefix = decoded(&alice)?;
+    assert_eq!(text(&alice, 100).as_deref(), Some("residential"), "Framed-IPv6-Pool");
+    assert_eq!(number(&alice, 85), Some(300), "Acct-Interim-Interval");
+    // Again: the same prefix; another user: another; a refusal takes none.
+    assert_eq!(decoded(&server.pap("alice", "alice-password"))?, alice_prefix);
+    let bob_prefix = decoded(&server.pap("bob", "bob-password"))?;
+    assert_ne!(bob_prefix, alice_prefix);
+    assert_eq!(server.pap("alice", "wrong").code, ACCESS_REJECT);
+    assert_eq!(server.pap("erin", "alice-password").code, ACCESS_REJECT);
+    let ula = decoded(&server.pap("dave", "dave-password"))?;
+    assert!(ula.starts_with("fd12:3456:789a:") && ula.ends_with("/56"), "{ula}");
+
+    // The Start names the prefix as the NAS got it from us: the lease becomes active, and the
+    // session list, which asks the table, shows the text the server decoded.
+    let nas = vec![(4u8, vec![10, 0, 0, 1]), (123u8, value.clone())];
+    let answer = server.accounting(session("alice", "pfx-1", 1, nas.clone()));
+    assert_eq!(answer.map(|answer| answer.code), Some(ACCOUNTING_RESPONSE), "{}", server.stderr());
+    let config = config_of(&server)?;
+    let listed = command(PROGRAM, &["session", "list", "--json", "--config", &config], "")?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&listed)?;
+    let shown: Vec<(&str, &str)> = rows.iter().map(|row| (row["username"].as_str().unwrap_or(""), row["prefix"].as_str().unwrap_or(""))).collect();
+    assert_eq!(shown, vec![("alice", alice_prefix.as_str())], "{listed}");
+    // The gauges of the example's queries see it: one active and two reserved prefixes in residential and one in the ULA pool.
+    wait_for(30, "the gauge of the active prefix", || metric(&server, "rradius_query_prefix_leases{pool=\"residential\",state=\"active\"}").is_ok_and(|value| value == 1.0))?;
+    assert_eq!(metric(&server, "rradius_query_prefix_capacity{pool=\"residential\"}")?, 256.0);
+
+    // The Stop releases the lease: nothing is listed, the gauge counts it as released, and it is kept for her.
+    let answer = server.accounting(session("alice", "pfx-1", 2, nas));
+    assert_eq!(answer.map(|answer| answer.code), Some(ACCOUNTING_RESPONSE), "{}", server.stderr());
+    assert!(command(PROGRAM, &["session", "list", "--json", "--config", &config], "").map_or(true, |output| output.trim() == "[]"));
+    wait_for(30, "the gauge of the released prefix", || metric(&server, "rradius_query_prefix_leases{pool=\"residential\",state=\"released\"}").is_ok_and(|value| value == 1.0))?;
+    assert_eq!(decoded(&server.pap("alice", "alice-password"))?, alice_prefix, "kept for her, and the start is hers");
+    assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
+    Ok(())
+}
+
 /// spec First run: with the example's own interval of 30 seconds the gauge is there long before
 /// the second run could be, since the first run is made as soon as the database is ready.
 #[test]
