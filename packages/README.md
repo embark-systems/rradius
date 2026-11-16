@@ -28,13 +28,16 @@
 
 ## 建置
 
-套件依賴的 glibc 版本跟著建置主機走（在 Ubuntu 24.04 建的 deb 要 glibc 2.39 以上）；要裝到較舊的發行版，就在那個發行版上建。
+套件依賴的 glibc 版本跟著建置主機走。deb 用 `deb/docker-build.sh` 在 Debian 12 容器建（amd64 或 arm64，另一種架構用模擬執行，慢但結果相同），依賴 glibc 2.34 以上，Debian 12、13 和 Ubuntu 22.04 以後都能裝。rpm 也一樣：要裝到較舊的發行版，就在那個發行版上建。
 
 所有套件都需要 Rust 1.99 以上（和 `Dockerfile` 一樣）、cmake、g++ 和 make。Rust 比各發行版附的新，所以套件沒有把 cargo 列為建置相依；用 rustup 或 `rust` 映像提供。建置用的環境變數和 `Dockerfile` 相同：`LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG`，arm64 加 `JEMALLOC_SYS_WITH_LG_PAGE=16`，`debian/rules`、`rradius.spec` 和 port 都已設好。
 
 ```bash
 # deb：另需 debhelper、dpkg-dev
 packages/deb/build.sh --out dist
+
+# deb，在 Debian 12 容器建（只需要 docker）
+packages/deb/docker-build.sh --platform linux/amd64 --out dist
 
 # rpm：另需 rpm-build、systemd-rpm-macros
 packages/rpm/build.sh --out dist
@@ -48,7 +51,7 @@ FreeBSD：把 `freebsd/net/rradius` 放進 ports 樹的 `net/`，並在 ports �
 
 | | 狀態 |
 | --- | --- |
-| deb | 在 Ubuntu 24.04（arm64）容器建置；檢查內容、安裝（建立用戶與目錄、預設設定檔路徑 `/etc/rradius/rradius.toml`、沒有設定檔）、移除（用戶保留）。**沒有建 amd64**，也沒有在真正的 systemd 主機上啟動服務 |
+| deb | 用 `docker-build.sh` 在 Debian 12 容器建出 amd64（模擬）和 arm64，依賴 glibc 2.34 以上；兩個都在 Debian 12 容器安裝：檢查內容、用戶與目錄、預設設定檔路徑 `/etc/rradius/rradius.toml`、`config init` 可執行、權限 0750。先前在 Ubuntu 24.04 arm64 容器也建過並驗證移除（用戶保留）、服務不自動啟用。amd64 只裝、沒有執行服務；沒有在真正的 systemd 主機上啟動服務 |
 | rpm | 在 Rocky Linux 9（aarch64）容器建置；檢查內容、安裝（`--nodeps`，容器裡沒有 systemd）、移除（用戶保留）。**沒有建 x86_64**，`%systemd_post` 等腳本沒有在有 systemd 的主機上跑過 |
 | 服務檔 | 只有 `common/rradius.service` 一份；`deb/build.sh` 建置時把它複製進 `debian/`。 |
 | 服務檔驗證 | `systemd-analyze verify` 沒有錯誤；沒有實際啟動 |
