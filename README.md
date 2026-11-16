@@ -20,7 +20,7 @@ cd rradius-server
 ../target/release/rradius-server server --config examples/scenarios/quick-start/rradius.toml
 ```
 
-Docker works too: run `docker/init-secrets.sh` first, then `docker compose up --build` (single node) or use `compose.cluster.yaml` (three nodes); see [section 1.1 of the usage guide](docs/usage.md#11-docker). Release archives are made with `packaging/release.sh`; see [`packaging/README.md`](packaging/README.md).
+Docker works too: run `docker/init-secrets.sh` first, then `docker compose up --build` (single node) or use `compose.cluster.yaml` (three nodes); see [section 1.1 of the usage guide](docs/usage.md#11-docker). Release archives are made with `packages/tarball/release.sh`; see [`packages/tarball/README.md`](packages/tarball/README.md).
 
 ## Documentation
 
