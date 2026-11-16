@@ -1,0 +1,33 @@
+rradius installed from the port
+===============================
+
+The port installs the program, the RADIUS dictionaries and the documentation, and creates the
+user "rradius" and the directories /var/db/rradius (data) and /var/log/rradius. It does not
+create a configuration and does not start the service.
+
+First start
+-----------
+
+  1. Print a starting configuration; it has random cluster and client secrets:
+
+       rradius-server config init > /usr/local/etc/rradius/rradius.toml
+
+  2. Point "dictionary" at /usr/local/share/rradius/dictionary, set the cluster data
+     directory (for example /var/db/rradius), add the [lua] script and your clients, and keep the
+     file readable by the "rradius" user only:
+
+       chown root:rradius /usr/local/etc/rradius/rradius.toml && chmod 640 /usr/local/etc/rradius/rradius.toml
+
+  3. Check, enable and start:
+
+       rradius-server check
+       sysrc rradius_enable=YES
+       service rradius start
+
+The default configuration path is fixed when the program is built; "rradius-server --version"
+shows it on the second line.
+
+The accounting log can be rotated by newsyslog: see
+/usr/local/etc/newsyslog.conf.d/rradius.conf.sample.
+
+Documentation: /usr/local/share/doc/rradius/manual/README.md (start there) and usage.md.

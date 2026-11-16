@@ -1,0 +1,22 @@
+Source: rradius
+Section: net
+Priority: optional
+Maintainer: Vanilla Hsu <v@embark.systems>
+# cargo is not listed: the program needs a Rust newer than the distributions ship (the
+# Dockerfile builds with 1.99), so it comes from rustup or the rust image. See packages/README.md.
+Build-Depends: debhelper-compat (= 13), cmake, g++, make, ca-certificates
+Standards-Version: 4.7.0
+Homepage: https://github.com/embark-systems/rradius
+Rules-Requires-Root: no
+
+Package: rradius
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Recommends: ca-certificates
+Description: RADIUS and TACACS+ server with Luau scripts and a built-in cluster database
+ rradius answers RADIUS and TACACS+ requests. Authentication and accounting logic is
+ written in Luau scripts and SQL; the data lives in an embedded hiqlite cluster, so a
+ cluster needs no external database.
+ .
+ The package installs the program, the RADIUS dictionaries and the documentation. It does
+ not create a configuration or start the service; see /usr/share/doc/rradius/README.packages.

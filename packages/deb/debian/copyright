@@ -1,0 +1,17 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: rradius
+Source: https://github.com/embark-systems/rradius
+
+Files: *
+Copyright: 2026, embark-systems
+License: BSD-2-Clause
+
+Files: share/*
+Copyright: The FreeRADIUS Server Project and contributors
+License: CC-BY-4.0
+Comment: The dictionaries are unmodified copies; see /usr/share/rradius/NOTICE.
+
+License: BSD-2-Clause
+ The full text is in /usr/share/doc/rradius/LICENSE.
+License: CC-BY-4.0
+ The full text is in /usr/share/rradius/LICENSE.

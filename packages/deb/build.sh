@@ -1,0 +1,25 @@
+#!/bin/sh
+# Builds the deb from the committed source: packages/deb/build.sh [--out <dir>] [--commit <rev>]
+# The Rust toolchain (1.99 or newer, as the Dockerfile uses), cmake, g++, make, debhelper and
+# dpkg-dev must be installed; the build downloads the crates. Run it in a container of the rust
+# image when the machine has no such toolchain (packages/README.md).
+set -eu
+root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+out="$root/dist"
+commit=HEAD
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --out) out=$2; shift 2 ;;
+        --commit) commit=$2; shift 2 ;;
+        *) echo "usage: packages/deb/build.sh [--out <dir>] [--commit <rev>]" >&2; exit 2 ;;
+    esac
+done
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mkdir "$work/rradius-src"
+git -C "$root" archive "$commit" | tar -x -C "$work/rradius-src"
+cp -r "$work/rradius-src/packages/deb/debian" "$work/rradius-src/debian"
+(cd "$work/rradius-src" && dpkg-buildpackage -b -us -uc -d)
+mkdir -p "$out"
+cp "$work"/rradius_*.deb "$out/"
+ls "$out"/rradius_*.deb
