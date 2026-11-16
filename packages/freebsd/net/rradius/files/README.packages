@@ -27,6 +27,10 @@ First start
 The default configuration path is fixed when the program is built; "rradius-server --version"
 shows it on the second line.
 
+The program runs as the "rradius" user, which cannot bind ports below 1024: TACACS+ on its
+standard port 49 needs mac_portacl(4), or the sysctl net.inet.ip.portrange.reservedhigh=0, or a
+port of 1024 or above.
+
 The accounting log can be rotated by newsyslog: see
 /usr/local/etc/newsyslog.conf.d/rradius.conf.sample.
 

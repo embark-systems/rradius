@@ -28,6 +28,8 @@ CARGO_INSTALL_PATH=	rradius-server
 # LIBSQLITE3_FLAGS is what the repository's .cargo/config.toml sets for the bundled SQLite.
 CARGO_ENV+=	RRADIUS_PREFIX=${PREFIX} \
 		LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG
+.include <bsd.port.options.mk>
+
 .if ${ARCH} == aarch64
 # jemalloc fixes the page size it supports at build time; 64 KiB runs on the smaller ones too.
 CARGO_ENV+=	JEMALLOC_SYS_WITH_LG_PAGE=16

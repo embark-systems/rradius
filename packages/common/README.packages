@@ -13,8 +13,15 @@ First start
 
        rradius-server config init > /etc/rradius/rradius.toml
 
-  2. Point "dictionary" at /usr/share/rradius/dictionary, add the [lua] script and your
-     clients, and keep the file readable by the "rradius" user only:
+  2. Edit it. The service can write only below /var/lib/rradius and /var/log/rradius, and
+     a relative path in the file is taken from the directory of the file, so set:
+
+       [cluster] data_dir = "/var/lib/rradius"
+       [radius.accounting_spool] dir  (if used) below /var/lib/rradius
+       [radius.accounting_log] file   (if used) below /var/log/rradius
+
+     "dictionary" already points at /usr/share/rradius/dictionary. Add the [lua] script and
+     your clients, and keep the file readable by the "rradius" user only:
 
        chown root:rradius /etc/rradius/rradius.toml && chmod 640 /etc/rradius/rradius.toml
 
@@ -22,6 +29,8 @@ First start
 
        rradius-server check
        systemctl enable --now rradius
+
+     The package does not enable the service by itself.
 
 The default configuration path is fixed when the program is built; "rradius-server --version"
 shows it on the second line.

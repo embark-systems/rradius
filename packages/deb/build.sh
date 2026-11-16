@@ -19,6 +19,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/rradius-src"
 git -C "$root" archive "$commit" | tar -x -C "$work/rradius-src"
 cp -r "$work/rradius-src/packages/deb/debian" "$work/rradius-src/debian"
+cp "$work/rradius-src/packages/common/rradius.service" "$work/rradius-src/debian/rradius.service"
 (cd "$work/rradius-src" && dpkg-buildpackage -b -us -uc -d)
 mkdir -p "$out"
 cp "$work"/rradius_*.deb "$out/"

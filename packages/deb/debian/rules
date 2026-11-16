@@ -34,6 +34,14 @@ override_dh_auto_install:
 	install -d -m 0750 debian/rradius/var/lib/rradius debian/rradius/var/log/rradius
 	install -d debian/rradius/etc/rradius
 
+# The documentation stays readable where the manual and the service file point to it.
+override_dh_compress:
+	dh_compress -Xusr/share/doc/rradius
+
+# The service starts once the configuration exists, and only when the operator enables it.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start
+
 # Rust binaries carry no DWARF the tool can compress, and the debug info is not packaged.
 override_dh_dwz:
 

@@ -1,4 +1,4 @@
-# The accounting log of [radius.accounting_log] (usage.md, section 2.13). rradius opens a new
+# The accounting log of [radius.accounting_log] (usage.md, section 2.18). rradius opens a new
 # file on SIGHUP; copytruncate would lose lines.
 /var/log/rradius/*.jsonl {
     daily
