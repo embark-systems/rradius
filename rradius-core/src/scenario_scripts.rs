@@ -24,6 +24,9 @@ const STATIC_SCHEMA: &str = include_str!("../../rradius-server/examples/scenario
 const STATIC_DATA: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/migrations/2_demo_data.sql");
 const STATIC_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/static.lua");
 const STATIC_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/accounting.lua");
+const RATE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/migrations/1_schema.sql");
+const RATE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/migrations/2_demo_data.sql");
+const RATE_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/rate.lua");
 const IP_POOL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
 const USAGE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/1_schema.sql");
 const USAGE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/2_demo_data.sql");
@@ -1006,5 +1009,103 @@ async fn test_static_ip_one_owner_for_a_value() -> Result<(), String> {
     statics.execute("INSERT INTO ASSIGNMENTS (username, ipv4) VALUES ('alice', '203.0.113.11')").await?;
     statics.execute("INSERT INTO ASSIGNMENTS (username, ipv4) VALUES ('dave2', '203.0.113.12')").await?;
     assert_eq!(statics.ask("alice").await.0, Outcome::Accept);
+    Ok(())
+}
+
+// ---- The rate attributes of chapter 18 ----
+
+const RATE_TABLES: [&str; 3] = ["plans", "subscribers", "nas_styles"];
+
+/// The rate-limit scenario's schema and demo data under `prefix`, with its script.
+struct Rates {
+    prefix: &'static str,
+    script: String,
+}
+
+impl Rates {
+    async fn new(prefix: &'static str) -> Rates {
+        apply(&renamed(RATE_SCHEMA, prefix, &RATE_TABLES)).await;
+        apply(&renamed(RATE_DATA, prefix, &RATE_TABLES)).await;
+        Rates { prefix, script: renamed(RATE_SCRIPT, prefix, &RATE_TABLES) }
+    }
+
+    /// The chain's lua handler for `user`, asked by the RADIUS client `client`.
+    async fn ask(&self, client: &str, user: &str) -> (Outcome, Vec<(String, AttrValue)>) {
+        run(&self.script, "radius", "authentication", client, Some(user), vec![("User-Name", bytes(user))]).await
+    }
+
+    async fn execute(&self, sql: &str) -> Result<(), String> {
+        test_db().execute(&sql.replace("STYLES", &format!("{}_nas_styles", self.prefix))).await.map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+/// Every style sends its own attributes for the same plan, in the unit and the direction the
+/// script's comments give; a client that is not listed gets Filter-Id.
+#[tokio::test]
+async fn test_rate_limit_styles() -> Result<(), String> {
+    let rates = Rates::new("rla").await;
+    // fiber-500: 500000 kbit/s down, 250000 up.
+    let (outcome, reply) = rates.ask("bng-unlisted", "bob").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(names(&reply), ["Acct-Interim-Interval", "Filter-Id"], "an unlisted client");
+    assert_eq!(reply_text(&reply, "Filter-Id").as_deref(), Some("fiber-500"));
+    assert_eq!(reply_number(&reply, "Acct-Interim-Interval"), Some(300.0));
+
+    let (_, reply) = rates.ask("bng-wispr", "bob").await;
+    assert_eq!(names(&reply), ["Acct-Interim-Interval", "WISPr-Bandwidth-Max-Down", "WISPr-Bandwidth-Max-Up"]);
+    assert_eq!(reply_number(&reply, "WISPr-Bandwidth-Max-Down"), Some(500_000_000.0), "bit/s");
+    assert_eq!(reply_number(&reply, "WISPr-Bandwidth-Max-Up"), Some(250_000_000.0));
+
+    let (_, reply) = rates.ask("bng-mikrotik", "bob").await;
+    assert_eq!(names(&reply), ["Acct-Interim-Interval", "Mikrotik-Rate-Limit"]);
+    assert_eq!(reply_text(&reply, "Mikrotik-Rate-Limit").as_deref(), Some("250000k/500000k"), "upload/download");
+
+    let (_, reply) = rates.ask("bng-nokia", "bob").await;
+    assert_eq!(names(&reply), ["Acct-Interim-Interval", "Alc-SLA-Prof-Str"]);
+    assert_eq!(reply_text(&reply, "Alc-SLA-Prof-Str").as_deref(), Some("fiber-500"));
+
+    let (_, reply) = rates.ask("bng-erx", "bob").await;
+    assert_eq!(names(&reply), ["Acct-Interim-Interval", "ERX-Egress-Policy-Name", "ERX-Ingress-Policy-Name"]);
+    assert_eq!(reply_text(&reply, "ERX-Ingress-Policy-Name").as_deref(), Some("fiber-500-up"));
+    assert_eq!(reply_text(&reply, "ERX-Egress-Policy-Name").as_deref(), Some("fiber-500-down"));
+
+    // Another plan, other numbers.
+    let (_, reply) = rates.ask("bng-wispr", "alice").await;
+    assert_eq!(reply_number(&reply, "WISPr-Bandwidth-Max-Down"), Some(100_000_000.0));
+    assert_eq!(reply_number(&reply, "WISPr-Bandwidth-Max-Up"), Some(50_000_000.0));
+    Ok(())
+}
+
+/// What is refused: a disabled or unknown user, a user whose plan does not exist, a client whose
+/// style the script does not know, and TACACS+; accounting is answered.
+#[tokio::test]
+async fn test_rate_limit_refusals() -> Result<(), String> {
+    let rates = Rates::new("rlb").await;
+    assert_eq!(rates.ask("bng-wispr", "erin").await.0, Outcome::Reject, "disabled");
+    assert_eq!(rates.ask("bng-wispr", "nobody").await.0, Outcome::Reject, "unknown");
+    assert_eq!(rates.ask("bng-wispr", "dave").await.0, Outcome::Reject, "plan missing");
+    rates.execute("INSERT INTO STYLES (client, style) VALUES ('bng-odd', 'no-such-style')").await?;
+    assert_eq!(rates.ask("bng-odd", "alice").await.0, Outcome::Reject, "style unknown");
+    let (outcome, _) = run(&rates.script, "tacacs", "authentication", "bng", None, vec![]).await;
+    assert_eq!(outcome, Outcome::Reject, "TACACS+");
+    let (outcome, _) = run(&rates.script, "radius", "accounting", "bng", None, vec![]).await;
+    assert_eq!(outcome, Outcome::Accept, "accounting");
+    Ok(())
+}
+
+/// WISPr's attributes are 32-bit integers in bit/s: a plan faster than 4294967295 bit/s is refused
+/// for a WISPr client (and the log says which plan) while the styles that send names still work;
+/// the largest value that fits is sent as it is.
+#[tokio::test]
+async fn test_rate_limit_wispr_upper_bound() -> Result<(), String> {
+    let rates = Rates::new("rlc").await;
+    for (plan, kbps, outcome) in [("fits", 4_294_967, Outcome::Accept), ("too-fast", 4_294_968, Outcome::Reject)] {
+        test_db().execute(&format!("INSERT INTO rlc_plans (plan, down_kbps, up_kbps, profile) VALUES ('{plan}', {kbps}, 1000, '{plan}')")).await.map_err(|e| e.to_string())?;
+        test_db().execute(&format!("INSERT INTO rlc_subscribers (username, password, plan, enabled) VALUES ('u-{plan}', 'x', '{plan}', 1)")).await.map_err(|e| e.to_string())?;
+        assert_eq!(rates.ask("bng-wispr", &format!("u-{plan}")).await.0, outcome, "{plan} on a WISPr client");
+        assert_eq!(rates.ask("bng-nokia", &format!("u-{plan}")).await.0, Outcome::Accept, "{plan} on a client that takes names");
+    }
+    let (_, reply) = rates.ask("bng-wispr", "u-fits").await;
+    assert_eq!(reply_number(&reply, "WISPr-Bandwidth-Max-Down"), Some(4_294_967_000.0));
     Ok(())
 }
