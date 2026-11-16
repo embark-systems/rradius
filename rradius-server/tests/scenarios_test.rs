@@ -281,6 +281,47 @@ fn test_wired_mab() {
     assert_eq!(mab("00ffffffffff", "00:ff:ff:ff:ff:ff").code, ACCESS_REJECT, "unknown");
 }
 
+/// Chapter 16: a line is known by the circuit-id and remote-id the BNG relays from DHCP Option 82
+/// (RFC 4679 attributes in vendor 3561), and answered with the plan's pool and profile.
+#[test]
+fn test_line_identity() -> TestResult {
+    let mut server = Server::start(SCENARIOS, "line-identity", "rradius.toml", |text| text.replacen("address = \"10.60.0.0/24\"", "address = \"127.0.0.1\"", 1));
+    server.secret = secret_of(SCENARIOS, "line-identity", "bng.secret");
+    // A vendor-specific attribute of the Broadband Forum (3561) with one sub-attribute.
+    let broadband = |sub_type: u8, value: &str| {
+        let mut data = 3561u32.to_be_bytes().to_vec();
+        data.extend_from_slice(&[sub_type, value.len() as u8 + 2]);
+        data.extend_from_slice(value.as_bytes());
+        (26u8, data)
+    };
+    let ask = |remote: &str, circuit: &str, mac: &str| {
+        let authenticator = random_authenticator();
+        let mut attributes = vec![(1, circuit.as_bytes().to_vec()), (2, hide_password(b"none", &server.secret, &authenticator)), (31, mac.as_bytes().to_vec()), broadband(1, circuit)];
+        if !remote.is_empty() {
+            attributes.push(broadband(2, remote));
+        }
+        server.login(attributes, authenticator)
+    };
+
+    let alice = ask("olt-a", "eth 1/1/3:100", "00:11:22:aa:bb:cc");
+    assert_eq!(alice.code, ACCESS_ACCEPT, "{}", server.stderr());
+    assert_eq!(text(&alice, 88).as_deref(), Some("residential"), "Framed-Pool");
+    assert_eq!(text(&alice, 11).as_deref(), Some("fiber-100m"), "Filter-Id");
+    assert_eq!(number(&alice, 85), Some(300), "Acct-Interim-Interval");
+    assert_eq!(text(&alice, 25).as_deref(), Some("alice"), "Class");
+    assert_eq!(text(&ask("olt-b", "eth 2/0/7:200", "00:11:22:aa:bb:dd"), 88).as_deref(), Some("business"));
+
+    assert_eq!(ask("olt-a", "eth 9/9/9:9", "00:11:22:aa:bb:cc").code, ACCESS_REJECT, "unknown line");
+    assert_eq!(ask("olt-b", "eth 1/1/3:100", "00:11:22:aa:bb:cc").code, ACCESS_REJECT, "another access node");
+    assert_eq!(ask("olt-b", "eth 2/0/8:200", "00:11:22:aa:bb:cc").code, ACCESS_REJECT, "disabled");
+    // bob's line is locked to the first station.
+    assert_eq!(ask("olt-a", "eth 1/1/4:100", "00:11:22:aa:bb:01").code, ACCESS_ACCEPT);
+    assert_eq!(ask("olt-a", "eth 1/1/4:100", "00:11:22:aa:bb:02").code, ACCESS_REJECT, "another station");
+    assert!(server.stderr().contains("line identity: unknown line"), "{}", server.stderr());
+    assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
+    Ok(())
+}
+
 /// Chapter 6: PAP login against the bcrypt hashes, authorization by role, and accounting.
 #[test]
 fn test_device_admin() {
