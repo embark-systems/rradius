@@ -20,6 +20,10 @@ const IP_POOL_ALLOCATE: &str = include_str!("../../rradius-server/examples/scena
 const LINE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/migrations/1_schema.sql");
 const LINE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/migrations/2_demo_data.sql");
 const LINE_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/auth.lua");
+const STATIC_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/migrations/1_schema.sql");
+const STATIC_DATA: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/migrations/2_demo_data.sql");
+const STATIC_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/static.lua");
+const STATIC_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/accounting.lua");
 const IP_POOL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
 const USAGE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/1_schema.sql");
 const USAGE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/2_demo_data.sql");
@@ -858,5 +862,149 @@ async fn test_line_identity_mac_race() -> Result<(), String> {
     assert_eq!(outcomes.iter().filter(|outcome| **outcome == Outcome::Accept).count(), 1, "{outcomes:?}");
     let bound = lines.column("bound_mac", "olt-a", "eth 1/1/4:100").await;
     assert!(bound == [vec![txt("001122aabb05")]] || bound == [vec![txt("001122aabb06")]], "{bound:?}");
+    Ok(())
+}
+
+// ---- The static addresses and prefixes of chapter 17 ----
+
+const STATIC_TABLES: [&str; 5] = ["subscribers", "static_assignments", "static_assignments_ipv4", "static_assignments_wan_v6", "static_assignments_pd_v6"];
+
+/// The static-ip scenario's schema and demo data under `prefix`, with its script.
+struct Statics {
+    prefix: &'static str,
+    script: String,
+}
+
+impl Statics {
+    async fn new(prefix: &'static str) -> Statics {
+        apply(&renamed(STATIC_SCHEMA, prefix, &STATIC_TABLES)).await;
+        apply(&renamed(STATIC_DATA, prefix, &STATIC_TABLES)).await;
+        Statics { prefix, script: renamed(STATIC_SCRIPT, prefix, &STATIC_TABLES) }
+    }
+
+    /// The chain's lua handler for `user`. The checker stands in for the dictionary: it refuses a
+    /// value that starts with "bad", as `set_attr` refuses what the attribute's type cannot hold.
+    async fn ask(&self, user: &str) -> (Outcome, Vec<(String, AttrValue)>) {
+        let engine = LuaAuthEngine::new(test_vms(), test_db(), &self.script).unwrap();
+        let mut request = LuaRequest::new("radius", "authentication", vec![("User-Name".to_string(), bytes(user))]);
+        request.client = "bng".to_string();
+        request.auth_user = Some(user.to_string());
+        request.validator = Some(std::sync::Arc::new(|name: &str, value: &AttrValue| match value {
+            AttrValue::Bytes(text) if text.starts_with(b"bad") || text.windows(4).any(|part| part == b"bad ") => Err(format!("{name}: cannot hold {}", String::from_utf8_lossy(text))),
+            _ => Ok(()),
+        }));
+        let decision = engine.authenticate(request).await;
+        (decision.outcome, decision.response_attributes)
+    }
+
+    async fn execute(&self, sql: &str) -> Result<(), String> {
+        test_db().execute(&sql.replace("ASSIGNMENTS", &format!("{}_static_assignments", self.prefix))).await.map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+fn names(attributes: &[(String, AttrValue)]) -> Vec<&str> {
+    let mut found: Vec<&str> = attributes.iter().map(|(name, _)| name.as_str()).collect();
+    found.sort_unstable();
+    found
+}
+
+/// Who gets what: everything a user has, nothing the user has not, the pool's name for a user
+/// without a row, and a refusal for a disabled or unknown user.
+#[tokio::test]
+async fn test_static_ip_replies() -> Result<(), String> {
+    let statics = Statics::new("sta").await;
+    let (outcome, reply) = statics.ask("carol").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(reply_text(&reply, "Framed-IP-Address").as_deref(), Some("203.0.113.20"));
+    assert_eq!(reply_text(&reply, "Framed-IP-Netmask").as_deref(), Some("255.255.255.252"));
+    assert_eq!(reply_text(&reply, "Framed-Route").as_deref(), Some("198.51.100.8/29 0.0.0.0 1"));
+    assert_eq!(reply_text(&reply, "Framed-IPv6-Prefix").as_deref(), Some("2001:db8:1:1::/64"));
+    assert_eq!(reply_text(&reply, "Delegated-IPv6-Prefix").as_deref(), Some("2001:db8:100::/56"));
+    assert_eq!(reply_number(&reply, "Acct-Interim-Interval"), Some(300.0));
+    assert_eq!(reply_text(&reply, "Framed-Pool"), None, "a static user is not sent to a pool");
+
+    // Only an address: the netmask is a host's.
+    let (outcome, reply) = statics.ask("bob").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(names(&reply), ["Acct-Interim-Interval", "Framed-IP-Address", "Framed-IP-Netmask"]);
+    assert_eq!(reply_text(&reply, "Framed-IP-Netmask").as_deref(), Some("255.255.255.255"));
+    // Only IPv6 prefixes.
+    let (outcome, reply) = statics.ask("dave").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(names(&reply), ["Acct-Interim-Interval", "Delegated-IPv6-Prefix", "Framed-IPv6-Prefix"]);
+    // No row: the pool's name.
+    let (outcome, reply) = statics.ask("alice").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(names(&reply), ["Framed-Pool"]);
+    assert_eq!(reply_text(&reply, "Framed-Pool").as_deref(), Some("residential"));
+    assert_eq!(statics.ask("erin").await.0, Outcome::Reject, "disabled");
+    assert_eq!(statics.ask("nobody").await.0, Outcome::Reject, "unknown");
+    // Accounting is answered, TACACS+ is not.
+    let (outcome, _) = run(&renamed(STATIC_ACCOUNTING, "sta", &STATIC_TABLES), "radius", "accounting", "bng", None, vec![]).await;
+    assert_eq!(outcome, Outcome::Accept);
+    let (outcome, _) = run(&renamed(STATIC_ACCOUNTING, "sta", &STATIC_TABLES), "tacacs", "authentication", "bng", None, vec![]).await;
+    assert_eq!(outcome, Outcome::Reject);
+    Ok(())
+}
+
+/// A value the attribute cannot hold is refused, and the user and the column are in the log's
+/// message; the user is not sent to a pool instead.
+#[tokio::test]
+async fn test_static_ip_bad_data_is_refused() -> Result<(), String> {
+    let statics = Statics::new("stb").await;
+    for (column, value) in [("ipv4", "bad address"), ("routed_v4", "bad subnet"), ("wan_v6", "bad prefix"), ("pd_v6", "bad prefix")] {
+        statics.execute("UPDATE ASSIGNMENTS SET ipv4 = NULL, routed_v4 = NULL, wan_v6 = NULL, pd_v6 = NULL WHERE username = 'bob'").await?;
+        statics.execute(&format!("UPDATE ASSIGNMENTS SET {column} = '{value}' WHERE username = 'bob'")).await?;
+        let (outcome, reply) = statics.ask("bob").await;
+        assert_eq!(outcome, Outcome::Reject, "{column}");
+        assert_eq!(reply_text(&reply, "Framed-Pool"), None, "{column}: no pool instead");
+    }
+    Ok(())
+}
+
+/// What the dictionary cannot check, the script does: a subnet must be a.b.c.d/n with no host bits,
+/// a netmask must be one run of ones. A row with nothing to send is a user without a row.
+#[tokio::test]
+async fn test_static_ip_checks_subnet_and_netmask() -> Result<(), String> {
+    let statics = Statics::new("std").await;
+    for (column, value) in [
+        ("routed_v4", "garbage"),
+        ("routed_v4", "203.0.113.999/29"),
+        ("routed_v4", "198.51.100.9/29"),
+        ("routed_v4", "198.51.100.8/33"),
+        ("routed_v4", "198.51.100.8"),
+        ("routed_v4", "2001:db8::/48"),
+        ("netmask", "255.0.255.0"),
+        ("netmask", "255.255.255.253"),
+        ("netmask", "garbage"),
+    ] {
+        statics.execute("UPDATE ASSIGNMENTS SET ipv4 = '203.0.113.10', netmask = NULL, routed_v4 = NULL WHERE username = 'bob'").await?;
+        statics.execute(&format!("UPDATE ASSIGNMENTS SET {column} = '{value}' WHERE username = 'bob'")).await?;
+        assert_eq!(statics.ask("bob").await.0, Outcome::Reject, "{column} {value}");
+    }
+    for (column, value) in [("routed_v4", "198.51.100.8/29"), ("routed_v4", "0.0.0.0/0"), ("routed_v4", "198.51.100.77/32"), ("netmask", "255.255.255.0"), ("netmask", "0.0.0.0"), ("netmask", "255.255.255.255")] {
+        statics.execute("UPDATE ASSIGNMENTS SET ipv4 = '203.0.113.10', netmask = NULL, routed_v4 = NULL WHERE username = 'bob'").await?;
+        statics.execute(&format!("UPDATE ASSIGNMENTS SET {column} = '{value}' WHERE username = 'bob'")).await?;
+        assert_eq!(statics.ask("bob").await.0, Outcome::Accept, "{column} {value}");
+    }
+    // Nothing to send, or only a netmask: the pool's name, as for a user without a row.
+    statics.execute("UPDATE ASSIGNMENTS SET ipv4 = NULL, netmask = '255.255.255.0', routed_v4 = NULL WHERE username = 'bob'").await?;
+    let (outcome, reply) = statics.ask("bob").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(names(&reply), ["Framed-Pool"]);
+    Ok(())
+}
+
+/// Two users cannot hold the same address or prefix; a column that is empty for many is fine.
+#[tokio::test]
+async fn test_static_ip_one_owner_for_a_value() -> Result<(), String> {
+    let statics = Statics::new("stc").await;
+    for (column, value) in [("ipv4", "203.0.113.10"), ("wan_v6", "2001:db8:1:2::/64"), ("pd_v6", "2001:db8:200::/56")] {
+        let again = statics.execute(&format!("INSERT INTO ASSIGNMENTS (username, {column}) VALUES ('alice', '{value}')")).await;
+        assert!(again.is_err(), "{column}: a second owner of {value}");
+    }
+    statics.execute("INSERT INTO ASSIGNMENTS (username, ipv4) VALUES ('alice', '203.0.113.11')").await?;
+    statics.execute("INSERT INTO ASSIGNMENTS (username, ipv4) VALUES ('dave2', '203.0.113.12')").await?;
+    assert_eq!(statics.ask("alice").await.0, Outcome::Accept);
     Ok(())
 }
