@@ -17,6 +17,9 @@ const DEVICE_ADMIN_SCRIPT: &str = include_str!("../../rradius-server/examples/sc
 const IP_POOL_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/migrations/1_schema.sql");
 const IP_POOL_DATA: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/migrations/2_demo_data.sql");
 const IP_POOL_ALLOCATE: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/allocate.lua");
+const LINE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/migrations/1_schema.sql");
+const LINE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/migrations/2_demo_data.sql");
+const LINE_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/auth.lua");
 const IP_POOL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
 const USAGE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/1_schema.sql");
 const USAGE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/2_demo_data.sql");
@@ -722,5 +725,138 @@ async fn test_usage_control_follows_the_session() -> Result<(), String> {
     assert_eq!(usage.slots("bob").await, ["free", "free"]);
     let ended = rows(&format!("SELECT count(*) FROM {}_accounting WHERE stopped IS NULL AND nas = '10.0.0.1'", usage.prefix)).await;
     assert_eq!(ended, [vec![int(0)]]);
+    Ok(())
+}
+
+// ---- The line identity of chapter 16 ----
+
+const LINE_TABLES: [&str; 2] = ["plans", "lines"];
+
+/// The line scenario's schema and demo data under `prefix`, with its script.
+struct Lines {
+    prefix: &'static str,
+    script: String,
+}
+
+impl Lines {
+    async fn new(prefix: &'static str) -> Lines {
+        apply(&renamed(LINE_SCHEMA, prefix, &LINE_TABLES)).await;
+        apply(&renamed(LINE_DATA, prefix, &LINE_TABLES)).await;
+        Lines { prefix, script: renamed(LINE_SCRIPT, prefix, &LINE_TABLES) }
+    }
+
+    /// The decision for a request with these attributes.
+    async fn ask(&self, attributes: Vec<(&str, AttrValue)>) -> (Outcome, Vec<(String, AttrValue)>) {
+        run(&self.script, "radius", "authentication", "bng", None, attributes).await
+    }
+
+    /// A request for the line with circuit-id `circuit` behind `remote`, from the station `mac`.
+    async fn line(&self, remote: &str, circuit: &[u8], mac: &str) -> (Outcome, Vec<(String, AttrValue)>) {
+        let mut attributes = vec![("ADSL-Agent-Circuit-Id", AttrValue::Bytes(circuit.to_vec())), ("Calling-Station-Id", bytes(mac))];
+        if !remote.is_empty() {
+            attributes.push(("ADSL-Agent-Remote-Id", bytes(remote)));
+        }
+        self.ask(attributes).await
+    }
+
+    async fn column(&self, column: &str, remote: &str, circuit: &str) -> Vec<Vec<DbValue>> {
+        rows(&format!("SELECT {column} FROM {}_lines WHERE remote_id = '{remote}' AND circuit_id = '{circuit}'", self.prefix)).await
+    }
+}
+
+fn reply_number(attributes: &[(String, AttrValue)], name: &str) -> Option<f64> {
+    attributes.iter().find_map(|(found, value)| match value {
+        AttrValue::Number(number) if found == name => Some(*number),
+        _ => None,
+    })
+}
+
+/// A known line is accepted with its plan's pool, profile and interim interval, and the
+/// subscriber in Class; the same line written with other case and spaces is the same line.
+#[tokio::test]
+async fn test_line_identity_known_line() -> Result<(), String> {
+    let lines = Lines::new("lia").await;
+    let (outcome, reply) = lines.line("olt-a", b"eth 1/1/3:100", "00:11:22:aa:bb:cc").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(reply_text(&reply, "Framed-Pool").as_deref(), Some("residential"));
+    assert_eq!(reply_text(&reply, "Filter-Id").as_deref(), Some("fiber-100m"));
+    assert_eq!(reply_number(&reply, "Acct-Interim-Interval"), Some(300.0));
+    assert_eq!(reply_text(&reply, "Class").as_deref(), Some("alice"));
+    let (outcome, reply) = lines.line("OLT-A", b"  ETH 1/1/3:100 ", "00:11:22:aa:bb:cc").await;
+    assert_eq!(outcome, Outcome::Accept, "case and spaces");
+    assert_eq!(reply_text(&reply, "Class").as_deref(), Some("alice"));
+    let (outcome, reply) = lines.line("olt-b", b"eth 2/0/7:200", "00:11:22:aa:bb:dd").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(reply_text(&reply, "Framed-Pool").as_deref(), Some("business"));
+    assert_eq!(reply_number(&reply, "Acct-Interim-Interval"), Some(600.0));
+    Ok(())
+}
+
+/// A circuit-id of raw octets is matched as hex, and NAS-Port-Id stands in for a missing circuit-id.
+#[tokio::test]
+async fn test_line_identity_binary_id_and_nas_port() -> Result<(), String> {
+    let lines = Lines::new("lib").await;
+    let (outcome, reply) = lines.line("", &[0x00, 0x04, 0x00, 0x0a, 0x00, 0x01], "00:11:22:aa:bb:ee").await;
+    assert_eq!(outcome, Outcome::Accept, "binary circuit-id, no remote-id");
+    assert_eq!(reply_text(&reply, "Class").as_deref(), Some("erin"));
+    let (outcome, reply) = lines.ask(vec![("NAS-Port-Id", bytes("eth 1/1/3:100")), ("ADSL-Agent-Remote-Id", bytes("olt-a"))]).await;
+    assert_eq!(outcome, Outcome::Accept, "NAS-Port-Id as the circuit");
+    assert_eq!(reply_text(&reply, "Class").as_deref(), Some("alice"));
+    Ok(())
+}
+
+/// What is refused: an unknown line, a remote-id that is not the line's, a disabled line, a
+/// request with no line at all, and a plan that does not exist.
+#[tokio::test]
+async fn test_line_identity_refusals() -> Result<(), String> {
+    let lines = Lines::new("lic").await;
+    assert_eq!(lines.line("olt-a", b"eth 9/9/9:9", "00:11:22:aa:bb:cc").await.0, Outcome::Reject, "unknown circuit");
+    assert_eq!(lines.line("olt-b", b"eth 1/1/3:100", "00:11:22:aa:bb:cc").await.0, Outcome::Reject, "another access node");
+    assert_eq!(lines.line("", b"eth 1/1/3:100", "00:11:22:aa:bb:cc").await.0, Outcome::Reject, "no remote-id for a line that has one");
+    assert_eq!(lines.line("olt-b", b"eth 2/0/8:200", "00:11:22:aa:bb:cc").await.0, Outcome::Reject, "disabled");
+    assert_eq!(lines.ask(vec![("Calling-Station-Id", bytes("00:11:22:aa:bb:cc"))]).await.0, Outcome::Reject, "no circuit-id");
+    assert_eq!(lines.ask(vec![("ADSL-Agent-Circuit-Id", bytes("   "))]).await.0, Outcome::Reject, "blank circuit-id");
+    test_db().execute("UPDATE lic_lines SET plan = 'gone' WHERE circuit_id = 'eth 1/1/3:100'").await.map_err(|e| e.to_string())?;
+    assert_eq!(lines.line("olt-a", b"eth 1/1/3:100", "00:11:22:aa:bb:cc").await.0, Outcome::Reject, "plan missing");
+    // Not RADIUS: refused; accounting: answered.
+    let (outcome, _) = run(&lines.script, "tacacs", "authentication", "bng", None, vec![]).await;
+    assert_eq!(outcome, Outcome::Reject, "TACACS+");
+    let (outcome, _) = run(&lines.script, "radius", "accounting", "bng", None, vec![]).await;
+    assert_eq!(outcome, Outcome::Accept, "accounting");
+    Ok(())
+}
+
+/// The MAC address: without a lock it is only recorded; with one, the first station is bound and
+/// another is refused until the binding is cleared.
+#[tokio::test]
+async fn test_line_identity_mac() -> Result<(), String> {
+    let lines = Lines::new("lid").await;
+    // alice has no lock: any station, the last one is recorded.
+    assert_eq!(lines.line("olt-a", b"eth 1/1/3:100", "00-11-22-AA-BB-01").await.0, Outcome::Accept);
+    assert_eq!(lines.line("olt-a", b"eth 1/1/3:100", "00:11:22:aa:bb:02").await.0, Outcome::Accept);
+    assert_eq!(lines.column("last_mac", "olt-a", "eth 1/1/3:100").await, [vec![txt("001122aabb02")]]);
+    assert_eq!(lines.column("bound_mac", "olt-a", "eth 1/1/3:100").await, [vec![DbValue::Null]], "not bound");
+    // bob is locked: the first station is bound, another is refused, the first is accepted again.
+    assert_eq!(lines.line("olt-a", b"eth 1/1/4:100", "00:11:22:aa:bb:03").await.0, Outcome::Accept);
+    assert_eq!(lines.column("bound_mac", "olt-a", "eth 1/1/4:100").await, [vec![txt("001122aabb03")]]);
+    assert_eq!(lines.line("olt-a", b"eth 1/1/4:100", "00:11:22:aa:bb:04").await.0, Outcome::Reject, "another station");
+    assert_eq!(lines.line("olt-a", b"eth 1/1/4:100", "0011.22aa.bb03").await.0, Outcome::Accept, "the same, written differently");
+    assert_eq!(lines.ask(vec![("ADSL-Agent-Circuit-Id", bytes("eth 1/1/4:100")), ("ADSL-Agent-Remote-Id", bytes("olt-a"))]).await.0, Outcome::Reject, "no MAC in a locked line");
+    // Replacing the equipment: the operator clears the binding, and the next station is bound.
+    test_db().execute("UPDATE lid_lines SET bound_mac = NULL WHERE circuit_id = 'eth 1/1/4:100'").await.map_err(|e| e.to_string())?;
+    assert_eq!(lines.line("olt-a", b"eth 1/1/4:100", "00:11:22:aa:bb:04").await.0, Outcome::Accept);
+    assert_eq!(lines.column("bound_mac", "olt-a", "eth 1/1/4:100").await, [vec![txt("001122aabb04")]]);
+    Ok(())
+}
+
+/// Two first logins at once on a locked line: one station is bound and the other refused.
+#[tokio::test]
+async fn test_line_identity_mac_race() -> Result<(), String> {
+    let lines = Lines::new("lie").await;
+    let (first, second) = futures::future::join(lines.line("olt-a", b"eth 1/1/4:100", "00:11:22:aa:bb:05"), lines.line("olt-a", b"eth 1/1/4:100", "00:11:22:aa:bb:06")).await;
+    let outcomes = [first.0, second.0];
+    assert_eq!(outcomes.iter().filter(|outcome| **outcome == Outcome::Accept).count(), 1, "{outcomes:?}");
+    let bound = lines.column("bound_mac", "olt-a", "eth 1/1/4:100").await;
+    assert!(bound == [vec![txt("001122aabb05")]] || bound == [vec![txt("001122aabb06")]], "{bound:?}");
     Ok(())
 }
