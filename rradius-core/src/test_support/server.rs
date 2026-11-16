@@ -421,7 +421,11 @@ pub fn aka_settings_table(key_file: &str) -> Vec<(String, Said)> {
         ),
         (
             radius("[radius.eap]\nmethods = [\"md5\"]\n", ""),
-            Said { in_core: Some("'md5' is not a method this server offers; it has tls, peap and ttls"), in_enterprise: Some("'md5' is not a method this server offers; it has tls, peap, ttls and aka-prime") },
+            Said { in_core: Some("'md5' is not a method this server offers; it has tls, peap and ttls"), in_enterprise: Some("'md5' is not a method this server offers; it has tls, peap, ttls, aka-prime and sim") },
+        ),
+        (
+            radius("[radius.eap]\nmethods = [\"sim\"]\n", ""),
+            Said { in_core: Some("'sim' is not a method this server offers; it has tls, peap and ttls"), in_enterprise: Some("radius.eap.methods has sim, which needs [radius.eap.aka]") },
         ),
         (
             radius(peap, "") + "[accounts.aka]\nshow = \"SELECT imsi FROM aka_subscribers WHERE imsi = ?1\"\n",
