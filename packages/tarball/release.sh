@@ -164,7 +164,8 @@ self_check() {
 test ! -e rradius-enterprise"
     local script="set -e
 cd \"\$1\"
-test \"\$(bin/$program --version)\" = \"$program $version\"
+# The first line is the name and the version; the second is the default configuration path.
+test \"\$(bin/$program --version | head -n 1)\" = \"$program $version\"
 checked=0
 for root in $roots; do
     seen=0
