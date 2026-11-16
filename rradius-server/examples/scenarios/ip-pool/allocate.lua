@@ -54,7 +54,7 @@ local function give(ip)
 end
 
 -- 1. 已經有綁定：沿用。預留的延長到從現在起 RESERVE_SECONDS；active 的由計費延長。
-local mine = sql_query("SELECT ip FROM ip_pool WHERE pool = ? AND username = ? AND state IN ('reserved', 'active') ORDER BY ip LIMIT 1", {pool, user})
+local mine = sql_query("SELECT ip FROM ip_pool WHERE pool = ? AND username = ? AND state IN ('reserved', 'active') LIMIT 1", {pool, user})
 if #mine > 0 then
   sql_execute("UPDATE ip_pool SET expires = max(expires, ?), updated = ? WHERE pool = ? AND ip = ? AND username = ? AND state = 'reserved'",
     {now + RESERVE_SECONDS, now, pool, mine[1].ip, user})
@@ -74,13 +74,24 @@ if #sticky > 0 and claim(sticky[1].ip) then
   return give(sticky[1].ip)
 end
 
--- 3. 隨機挑幾個空閒的位址來搶。隨機是為了讓同時進來的請求不要都搶同一個。
+-- 3. 從空閒的位址裡挑幾個來搶。起點是空閒位址的 n 範圍內隨機取的，同時進來的請求才不會都搶同一批；
+-- 從起點往後取 CANDIDATES 個，後面不夠就從最小的 n 取。最小與最大 n 分兩條查詢，各自走 (pool, state, n)
+-- 索引，所以池再大也不會掃全部空閒列（同一條查詢同時取 min 和 max 就掃不了索引）。
 -- LIMIT 直接寫進語句：它是這個腳本的常數，不是請求送來的值。
-local pick = string.format("SELECT ip FROM ip_pool WHERE pool = ? AND state = 'free' ORDER BY random() LIMIT %d", CANDIDATES)
+local from_here = string.format("SELECT ip FROM ip_pool WHERE pool = ? AND state = 'free' AND n >= ? ORDER BY n LIMIT %d", CANDIDATES)
+local from_start = string.format("SELECT ip FROM ip_pool WHERE pool = ? AND state = 'free' ORDER BY n LIMIT %d", CANDIDATES)
 for _ = 1, ATTEMPTS do
-  local candidates = sql_query(pick, {pool})
-  if #candidates == 0 then
+  local lowest = sql_query("SELECT n FROM ip_pool WHERE pool = ? AND state = 'free' ORDER BY n LIMIT 1", {pool})
+  if #lowest == 0 then
     break
+  end
+  local highest = sql_query("SELECT n FROM ip_pool WHERE pool = ? AND state = 'free' ORDER BY n DESC LIMIT 1", {pool})
+  local first = lowest[1].n
+  -- 最小與最大是兩次讀，中間位址可能被搶走或放回，所以最大不一定 >= 最小；取較大的，免得範圍是空的。
+  local last = math.max(first, highest[1] and highest[1].n or first)
+  local candidates = sql_query(from_here, {pool, first + math.random(0, last - first)})
+  if #candidates == 0 then
+    candidates = sql_query(from_start, {pool})
   end
   for _, candidate in ipairs(candidates) do
     if claim(candidate.ip) then
