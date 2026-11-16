@@ -175,7 +175,7 @@ rradius-server query slot_usage --config examples/scenarios/usage-control/rradiu
 
 ## 已知限制
 
-- **只在登入時檢查。** 不會中斷已經在線的連線：一個 session 在線期間用掉的流量，要等它下次登入才會被檢查。要中途強制（超過上限就斷線或改變權限），需要 CoA 與 Disconnect（rradius-enterprise）。
+- **只在登入時檢查。** 不會中斷已經在線的連線：一個 session 在線期間用掉的流量，要等它下次登入才會被檢查。要中途強制（超過上限就斷線或改變權限），需要 CoA 與 Disconnect（rradius-enterprise）；rradius-enterprise 的手冊有一個範例，在每次計費的 Interim-Update 重算，額度用完時用 CoA 降速，方案被改時換成新的速率，帳號被停用時用 Disconnect 斷線。
 - **計量期間是滾動的最近 N 天，** 不是日曆月，沒有帳單日和時區。
 - **流量加總隨用戶的 session 數變慢。** 有 `accounting_user` 索引、只看一個用戶，但用戶多、session 多時要先實測；必要時另存每個用戶的累計表。
 - **用盡時 NAS 只看到 Reject，** 原因在 rradius 的記錄，監控記錄裡的 `session limit` 與 `quota`。
