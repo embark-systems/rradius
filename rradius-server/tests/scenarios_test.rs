@@ -322,6 +322,65 @@ fn test_line_identity() -> TestResult {
     Ok(())
 }
 
+/// Chapter 17: a user with fixed data gets exactly that, as the attributes of RFC 2865, 3162 and
+/// 4818 carry it; a user without gets the pool's name; a value the attribute cannot hold is refused.
+#[test]
+fn test_static_ip() -> TestResult {
+    // Users whose data is wrong in one column each.
+    let broken = [("frank", "ipv4", "203.0.113.999"), ("gina", "routed_v4", "garbage"), ("hank", "netmask", "255.0.255.0"), ("ivan", "wan_v6", "2001:db8::/129"), ("judy", "pd_v6", "2001:db8::1/56")];
+    let mut bad = String::new();
+    for (user, column, value) in broken {
+        bad.push_str(&format!("INSERT INTO subscribers (username, password, pool, enabled) VALUES ('{user}', '{user}-password', 'residential', 1);\n"));
+        let ipv4 = if column == "netmask" { ", ipv4" } else { "" };
+        let address = if column == "netmask" { ", '203.0.113.50'" } else { "" };
+        bad.push_str(&format!("INSERT INTO static_assignments (username, {column}{ipv4}) VALUES ('{user}', '{value}'{address});\n"));
+    }
+    let bad = bad.as_str();
+    let (migrations, migrations_line) = migrations_with("static-ip", &[("3_test_bad_data.sql", bad)]);
+    let mut server = Server::start(SCENARIOS, "static-ip", "rradius.toml", |text| text.replace(&migrations_line, &format!("migrations_dir = \"{}\"", migrations.path().display())));
+    server.secret = secret_of(SCENARIOS, "static-ip", "localhost.secret");
+
+    let carol = server.pap("carol", "carol-password");
+    assert_eq!(carol.code, ACCESS_ACCEPT, "{}", server.stderr());
+    assert_eq!(framed_ip(&carol).as_deref(), Some("203.0.113.20"));
+    assert_eq!(carol.attribute(9), Some(&[255, 255, 255, 252][..]), "Framed-IP-Netmask");
+    assert_eq!(text(&carol, 22).as_deref(), Some("198.51.100.8/29 0.0.0.0 1"), "Framed-Route");
+    // Prefix attributes: a reserved octet, the length in bits, then the prefix (sent in full, 16 octets).
+    let prefix = |answer: &RadiusPacket, attr_type: u8| answer.attribute(attr_type).map(|value| (value.len(), value[0], value[1], value[2..value.len().min(2 + 8)].to_vec()));
+    assert_eq!(prefix(&carol, 97), Some((18, 0, 64, vec![0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 1])), "Framed-IPv6-Prefix");
+    assert_eq!(prefix(&carol, 123), Some((18, 0, 56, vec![0x20, 0x01, 0x0d, 0xb8, 0x01, 0, 0, 0])), "Delegated-IPv6-Prefix");
+    assert_eq!(number(&carol, 85), Some(300), "Acct-Interim-Interval");
+    assert_eq!(carol.attribute(88), None, "no pool for a static user");
+
+    let bob = server.pap("bob", "bob-password");
+    assert_eq!(framed_ip(&bob).as_deref(), Some("203.0.113.10"));
+    assert_eq!(bob.attribute(9), Some(&[255, 255, 255, 255][..]));
+    let dave = server.pap("dave", "dave-password");
+    assert_eq!(framed_ip(&dave), None);
+    assert_eq!(dave.attribute(97).map(|prefix| prefix[1]), Some(64));
+    assert_eq!(dave.attribute(123).map(|prefix| prefix[1]), Some(56));
+
+    let alice = server.pap("alice", "alice-password");
+    assert_eq!(alice.code, ACCESS_ACCEPT);
+    assert_eq!(text(&alice, 88).as_deref(), Some("residential"), "Framed-Pool");
+    assert_eq!(framed_ip(&alice), None);
+
+    let wrong = server.pap("carol", "wrong");
+    assert_eq!(wrong.code, ACCESS_REJECT);
+    assert_eq!(framed_ip(&wrong), None);
+    assert_eq!(server.pap("erin", "erin-password").code, ACCESS_REJECT, "disabled");
+
+    // An address that is not one: refused, and the log says whose and which column.
+    for (user, column, _) in broken {
+        let refused = server.pap(user, &format!("{user}-password"));
+        assert_eq!(refused.code, ACCESS_REJECT, "{user}: {}", server.stderr());
+        assert_eq!(framed_ip(&refused), None);
+        assert!(server.stderr().contains(&format!("static ip: bad {column} for {user}")), "{column}: {}", server.stderr());
+    }
+    assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
+    Ok(())
+}
+
 /// Chapter 6: PAP login against the bcrypt hashes, authorization by role, and accounting.
 #[test]
 fn test_device_admin() {

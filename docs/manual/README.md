@@ -24,6 +24,7 @@
 | 由認證伺服器從池裡分配 IP 位址給用戶 | [14](14-ip-pool.md) |
 | 限制每個用戶同時幾個連線、一段時間的流量（降速或拒絕） | [15](15-usage-control.md) |
 | 光纖、DSL 用戶不輸入密碼，依 BNG 轉送的 Option 82（哪個設備的哪個埠）認證 | [16](16-line-identity.md) |
+| 商業用戶固定的 IPv4 位址、路由網段、IPv6 前綴 | [17](17-static-ip.md) |
 | 帳號已經在別的系統裡，不想複製 | 目錄（LDAP／AD）看 [5](05-remote-access.md)，HTTP API 看 [10](10-external-api.md)，MySQL／PostgreSQL 看 [9](09-migrate-users.md#帳號留在原本的資料庫) |
 | 從舊的認證系統搬過來，不想讓大家重設密碼 | [9](09-migrate-users.md) |
 | 上線之後的日常工作 | [11](11-operations.md) |
@@ -47,6 +48,7 @@
 | [14. 位址池](14-ip-pool.md) | 登入時從資料表的池分配 IP，計費確認與釋放，黏著，過期回收 | `all_accept` 串接、`lua` 處理器、`sql_execute` 比較後更新、請求觸發的回收 | `ip-pool/` |
 | [15. 用戶資源控制](15-usage-control.md) | 方案：同時連線數與一段時間的流量上限，超過降速或拒絕 | `all_accept` 串接、連線位的比較後更新、`Acct-*-Gigawords` 流量加總、請求觸發的回收 | `usage-control/` |
 | [16. 線路身分認證](16-line-identity.md) | 依 BNG 轉送的 Option 82（circuit-id、remote-id）認證，回方案；可選的 MAC 鎖 | 沒有 `[auth]` 的最上層腳本、RFC 4679 屬性、正規化、比較後更新綁定 | `line-identity/` |
+| [17. 固定位址與前綴](17-static-ip.md) | 依用戶回固定的 IPv4、路由網段（`Framed-Route`）、IPv6 的 /64 與委派前綴，沒有的回池名稱；唯一索引防重複 | `all_accept` 串接、`set_attr` 的字典檢查、唯一索引 | `static-ip/` |
 
 ## 上線之後
 
