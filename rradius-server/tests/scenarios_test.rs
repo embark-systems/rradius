@@ -317,7 +317,8 @@ fn test_line_identity() -> TestResult {
     // bob's line is locked to the first station.
     assert_eq!(ask("olt-a", "eth 1/1/4:100", "00:11:22:aa:bb:01").code, ACCESS_ACCEPT);
     assert_eq!(ask("olt-a", "eth 1/1/4:100", "00:11:22:aa:bb:02").code, ACCESS_REJECT, "another station");
-    assert!(server.stderr().contains("line identity: unknown line"), "{}", server.stderr());
+    let log = server.wait_for_log("line identity: unknown line");
+    assert!(log.contains("line identity: unknown line"), "{log}");
     assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
     Ok(())
 }
@@ -375,7 +376,8 @@ fn test_static_ip() -> TestResult {
         let refused = server.pap(user, &format!("{user}-password"));
         assert_eq!(refused.code, ACCESS_REJECT, "{user}: {}", server.stderr());
         assert_eq!(framed_ip(&refused), None);
-        assert!(server.stderr().contains(&format!("static ip: bad {column} for {user}")), "{column}: {}", server.stderr());
+        let log = server.wait_for_log(&format!("static ip: bad {column} for {user}"));
+        assert!(log.contains(&format!("static ip: bad {column} for {user}")), "{column}: {log}");
     }
     assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
     Ok(())
