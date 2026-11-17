@@ -227,8 +227,11 @@ mod tests {
     use super::*;
     use crate::test_support::test_db;
 
+    // A timeout far longer than any query here takes: the test database is shared by the whole
+    // process, and on a busy machine a query that takes milliseconds can wait seconds for its turn.
+    // The test of the timeout itself sets its own.
     fn settings(sql: &str, labels: &[&str], value: &str) -> QuerySettings {
-        QuerySettings { sql: sql.to_string(), help: String::new(), labels: labels.iter().map(|label| label.to_string()).collect(), value: value.to_string(), interval: Duration::from_secs(30), timeout: Duration::from_secs(5), max_rows: 200 }
+        QuerySettings { sql: sql.to_string(), help: String::new(), labels: labels.iter().map(|label| label.to_string()).collect(), value: value.to_string(), interval: Duration::from_secs(30), timeout: Duration::from_secs(30), max_rows: 200 }
     }
 
     async fn table(name: &str, rows: &str) -> Result<(), String> {
