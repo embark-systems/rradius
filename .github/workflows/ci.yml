@@ -4,7 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
-  # To run it again on main by hand, as after it was turned back on.
+  # The jobs that need Docker or take long (ldap, external-db, fuzz, docker) run only here,
+  # once a week on main, and when started by hand; a push or a pull request runs test and
+  # bench. After a change to LDAP, [databases], the fuzz targets or the Docker files, start
+  # CI by hand on the branch before merging.
+  schedule:
+    - cron: '7 4 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -37,6 +42,7 @@ jobs:
       - run: cargo test --locked -p rradius-core -p rradius-server
 
   ldap:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # Runs a real OpenLDAP server in Docker, which `cargo test` skips.
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -47,6 +53,7 @@ jobs:
       - run: cargo test --locked -p rradius-server --test ldap_test -- --ignored
 
   external-db:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # Runs MySQL 8.4 and PostgreSQL 17 in Docker for [databases], which `cargo test` skips.
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -72,6 +79,7 @@ jobs:
       - run: cargo test --locked -p rradius-bench
 
   fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # Replays the seeds only, so that a pull request fails for what it changed. The
     # random search runs on its own schedule, in fuzz.yml.
     runs-on: ubuntu-latest
@@ -94,6 +102,7 @@ jobs:
           done
 
   docker:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
