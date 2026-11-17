@@ -1,0 +1,30 @@
+# One node on a Synology NAS (Container Manager project). Chapter 20 of the manual,
+# docs/manual/20-synology.md, says how to get the image and the two folders onto the NAS.
+#
+#   /volume1/docker/rradius/compose.yaml   this file
+#   /volume1/docker/rradius/config/        a copy of docker/config (edit rradius.toml)
+#   /volume1/docker/rradius/secrets/       raft.secret, api.secret, radius.secret
+#
+# The image is not on a registry: it is built on another machine and imported (chapter 20).
+services:
+  rradius:
+    image: rradius-server:latest
+    restart: unless-stopped
+    # Time to finish the database shutdown; the default 10 s can cut it short.
+    stop_grace_period: 30s
+    ports:
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+    volumes:
+      - ./config:/etc/rradius:ro
+      # The three files rradius.toml names under /run/secrets, as plain files: no Compose
+      # secrets are needed, so it does not matter which Compose version the package carries.
+      - ./secrets/raft.secret:/run/secrets/raft:ro
+      - ./secrets/api.secret:/run/secrets/api:ro
+      - ./secrets/radius.secret:/run/secrets/radius:ro
+      # A named volume: Docker makes it writable for the container's user (uid 10001), which
+      # a folder made in File Station would not be.
+      - data:/var/lib/rradius
+
+volumes:
+  data:
