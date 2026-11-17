@@ -3,6 +3,6 @@ set -e
 # The data, the logs and the user stay: they hold the cluster's database and the accounting.
 # "purge" removes only the configuration directory if it is empty.
 if [ "$1" = purge ]; then
-    rmdir /etc/rradius 2>/dev/null || true
+    rmdir /etc/rradius/conf.d /etc/rradius 2>/dev/null || true
 fi
 #DEBHELPER#

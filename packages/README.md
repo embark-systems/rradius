@@ -53,6 +53,7 @@ FreeBSD：把 `freebsd/net/rradius` 放進 ports 樹的 `net/`，並在 ports �
 | --- | --- |
 | deb | 用 `docker-build.sh` 在 Debian 12 容器建出 amd64（模擬）和 arm64，依賴 glibc 2.34 以上；兩個都在 Debian 12 容器安裝：檢查內容、用戶與目錄、預設設定檔路徑 `/etc/rradius/rradius.toml`、`config init` 可執行、權限 0750。先前在 Ubuntu 24.04 arm64 容器也建過並驗證移除（用戶保留）、服務不自動啟用。amd64 只裝、沒有執行服務；沒有在真正的 systemd 主機上啟動服務 |
 | rpm | 在 Rocky Linux 9（aarch64）容器建置；檢查內容、安裝（`--nodeps`，容器裡沒有 systemd）、移除（用戶保留）。**沒有建 x86_64**，`%systemd_post` 等腳本沒有在有 systemd 的主機上跑過 |
+| `conf.d/` | 三種套件的定義都建立空的 `/etc/rradius/conf.d`（FreeBSD 是 `etc/rradius/conf.d`）：`deb/debian/rules` 與 `rradius.postrm`、`rpm/rradius.spec` 的 `%dir`、`pkg-plist` 的 `@dir`，說明在 `common/README.packages` 與 FreeBSD 的 `README.packages`。**只檢查了定義檔，沒有重建套件，也沒有安裝驗證** |
 | 服務檔 | 只有 `common/rradius.service` 一份；`deb/build.sh` 建置時把它複製進 `debian/`。 |
 | 服務檔驗證 | `systemd-analyze verify` 沒有錯誤；沒有實際啟動 |
 | FreeBSD port | **沒有在 FreeBSD 驗證。** 沒有 `distinfo`（要在 FreeBSD 用 `make makesum` 產生），沒有跑過 `make`、`portlint`、`poudriere`；rc.d 腳本只過了 `sh -n`；`Makefile.crates` 的筆數與 `Cargo.lock` 相同 |

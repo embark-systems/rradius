@@ -264,6 +264,7 @@ fn inline(node: &mut Value, definitions: &Map<String, Value>, depth: usize) -> R
 const USAGE: &str = "https://github.com/embark-systems/rradius/blob/main/docs/usage.md";
 const CHAPTERS: &[(&str, &str)] = &[
     ("dictionary", "#2-設定檔總覽"),
+    ("include", "#2-設定檔總覽"),
     ("lua", "#21-lua"),
     ("cluster", "#22-cluster"),
     ("radius", "#23-radius-與-tacacs"),

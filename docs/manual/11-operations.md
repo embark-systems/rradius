@@ -133,6 +133,31 @@ systemctl reload rradius        # 服務檔有 ExecReload=/bin/kill -HUP $MAINPI
 
 完整的清單見 [usage 2.9 節](../usage.md#29-重新載入sighup)。**每個節點各自重新載入，** 叢集要對每一台更新檔案並送信號。
 
+## 把設定拆成多個檔案（`conf.d`）
+
+設定檔很大、或要用設定管理工具依功能分開維護時，把一部分放進另一個目錄的檔案：主檔最上層寫 `include = ["conf.d/*.toml"]`（`config init` 和套件預設就有，套件也建立空的 `/etc/rradius/conf.d`）。
+
+```bash
+# /etc/rradius/conf.d/10-branch-clients.toml：第一個有意義的行要是表
+cat > /etc/rradius/conf.d/10-branch-clients.toml <<'EOF'
+[[radius.clients]]
+name = "branch-1"
+address = "10.1.0.1"
+secret_file = "branch-1.secret"
+EOF
+chmod 640 /etc/rradius/conf.d/10-branch-clients.toml
+rradius-server check
+kill -HUP $(pidof rradius-server)
+```
+
+- **同一個設定不能出現在兩個檔案：** 後面的檔案不會蓋掉前面的，是錯誤，訊息指到檔案和行；`[[radius.clients]]` 這類陣列的元素依檔名順序累加（所以用 `10-`、`20-` 這樣的前綴控制順序）。
+- **`dictionary`、`include` 這類最上層的設定只能在主檔；** 引入檔以 `[表]` 開頭。
+- **看合併後的結果：** `rradius-server config show`；比較兩個節點：`config diff`。
+- **叢集每個節點各有自己的檔案，** 要自己讓它們一致（設定管理工具、`config diff`）。
+- **引入的檔案可以改變誰能登入，** 要和主檔一樣保護：不要讓群組或其他人可寫，伺服器會記一行警告。
+
+細節見[使用文件第 2 節](../usage.md#2-設定檔總覽)的〈把設定拆成多個檔案〉。
+
 ## 更換密碼
 
 | 密碼 | 怎麼換 |
