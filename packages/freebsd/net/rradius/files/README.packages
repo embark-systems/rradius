@@ -24,6 +24,12 @@ First start
        sysrc rradius_enable=YES
        service rradius start
 
+The directory /usr/local/etc/rradius/conf.d is created empty. The configuration that "config init"
+writes has include = ["conf.d/*.toml"], so every .toml file there is read with rradius.toml, as if
+its text followed it: a file begins with a table such as [[radius.clients]] and cannot set what
+another file sets. "rradius-server config show" prints the settings of all the files together.
+Keep them readable by the "rradius" user only and writable by root only.
+
 The default configuration path is fixed when the program is built; "rradius-server --version"
 shows it on the second line.
 

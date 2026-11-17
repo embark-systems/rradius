@@ -125,8 +125,8 @@ fn schema_and_descriptions(extensions: &Extensions) -> Result<(Value, Descriptio
 type Computed = Vec<(&'static str, String)>;
 
 fn loaded(path: &str, extensions: &Extensions) -> Result<(toml::Table, Computed), String> {
-    let config = crate::config::load_with(Path::new(path), extensions).map_err(|e| e.to_string())?;
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    // The file and those it includes, as they are read together, and what they make.
+    let (config, text) = crate::config::load_with_text(Path::new(path), extensions).map_err(|e| e.to_string())?;
     let mut table: toml::Table = text.parse().map_err(|e| format!("{path}: {e}"))?;
     // Defaults the configuration computes as it loads, from this machine; the schema holds the
     // value of the machine that built it, or none.
@@ -352,6 +352,7 @@ pub fn init_text(lang: Lang, extensions: &Extensions, secrets: &[String; 3]) -> 
     let schema = crate::schema::build_in(crate::cli::program_name(), extensions, lang)?;
     let working: toml::Table = format!(
         "dictionary = \"/usr/share/rradius/dictionary\"\n\
+         include = [\"conf.d/*.toml\"]\n\
          [lua]\nscript = \"auth.lua\"\n\
          [cluster]\ndata_dir = \"data\"\nsecret_raft = \"{}\"\nsecret_api = \"{}\"\n\
          [[cluster.nodes]]\nid = 1\nraft = \"127.0.0.1:8100\"\napi = \"127.0.0.1:8200\"\n\
@@ -368,12 +369,15 @@ pub fn init_text(lang: Lang, extensions: &Extensions, secrets: &[String; 3]) -> 
                      # Every node of the cluster needs the same secret_raft and secret_api; the example\n\
                      # client's secret goes into the NAS too.\n\
                      # Point dictionary at the installed dictionary, and create the script auth.lua.\n\
+                     # The files of conf.d/ next to this one are read with it (include): each begins with a\n\
+                     # table such as [[radius.clients]], and cannot set what this file or another sets.\n\
                      # [metrics] answers /metrics, /livez and /readyz on 127.0.0.1:9812, which the status\n\
                      # command reads; it has no authentication, so bind it to an inside address only.\n\
                      # A commented setting shows its default; remove the # to set it.\n",
         Lang::ZhTw => "# 由 `config init` 產生的 rradius 設定檔。\n\
                        # 叢集的每個節點都要用相同的 secret_raft 與 secret_api；範例用戶端的 secret 也要設在 NAS 上。\n\
                        # 把 dictionary 指向實際安裝的字典檔，並自己建立腳本 auth.lua。\n\
+                       # 這個檔案旁邊 conf.d/ 的檔案會一起讀（include）：每個檔案以 [[radius.clients]] 這類表開頭，不能設定這個檔案或別的檔案已經設定的東西。\n\
                        # [metrics] 在 127.0.0.1:9812 回答 /metrics、/livez 與 /readyz，status 指令讀的就是它；沒有認證，只能綁內部位址。\n\
                        # 註解掉的設定列出預設值；拿掉 # 即可設定。\n",
     };
@@ -596,9 +600,37 @@ mod tests {
             assert_eq!(parsed.get("metrics").and_then(toml::Value::as_table).map(toml::Table::len), Some(0), "{text}");
             assert!(text.contains("\n[metrics]\n") && text.contains("\n# bind = \"127.0.0.1\"\n") && text.contains("\n# port = 9812\n"), "{text}");
             assert!(text.contains("\n# [tacacs]\n") && text.contains("\n# [[tacacs.clients]]\n"), "{text}");
+            // The files of conf.d are read with it: `include`, before the first table.
+            assert_eq!(parsed.get("include").and_then(toml::Value::as_array).map(|names| names.iter().filter_map(toml::Value::as_str).collect::<Vec<_>>()), Some(vec!["conf.d/*.toml"]), "{text}");
+            assert!(text.find("include = ").zip(text.find("\n[lua]")).is_some_and(|(include, lua)| include < lua), "{text}");
             let english = text.contains("# Point dictionary at the installed dictionary");
             assert_eq!(english, lang == Lang::En, "{text}");
         }
+        Ok(())
+    }
+
+    /// `config show` prints the settings of the file and of the files it includes together, and
+    /// `config diff` tells the one that adds a client through an included file from the other.
+    #[test]
+    fn test_show_and_diff_read_included_files() -> Result<(), String> {
+        let write = |dir: &std::path::Path, clients: &[&str]| -> Result<String, String> {
+            std::fs::create_dir_all(dir.join("conf.d")).map_err(|e| e.to_string())?;
+            for (at, address) in clients.iter().enumerate() {
+                std::fs::write(dir.join(format!("conf.d/{at}0-client.toml")), format!("[[radius.clients]]\naddress = \"{address}\"\nsecret = \"s\"\n")).map_err(|e| e.to_string())?;
+            }
+            let main = "include = [\"conf.d/*.toml\"]\ndictionary = \"d\"\n[lua]\nscript = \"auth.lua\"\n[cluster]\ndata_dir = \"data\"\nsecret_raft = \"raft-secret-0123456\"\nsecret_api = \"api-secret-01234567\"\n[radius]\n";
+            let path = dir.join("rradius.toml");
+            std::fs::write(&path, main).map_err(|e| e.to_string())?;
+            path.to_str().map(str::to_string).ok_or("a path that is not UTF-8".to_string())
+        };
+        let (one, two) = (tempfile::tempdir().map_err(|e| e.to_string())?, tempfile::tempdir().map_err(|e| e.to_string())?);
+        let (one_path, two_path) = (write(one.path(), &["127.0.0.1"])?, write(two.path(), &["127.0.0.1", "10.0.0.5"])?);
+        let extensions = crate::extensions::builtin();
+        let (shown, status) = show(&two_path, &extensions)?;
+        assert!(status == 0 && shown.contains("127.0.0.1") && shown.contains("10.0.0.5"), "{shown}");
+        let (difference, status) = diff(&one_path, &two_path, &extensions)?;
+        assert_eq!(status, 1, "{difference}");
+        assert!(difference.contains("10.0.0.5"), "{difference}");
         Ok(())
     }
 }

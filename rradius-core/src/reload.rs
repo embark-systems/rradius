@@ -753,6 +753,34 @@ mod tests {
         assert_eq!(code(server.handle_auth(&request(2), source).await), ACCESS_ACCEPT);
     }
 
+    /// spec Reload With Included Files: a change to an included file is read at the reload and not
+    /// before, and a file with an error keeps the running configuration and is named with its line.
+    #[tokio::test]
+    async fn test_reload_reads_included_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("conf.d")).unwrap();
+        let clients = dir.path().join("conf.d/10-clients.toml");
+        std::fs::write(&clients, CLIENT).unwrap();
+        let (serving, server) = serving(dir.path(), "return 'accept'", &format!("include = [\"conf.d/*.toml\"]\n{}", config_text("")));
+        let (here, there) = ("127.0.0.1".parse().unwrap(), "192.0.2.1".parse().unwrap());
+        assert_eq!(code(server.handle_auth(&request(1), here).await), ACCESS_ACCEPT);
+
+        // Changed, and not read: the running configuration stays.
+        std::fs::write(&clients, "[[radius.clients]]\naddress = \"192.0.2.1\"\nsecret = \"s\"\n").unwrap();
+        assert_eq!(code(server.handle_auth(&request(2), here).await), ACCESS_ACCEPT);
+        serving.try_reload().unwrap();
+        assert!(server.handle_auth(&request(3), here).await.is_none(), "127.0.0.1 is no client after the reload");
+        assert_eq!(code(server.handle_auth(&request(4), there).await), ACCESS_ACCEPT);
+
+        // A file with an error: nothing is replaced, and the error names the file and the line in it.
+        let before = server.state();
+        std::fs::write(&clients, "# the clients\n[[radius.clients]]\naddress = 127\n").unwrap();
+        let error = serving.try_reload().unwrap_err();
+        assert!(error.starts_with(&clients.display().to_string()) && error.contains("line 3"), "{error}");
+        assert!(Arc::ptr_eq(&before, &server.state()), "an error replaced something");
+        assert_eq!(code(server.handle_auth(&request(5), there).await), ACCESS_ACCEPT);
+    }
+
     /// A sender for tests: what a configuration's RADIUS clients are, by name or address, is
     /// sent to, and times out; anything else is not a configured client.
     struct ClientsSender(Vec<String>);

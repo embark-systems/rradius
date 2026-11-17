@@ -51,7 +51,7 @@ cp -a rradius-server/examples %{buildroot}%{_docdir}/%{name}/examples
 install -m 0644 packages/common/README.packages %{buildroot}%{_docdir}/%{name}/README.packages
 install -D -m 0644 packages/common/rradius.service %{buildroot}%{_unitdir}/rradius.service
 install -D -m 0644 packages/common/rradius.logrotate %{buildroot}%{_sysconfdir}/logrotate.d/rradius
-install -d %{buildroot}%{_sysconfdir}/rradius
+install -d %{buildroot}%{_sysconfdir}/rradius %{buildroot}%{_sysconfdir}/rradius/conf.d
 install -d -m 0750 %{buildroot}%{_sharedstatedir}/rradius %{buildroot}%{_localstatedir}/log/rradius
 
 %pre
@@ -78,6 +78,7 @@ exit 0
 %{_unitdir}/rradius.service
 %config(noreplace) %{_sysconfdir}/logrotate.d/rradius
 %dir %{_sysconfdir}/rradius
+%dir %{_sysconfdir}/rradius/conf.d
 %attr(0750,rradius,rradius) %dir %{_sharedstatedir}/rradius
 %attr(0750,rradius,rradius) %dir %{_localstatedir}/log/rradius
 

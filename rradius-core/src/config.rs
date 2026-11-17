@@ -576,6 +576,10 @@ impl std::error::Error for ConfigError {}
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     dictionary: PathBuf,
+    /// Files read with this one, as if their text followed it (`conf.d/*.toml`). Read before the
+    /// rest, by `with_includes`; it is only here so that the file is not refused for it.
+    #[allow(dead_code)]
+    include: Option<Vec<String>>,
     /// Moved to `[lua].script`; only read to report the new place.
     #[schemars(skip)]
     script: Option<toml::Value>,
@@ -1348,9 +1352,23 @@ pub fn load(path: &Path) -> Result<ServerConfig, ConfigError> {
 
 /// Like `load`, with `extensions` reading their sections.
 pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Result<ServerConfig, ConfigError> {
+    load_with_text(path, extensions).map(|(config, _)| config)
+}
+
+/// Like `load_with`, with the text the configuration was read from: that of the file and of the files
+/// it includes after it, for what prints the settings as TOML.
+pub(crate) fn load_with_text(path: &Path, extensions: &crate::extension::Extensions) -> Result<(ServerConfig, String), ConfigError> {
+    let text = fs::read_to_string(path).map_err(|e| ConfigError(format!("{}: cannot read configuration: {}", path.display(), e)))?;
+    let (text, parts) = with_includes(path, text)?;
+    let config = load_text(path, &text, extensions).map_err(|error| locate(error, path, &parts))?;
+    Ok((config, text))
+}
+
+/// The configuration of `text`, which is what the file at `path` says, with the files it includes
+/// after it. Errors begin with `path`, and lines are those of `text`: `locate` names the file.
+fn load_text(path: &Path, text: &str, extensions: &crate::extension::Extensions) -> Result<ServerConfig, ConfigError> {
     let fail = |msg: String| ConfigError(format!("{}: {}", path.display(), msg));
-    let text = fs::read_to_string(path).map_err(|e| fail(format!("cannot read configuration: {}", e)))?;
-    let mut raw: RawConfig = toml::from_str(&text).map_err(|e| fail(syntax_error(&text, &e)))?;
+    let mut raw: RawConfig = toml::from_str(text).map_err(|e| fail(syntax_error(text, &e)))?;
     let base = path.parent().unwrap_or(Path::new(""));
 
     // Settings that moved: say where they went before any other check.
@@ -1375,7 +1393,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
     let tacacs_tls = raw.tacacs.as_mut().and_then(|tacacs| tacacs.tls.take());
     let cluster_backup = raw.cluster.as_mut().and_then(|cluster| cluster.backup.take());
     let found = [("radius.eap.aka", aka), ("accounts.aka", raw.accounts.as_mut().and_then(|accounts| accounts.aka.take())), ("radius.dpsk", dpsk), ("accounts.dpsk", dpsk_statements), ("radius.tls", radsec_section), ("radius.dynamic_clients", dynamic_clients), ("accounts.clients", client_statements), ("radius.coa", coa_relay), ("proxy", raw.proxy.take()), ("tacacs.tls", tacacs_tls), ("cluster.backup", cluster_backup), ("accounting_export", raw.accounting_export.take()), ("mfa", raw.mfa.take()), ("diameter", raw.diameter.take())];
-    let shared_text: Arc<str> = Arc::from(text.as_str());
+    let shared_text: Arc<str> = Arc::from(text);
     let found = found.into_iter().filter_map(|(section, value)| value.map(|value| crate::extension::Section::new(section, value, shared_text.clone()))).collect();
     let extension_settings = crate::extension::settings(extensions, found, base).map_err(fail)?;
 
@@ -1840,6 +1858,194 @@ fn without_the_value(message: &str) -> String {
         }
     }
     message.to_string()
+}
+
+/// The setting `include` of a configuration file, read before the rest.
+#[derive(Deserialize)]
+struct IncludeOnly {
+    include: Option<Vec<String>>,
+}
+
+/// The most files `include` may stand for, and the most octets of one: a mistake in a pattern is not
+/// to read a whole directory, or a device.
+const MAX_INCLUDED_FILES: usize = 1000;
+const MAX_INCLUDED_FILE_LEN: u64 = 1 << 20;
+
+/// One file of the text read together: where its lines begin in it, and how many there are.
+struct Part {
+    path: PathBuf,
+    first_line: usize,
+    lines: usize,
+}
+
+/// Whether `name` is matched by `pattern`, in which `*` stands for any characters and `?` for one.
+/// It goes along both once, going back to the last `*` when a letter does not match, so that it takes
+/// no more than the product of their lengths whatever the pattern.
+fn wildcard_match(pattern: &[char], name: &[char]) -> bool {
+    let (mut at_pattern, mut at_name) = (0, 0);
+    let (mut star, mut resume) = (None, 0);
+    while at_name < name.len() {
+        match pattern.get(at_pattern) {
+            Some('*') => {
+                star = Some(at_pattern);
+                resume = at_name;
+                at_pattern += 1;
+            }
+            Some(letter) if *letter == '?' || *letter == name[at_name] => {
+                at_pattern += 1;
+                at_name += 1;
+            }
+            _ => match star {
+                Some(last) => {
+                    at_pattern = last + 1;
+                    resume += 1;
+                    at_name = resume;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[at_pattern..].iter().all(|letter| *letter == '*')
+}
+
+/// The files the names of `include` stand for, each name's files in the order of their paths. A name
+/// with a wildcard in its last component stands for the files of that directory it matches, none
+/// when there are none or the directory cannot be read; a name without one stands for that file.
+fn included_files(base: &Path, names: &[String]) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    for name in names {
+        let pattern = base.join(name);
+        let last = pattern.file_name().and_then(|last| last.to_str()).ok_or(format!("include: '{name}' does not name a file"))?;
+        let wild = |text: &str| text.contains(['*', '?']);
+        if Path::new(name).parent().and_then(Path::to_str).is_some_and(wild) {
+            return Err(format!("include: '{name}' has a wildcard before its last component; only the file name may have one"));
+        }
+        if !wild(last) {
+            files.push(pattern);
+            continue;
+        }
+        let Some(directory) = pattern.parent() else { continue };
+        let letters: Vec<char> = last.chars().collect();
+        let mut found: Vec<PathBuf> = match fs::read_dir(directory) {
+            Ok(entries) => entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().is_file())
+                // A name that begins with a dot, such as an editor's file, is not matched by a wildcard.
+                .filter(|entry| entry.file_name().to_str().is_some_and(|file| (letters.first() == Some(&'.') || !file.starts_with('.')) && wildcard_match(&letters, &file.chars().collect::<Vec<_>>())))
+                .map(|entry| entry.path())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        found.sort_by(|a, b| a.as_os_str().as_encoded_bytes().cmp(b.as_os_str().as_encoded_bytes()));
+        files.extend(found);
+    }
+    // A file two names stand for is read once, where the first has it.
+    let mut seen = std::collections::HashSet::new();
+    files.retain(|file| seen.insert(file.clone()));
+    Ok(files)
+}
+
+/// `text`, the configuration file at `path`, followed by the files its `include` names, and where
+/// each of them is. Without `include` it is `text` itself. An included file has to begin with a
+/// table, or its settings would end up in the last table of the file before it.
+fn with_includes(path: &Path, text: String) -> Result<(String, Vec<Part>), ConfigError> {
+    let fail = |file: &Path, msg: String| ConfigError(format!("{}: {}", file.display(), msg));
+    // A mistake in the file itself, or in `include`, is for the real parse to report with its line.
+    let Some(names) = toml::from_str::<IncludeOnly>(&text).ok().and_then(|only| only.include).filter(|names| !names.is_empty()) else {
+        return Ok((text, Vec::new()));
+    };
+    let base = path.parent().unwrap_or(Path::new(""));
+    let own = fs::canonicalize(path).ok();
+    let files: Vec<PathBuf> = included_files(base, &names).map_err(|e| fail(path, e))?.into_iter().filter(|file| own.is_none() || fs::canonicalize(file).ok() != own).collect();
+    if files.len() > MAX_INCLUDED_FILES {
+        return Err(fail(path, format!("include stands for {} files, more than the {MAX_INCLUDED_FILES} it may", files.len())));
+    }
+    let mut combined = text;
+    if !combined.ends_with('\n') {
+        combined.push('\n');
+    }
+    let mut parts = Vec::new();
+    for file in files {
+        let metadata = fs::metadata(&file).map_err(|e| fail(&file, format!("cannot read included file: {e}")))?;
+        if !metadata.is_file() {
+            return Err(fail(&file, "cannot read included file: it is not a file".to_string()));
+        }
+        if metadata.len() > MAX_INCLUDED_FILE_LEN {
+            return Err(fail(&file, format!("an included file may have at most {MAX_INCLUDED_FILE_LEN} octets")));
+        }
+        let part = fs::read_to_string(&file).map_err(|e| fail(&file, format!("cannot read included file: {e}")))?;
+        // A byte order mark is not part of the text.
+        let part = part.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(part);
+        // Each file has to be whole TOML by itself, or an unclosed string or array would swallow the file after it.
+        if let Err(e) = toml::from_str::<toml::Table>(&part) {
+            return Err(fail(&file, syntax_error(&part, &e)));
+        }
+        let first = part.lines().enumerate().find(|(_, line)| !line.trim().is_empty() && !line.trim_start().starts_with('#'));
+        if let Some((at, line)) = first.filter(|(_, line)| !line.trim_start().starts_with('[')) {
+            let key = line.trim_start();
+            let why = if key.starts_with("include") && key["include".len()..].trim_start().starts_with('=') {
+                "an included file cannot have `include`"
+            } else {
+                "an included file has to begin with a table (`[section]`), not a setting: a setting before its first table would belong to the file before it"
+            };
+            return Err(fail(&file, format!("line {}: {why}", at + 1)));
+        }
+        warn_if_writable(&file);
+        let first_line = combined.matches('\n').count() + 1;
+        combined.push_str(&part);
+        if !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        // An empty file has no lines, so no error can be in it.
+        if part.lines().count() > 0 {
+            parts.push(Part { path: file, first_line, lines: part.lines().count() });
+        }
+    }
+    Ok((combined, parts))
+}
+
+/// Logs a warning when `file`, or the directory it is in, can be written by its group or by others:
+/// an included file can change who may log in. Only where there are such permissions to look at.
+#[cfg(unix)]
+fn warn_if_writable(file: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let writable = |path: &Path| fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o022 != 0);
+    let directory = file.parent().filter(|directory| !directory.as_os_str().is_empty());
+    if writable(file) {
+        tracing::warn!("included configuration file {} can be written by its group or by others, which lets them change who may log in", file.display());
+    } else if directory.is_some_and(writable) {
+        tracing::warn!("the directory of included configuration file {} can be written by its group or by others, which lets them change who may log in", file.display());
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_writable(_file: &Path) {}
+
+/// The first number that follows the word `line ` in `message`, and where it begins and ends.
+fn line_in(message: &str) -> Option<(usize, usize, usize)> {
+    let mut from = 0;
+    while let Some(found) = message[from..].find("line ") {
+        let at = from + found;
+        let digits: String = message[at + 5..].chars().take_while(char::is_ascii_digit).collect();
+        let word_start = message[..at].chars().next_back().is_none_or(|before| !before.is_alphanumeric());
+        if word_start && !digits.is_empty() {
+            return Some((digits.parse().ok()?, at + 5, at + 5 + digits.len()));
+        }
+        from = at + 5;
+    }
+    None
+}
+
+/// An error of the text read together, as the file it is in says it: when its line is one of an
+/// included file, that file's path and the line in it, in place of the configuration file.
+fn locate(error: ConfigError, path: &Path, parts: &[Part]) -> ConfigError {
+    let prefix = format!("{}: ", path.display());
+    let Some(rest) = error.0.strip_prefix(&prefix) else { return error };
+    let Some((line, start, end)) = line_in(rest) else { return error };
+    match parts.iter().find(|part| (part.first_line..part.first_line + part.lines).contains(&line)) {
+        Some(part) => ConfigError(format!("{}: {}{}{}", part.path.display(), &rest[..start], line - part.first_line + 1, &rest[end..])),
+        None => error,
+    }
 }
 
 /// Where the file is wrong and why, in one line. The error's own display is not used
@@ -4499,5 +4705,260 @@ mod tests {
             assert_eq!(with_prefix(prefix), path, "{prefix:?}");
         }
         assert_eq!(default_config_path(), with_prefix(option_env!("RRADIUS_PREFIX")));
+    }
+
+    // ---- `include` ----
+
+    /// Writes `main` as rradius.toml and each of `files` at its relative path, and loads it.
+    fn load_with_files(main: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, Result<ServerConfig, ConfigError>) {
+        let dir = tempdir().unwrap();
+        for (name, text) in files {
+            let path = dir.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let path = dir.path().join("rradius.toml");
+        fs::write(&path, main).unwrap();
+        let result = load(&path);
+        (dir, result)
+    }
+
+    /// The main file: `include` of conf.d, and what `base` has, with a `[radius]` of its own.
+    fn including(extra: &str) -> String {
+        format!("include = [\"conf.d/*.toml\"]\n{}", base(&format!("\n[radius]\n{extra}")))
+    }
+
+    const A_CLIENT: &str = "[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n";
+    const ANOTHER_CLIENT: &str = "[[radius.clients]]\naddress = \"10.0.0.5\"\nsecret = \"t\"\n";
+
+    /// Two files of conf.d are read after the main file, as if they were one: both clients are known.
+    #[test]
+    fn test_included_files_are_read_together() -> Result<(), String> {
+        let (_dir, result) = load_with_files(&including(""), &[("conf.d/10-clients.toml", A_CLIENT), ("conf.d/20-clients.toml", ANOTHER_CLIENT)]);
+        let config = result.map_err(|e| e.to_string())?;
+        let radius = config.radius.ok_or("no [radius]")?;
+        assert!(radius.clients.lookup("127.0.0.1".parse().map_err(|_| "address")?).is_some() && radius.clients.lookup("10.0.0.5".parse().map_err(|_| "address")?).is_some());
+        Ok(())
+    }
+
+    /// No directory, or no file that matches, is not a mistake; a file named without a wildcard that
+    /// cannot be read is.
+    #[test]
+    fn test_nothing_matches_and_a_file_that_is_missing() -> Result<(), String> {
+        let (_dir, result) = load_with_files(&format!("include = [\"conf.d/*.toml\"]\n{}", base(RADIUS_CLIENT)), &[]);
+        result.map_err(|e| e.to_string())?;
+        let main = format!("include = [\"conf.d/clients.toml\"]\n{}", base(RADIUS_CLIENT));
+        let (dir, result) = load_with_files(&main, &[]);
+        let error = result.err().ok_or("a missing file accepted")?.to_string();
+        assert!(error.contains("conf.d/clients.toml") && error.contains("cannot read included file"), "{error}");
+        assert!(error.starts_with(&dir.path().join("conf.d/clients.toml").display().to_string()), "{error}");
+        Ok(())
+    }
+
+    /// The same table in two files is refused as it is in one, and the error says where.
+    #[test]
+    fn test_a_table_in_two_files() -> Result<(), String> {
+        let (dir, result) = load_with_files(&including("auth_port = 1812\n"), &[("conf.d/10-radius.toml", "[radius]\nacct_port = 1813\n")]);
+        let error = result.err().ok_or("a table twice accepted")?.to_string();
+        let file = dir.path().join("conf.d/10-radius.toml").display().to_string();
+        assert!(error.starts_with(&format!("{file}: line 1")), "{error}");
+        Ok(())
+    }
+
+    /// An included file that begins with a setting, and one that has `include`.
+    #[test]
+    fn test_included_file_has_to_begin_with_a_table() -> Result<(), String> {
+        for (text, line, says) in [("dictionary = \"dict/dictionary\"\n[radius]\n", 1, "has to begin with a table"), ("# a comment\n\ninclude = [\"more/*.toml\"]\n", 3, "cannot have `include`")] {
+            let (dir, result) = load_with_files(&including(""), &[("conf.d/10-first.toml", text)]);
+            let error = result.err().ok_or("a file that begins with a setting accepted")?.to_string();
+            let file = dir.path().join("conf.d/10-first.toml").display().to_string();
+            assert!(error.starts_with(&format!("{file}: line {line}")) && error.contains(says), "{error}");
+        }
+        Ok(())
+    }
+
+    /// A setting of the wrong type in the third line of an included file: that file and that line, no value.
+    #[test]
+    fn test_mistake_in_an_included_file_names_the_file_and_its_line() -> Result<(), String> {
+        let main = format!("include = [\"conf.d/*.toml\"]\n{}", base(""));
+        let (dir, result) = load_with_files(&main, &[("conf.d/20-radius.toml", "# the radius\n[radius]\nauth_port = \"1812\"\n")]);
+        let error = result.err().ok_or("a string for a port accepted")?.to_string();
+        let file = dir.path().join("conf.d/20-radius.toml").display().to_string();
+        assert!(error.starts_with(&format!("{file}: line 3")) && error.contains("`auth_port`") && !error.contains("1812"), "{error}");
+        // A mistake in the main file keeps its own file and line.
+        let (dir, result) = load_with_files(&format!("include = [\"conf.d/*.toml\"]\n{}", base("\n[radius]\nauth_port = \"1812\"\n")), &[("conf.d/10-clients.toml", A_CLIENT)]);
+        let error = result.err().ok_or("a string for a port accepted")?.to_string();
+        // `include`, dictionary, [lua] and its script, [cluster] with three lines, [radius], then the port.
+        assert!(error.starts_with(&format!("{}: line 11", dir.path().join("rradius.toml").display())), "{error}");
+        Ok(())
+    }
+
+    /// What names a file: the wildcards, the order, and the files whose names begin with a dot.
+    #[test]
+    fn test_what_include_names() -> Result<(), String> {
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        fs::create_dir(dir.path().join("conf.d")).map_err(|e| e.to_string())?;
+        for name in ["b.toml", "a.toml", "10-x.toml", ".hidden.toml", "c.conf", "a1.toml"] {
+            fs::write(dir.path().join("conf.d").join(name), "").map_err(|e| e.to_string())?;
+        }
+        let names = |patterns: &[&str]| -> Result<Vec<String>, String> {
+            let patterns: Vec<String> = patterns.iter().map(|pattern| pattern.to_string()).collect();
+            let found = included_files(dir.path(), &patterns)?;
+            Ok(found.iter().filter_map(|path| path.file_name().and_then(|name| name.to_str()).map(str::to_string)).collect())
+        };
+        assert_eq!(names(&["conf.d/*.toml"])?, ["10-x.toml", "a.toml", "a1.toml", "b.toml"], "sorted, and no hidden file");
+        assert_eq!(names(&["conf.d/a?.toml"])?, ["a1.toml"]);
+        assert_eq!(names(&["conf.d/.*.toml"])?, [".hidden.toml"], "a pattern that begins with a dot matches such a name");
+        assert_eq!(names(&["conf.d/b.toml", "conf.d/a.toml"])?, ["b.toml", "a.toml"], "the order of the names is kept");
+        assert!(names(&["conf.*/a.toml"]).is_err(), "a wildcard before the last component");
+        Ok(())
+    }
+
+    /// An error of the text read together is for the included file its line is in, and a line of the
+    /// main file stays.
+    #[test]
+    fn test_locate() {
+        let path = Path::new("/etc/rradius/rradius.toml");
+        let parts = [Part { path: PathBuf::from("/etc/rradius/conf.d/a.toml"), first_line: 21, lines: 5 }, Part { path: PathBuf::from("/etc/rradius/conf.d/b.toml"), first_line: 26, lines: 3 }];
+        let located = |message: &str| locate(ConfigError(message.to_string()), path, &parts).0;
+        assert_eq!(located("/etc/rradius/rradius.toml: line 23: `secret`: invalid type"), "/etc/rradius/conf.d/a.toml: line 3: `secret`: invalid type");
+        assert_eq!(located("/etc/rradius/rradius.toml: radius.eap.aka: max_lookups must be from 1 to 4096 (line 26)"), "/etc/rradius/conf.d/b.toml: radius.eap.aka: max_lookups must be from 1 to 4096 (line 1)");
+        assert_eq!(located("/etc/rradius/rradius.toml: line 7: a mistake"), "/etc/rradius/rradius.toml: line 7: a mistake");
+        assert_eq!(located("/etc/rradius/rradius.toml: line 40: past the files"), "/etc/rradius/rradius.toml: line 40: past the files");
+        assert_eq!(located("/etc/rradius/rradius.toml: inline 23 is not a line"), "/etc/rradius/rradius.toml: inline 23 is not a line");
+    }
+
+    /// An included file, or its directory, that its group or others can write: loaded all the same,
+    /// with a warning that names it.
+    #[cfg(unix)]
+    #[test]
+    fn test_writable_included_file_is_warned_about() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let warned = |file_mode: u32, directory_mode: u32| -> Result<String, String> {
+            let dir = tempdir().map_err(|e| e.to_string())?;
+            fs::create_dir(dir.path().join("conf.d")).map_err(|e| e.to_string())?;
+            fs::write(dir.path().join("conf.d/10-clients.toml"), A_CLIENT).map_err(|e| e.to_string())?;
+            fs::set_permissions(dir.path().join("conf.d/10-clients.toml"), fs::Permissions::from_mode(file_mode)).map_err(|e| e.to_string())?;
+            fs::set_permissions(dir.path().join("conf.d"), fs::Permissions::from_mode(directory_mode)).map_err(|e| e.to_string())?;
+            fs::write(dir.path().join("rradius.toml"), including("")).map_err(|e| e.to_string())?;
+            let log = crate::test_support::radius::CapturedLog::default();
+            let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
+            let result = tracing::subscriber::with_default(subscriber, || load(&dir.path().join("rradius.toml")));
+            result.map_err(|e| e.to_string())?;
+            let text = log.0.lock().map_err(|e| e.to_string())?.clone();
+            String::from_utf8(text).map_err(|e| e.to_string())
+        };
+        let group = warned(0o664, 0o755)?;
+        assert!(group.contains("10-clients.toml") && group.contains("can be written"), "{group}");
+        let directory = warned(0o644, 0o775)?;
+        assert!(directory.contains("the directory of included configuration file"), "{directory}");
+        assert_eq!(warned(0o644, 0o755)?, "", "not writable by others");
+        Ok(())
+    }
+
+    /// The file order the rules promise: files in the order of their names, so the client of the
+    /// first file is the first of the two.
+    #[test]
+    fn test_clients_keep_the_order_of_the_files() -> Result<(), String> {
+        let main = format!("include = [\"conf.d/*.toml\"]\n{}", base("\n[radius]\n"));
+        let (_dir, result) = load_with_files(&main, &[("conf.d/20-second.toml", "[[radius.clients]]\nname = \"second\"\naddress = \"10.0.0.5\"\nsecret = \"t\"\n"), ("conf.d/10-first.toml", "[[radius.clients]]\nname = \"first\"\naddress = \"127.0.0.1\"\nsecret = \"s\"\n")]);
+        let config = result.map_err(|e| e.to_string())?;
+        let names: Vec<&str> = config.radius.as_ref().ok_or("no [radius]")?.clients.names().collect();
+        assert_eq!(names, ["first", "second"]);
+        // A directory that exists and is empty names no file either.
+        let (dir, result) = load_with_files(&format!("include = [\"conf.d/*.toml\"]\n{}", base(RADIUS_CLIENT)), &[]);
+        fs::create_dir(dir.path().join("conf.d")).map_err(|e| e.to_string())?;
+        result.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The matching of a name goes along pattern and name once: a pattern made to take long to match
+    /// does not.
+    #[test]
+    fn test_a_pattern_made_to_take_long() -> Result<(), String> {
+        let pattern: Vec<char> = "*a*a*a*a*a*a*a*a*a*a*b".chars().collect();
+        let name: Vec<char> = "a".repeat(2000).chars().collect();
+        let started = std::time::Instant::now();
+        assert!(!wildcard_match(&pattern, &name));
+        assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+        let letters = |text: &str| text.chars().collect::<Vec<char>>();
+        for (pattern, name, matches) in [("*", "", true), ("*", "abc", true), ("a*c", "abc", true), ("a*c", "ab", false), ("?", "", false), ("a?c", "abc", true), ("*.toml", "a.toml", true), ("*.toml", "a.toml.bak", false), ("a**b", "ab", true)] {
+            assert_eq!(wildcard_match(&letters(pattern), &letters(name)), matches, "{pattern} {name}");
+        }
+        Ok(())
+    }
+
+    /// An empty included file has no lines: an error in the file after it is for that file.
+    #[test]
+    fn test_empty_included_file_does_not_take_the_next_ones_line() -> Result<(), String> {
+        let main = format!("include = [\"conf.d/*.toml\"]\n{}", base(""));
+        let (dir, result) = load_with_files(&main, &[("conf.d/10-empty.toml", "\n"), ("conf.d/20-radius.toml", "[radius]\nauth_port = \"1812\"\n")]);
+        let error = result.err().ok_or("a string for a port accepted")?.to_string();
+        assert!(error.starts_with(&format!("{}: line 2", dir.path().join("conf.d/20-radius.toml").display())), "{error}");
+        Ok(())
+    }
+
+    /// A configuration in a directory whose name has a wildcard character, a byte order mark, a file
+    /// two names stand for, a file that is not whole TOML, a name that is a directory and one that is too big.
+    #[test]
+    fn test_things_include_has_to_get_right() -> Result<(), String> {
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        let odd = dir.path().join("a*b");
+        fs::create_dir_all(odd.join("conf.d")).map_err(|e| e.to_string())?;
+        fs::write(odd.join("conf.d/10-clients.toml"), format!("\u{feff}{A_CLIENT}")).map_err(|e| e.to_string())?;
+        fs::write(odd.join("rradius.toml"), format!("include = [\"conf.d/*.toml\", \"conf.d/10-clients.toml\"]\n{}", base("\n[radius]\n"))).map_err(|e| e.to_string())?;
+        load(&odd.join("rradius.toml")).map_err(|e| e.to_string())?;
+
+        let main = |include: &str| format!("include = [{include}]\n{}", base(RADIUS_CLIENT));
+        // Not whole TOML: its own file and line, not a mess in the file after it.
+        let (dir, result) = load_with_files(&main("\"conf.d/*.toml\""), &[("conf.d/10-open.toml", "[radius.eap]\nname = \"\"\"never closed\n"), ("conf.d/20-after.toml", "[lua]\n")]);
+        let error = result.err().ok_or("a string that is never closed accepted")?.to_string();
+        assert!(error.starts_with(&dir.path().join("conf.d/10-open.toml").display().to_string()) && error.contains("line "), "{error}");
+        // A name that is a directory.
+        let (_dir, result) = load_with_files(&main("\"conf.d/dir.toml\""), &[("conf.d/dir.toml/x", "")]);
+        let error = result.err().ok_or("a directory accepted")?.to_string();
+        assert!(error.contains("not a file"), "{error}");
+        // Too big.
+        let big = format!("# {}\n[radius]\n", "x".repeat(MAX_INCLUDED_FILE_LEN as usize));
+        let (_dir, result) = load_with_files(&main("\"conf.d/big.toml\""), &[("conf.d/big.toml", &big)]);
+        let error = result.err().ok_or("a file that is too big accepted")?.to_string();
+        assert!(error.contains("at most"), "{error}");
+        // A pattern that also matches the configuration file itself leaves it out.
+        let (_dir, result) = load_with_files(&format!("include = [\"*.toml\"]\n{}", base(RADIUS_CLIENT)), &[]);
+        result.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// An error an extension finds in an included file names that file and the line in it.
+    #[test]
+    fn test_extension_error_in_an_included_file() -> Result<(), String> {
+        struct ProbeMfa;
+        impl crate::extension::Extension for ProbeMfa {
+            fn name(&self) -> &'static str {
+                "probe-mfa"
+            }
+            fn sections(&self) -> &'static [&'static str] {
+                &["mfa"]
+            }
+            fn configure(&self, found: Vec<crate::extension::Section>, _base: &Path, _extensions: &crate::extension::Extensions) -> Result<Vec<crate::extension::Settings>, String> {
+                #[derive(Deserialize)]
+                struct Mfa {
+                    #[allow(dead_code)]
+                    value: u16,
+                }
+                for section in found {
+                    section.parse::<Mfa>()?;
+                }
+                Ok(Vec::new())
+            }
+        }
+        let extensions = crate::extension::Extensions::unchecked(vec![Arc::new(ProbeMfa)]);
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        fs::create_dir(dir.path().join("conf.d")).map_err(|e| e.to_string())?;
+        fs::write(dir.path().join("conf.d/10-mfa.toml"), "# the second factor\n[mfa]\nvalue = \"x\"\n").map_err(|e| e.to_string())?;
+        fs::write(dir.path().join("rradius.toml"), format!("include = [\"conf.d/*.toml\"]\n{}", base(RADIUS_CLIENT))).map_err(|e| e.to_string())?;
+        let error = load_with(&dir.path().join("rradius.toml"), &extensions).err().ok_or("a string for a number accepted")?.to_string();
+        assert!(error.starts_with(&format!("{}: line 3", dir.path().join("conf.d/10-mfa.toml").display())) && error.contains("`value`"), "{error}");
+        Ok(())
     }
 }

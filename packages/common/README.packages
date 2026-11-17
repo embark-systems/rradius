@@ -32,6 +32,18 @@ First start
 
      The package does not enable the service by itself.
 
+Splitting the configuration
+---------------------------
+
+The directory /etc/rradius/conf.d is created empty. The configuration that "config init"
+writes has include = ["conf.d/*.toml"], so every .toml file you put there is read with
+rradius.toml, as if its text followed it. A file there begins with a table, for example
+[[radius.clients]], and cannot set what rradius.toml or another file sets. A package upgrade
+leaves rradius.toml, which you changed, and conf.d alone. "rradius-server config show" prints
+the settings of all the files together. Keep the files readable by the "rradius" user only and
+writable by root only: an included file can change who may log in, and the server warns about
+one that its group or others can write.
+
 The default configuration path is fixed when the program is built; "rradius-server --version"
 shows it on the second line.
 

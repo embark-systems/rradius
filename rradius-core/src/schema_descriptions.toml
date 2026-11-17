@@ -293,6 +293,10 @@ zh-TW = "讀本機資料庫的連線數，1 到 128；預設是工作執行緒�
 
 # databases
 
+[fields."include"]
+en = "Files read with this one, as if their text followed it: names relative to this file's directory, with * and ? allowed in the file name (\"conf.d/*.toml\"), in the order of their paths. An included file has to begin with a table, cannot have include, and cannot set what another file sets. Read again at a reload."
+zh-TW = "和這個檔案一起讀的檔案，讀起來像是它們的文字接在這個檔案後面：名稱相對於這個檔案所在的目錄，檔名可以用 * 和 ?（\"conf.d/*.toml\"），依路徑順序載入。引入的檔案要以表開頭，不能再有 include，也不能設定別的檔案已經設定的東西。重新載入時再讀一次。"
+
 [fields."databases"]
 en = "External MySQL and PostgreSQL databases, by name (letters, digits and _), for the sql handler's database and the scripts' db_query and db_execute. A change needs a restart."
 zh-TW = "外部 MySQL 與 PostgreSQL 資料庫，以名稱區分（英數與底線），給 sql 處理器的 database 與腳本的 db_query、db_execute 使用。修改後要重啟才套用。"
