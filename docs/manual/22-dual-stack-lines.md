@@ -89,7 +89,7 @@ IPoE 的計費封包沒有可靠的 `User-Name`。`line.lua` 回的 `Class` 是 
 
 ### 一邊用盡時
 
-預設（`ALLOW_V4_ONLY = false`）整個登入拒絕，記錄寫 `prefix pool <名稱> is exhausted: no prefix for <用戶>`（或 IPv4 池的 `ip pool ... is exhausted`）。要「有 IPv4 沒前綴也放行」，把 `line.lua` 開頭的 `local ALLOW_V4_ONLY = false` 改成 `true`：前綴拿不到時保留 IPv4，只回 IPv4 的屬性，用戶沒有 IPv6 但能上網；用戶之後登入時再試著拿前綴。IPv4 用盡時一律拒絕，因為沒有 IPv4 的線路通常也上不了網。
+預設（`ALLOW_V4_ONLY = false`）整個登入拒絕，記錄寫 `prefix pool <名稱> is exhausted: no prefix for <用戶>`（或 IPv4 池的 `ip pool ... is exhausted`）。要「有 IPv4 沒前綴也放行」，把 `line.lua` 開頭的 `local ALLOW_V4_ONLY = false` 改成 `true`：前綴拿不到時保留 IPv4，只回 IPv4 的屬性（IPv4 是固定的線路也一樣），用戶沒有 IPv6 但能上網；用戶之後登入時再試著拿前綴。IPv4 用盡時一律拒絕，因為沒有 IPv4 的線路通常也上不了網。
 
 ### 資料怎麼維護
 

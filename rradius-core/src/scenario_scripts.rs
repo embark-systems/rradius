@@ -1827,6 +1827,18 @@ async fn test_dual_stack_v4_only_when_the_prefix_is_out() -> Result<(), String> 
     assert_eq!(reply_text(&reply, "Delegated-IPv6-Prefix"), None);
     assert_eq!(reply_text(&reply, "Framed-IPv6-Pool"), None);
     assert!(!dual.address("max").await.is_empty(), "the address is kept");
+    // A line with only its IPv4 address fixed is let in the same way: frank's prefix would come from the full pool.
+    dual.sql("UPDATE {lines} SET plan = 'metro' WHERE subscriber = 'frank'").await?;
+    let (outcome, reply) = dual.login(105, "00:11:22:aa:bb:05").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(reply_text(&reply, "Framed-IP-Address").as_deref(), Some("203.0.113.20"));
+    assert_eq!(reply_text(&reply, "Delegated-IPv6-Prefix"), None);
+    // And refused when the constant is false.
+    let refused = Dual::new("dsg").await;
+    refused.sql("UPDATE {lines} SET plan = 'metro' WHERE subscriber = 'frank'").await?;
+    assert_eq!(refused.login(110, "00:11:22:aa:bb:00").await.0, Outcome::Accept);
+    assert_eq!(refused.login(111, "00:11:22:aa:bb:00").await.0, Outcome::Accept);
+    assert_eq!(refused.login(105, "00:11:22:aa:bb:05").await.0, Outcome::Reject, "no prefix, and v4-only is not allowed");
     Ok(())
 }
 

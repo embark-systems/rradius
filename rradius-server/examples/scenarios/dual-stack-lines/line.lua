@@ -460,7 +460,8 @@ if fixed_v6 then
   end
 else
   v6 = allocate_prefix(line.pool6)
-  if not v6 and (not ALLOW_V4_ONLY or not v4) then
+  -- 固定的 IPv4 也算「有 IPv4」：只固定 IPv4 的線路，前綴池用盡時也依 ALLOW_V4_ONLY 放行。
+  if not v6 and (not ALLOW_V4_ONLY or not (fixed_v4 or v4)) then
     return refuse()
   end
 end
