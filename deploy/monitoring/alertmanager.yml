@@ -1,0 +1,17 @@
+# Alertmanager configuration that sends rradius alerts to snmp_notifier, which turns them into
+# SNMP traps (see README.md). Merge the route and the receiver into your own configuration if
+# you already have one.
+route:
+  receiver: snmp
+  group_by: [alertname, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: snmp
+    webhook_configs:
+      # snmp_notifier listens on :9464 and takes the alerts at /alerts.
+      - url: http://snmp-notifier:9464/alerts
+        # A trap is sent when an alert resolves, too.
+        send_resolved: true
