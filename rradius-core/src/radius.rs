@@ -6751,7 +6751,7 @@ pub(crate) mod tests {
     /// A server on two addresses, with both ports of them to send to. `None` with no IPv6 here.
     async fn server_on(first: &str, second: &str) -> Option<(u16, u16, tokio::task::JoinHandle<io::Result<()>>)> {
         UdpSocket::bind("[::1]:0").await.ok()?;
-        let free = || std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let free = crate::test_support::server::free_port;
         let (auth_port, acct_port) = (free(), free());
         let mut clients = ClientTable::default();
         for address in ["127.0.0.1", "::1"] {
@@ -6789,7 +6789,7 @@ pub(crate) mod tests {
     /// A server on 127.0.0.1 with `sockets` sockets on each port, whose script puts a fresh
     /// token in every reply, so a reply sent again from the cache shows.
     fn server_with_sockets(sockets: usize) -> (u16, u16, RadiusServer) {
-        let free = || std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let free = crate::test_support::server::free_port;
         let (auth_port, acct_port) = (free(), free());
         let mut clients = ClientTable::default();
         clients.add("127.0.0.1", Some("local".to_string()), SECRET.to_vec(), crate::clients::ClientOptions { require_message_authenticator: Policy::No, ..crate::clients::ClientOptions::default() }).unwrap();
@@ -6804,7 +6804,7 @@ pub(crate) mod tests {
     /// the next one is already waiting and it goes straight to a task of its own.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_slow_request_does_not_hold_up_the_socket() -> Result<(), String> {
-        let free = || std::net::UdpSocket::bind("127.0.0.1:0").and_then(|socket| socket.local_addr()).map(|address| address.port()).map_err(|e| e.to_string());
+        let free = || Ok::<u16, String>(crate::test_support::server::free_port());
         let (auth_port, acct_port) = (free()?, free()?);
         let mut clients = ClientTable::default();
         clients.add("127.0.0.1", Some("local".to_string()), SECRET.to_vec(), crate::clients::ClientOptions { require_message_authenticator: Policy::No, ..crate::clients::ClientOptions::default() }).map_err(|e| e.to_string())?;
@@ -8470,7 +8470,7 @@ pub(crate) mod tests {
     /// accounting requests when `slow_acct`, record a run and wait for `release(tag)`.
     async fn limited_server(tag: &str, max_auth: usize, max_acct: usize, slow_acct: bool) -> (SocketAddr, SocketAddr) {
         create_signal_tables().await;
-        let port = || std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let port = || SocketAddr::from(([127, 0, 0, 1], crate::test_support::server::free_port()));
         let (auth, acct) = (port(), port());
         let script = format!(
             "if get_attr('User-Name') == 'slow' or (phase == 'accounting' and {slow_acct}) then {} {} end return 'accept'",
