@@ -345,10 +345,7 @@ fn test_retries_run_out() {
 
 #[test]
 fn test_closed_port_counts_socket_errors() {
-    let port = {
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-        socket.local_addr().unwrap()
-    };
+    let port = std::net::SocketAddr::from(([127, 0, 0, 1], closed_port()));
     let output = run_against(port, &["--load", "pap,concurrency=1", "--requests", "2", "--timeout", "0.1"]);
     assert_eq!(output.code, 2);
     assert!(step(&output.json(), 0, 0)["socket_errors"].as_u64().unwrap() >= 1, "{}", output.stdout);
@@ -456,10 +453,7 @@ fn test_rejected_flow() {
 
 #[test]
 fn test_closed_port_shows_as_timeouts_in_a_session_load() {
-    let port = {
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-        socket.local_addr().unwrap()
-    };
+    let port = std::net::SocketAddr::from(([127, 0, 0, 1], closed_port()));
     let output = run_against(port, &["--load", "session,concurrency=1", "--requests", "1", "--timeout", "0.1"]);
     assert_eq!(output.code, 2);
     let json = output.json();
@@ -629,11 +623,7 @@ fn test_duplicate_path_warning() {
 #[test]
 fn test_metrics_unavailable() {
     let responder = Responder::answering();
-    let closed = {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap()
-    };
-    let url = format!("http://{closed}/metrics");
+    let url = format!("http://127.0.0.1:{}/metrics", closed_port());
     let output = run_against(responder.address, &["--load", "pap,concurrency=1", "--requests", "1", "--metrics-url", &url]);
     assert_eq!(output.code, 0);
     let json = output.json();
@@ -723,10 +713,7 @@ fn test_tacacs_no_answer_times_out() -> Result<(), String> {
 #[test]
 fn test_tacacs_keep_unreachable_exits_3() -> Result<(), String> {
     let responder = Responder::answering();
-    let port = {
-        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-        listener.local_addr().map_err(|e| e.to_string())?.port().to_string()
-    };
+    let port = closed_port().to_string();
     let output = run_against(responder.address, &["--load", "tacacs-pap,concurrency=1", "--requests", "1", "--timeout", "1", "--tacacs-port", &port]);
     if output.code != 3 || !output.stderr.contains("TACACS+ connection 1") {
         return Err(format!("exit {}: {}", output.code, output.stderr));
