@@ -507,6 +507,79 @@ fn test_prefix_pool() -> TestResult {
     Ok(())
 }
 
+/// Chapter 22: a line with fixed data gets exactly that; one without gets an address and a delegated
+/// prefix of its plan's pools, a Start with both confirms both (the gauges of the example's queries
+/// follow), and the Stop gives the address back and keeps the prefix for the line.
+#[test]
+fn test_dual_stack_lines() -> TestResult {
+    let mut server = Server::start(SCENARIOS, "dual-stack-lines", "rradius.toml", |text| {
+        text.replacen("address = \"10.60.0.0/24\"", "address = \"127.0.0.1\"", 1)
+            .replacen("[queries.pool_usage]\n", "[queries.pool_usage]\ninterval_ms = 5000\n", 1)
+            .replacen("[queries.prefix_usage]\n", "[queries.prefix_usage]\ninterval_ms = 5000\n", 1)
+    });
+    server.secret = secret_of(SCENARIOS, "dual-stack-lines", "bng.secret");
+    // A vendor-specific attribute of the Broadband Forum (3561) with one sub-attribute.
+    let broadband = |sub_type: u8, value: &str| {
+        let mut data = 3561u32.to_be_bytes().to_vec();
+        data.extend_from_slice(&[sub_type, value.len() as u8 + 2]);
+        data.extend_from_slice(value.as_bytes());
+        (26u8, data)
+    };
+    let ask = |port: u32, mac: &str| {
+        let authenticator = random_authenticator();
+        let circuit = format!("eth 1/1/1:{port}");
+        let attributes = vec![(1, circuit.as_bytes().to_vec()), (2, hide_password(b"none", &server.secret, &authenticator)), (31, mac.as_bytes().to_vec()), broadband(1, &circuit), broadband(2, "olt-a")];
+        server.login(attributes, authenticator)
+    };
+    let metric_is = |name: &str, expected: f64| wait_for(30, name, || metric(&server, name).is_ok_and(|value| value == expected));
+
+    // dave's line has everything fixed: exactly that, no pool, and the BNG's Class for the accounting.
+    let dave = ask(103, "00:11:22:aa:bb:03");
+    assert_eq!(dave.code, ACCESS_ACCEPT, "{}", server.stderr());
+    assert_eq!(dave.attribute(8), Some(&[203u8, 0, 113, 10][..]), "Framed-IP-Address");
+    assert_eq!(text(&dave, 22).as_deref(), Some("203.0.113.8/29 0.0.0.0 1"), "Framed-Route");
+    let wan = dave.attribute(97).ok_or("no Framed-IPv6-Prefix")?;
+    assert_eq!((wan.len(), wan[1]), (18, 64), "a /64 in 18 octets");
+    let delegated = dave.attribute(123).ok_or("no Delegated-IPv6-Prefix")?.to_vec();
+    assert_eq!((delegated.len(), delegated[1], &delegated[2..6]), (18, 56, &[0x20u8, 0x01, 0x0d, 0xb8][..]));
+    assert_eq!(text(&dave, 25).as_deref(), Some("dave"), "Class");
+    assert_eq!(text(&dave, 100), None, "no pool for a fixed line");
+
+    // alice's line has none: an address of the residential pool and a /56 of its prefix pool.
+    let alice = ask(100, "00:11:22:aa:bb:00");
+    assert_eq!(alice.code, ACCESS_ACCEPT, "{}", server.stderr());
+    let ip = alice.attribute(8).ok_or("no address")?.to_vec();
+    assert_eq!(&ip[..3], &[10, 77, 0], "inside 10.77.0.0/24");
+    let prefix = alice.attribute(123).ok_or("no prefix")?.to_vec();
+    assert_eq!((prefix.len(), prefix[0], prefix[1]), (18, 0, 56), "a /56 in 18 octets");
+    assert_eq!(&prefix[2..6], &[0x20, 0x01, 0x0d, 0xb8], "2001:db8:1xx::/56");
+    assert_eq!(text(&alice, 100).as_deref(), Some("res6"), "Framed-IPv6-Pool");
+    assert_eq!(text(&alice, 25).as_deref(), Some("alice"), "Class");
+    assert_eq!(number(&alice, 85), Some(300), "Acct-Interim-Interval");
+    assert_eq!(ask(100, "00:11:22:aa:bb:00").attribute(8), Some(&ip[..]), "the same address again");
+    assert_eq!(ask(999, "00:11:22:aa:bb:00").code, ACCESS_REJECT, "unknown line");
+    metric_is("rradius_query_pool_usage{pool=\"res4\",state=\"reserved\"}", 1.0)?;
+    metric_is("rradius_query_prefix_usage{pool=\"res6\",state=\"reserved\"}", 1.0)?;
+
+    // The Start names both, as the BNG got them from us, and the Class it was given.
+    let bng = |status: u32, id: &str| {
+        let extra = vec![(4u8, vec![10, 0, 0, 1]), (25u8, b"alice".to_vec()), (8u8, ip.clone()), (123u8, prefix.clone())];
+        server.accounting(session("00:11:22:aa:bb:00", id, status, extra)).map(|answer| answer.code)
+    };
+    assert_eq!(bng(1, "ds-1"), Some(ACCOUNTING_RESPONSE), "{}", server.stderr());
+    metric_is("rradius_query_pool_usage{pool=\"res4\",state=\"active\"}", 1.0)?;
+    metric_is("rradius_query_prefix_usage{pool=\"res6\",state=\"active\"}", 1.0)?;
+    // The Stop gives the address back and keeps the prefix for her.
+    assert_eq!(bng(2, "ds-1"), Some(ACCOUNTING_RESPONSE), "{}", server.stderr());
+    metric_is("rradius_query_pool_usage{pool=\"res4\",state=\"free\"}", 8.0)?;
+    metric_is("rradius_query_prefix_usage{pool=\"res6\",state=\"released\"}", 1.0)?;
+    let back = ask(100, "00:11:22:aa:bb:00");
+    assert_eq!(back.attribute(8), Some(&ip[..]), "her address again");
+    assert_eq!(back.attribute(123), Some(&prefix[..]), "her prefix again");
+    assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
+    Ok(())
+}
+
 /// spec First run: with the example's own interval of 30 seconds the gauge is there long before
 /// the second run could be, since the first run is made as soon as the database is ready.
 #[test]

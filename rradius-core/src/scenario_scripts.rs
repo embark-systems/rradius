@@ -32,6 +32,10 @@ const PREFIX_DATA: &str = include_str!("../../rradius-server/examples/scenarios/
 const PREFIX_ALLOCATE: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/allocate.lua");
 const PREFIX_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/accounting.lua");
 const IP_POOL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
+const DUAL_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/dual-stack-lines/migrations/1_schema.sql");
+const DUAL_DATA: &str = include_str!("../../rradius-server/examples/scenarios/dual-stack-lines/migrations/2_demo_data.sql");
+const DUAL_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/dual-stack-lines/line.lua");
+const DUAL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/dual-stack-lines/accounting.lua");
 const USAGE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/1_schema.sql");
 const USAGE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/2_demo_data.sql");
 const USAGE_LIMITS: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/limits.lua");
@@ -1608,5 +1612,268 @@ async fn test_prefix_pool_takes_back_what_is_not_used() -> Result<(), String> {
     // A prefix is free again: alice, who lost hers, is given one, and gets hers again when the start is free.
     let again = prefixes.allocate("alice").await.1.ok_or("no prefix")?;
     assert_eq!(again, alice, "the same start, free again");
+    Ok(())
+}
+
+// ---- The dual-stack lines ----
+
+const DUAL_TABLES: [&str; 20] = [
+    "plans", "lines", "ip_pool", "prefix_pools", "prefix_leases", "housekeeping", "lines_subscriber", "lines_ipv4", "lines_wan_v6", "lines_pd_v6",
+    "ip_pool_user", "ip_pool_state", "ip_pool_last_user", "ip_pool_expiry", "prefix_leases_user", "prefix_leases_prefix", "prefix_leases_expiry",
+    "prefix_leases_nas", "prefix_leases_released", "prefix_leases_pool_state",
+];
+
+/// The dual-stack scenario's schema and demo data under `prefix`, with its two scripts.
+struct Dual {
+    prefix: &'static str,
+    line: String,
+    accounting: String,
+}
+
+impl Dual {
+    async fn new(prefix: &'static str) -> Dual {
+        Dual::with_script(prefix, DUAL_SCRIPT).await
+    }
+
+    async fn with_script(prefix: &'static str, script: &str) -> Dual {
+        apply(&renamed(DUAL_SCHEMA, prefix, &DUAL_TABLES)).await;
+        apply(&renamed(DUAL_DATA, prefix, &DUAL_TABLES)).await;
+        // The first request would reap the tables; the tests that look at a reap ask for it.
+        apply(&format!("UPDATE {prefix}_housekeeping SET last_run = {}", now())).await;
+        Dual { prefix, line: renamed(script, prefix, &DUAL_TABLES), accounting: renamed(DUAL_ACCOUNTING, prefix, &DUAL_TABLES) }
+    }
+
+    /// The decision for the line `eth 1/1/1:<port>` behind `olt-a`, from the station `mac`.
+    async fn login(&self, port: u32, mac: &str) -> (Outcome, Vec<(String, AttrValue)>) {
+        let attributes = vec![
+            ("ADSL-Agent-Circuit-Id", bytes(&format!("eth 1/1/1:{port}"))),
+            ("ADSL-Agent-Remote-Id", bytes("olt-a")),
+            ("Calling-Station-Id", bytes(mac)),
+        ];
+        // The checker stands in for the dictionary, as in the static scenario's tests: it refuses a value that
+        // starts with "bad" or has a space-separated "bad" in it; the process test has the real dictionary.
+        let engine = LuaAuthEngine::new(test_vms(), test_db(), &self.line).unwrap();
+        let mut request = LuaRequest::new("radius", "authentication", attributes.into_iter().map(|(name, value)| (name.to_string(), value)).collect());
+        request.client = "bng".to_string();
+        request.validator = Some(std::sync::Arc::new(|name: &str, value: &AttrValue| match value {
+            AttrValue::Bytes(text) if text.starts_with(b"bad") || text.windows(4).any(|part| part == b"bad ") || text == b"garbage" || text == b"not an address" => Err(format!("{name}: cannot hold {}", String::from_utf8_lossy(text))),
+            _ => Ok(()),
+        }));
+        let decision = engine.authenticate(request).await;
+        (decision.outcome, decision.response_attributes)
+    }
+
+    /// An accounting packet for `class`'s session `session` from the NAS `nas`, with the address and prefix it has.
+    async fn account(&self, status: f64, class: Option<&str>, session: &str, ip: Option<&str>, prefix: Option<&str>) -> Outcome {
+        let mut attributes = vec![("Acct-Session-Id", bytes(session)), ("Acct-Status-Type", number(status)), ("NAS-IP-Address", bytes("10.60.0.1"))];
+        if let Some(class) = class {
+            attributes.push(("Class", bytes(class)));
+        }
+        if let Some(ip) = ip {
+            attributes.push(("Framed-IP-Address", bytes(ip)));
+        }
+        if let Some(prefix) = prefix {
+            attributes.push(("Delegated-IPv6-Prefix", bytes(prefix)));
+        }
+        run(&self.accounting, "radius", "accounting", "bng", None, attributes).await.0
+    }
+
+    async fn sql(&self, sql: &str) -> Result<(), String> {
+        let mut text = sql.to_string();
+        for table in ["plans", "lines", "ip_pool", "prefix_leases", "housekeeping"] {
+            text = text.replace(&format!("{{{table}}}"), &format!("{}_{table}", self.prefix));
+        }
+        test_db().execute(&text).await.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// The number of rows of a pool table in `state`.
+    async fn count(&self, table: &str, state: &str) -> i64 {
+        match rows(&format!("SELECT count(*) FROM {}_{table} WHERE state = '{state}'", self.prefix)).await.first().and_then(|row| row.first()) {
+            Some(DbValue::Integer(count)) => *count,
+            _ => -1,
+        }
+    }
+
+    /// (state, session) of the user's address; nothing when there is none.
+    async fn address(&self, user: &str) -> Vec<DbValue> {
+        rows(&format!("SELECT state, session_id FROM {}_ip_pool WHERE username = '{user}'", self.prefix)).await.into_iter().next().unwrap_or_default()
+    }
+
+    /// (state, session) of the user's prefix; nothing when there is none.
+    async fn prefix_of(&self, user: &str) -> Vec<DbValue> {
+        rows(&format!("SELECT state, session_id FROM {}_prefix_leases WHERE username = '{user}'", self.prefix)).await.into_iter().next().unwrap_or_default()
+    }
+}
+
+/// A line with fixed data gets exactly that and no pool is touched; a line with none gets an
+/// address and a prefix of its plan's pools, the same ones when it asks again; a line with only
+/// an IPv4 address fixed still gets its prefix from the pool.
+#[tokio::test]
+async fn test_dual_stack_fixed_and_dynamic_lines() -> Result<(), String> {
+    let dual = Dual::new("dsa").await;
+    let (outcome, reply) = dual.login(103, "00:11:22:aa:bb:03").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(reply_text(&reply, "Framed-IP-Address").as_deref(), Some("203.0.113.10"));
+    assert_eq!(reply_text(&reply, "Framed-IP-Netmask").as_deref(), Some("255.255.255.255"));
+    assert_eq!(reply_text(&reply, "Framed-Route").as_deref(), Some("203.0.113.8/29 0.0.0.0 1"));
+    assert_eq!(reply_text(&reply, "Framed-IPv6-Prefix").as_deref(), Some("2001:db8:1:1::/64"));
+    assert_eq!(reply_text(&reply, "Delegated-IPv6-Prefix").as_deref(), Some("2001:db8:f00::/56"));
+    assert_eq!(reply_text(&reply, "Framed-IPv6-Pool"), None, "a fixed line is not sent to a pool");
+    assert_eq!(reply_text(&reply, "Class").as_deref(), Some("dave"));
+    assert_eq!(reply_text(&reply, "Filter-Id").as_deref(), Some("biz-500m"));
+    assert_eq!(dual.count("ip_pool", "reserved").await + dual.count("prefix_leases", "reserved").await, 0, "no pool was touched");
+
+    let (outcome, reply) = dual.login(100, "00:11:22:aa:bb:00").await;
+    assert_eq!(outcome, Outcome::Accept);
+    let ip = reply_text(&reply, "Framed-IP-Address").ok_or("no address")?;
+    let prefix = reply_text(&reply, "Delegated-IPv6-Prefix").ok_or("no prefix")?;
+    assert!(ip.starts_with("10.77.0."), "{ip}");
+    assert!(prefix.starts_with("2001:db8:1") && prefix.ends_with("::/56"), "{prefix}");
+    assert_eq!(reply_text(&reply, "Framed-IPv6-Pool").as_deref(), Some("res6"));
+    assert_eq!(reply_text(&reply, "Class").as_deref(), Some("alice"));
+    assert_eq!(reply_number(&reply, "Acct-Interim-Interval"), Some(300.0));
+    assert_eq!(reply_text(&reply, "Framed-IPv6-Prefix"), None);
+    let (_, again) = dual.login(100, "00:11:22:aa:bb:00").await;
+    assert_eq!(reply_text(&again, "Framed-IP-Address"), Some(ip), "the same address");
+    assert_eq!(reply_text(&again, "Delegated-IPv6-Prefix"), Some(prefix), "the same prefix");
+    assert_eq!(dual.count("ip_pool", "reserved").await, 1);
+    assert_eq!(dual.count("prefix_leases", "reserved").await, 1);
+
+    // Frank has only the IPv4 address fixed.
+    let (outcome, reply) = dual.login(105, "00:11:22:aa:bb:05").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert_eq!(reply_text(&reply, "Framed-IP-Address").as_deref(), Some("203.0.113.20"));
+    assert!(reply_text(&reply, "Delegated-IPv6-Prefix").is_some_and(|prefix| prefix.starts_with("2001:db8:2") && prefix.ends_with("::/60")), "{reply:?}");
+    assert_eq!(dual.count("ip_pool", "reserved").await, 1, "the fixed address is not from the pool");
+    Ok(())
+}
+
+/// Unknown, disabled and locked lines are refused as in chapter 16, and a refusal reserves nothing.
+#[tokio::test]
+async fn test_dual_stack_refusals() -> Result<(), String> {
+    let dual = Dual::new("dsb").await;
+    assert_eq!(dual.login(999, "00:11:22:aa:bb:00").await.0, Outcome::Reject, "unknown line");
+    assert_eq!(dual.login(104, "00:11:22:aa:bb:04").await.0, Outcome::Reject, "disabled");
+    assert_eq!(dual.login(102, "00:11:22:aa:bb:01").await.0, Outcome::Accept, "locked to the first station");
+    assert_eq!(dual.login(102, "00:11:22:aa:bb:02").await.0, Outcome::Reject, "another station");
+    assert_eq!(dual.login(102, "00:11:22:aa:bb:01").await.0, Outcome::Accept);
+    let (outcome, _) = run(&dual.line, "radius", "authentication", "bng", None, vec![("Calling-Station-Id", bytes("00:11:22:aa:bb:00"))]).await;
+    assert_eq!(outcome, Outcome::Reject, "no circuit-id");
+    let (outcome, _) = run(&dual.line, "tacacs", "authentication", "bng", None, vec![]).await;
+    assert_eq!(outcome, Outcome::Reject, "TACACS+ is not for lines");
+    assert_eq!(dual.count("ip_pool", "reserved").await, 1, "only carol's");
+    Ok(())
+}
+
+/// Fixed data that cannot be right is refused, not answered with a pool; and when the fixed
+/// IPv6 part is wrong on a line whose IPv4 came from the pool, that address is put back.
+#[tokio::test]
+async fn test_dual_stack_bad_fixed_data() -> Result<(), String> {
+    let dual = Dual::new("dsc").await;
+    for (column, value) in [("netmask", "255.0.255.0"), ("routed_v4", "203.0.113.9/29"), ("routed_v4", "garbage"), ("ipv4", "not an address")] {
+        dual.sql("UPDATE {lines} SET ipv4 = '203.0.113.10', netmask = NULL, routed_v4 = NULL WHERE subscriber = 'dave'").await?;
+        dual.sql(&format!("UPDATE {{lines}} SET {column} = '{value}' WHERE subscriber = 'dave'")).await?;
+        let (outcome, reply) = dual.login(103, "00:11:22:aa:bb:03").await;
+        assert_eq!(outcome, Outcome::Reject, "{column} {value}: {reply:?}");
+    }
+    // routed_v4 or a netmask without an address to route to.
+    dual.sql("UPDATE {lines} SET ipv4 = NULL, netmask = NULL, routed_v4 = '203.0.113.8/29', pd_v6 = NULL, wan_v6 = NULL WHERE subscriber = 'dave'").await?;
+    assert_eq!(dual.login(103, "00:11:22:aa:bb:03").await.0, Outcome::Reject, "routed_v4 without ipv4");
+    // A bad prefix on a line whose IPv4 comes from the pool: nothing stays reserved.
+    dual.sql("UPDATE {lines} SET wan_v6 = 'garbage' WHERE subscriber = 'alice'").await?;
+    assert_eq!(dual.login(100, "00:11:22:aa:bb:00").await.0, Outcome::Reject, "bad wan_v6");
+    assert_eq!(dual.count("ip_pool", "reserved").await, 0, "the address of the refused login was put back");
+    assert_eq!(dual.address("alice").await, Vec::<DbValue>::new());
+    Ok(())
+}
+
+/// A pool that has run out refuses the login and says which; when the prefix pool runs out,
+/// the IPv4 address just reserved for that login is put back but a binding the line already had is not.
+#[tokio::test]
+async fn test_dual_stack_pool_exhausted() -> Result<(), String> {
+    let dual = Dual::new("dsd").await;
+    // Business has 3 addresses and 4 dynamic lines (gina, hank, ivan, judy).
+    for (port, expected) in [(106, Outcome::Accept), (107, Outcome::Accept), (108, Outcome::Accept), (109, Outcome::Reject)] {
+        assert_eq!(dual.login(port, "00:11:22:aa:bb:00").await.0, expected, "port {port}");
+    }
+    assert!(dual.prefix_of("judy").await.is_empty(), "the refused line holds no prefix");
+    assert_eq!(dual.count("ip_pool", "reserved").await, 3);
+    // Metro has 2 prefixes and 3 lines (kim, lee, max).
+    assert_eq!(dual.login(110, "00:11:22:aa:bb:00").await.0, Outcome::Accept);
+    assert_eq!(dual.login(111, "00:11:22:aa:bb:00").await.0, Outcome::Accept);
+    let before = dual.count("ip_pool", "reserved").await;
+    assert_eq!(dual.login(112, "00:11:22:aa:bb:00").await.0, Outcome::Reject, "no prefix left");
+    assert!(dual.address("max").await.is_empty(), "the IPv4 address of the refused login was put back");
+    assert_eq!(dual.count("ip_pool", "reserved").await, before);
+    // A line that already holds its address keeps it when its prefix is refused.
+    dual.sql("UPDATE {prefix_leases} SET username = 'someone' WHERE username = 'kim'").await?;
+    dual.sql("INSERT INTO {ip_pool} (pool, ip, n, state, username, expires) VALUES ('res4', '10.77.0.99', 99, 'reserved', 'max', 9999999999)").await?;
+    assert_eq!(dual.login(112, "00:11:22:aa:bb:00").await.0, Outcome::Reject);
+    assert!(!dual.address("max").await.is_empty(), "an existing binding stays");
+    Ok(())
+}
+
+/// With `ALLOW_V4_ONLY` a line whose prefix cannot be had keeps its address and gets only that.
+#[tokio::test]
+async fn test_dual_stack_v4_only_when_the_prefix_is_out() -> Result<(), String> {
+    let allowed = DUAL_SCRIPT.replacen("local ALLOW_V4_ONLY = false", "local ALLOW_V4_ONLY = true", 1);
+    assert_ne!(allowed, DUAL_SCRIPT, "the constant is where the manual says");
+    let dual = Dual::with_script("dse", &allowed).await;
+    assert_eq!(dual.login(110, "00:11:22:aa:bb:00").await.0, Outcome::Accept);
+    assert_eq!(dual.login(111, "00:11:22:aa:bb:00").await.0, Outcome::Accept);
+    let (outcome, reply) = dual.login(112, "00:11:22:aa:bb:00").await;
+    assert_eq!(outcome, Outcome::Accept);
+    assert!(reply_text(&reply, "Framed-IP-Address").is_some());
+    assert_eq!(reply_text(&reply, "Delegated-IPv6-Prefix"), None);
+    assert_eq!(reply_text(&reply, "Framed-IPv6-Pool"), None);
+    assert!(!dual.address("max").await.is_empty(), "the address is kept");
+    Ok(())
+}
+
+/// Accounting confirms, extends and releases both: a packet with an address and a prefix does
+/// both, with one or the other does that one, a line with fixed data changes nothing, a replay
+/// changes nothing, and a packet without Class is answered and left alone.
+#[tokio::test]
+async fn test_dual_stack_accounting() -> Result<(), String> {
+    let dual = Dual::new("dsf").await;
+    let (_, reply) = dual.login(100, "00:11:22:aa:bb:00").await;
+    let ip = reply_text(&reply, "Framed-IP-Address").ok_or("no address")?;
+    let prefix = reply_text(&reply, "Delegated-IPv6-Prefix").ok_or("no prefix")?;
+    assert_eq!(dual.account(1.0, Some("alice"), "s1", Some(&ip), Some(&prefix)).await, Outcome::Accept);
+    assert_eq!(dual.address("alice").await, [txt("active"), txt("s1")]);
+    assert_eq!(dual.prefix_of("alice").await, [txt("active"), txt("s1")]);
+    // The same packet again, and an Interim: nothing changes.
+    assert_eq!(dual.account(1.0, Some("alice"), "s1", Some(&ip), Some(&prefix)).await, Outcome::Accept);
+    assert_eq!(dual.account(3.0, Some("alice"), "s1", Some(&ip), Some(&prefix)).await, Outcome::Accept);
+    assert_eq!(dual.address("alice").await, [txt("active"), txt("s1")]);
+    // A Stop of another session does not release it; the line's own does, both.
+    assert_eq!(dual.account(2.0, Some("alice"), "other", Some(&ip), Some(&prefix)).await, Outcome::Accept);
+    assert_eq!(dual.address("alice").await[0], txt("active"));
+    assert_eq!(dual.account(2.0, Some("alice"), "s1", Some(&ip), Some(&prefix)).await, Outcome::Accept);
+    assert!(dual.address("alice").await.is_empty(), "the address is free");
+    assert_eq!(dual.prefix_of("alice").await[0], txt("released"), "the prefix is kept for her");
+    // She comes back: the same address (sticky) and the same prefix.
+    let (_, back) = dual.login(100, "00:11:22:aa:bb:00").await;
+    assert_eq!(reply_text(&back, "Framed-IP-Address"), Some(ip.clone()));
+    assert_eq!(reply_text(&back, "Delegated-IPv6-Prefix"), Some(prefix.clone()));
+    // A Start with only the address confirms the address; the prefix is confirmed by one that has it.
+    assert_eq!(dual.account(1.0, Some("alice"), "s2", Some(&ip), None).await, Outcome::Accept);
+    assert_eq!(dual.address("alice").await, [txt("active"), txt("s2")]);
+    // A line with fixed data: answered, and the pools stay as they are.
+    let (_, dave) = dual.login(103, "00:11:22:aa:bb:03").await;
+    let fixed = reply_text(&dave, "Framed-IP-Address").ok_or("no fixed address")?;
+    let before = (dual.count("ip_pool", "active").await, dual.count("prefix_leases", "active").await);
+    assert_eq!(dual.account(1.0, Some("dave"), "d1", Some(&fixed), Some("2001:db8:f00::/56")).await, Outcome::Accept);
+    assert_eq!(dual.account(2.0, Some("dave"), "d1", Some(&fixed), Some("2001:db8:f00::/56")).await, Outcome::Accept);
+    assert_eq!((dual.count("ip_pool", "active").await, dual.count("prefix_leases", "active").await), before);
+    // Without Class, and with a Class no line has: answered, nothing done.
+    assert_eq!(dual.account(2.0, None, "s2", Some(&ip), Some(&prefix)).await, Outcome::Accept);
+    assert_eq!(dual.account(2.0, Some("nobody"), "s2", Some(&ip), Some(&prefix)).await, Outcome::Accept);
+    assert_eq!(dual.address("alice").await[0], txt("active"));
+    // The NAS restarts: both are let go.
+    assert_eq!(dual.account(7.0, None, "x", None, None).await, Outcome::Accept);
+    assert!(dual.address("alice").await.is_empty());
+    assert_eq!(dual.count("ip_pool", "active").await, 0);
+    assert_eq!(dual.count("prefix_leases", "active").await, 0);
     Ok(())
 }
