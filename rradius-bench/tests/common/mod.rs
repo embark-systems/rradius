@@ -3,12 +3,31 @@
 
 use rradius_bench::packet::{write_response, Signer, ACCESS_ACCEPT, ACCESS_REJECT, ACCOUNTING_RESPONSE, MAX_PACKET};
 use serde_json::Value;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+/// A port nothing listens on, for a test that needs a connection or a datagram to be refused.
+///
+/// Binding port 0 and letting go hands back a port from the range the system gives out for
+/// every other socket the tests open at the same time, so another test can be handed it
+/// before this one uses it. These ports are from below that range (above 32767 on Linux, above
+/// 49151 on macOS), which nothing here asks for, and a port is taken only when neither a UDP
+/// socket nor a TCP listener can be bound to it. A test program counts up from a start of
+/// its own, so two of them running side by side do not look at the same ports first.
+pub fn closed_port() -> u16 {
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    let start = 20_000 + (std::process::id() % 8_000) as u16;
+    loop {
+        let port = start + NEXT.fetch_add(1, Ordering::Relaxed) % 2_000;
+        if UdpSocket::bind(("127.0.0.1", port)).is_ok() && TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+}
 
 pub const SECRET: &str = "test-secret";
 
