@@ -102,6 +102,14 @@ pub fn rewrite(scenario: &Path, file: &str, nodes: &mut HashMap<String, String>)
     (out, ports)
 }
 
+/// The port a server says it could not bind because it is in use: the number after the last `:` of the
+/// address in a line with "Address already in use".
+fn taken_port(stderr: &str) -> Option<u16> {
+    let line = stderr.lines().find(|line| line.contains("Address already in use"))?;
+    let address = line.split('\'').find(|part| part.contains(':') && part.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
+    address.rsplit(':').next()?.parse().ok()
+}
+
 /// A server started from a scenario, killed when the test ends.
 pub struct Server {
     pub child: Child,
@@ -115,8 +123,44 @@ impl Server {
     /// and waits until it serves.
     pub fn start(scenarios: Scenarios, name: &str, file: &str, change: impl FnOnce(String) -> String) -> Self {
         let mut server = Self::spawn(scenarios, name, file, &mut HashMap::new(), change);
+        // A port can be taken by something outside the test between handing it out and the server binding
+        // it (a server of an earlier test program that is still going down, say). The port is changed for
+        // a new one, a few times, instead of failing a test that has nothing to do with it.
+        for _ in 0..3 {
+            match server.try_ready() {
+                Ok(()) => return server,
+                Err(stderr) => match taken_port(&stderr) {
+                    Some(port) if server.give_new_port(scenarios, port) => {}
+                    _ => panic!("{stderr}"),
+                },
+            }
+        }
         server.wait_ready();
         server
+    }
+
+    /// Starts the server again with `port`, which was taken, changed for a new one in its configuration and
+    /// in `ports`. False when the configuration does not hold it.
+    fn give_new_port(&mut self, scenarios: Scenarios, port: u16) -> bool {
+        let config = self.dir.path().join("rradius.toml");
+        let Ok(text) = std::fs::read_to_string(&config) else { return false };
+        let fresh = free_port();
+        let replaced = text.replace(&format!(":{port}\""), &format!(":{fresh}\"")).replace(&format!("= {port}\n"), &format!("= {fresh}\n"));
+        if replaced == text || std::fs::write(&config, replaced).is_err() {
+            return false;
+        }
+        for value in self.ports.values_mut().filter(|value| **value == port) {
+            *value = fresh;
+        }
+        // The first start made its data directory, which holds the address the node had: a node started over
+        // it would go on with that one.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(self.dir.path().join("data"));
+        let Ok(stderr) = std::fs::File::create(self.dir.path().join("stderr.log")) else { return false };
+        let Ok(child) = Command::new(scenarios.program).args(["server", "--config", &config.to_string_lossy()]).current_dir(self.dir.path()).stdout(Stdio::null()).stderr(stderr).spawn() else { return false };
+        self.child = child;
+        true
     }
 
     /// Starts it without waiting: a cluster node waits for the others.
@@ -162,18 +206,26 @@ impl Server {
 
     /// Waits for the log line that says the RADIUS ports are open, after the migrations.
     pub fn wait_ready(&mut self) {
+        if let Err(message) = self.try_ready() {
+            panic!("{message}");
+        }
+    }
+
+    /// `wait_ready`, with what went wrong as the error: the server's end with its status and what it logged,
+    /// or that it was not ready in time.
+    pub fn try_ready(&mut self) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
             if let Some(status) = self.child.try_wait().unwrap() {
-                panic!("exited with {status}: {}", self.stderr());
+                return Err(format!("exited with {status}: {}", self.stderr()));
             }
             let ready = if self.ports.contains_key("radius.auth_port") { "RADIUS Server listening" } else { "TACACS+ Server listening" };
             if self.stderr().contains(ready) {
-                return;
+                return Ok(());
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        panic!("not ready within 60 s: {}", self.stderr());
+        Err(format!("not ready within 60 s: {}", self.stderr()))
     }
 
     /// Sends `packet` to `port` until an answer comes, at most a few times.
@@ -513,4 +565,22 @@ pub fn author_answer(answer: &[u8]) -> Result<(u8, Vec<String>), Box<dyn std::er
         at += usize::from(*length);
     }
     Ok((*status, pairs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::taken_port;
+
+    #[test]
+    fn test_taken_port() {
+        // As a node logged it in CI.
+        let logged = "2026-11-18T15:11:11Z WARN hiqlite: No metadata exists inside the DB yet\ncannot start cluster node 1: Config: Cannot bind API listen address '127.0.0.1:26443': Error(\"Address already in use (os error 48)\")\n";
+        assert_eq!(taken_port(logged), Some(26443));
+        let other = "cannot bind '127.0.0.1:1812': Address already in use (os error 98)";
+        assert_eq!(taken_port(other), Some(1812));
+        // Nothing taken, or no port to read.
+        assert_eq!(taken_port("cannot start cluster node 1: some other error '127.0.0.1:26443'"), None);
+        assert_eq!(taken_port("Address already in use"), None);
+        assert_eq!(taken_port(""), None);
+    }
 }
