@@ -295,7 +295,8 @@ pub fn url_encode(text: &[u8]) -> Result<String, String> {
 pub(crate) mod tests {
     use super::*;
     use crate::lua_engine::{LuaAuthEngine, LuaRequest, LuaVms};
-    use crate::test_support::{logged_errors, test_db, test_vms};
+    use crate::logging::logged_errors;
+    use crate::test_support::{test_db, test_vms};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;

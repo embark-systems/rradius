@@ -1913,7 +1913,7 @@ fn log_script_error(request: &LuaRequest, error: &mlua::Error) {
 pub fn log_line(level: tracing::Level, line: String) {
     #[cfg(any(test, feature = "test-support"))]
     if crate::logging::keeping() {
-        crate::test_support::logged_errors().lock().unwrap_or_else(PoisonError::into_inner).push(line.clone());
+        crate::logging::logged_errors().lock().unwrap_or_else(PoisonError::into_inner).push(line.clone());
     }
     match level {
         tracing::Level::ERROR => tracing::error!("{line}"),
@@ -2489,7 +2489,8 @@ pub(crate) mod tests {
     }
 
     use super::*;
-    use crate::test_support::{logged_errors, test_db, test_vms};
+    use crate::logging::logged_errors;
+    use crate::test_support::{test_db, test_vms};
 
     async fn engine_with_test_db() -> LuaAuthEngine {
         let db = test_db();
@@ -5001,7 +5002,7 @@ pub(crate) mod tests {
     async fn test_dynamic_authorization_needs_the_enterprise_program() -> Result<(), String> {
         let engine = LuaAuthEngine::new(test_vms(), test_db(), "send_coa('nas1', { ['Session-Timeout'] = 60 }) return 'accept'").map_err(|e| e.to_string())?;
         assert!(!engine.authenticate(LuaRequest::new("radius", "authentication", vec![])).await.accepted(), "the script failed");
-        let logged = crate::test_support::logged_errors().lock().map_err(|e| e.to_string())?.clone();
+        let logged = crate::logging::logged_errors().lock().map_err(|e| e.to_string())?.clone();
         assert!(logged.iter().any(|line| line.contains("send_coa: not supported by this program (CoA needs rradius-enterprise)")), "{logged:?}");
         for function in ["send_coa", "send_disconnect"] {
             let script = format!("local ok, err = pcall({function}, 'nas1', {{ ['User-Name'] = 'bob' }})\n\

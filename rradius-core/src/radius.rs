@@ -2949,7 +2949,8 @@ pub(crate) use crate::test_support::radius::share_test_dictionary;
 mod example_tests {
     use super::*;
     use crate::lua_engine::now_unix;
-    use crate::test_support::{logged_errors, test_db, test_vms};
+    use crate::logging::logged_errors;
+    use crate::test_support::{test_db, test_vms};
 
     const SECRET: &[u8] = b"s";
 
@@ -4139,7 +4140,7 @@ pub(crate) mod tests {
         let (response, _) = rfc_request_response("set_attr('Filter-Id', 'x') return 'challenge'").await;
         assert_eq!(response.code, ACCESS_REJECT);
         assert!(response.attribute(11).is_none());
-        let log = crate::test_support::logged_errors().lock().unwrap().join("\n");
+        let log = crate::logging::logged_errors().lock().unwrap().join("\n");
         assert!(log.contains("Filter-Id"), "the reason was not logged: {log}");
     }
 
@@ -4148,7 +4149,7 @@ pub(crate) mod tests {
         let (response, _) = rfc_request_response("set_attr('FreeRADIUS-802.1X-Anonce', 'x') return 'challenge'").await;
         assert_eq!(response.code, ACCESS_REJECT);
         assert!(response.attribute(245).is_none());
-        let log = crate::test_support::logged_errors().lock().unwrap().join("\n");
+        let log = crate::logging::logged_errors().lock().unwrap().join("\n");
         assert!(log.contains("FreeRADIUS-802.1X-Anonce"), "the reason was not logged: {log}");
     }
 
@@ -4867,7 +4868,7 @@ pub(crate) mod tests {
         assert_eq!(response.code, ACCESS_REJECT);
         assert_eq!(joined(&response)[0], 4, "EAP-Failure");
         assert_eq!(microsoft_attribute(&response, 17), None, "no keys on a refusal");
-        let logged = crate::test_support::logged_errors().lock().unwrap().clone();
+        let logged = crate::logging::logged_errors().lock().unwrap().clone();
         assert!(logged.iter().any(|line| line.contains("refused") && line.contains("alternative names")), "it got as far as the names: {logged:?}");
         assert_eq!(server.metrics.eap_tls.reject.get(), 1);
     }
@@ -5478,7 +5479,7 @@ pub(crate) mod tests {
         let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![accepting_script()]);
         let (dir, server) = ttls_server("ttls-unsaid", "return 'accept'", Some(chain));
         assert_eq!(ttls_conversation(&server, ttls_pap_peer(dir.path(), Some("alice"), "anything"), b"anonymous").await.0.code, ACCESS_REJECT);
-        assert!(crate::test_support::logged_errors().lock().unwrap().iter().any(|line| line.contains("ttls-unsaid") && line.contains("without checking a password")));
+        assert!(crate::logging::logged_errors().lock().unwrap().iter().any(|line| line.contains("ttls-unsaid") && line.contains("without checking a password")));
     }
 
     #[tokio::test]
@@ -5525,7 +5526,7 @@ pub(crate) mod tests {
     async fn test_ttls_client_without_a_chain() {
         let (dir, server) = ttls_server("ttls-nochain", "return 'accept'", None);
         assert_eq!(ttls_conversation(&server, ttls_pap_peer(dir.path(), Some("alice"), "secret"), b"anonymous").await.0.code, ACCESS_REJECT);
-        assert!(crate::test_support::logged_errors().lock().unwrap().iter().any(|line| line.contains("ttls-nochain") && line.contains("no chain")));
+        assert!(crate::logging::logged_errors().lock().unwrap().iter().any(|line| line.contains("ttls-nochain") && line.contains("no chain")));
     }
 
     #[tokio::test]
@@ -5668,7 +5669,7 @@ pub(crate) mod tests {
         assert_eq!(records.len(), 1, "{records:?}");
         assert_eq!((records[0].account.as_str(), records[0].handler.as_str(), records[0].decision.as_str()), ("alice", "eap-peap", "reject"));
         assert_eq!(server.metrics.eap_peap.reject.get(), 1);
-        assert!(crate::test_support::logged_errors().lock().unwrap().iter().any(|line| line.contains("peap-stops") && line.contains("did not accept")));
+        assert!(crate::logging::logged_errors().lock().unwrap().iter().any(|line| line.contains("peap-stops") && line.contains("did not accept")));
     }
 
     #[tokio::test]
@@ -5689,7 +5690,7 @@ pub(crate) mod tests {
         let (response, _, _, _) = peap_conversation(&server, dir.path(), b"anonymous", "alice", "secret").await;
         assert_eq!(response.code, ACCESS_REJECT);
         assert_eq!(joined(&response)[0], 4);
-        assert!(crate::test_support::logged_errors().lock().unwrap().iter().any(|line| line.contains("peap-nochain") && line.contains("no chain")));
+        assert!(crate::logging::logged_errors().lock().unwrap().iter().any(|line| line.contains("peap-nochain") && line.contains("no chain")));
     }
 
     /// Up to the first response, so that a test can reload before going on.
