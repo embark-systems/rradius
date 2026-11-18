@@ -1128,6 +1128,108 @@ fn test_passwords_are_not_logged() {
     }
 }
 
+/// MS-CHAPv1 through real processes (RFC 2433 appendix B.2: password "MyPw", challenge 102DB5DF085D3041): over
+/// RADIUS a right response is accepted with the MPPE keys and a wrong one refused with an MS-CHAP-Error; over
+/// TACACS+ the MSCHAP START is decided by the chain, and a client without one is told to restart with another type.
+#[test]
+fn test_mschapv1_through_real_processes() -> Result<(), Box<dyn std::error::Error>> {
+    const CHALLENGE: [u8; 8] = [0x10, 0x2D, 0xB5, 0xDF, 0x08, 0x5D, 0x30, 0x41];
+    const NT_RESPONSE: [u8; 24] = [0x4E, 0x9D, 0x3C, 0x8F, 0x9C, 0xFD, 0x38, 0x5D, 0x5B, 0xF4, 0xD3, 0x24, 0x67, 0x91, 0x95, 0x6C, 0xA4, 0xC3, 0x51, 0xAB, 0x40, 0x9A, 0x3D, 0x61];
+    // bob's password "MyPw" is stored in plain text; the exact keys are in the unit tests (RFC 3079 section 2.5.3).
+    let schema = "CREATE TABLE users (username TEXT, password TEXT);\nINSERT INTO users VALUES ('bob', 'MyPw');\n";
+    let microsoft = |kind: u8, value: &[u8]| {
+        let mut attribute = 311u32.to_be_bytes().to_vec();
+        attribute.extend_from_slice(&[kind, value.len() as u8 + 2]);
+        attribute.extend_from_slice(value);
+        (radius::VENDOR_SPECIFIC, attribute)
+    };
+    let response = |nt_response: &[u8; 24], flags: u8| {
+        let mut value = vec![5u8, flags];
+        value.extend_from_slice(&[0; 24]);
+        value.extend_from_slice(nt_response);
+        value
+    };
+    // The data of a TACACS+ MSCHAP START: id, challenge, LM response, NT response, flags.
+    let tacacs_data = |nt_response: &[u8; 24], flags: u8| {
+        let mut data = vec![5u8];
+        data.extend_from_slice(&CHALLENGE);
+        data.extend_from_slice(&[0; 24]);
+        data.extend_from_slice(nt_response);
+        data.push(flags);
+        data
+    };
+    let mschap_start = |user: &[u8], data: &[u8]| {
+        let mut body = vec![1u8, 1, 5, 1, user.len() as u8, 0, 0, data.len() as u8];
+        body.extend_from_slice(user);
+        body.extend_from_slice(data);
+        body
+    };
+    let mut wrong = NT_RESPONSE;
+    wrong[0] ^= 0x01;
+
+    for chain in [true, false] {
+        let dir = dir_with_migrations(&[("1_users.sql", schema)]);
+        let (config, auth_port) = write_config_with(dir.path(), "return 'accept'", None, WITH_MIGRATIONS);
+        let tacacs = free_port();
+        let text = std::fs::read_to_string(&config)?;
+        let handlers = if chain { "[auth]\n[[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE username = ?\"\n" } else { "" };
+        std::fs::write(&config, format!("{text}[tacacs]\nport = {tacacs}\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n{handlers}"))?;
+        let child = Server::spawn(PROGRAM, dir.path(), &config);
+        let mut server = Server { child, dir, config, auth_port };
+        server.access_request();
+
+        // TACACS+: right and wrong, the LM-only flag, a challenge of another size; without a chain the client restarts.
+        let login = |user: &[u8], data: &[u8], id: u32| tacacs_ask(&mut tacacs_stream(tacacs), id, 1, &mschap_start(user, data));
+        const RESTART: u8 = 6;
+        if chain {
+            assert_eq!(login(b"bob", &tacacs_data(&NT_RESPONSE, 1), 0x21), PASS);
+            assert_eq!(login(b"bob", &tacacs_data(&wrong, 1), 0x22), FAIL);
+            assert_eq!(login(b"bob", &tacacs_data(&NT_RESPONSE, 0), 0x23), FAIL, "the flag asks for the LM response");
+            assert_eq!(login(b"nobody", &tacacs_data(&NT_RESPONSE, 1), 0x24), FAIL);
+            assert_eq!(login(b"bob", &tacacs_data(&NT_RESPONSE, 1)[..40], 0x25), FAIL, "a short body");
+        } else {
+            assert_eq!(login(b"bob", &tacacs_data(&NT_RESPONSE, 1), 0x21), RESTART);
+        }
+
+        // RADIUS: the same exchange as a request. Without a chain the top-level script decides and no response is checked.
+        let socket = UdpSocket::bind("127.0.0.1:0")?;
+        socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let ask = |id: u8, user: &[u8], nt_response: &[u8; 24], flags: u8, authenticator: [u8; 16]| -> Result<RadiusPacket, String> {
+            let attributes = vec![(1u8, user.to_vec()), microsoft(11, &CHALLENGE), microsoft(1, &response(nt_response, flags))];
+            let packet = RadiusPacket::create_access_request(id, authenticator, attributes, b"s");
+            socket.send_to(&packet, ("127.0.0.1", auth_port)).map_err(|e| e.to_string())?;
+            let mut buf = [0u8; 4096];
+            let (size, _) = socket.recv_from(&mut buf).map_err(|e| e.to_string())?;
+            RadiusPacket::parse(&buf[..size]).map_err(|e| format!("{e:?}"))
+        };
+        let vendor = |packet: &RadiusPacket, kind: u8| {
+            packet.attributes.iter().find_map(|(attribute, value)| (*attribute == radius::VENDOR_SPECIFIC && value[..4] == 311u32.to_be_bytes() && value[4] == kind).then(|| value[6..].to_vec()))
+        };
+        if chain {
+            let accepted = ask(31, b"bob", &NT_RESPONSE, 1, [51; 16])?;
+            assert_eq!(accepted.code, radius::ACCESS_ACCEPT, "{}", server.stderr());
+            let keys = vendor(&accepted, 12).ok_or("no MS-CHAP-MPPE-Keys")?;
+            assert_eq!(keys.len(), 32, "24 octets and the padding to 16");
+            let plain = radius::decrypt_user_password(&keys, b"s", &[51; 16]);
+            // 8 zeros for the LM-Key, then the 16 octets of the NT-Key.
+            assert_eq!(plain.len(), 24);
+            assert_eq!(plain[..8], [0u8; 8]);
+            assert!(plain[8..].iter().any(|byte| *byte != 0));
+            assert_eq!(vendor(&accepted, 8), Some(vec![0, 0, 0, 2]), "128-bit only");
+            let refused = ask(32, b"bob", &wrong, 1, [52; 16])?;
+            assert_eq!(refused.code, radius::ACCESS_REJECT);
+            let error = vendor(&refused, 2).ok_or("no MS-CHAP-Error")?;
+            assert_eq!((error[0], &error[1..]), (5, b"E=691 R=0".as_slice()));
+            assert!(vendor(&refused, 12).is_none());
+            assert_eq!(ask(33, b"bob", &NT_RESPONSE, 0, [53; 16])?.code, radius::ACCESS_REJECT, "the LM response is not checked");
+            assert_eq!(ask(34, b"nobody", &NT_RESPONSE, 1, [54; 16])?.code, radius::ACCESS_REJECT);
+        }
+        assert!(!server.stderr().contains("Lua script error"), "{}", server.stderr());
+        server.stop_with("-TERM");
+    }
+    Ok(())
+}
+
 #[test]
 fn test_check_passes_without_touching_anything() {
     let dir = tempfile::tempdir().unwrap();

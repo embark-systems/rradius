@@ -142,7 +142,7 @@ aaa accounting commands 15 default stop-only group RRADIUS
 - **49 埠：** 用 systemd 的 `AmbientCapabilities=CAP_NET_BIND_SERVICE`，或 `setcap cap_net_bind_service=+ep` 給執行檔，不要用 root 執行。
 - **TACACS+ 的加密很弱：** RFC 8907 的混淆只用 MD5 和共用密碼，不能取代真正的加密。設備和 rradius 之間要走管理網路，共用密碼夠長（少於 16 個字元啟動時會有警告）且每台不同（可以用多個 `[[tacacs.clients]]`）。設備支援 TACACS+ over TLS（RFC 9887）時可以改用 TLS，這需要 rradius-enterprise，見企業版手冊第 9 章。
 - **ASCII 登入**（設備問帳號、再問密碼）和 PAP 都支援。enable 預設拒絕，改密碼一律回 FAIL，見 [usage 4.6 節](../usage.md#46-tacacs-屬性)。
-- **CHAP 和 MS-CHAPv2**（用 PPP 撥接的設備才會用到）由認證串接比對，所以帳號的密碼要是伺服器讀得到的形式：CHAP 要明文，MS-CHAPv2 要明文或 `{nthash}`。範例的帳號存 bcrypt，這兩種登入會被拒絕，一般的 SSH 登入（PAP、ASCII）不受影響。沒有串接的設備收到的是 RESTART，設備可以改用 PAP。
+- **CHAP、MS-CHAP（v1）和 MS-CHAPv2**（用 PPP 撥接的設備才會用到）由認證串接比對，所以帳號的密碼要是伺服器讀得到的形式：CHAP 要明文，MS-CHAP 與 MS-CHAPv2 要明文或 `{nthash}`。範例的帳號存 bcrypt，這幾種登入會被拒絕，一般的 SSH 登入（PAP、ASCII）不受影響。沒有串接的設備，以及 enable 請求，收到的是 RESTART，設備可以改用 PAP。MS-CHAP（v1）的雜湊只用 DES，幾乎可以即時破解，只用在管理網路與無法升級的舊設備，見 [usage 5.2 節](../usage.md#52-ms-chapv1)。
 - **給使用者看的訊息：** 腳本用 `set_attr('server_msg', '...')` 設的文字會放進回覆，設備通常會顯示給登入的人，例如拒絕指令時說明原因。授權群組的規則不能帶訊息。
 - **閒置連線** 300 秒沒有完整封包就關閉（`idle_timeout_ms`），每條連線最多 8 個未完成的登入。
 - **記錄的保存：** `tacacs_log` 會一直變大，rradius 不會自動清除。清除舊資料的做法見[第 11 章](11-operations.md#清除舊資料)。

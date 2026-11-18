@@ -454,6 +454,15 @@ mod tests {
         Credentials { user: Some(user.to_string()), secret: Secret::MsChapV2 { ident: 7, peer_challenge: PEER, response, challenge: AUTHENTICATOR } }
     }
 
+    /// The handler asks a domain controller about MS-CHAPv2 only; an MS-CHAPv1 request is ignored, so that
+    /// the chain does not accept it unless another handler that can check it does.
+    #[tokio::test]
+    async fn test_mschapv1_is_ignored() {
+        let (handler, _) = make(vec![None], |_| {});
+        let credentials = Credentials { user: Some("alice".to_string()), secret: Secret::MsChapV1 { ident: 1, challenge: [1; 8], nt_response: [2; 24] } };
+        assert_eq!(handler.authenticate(&credentials, Some("alice")).await, (Outcome::Ignore, Vec::new(), false));
+    }
+
     async fn decide(handler: &NetlogonHandler, user: &str, password: &str) -> (Outcome, Vec<(String, AttrValue)>, bool) {
         handler.authenticate(&mschapv2(user, password), Some(user)).await
     }

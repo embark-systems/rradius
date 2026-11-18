@@ -208,8 +208,8 @@ pub fn parse_authen_start(body: &[u8]) -> Option<Vec<(String, AttrValue)>> {
 /// The reply an Authentication START gets before anything is asked or run: FAIL for an
 /// action other than LOGIN, which this server does not do (RFC 8907 section 5.1:
 /// unsupported options fail), for an enable request while `enable` denies them, or for CHAP
-/// or MS-CHAPv2 data of the wrong size; RESTART for an authentication type this server does
-/// not check, so that the client can try another. CHAP and MS-CHAPv2 are checked only by an
+/// or MS-CHAP (v1) or MS-CHAPv2 data of the wrong size; RESTART for an authentication type this server does
+/// not check, so that the client can try another. CHAP, MS-CHAP and MS-CHAPv2 are checked only by an
 /// authentication chain with a handler that compares passwords (`chained`); a script has
 /// nothing to compare them with. `None` for a body that does not parse, which is
 /// answered as malformed.
@@ -227,13 +227,13 @@ fn refused_start(body: &[u8], enable: EnableMode, chained: bool, client: &Client
         tracing::info!(client = client.name.as_str(), user = user().as_str(), priv_lvl = body[1], "TACACS+ enable request refused: [tacacs].enable is \"deny\"");
         return Some(authen_reply(AUTHEN_STATUS_FAIL, 0, b""));
     }
-    let challenge_response = matches!(body[2], AUTHEN_TYPE_CHAP | AUTHEN_TYPE_MSCHAPV2) && chained && body[3] != AUTHEN_SVC_ENABLE;
+    let challenge_response = matches!(body[2], AUTHEN_TYPE_CHAP | AUTHEN_TYPE_MSCHAP | AUTHEN_TYPE_MSCHAPV2) && chained && body[3] != AUTHEN_SVC_ENABLE;
     if !matches!(body[2], AUTHEN_TYPE_ASCII | AUTHEN_TYPE_PAP) && !challenge_response {
         tracing::info!(client = client.name.as_str(), user = user().as_str(), authen_type = body[2], "TACACS+ authentication type not supported here: asking the client to restart with another");
         return Some(authen_reply(AUTHEN_STATUS_RESTART, 0, b""));
     }
     if challenge_response && challenge_secret(body[2], data_field(&attributes)).is_none() {
-        tracing::info!(client = client.name.as_str(), user = user().as_str(), authen_type = body[2], data_len = data_field(&attributes).len(), "TACACS+ authentication refused: CHAP needs a challenge of at least 8 octets, MS-CHAPv2 one of 16");
+        tracing::info!(client = client.name.as_str(), user = user().as_str(), authen_type = body[2], data_len = data_field(&attributes).len(), "TACACS+ authentication refused: CHAP needs a challenge of at least 8 octets, MS-CHAP one of 8 and a response with the NT flag, MS-CHAPv2 one of 16");
         return Some(authen_reply(AUTHEN_STATUS_FAIL, 0, b""));
     }
     None
@@ -250,13 +250,18 @@ fn data_field(attributes: &[(String, AttrValue)]) -> &[u8] {
 const CHAP_RESPONSE_LEN: usize = 16;
 /// RFC 8907 section 5.4.2.3 recommends refusing shorter CHAP challenges.
 const MIN_CHAP_CHALLENGE_LEN: usize = 8;
+/// MS-CHAP (v1) response size (RFC 8907 section 5.4.2.4): LM response (24), NT response (24), flags (1).
+const MSCHAP_RESPONSE_LEN: usize = 49;
+/// The challenge of MS-CHAP (v1) is 8 octets (RFC 2433).
+const MSCHAP_CHALLENGE_LEN: usize = 8;
 /// MS-CHAPv2 response size (RFC 8907 section 5.4.2.5): peer challenge (16), reserved (8),
 /// NT response (24), flags (1), as in RFC 2759.
 const MSCHAPV2_RESPONSE_LEN: usize = 49;
 
-/// The secret in the data of a CHAP or MS-CHAPv2 START: the PPP id, the challenge, then the
+/// The secret in the data of a CHAP, MS-CHAP or MS-CHAPv2 START: the PPP id, the challenge, then the
 /// response. `None` for another type, or for data whose challenge is shorter than
-/// [`MIN_CHAP_CHALLENGE_LEN`] (CHAP) or other than 16 octets (MS-CHAPv2, as RFC 8907 requires).
+/// [`MIN_CHAP_CHALLENGE_LEN`] (CHAP), other than 8 octets or without the NT flag (MS-CHAP), or other
+/// than 16 octets (MS-CHAPv2, as RFC 8907 requires).
 fn challenge_secret(authen_type: u8, data: &[u8]) -> Option<Secret> {
     let (&id, rest) = data.split_first()?;
     match authen_type {
@@ -264,6 +269,15 @@ fn challenge_secret(authen_type: u8, data: &[u8]) -> Option<Secret> {
             let split = rest.len().checked_sub(CHAP_RESPONSE_LEN).filter(|&len| len >= MIN_CHAP_CHALLENGE_LEN)?;
             let (challenge, response) = rest.split_at(split);
             Some(Secret::Chap { id, response: response.to_vec(), challenge: challenge.to_vec() })
+        }
+        AUTHEN_TYPE_MSCHAP => {
+            // The LM response is dropped: only the NT response is checked, and a response whose flag
+            // does not say it is the one to use is no login.
+            if rest.len() != MSCHAP_CHALLENGE_LEN + MSCHAP_RESPONSE_LEN || rest[rest.len() - 1] & 1 == 0 {
+                return None;
+            }
+            let (challenge, response) = rest.split_at(MSCHAP_CHALLENGE_LEN);
+            Some(Secret::MsChapV1 { ident: id, challenge: challenge.try_into().ok()?, nt_response: response[24..48].try_into().ok()? })
         }
         AUTHEN_TYPE_MSCHAPV2 => {
             if rest.len() != 16 + MSCHAPV2_RESPONSE_LEN {
@@ -393,6 +407,8 @@ pub const AUTHEN_TYPE_PAP: u8 = 0x02;
 /// Authentication type CHAP in an Authentication START (RFC 8907 section 5.1).
 pub const AUTHEN_TYPE_CHAP: u8 = 0x03;
 /// Authentication type MS-CHAPv2 in an Authentication START (RFC 8907 section 5.1).
+pub const AUTHEN_TYPE_MSCHAP: u8 = 0x05;
+/// Authentication type MS-CHAPv2 (RFC 8907 section 5.4.2.5).
 pub const AUTHEN_TYPE_MSCHAPV2: u8 = 0x06;
 
 /// The user and secret of a parsed Authentication START: `data` is the
@@ -1097,16 +1113,16 @@ impl TacacsServer {
             Some(chain) => {
                 let result = chain.authenticate(credentials, &request).await;
                 let unavailable = result.unavailable;
-                // A CHAP or MS-CHAPv2 response proves nothing unless a handler compared it: an accept
+                // A CHAP, MS-CHAP or MS-CHAPv2 response proves nothing unless a handler compared it: an accept
                 // from a policy script, after one that did not know the name, is no such proof, and
                 // MS-CHAPv2 is only proved by MS-CHAP2-Success, as for PEAP's inner method.
                 let proved = match &credentials.secret {
-                    Secret::Chap { .. } => result.verified,
+                    Secret::Chap { .. } | Secret::MsChapV1 { .. } => result.verified,
                     Secret::MsChapV2 { .. } => result.verified && result.attributes.iter().any(|(name, _)| name == "MS-CHAP2-Success"),
                     _ => true,
                 };
                 if result.accepted() && !proved {
-                    crate::lua_engine::log_line(tracing::Level::WARN, format!("TACACS+ client {}: a CHAP or MS-CHAPv2 login accepted without a handler checking the response, refused", client.name));
+                    crate::lua_engine::log_line(tracing::Level::WARN, format!("TACACS+ client {}: a CHAP, MS-CHAP or MS-CHAPv2 login accepted without a handler checking the response, refused", client.name));
                 }
                 (result.accepted() && proved, client.auth.as_deref().unwrap_or("default"), if proved { result.handler } else { "no_password_check" }, result.account, if proved { result.attributes } else { Vec::new() }, unavailable)
             }
@@ -1786,6 +1802,18 @@ pub(crate) mod tests {
         data
     }
 
+    /// The data of an MS-CHAP (v1) START: the PPP id, an 8-octet challenge, the LM response (zeros), the NT
+    /// response and the flags (RFC 8907 section 5.4.2.4).
+    fn mschap_data(id: u8, challenge: &[u8], password: &str, flags: u8) -> Vec<u8> {
+        let mut data = vec![id];
+        data.extend_from_slice(challenge);
+        data.extend_from_slice(&[0; 24]);
+        let eight: [u8; 8] = challenge.iter().copied().chain(std::iter::repeat(0)).take(8).collect::<Vec<_>>().try_into().unwrap_or([0; 8]);
+        data.extend_from_slice(&crate::mschap::challenge_response(&eight, &crate::mschap::nt_password_hash(password)).unwrap_or([0; 24]));
+        data.push(flags);
+        data
+    }
+
     fn mschapv2_data(id: u8, challenge: &[u8; 16], password: &str) -> Vec<u8> {
         let peer = [0x5a; 16];
         let mut data = vec![id];
@@ -1811,9 +1839,17 @@ pub(crate) mod tests {
             ("MS-CHAPv2, right password", typed_start_body(AUTHEN_TYPE_MSCHAPV2, 1, b"alice", &mschapv2_data(9, &challenge, "secret")), AUTHEN_STATUS_PASS),
             ("MS-CHAPv2, wrong password", typed_start_body(AUTHEN_TYPE_MSCHAPV2, 1, b"alice", &mschapv2_data(9, &challenge, "wrong")), AUTHEN_STATUS_FAIL),
             ("MS-CHAPv2, one octet short", typed_start_body(AUTHEN_TYPE_MSCHAPV2, 1, b"alice", &mschapv2_data(9, &challenge, "secret")[..65]), AUTHEN_STATUS_FAIL),
-            // Enable stays ASCII or PAP, and MS-CHAPv1 is not checked.
+            ("MS-CHAP, right password", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &challenge[..8], "secret", 1)), AUTHEN_STATUS_PASS),
+            ("MS-CHAP, wrong password", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &challenge[..8], "wrong", 1)), AUTHEN_STATUS_FAIL),
+            ("MS-CHAP, unknown user", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"bob", &mschap_data(5, &challenge[..8], "secret", 1)), AUTHEN_STATUS_FAIL),
+            ("MS-CHAP, flag for the LM response only", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &challenge[..8], "secret", 0)), AUTHEN_STATUS_FAIL),
+            ("MS-CHAP, 16-octet challenge", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &challenge, "secret", 1)), AUTHEN_STATUS_FAIL),
+            ("MS-CHAP, 7-octet challenge", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &challenge[..7], "secret", 1)), AUTHEN_STATUS_FAIL),
+            ("MS-CHAP, one octet short", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &challenge[..8], "secret", 1)[..57]), AUTHEN_STATUS_FAIL),
+            ("MS-CHAP, no data", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", b""), AUTHEN_STATUS_FAIL),
+            // Enable stays ASCII or PAP.
+            ("MS-CHAP enable", typed_start_body(AUTHEN_TYPE_MSCHAP, AUTHEN_SVC_ENABLE, b"alice", &mschap_data(5, &challenge[..8], "secret", 1)), AUTHEN_STATUS_RESTART),
             ("CHAP enable", typed_start_body(AUTHEN_TYPE_CHAP, AUTHEN_SVC_ENABLE, b"alice", &chap_data(7, &challenge, b"secret")), AUTHEN_STATUS_RESTART),
-            ("MS-CHAPv1", typed_start_body(5, 1, b"alice", &[0; 66]), AUTHEN_STATUS_RESTART),
         ];
         // A chain of scripts that do not compare passwords cannot check a response either.
         let scripts_only = Arc::new(AuthChains::new(Some(AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![
@@ -1859,6 +1895,7 @@ pub(crate) mod tests {
         for (label, body) in [
             ("CHAP", typed_start_body(AUTHEN_TYPE_CHAP, 1, b"nobody", &chap_data(7, &challenge, b"anything"))),
             ("MS-CHAPv2", typed_start_body(AUTHEN_TYPE_MSCHAPV2, 1, b"nobody", &mschapv2_data(9, &challenge, "anything"))),
+            ("MS-CHAP", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"nobody", &mschap_data(9, &challenge[..8], "anything", 1))),
         ] {
             let mut connection = AsciiConnection::with(script_engine("return 'accept'").await, Some(chains.clone())).await;
             let (_, status, _, rest) = connection.ask(ASCII_SESSION, 1, &body).await;
@@ -1877,6 +1914,17 @@ pub(crate) mod tests {
         let expected = Secret::MsChapV2 { ident: 9, challenge: [1; 16], peer_challenge: [0x5a; 16], response: crate::mschap::response_for("secret", "alice", &[0x5a; 16], &[1; 16]) };
         assert_eq!(challenge_secret(AUTHEN_TYPE_MSCHAPV2, &data), Some(expected));
         assert_eq!(challenge_secret(AUTHEN_TYPE_MSCHAPV2, &[data.as_slice(), &[0]].concat()), None);
+        // MS-CHAP (v1): id, 8 octets of challenge, LM response, NT response, flags.
+        let data = mschap_data(5, &[2u8; 8], "secret", 1);
+        let nt = crate::mschap::challenge_response(&[2u8; 8], &crate::mschap::nt_password_hash("secret")).unwrap_or([0; 24]);
+        assert_eq!(challenge_secret(AUTHEN_TYPE_MSCHAP, &data), Some(Secret::MsChapV1 { ident: 5, challenge: [2; 8], nt_response: nt }));
+        assert_eq!(data.len(), 1 + 8 + 49);
+        // Another flag value with the NT bit still set is the same login; without it, none.
+        assert!(challenge_secret(AUTHEN_TYPE_MSCHAP, &mschap_data(5, &[2u8; 8], "secret", 3)).is_some());
+        assert_eq!(challenge_secret(AUTHEN_TYPE_MSCHAP, &mschap_data(5, &[2u8; 8], "secret", 2)), None);
+        assert_eq!(challenge_secret(AUTHEN_TYPE_MSCHAP, &data[..data.len() - 1]), None);
+        assert_eq!(challenge_secret(AUTHEN_TYPE_MSCHAP, &[data.as_slice(), &[1]].concat()), None);
+        assert_eq!(challenge_secret(AUTHEN_TYPE_MSCHAP, &[]), None);
         assert_eq!(challenge_secret(AUTHEN_TYPE_PAP, &data), None);
         assert_eq!(challenge_secret(AUTHEN_TYPE_CHAP, &[]), None);
     }

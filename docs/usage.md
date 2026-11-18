@@ -1015,7 +1015,7 @@ minutes = 30         # 必填，1 到 1440
 | `decision` | 設備實際收到的結果：`accept`、`reject`、`challenge`。回應送不出去而改成拒絕時，這裡寫 `reject` |
 
 - **只有做出決定的請求才有紀錄。** 重送快取的回覆、過載丟棄、驗證失敗和未知 client 的封包不會有，請看 2.8 節的指標。計費和 TACACS+ 授權也不會有。
-- **不會記錄密碼、CHAP 或 MS-CHAPv2 回應、TACACS+ 的 `data`。** 但使用者把密碼打進帳號欄位時，它會出現在 `user`，伺服器無法判斷。
+- **不會記錄密碼、CHAP 或 MS-CHAP 回應、TACACS+ 的 `data`。** 但使用者把密碼打進帳號欄位時，它會出現在 `user`，伺服器無法判斷。
 - **紀錄含有帳號等個人資料。** 保存多久、誰能讀取由部署方負責；不需要時可以設 `auth = false`。
 
 **不是可靠的稽核來源：** 記錄由背景執行緒寫出，最多緩衝 128000 行。輸出跟不上時會直接丟棄，寫入失敗（例如接收的程序結束了或磁碟滿了）時也會遺失，兩者都計入 `rradius_log_dropped_lines_total`，不會拖慢認證，所以要留意這個指標。SIGTERM 和 SIGINT 會在結束前等緩衝寫出，最多 5 秒，超過時剩下的會遺失，也不會計數；SIGKILL 或當機時，緩衝中的內容同樣會遺失。
@@ -1250,7 +1250,7 @@ rradius-server user show --config /etc/rradius/rradius.toml alice
 | --- | --- | --- |
 | `bcrypt`（預設） | `{crypt}$2b$10$...` | 一般用途。驗證刻意很慢：2026-11-07 在 14 核心的 Apple M4 Max 上用 `rradius-bench`（PAP、併發 64）量到每秒約 281 次登入，登入量大時不夠 |
 | `sha512-crypt` | `{crypt}$6$...` | 登入量大、只用 PAP。仍有鹽和多輪雜湊，驗證快很多 |
-| `nthash` | `{nthash}...` | MS-CHAPv2、PEAP、EAP-TTLS 的 MS-CHAPv2（5.1 節）；PAP 也能用 |
+| `nthash` | `{nthash}...` | MS-CHAPv2、MS-CHAPv1、PEAP、EAP-TTLS 的 MS-CHAPv2（5.1、5.2 節）；PAP 也能用 |
 | `clear` | `{clear}...` | CHAP（例如 PPPoE），它只能比對明文。資料庫外洩就等於密碼外洩 |
 
 `scheme` 只影響之後寫入的密碼，已經存在的帳號保留原本的格式，伺服器照樣驗證（第 5 節）。
@@ -1616,7 +1616,7 @@ script = "site_rules.lua"   # 以設定檔目錄解析
 - `{user}` 會依 RFC 4515 跳脫，使用者名稱無法改變搜尋條件的結構。
 - 查無 → 略過；多筆 → 拒絕並記錄。
 - `bind` 模式只接受 PAP，空密碼一律拒絕（避免被當成匿名登入）；`invalidCredentials` 為一般拒絕，其他登入錯誤視為伺服器錯誤。
-- `attribute` 模式支援 PAP，以及密碼以明文或 `{clear}` 儲存時的 CHAP，也支援 MS-CHAPv2（5.1 節）。
+- `attribute` 模式支援 PAP，以及密碼以明文或 `{clear}` 儲存時的 CHAP，也支援 MS-CHAPv2 與 MS-CHAPv1（5.1、5.2 節）。
 - 連線失敗、連線中斷或逾時才換下一個 URL，包含服務帳號登入、搜尋和使用者登入途中斷線；伺服器回應的錯誤，例如服務帳號密碼錯誤、搜尋失敗，一律拒絕並記錄，不會略過。
 - 憑證一律驗證（系統信任的 CA 加上 `ca_file`）。
 - 連線在認證之間重用：取用前確認連線仍開著，並在 `timeout_ms` 的一半內以服務帳號重新登入；出錯或逾時的連線會丟棄並改建新連線。
@@ -1921,7 +1921,7 @@ set_attr('WiMAX-Release', '2.0')
   - `get_attr('WiMAX-Capability')`、`get_attr('Extended-Attribute-1')` 這類容器名稱以前回傳原始位元組，現在是 `nil`，要用裡面屬性的名稱。
   - 字典的 `VENDOR` 和 `BEGIN-VENDOR` 上不認得的選項或多餘的欄位以前被忽略，現在載入失敗。
 
-字典的 `encrypt=` 只能是 1、2、3，其他寫法在載入時就報錯；選項可以用逗號或空白分隔。`set_attr` 不支援 `encrypt=1`、`encrypt=3` 的屬性，也不支援 `abinary`；延伸屬性和 TLV 裡有 `has_tag` 或 `encrypt` 的定義也不支援。這些都會讓腳本出錯。
+字典的 `encrypt=` 只能是 1、2、3，其他寫法在載入時就報錯；選項可以用逗號或空白分隔。`set_attr` 支援 `encrypt=1`（RFC 2865 第 5.2 節 User-Password 的方法，值補零到 16 的倍數，1 到 128 個位元組，不能同時有 `has_tag`）和 `encrypt=2`，不支援 `encrypt=3` 的屬性，也不支援 `abinary`；延伸屬性和 TLV 裡有 `has_tag` 或 `encrypt` 的定義也不支援。這些都會讓腳本出錯。
 
 - `get_attr` 使用字典中的屬性名稱，例如 `User-Name`、`NAS-IP-Address`；Vendor-Specific 屬性會拆成各廠商屬性。字典中沒有的屬性不會出現。
 - 型別：`integer`、`date`、`byte`、`short`、`signed`、`integer64` → 數字；上表的位址型別 → 文字，值的長度不符時是原始位元組字串；其他 → 原始位元組字串。
@@ -1942,12 +1942,12 @@ set_attr('WiMAX-Release', '2.0')
 - **升級注意（enable）：** 以前 enable 請求被當成一般登入，能登入的人都能用自己的密碼 enable。現在預設拒絕；需要舊行為時設 `enable = "login"`，並建議在腳本裡限制。
 - **只支援 LOGIN 動作。** 改密碼（CHPASS）、SENDPASS、SENDAUTH 一律回 FAIL，不詢問也不執行串接或腳本（RFC 8907：不支援的選項回 FAIL）。以前改密碼會被當成登入而回 PASS，設備會以為密碼已改。
 - 授權與計費：每個 `key=value` 或 `key*value` 參數以 `key` 為名稱，例如 `get_attr('cmd')`。另有封包表頭的 `priv_lvl`（使用者目前的權限等級，0–15）、`authen_method`、`authen_type`、`authen_service`（都是數字）。名稱用底線，和設備送的 `priv-lvl` 這類參數區分；授權群組規則只比對參數，不看這些欄位。
-- **CHAP 和 MS-CHAPv2 登入**（RFC 8907 第 5.4.2.3、5.4.2.5 節，例如用 PPP 撥接的設備）**要有認證串接**（第 3 節），由串接比對，一個 START 直接回 PASS 或 FAIL，和 RADIUS 的 CHAP、MS-CHAPv2 用同樣的處理器：
-  - CHAP 只能比對明文或 `{clear}` 密碼，MS-CHAPv2 要明文或 `{nthash}`（5.1 節）；`ldap` 處理器要用 `attribute` 模式。
-  - CHAP 的 challenge 短於 8 個位元組、MS-CHAPv2 的 challenge 不是 16 個位元組時直接回 FAIL 並記錄，不執行串接（RFC 8907 的建議與要求）。
-  - MS-CHAPv2 只回 PASS，不帶 authenticator response（RFC 8907 沒有定義它放在哪裡），需要雙向驗證的 PPP 用戶端可能因此失敗，這種情況改用 RADIUS。
-  - 沒有串接的 client、串接裡只有沒設 `verifies_password` 的 `lua` 處理器的 client，以及 enable 請求，CHAP 和 MS-CHAPv2 照舊回 RESTART，設備可以改用 PAP：腳本沒有可以比對的密碼。
-- **不支援的驗證方式**（ARAP、MS-CHAP，以及上一項說的情況）的 START 回 RESTART，不執行串接或腳本，設備可以改用 PAP 或 ASCII 重試；不支援 RESTART 的設備會當成 FAIL（RFC 8907）。改密碼這類非 LOGIN 動作與被拒的 enable 仍回 FAIL。
+- **CHAP、MS-CHAP（v1）和 MS-CHAPv2 登入**（RFC 8907 第 5.4.2.3、5.4.2.4、5.4.2.5 節，例如用 PPP 撥接的設備）**要有認證串接**（第 3 節），由串接比對，一個 START 直接回 PASS 或 FAIL，和 RADIUS 的 CHAP、MS-CHAP、MS-CHAPv2 用同樣的處理器：
+  - CHAP 只能比對明文或 `{clear}` 密碼，MS-CHAP 與 MS-CHAPv2 要明文或 `{nthash}`（5.1、5.2 節）；`ldap` 處理器要用 `attribute` 模式。
+  - CHAP 的 challenge 短於 8 個位元組、MS-CHAP 的 `data` 不是剛好 1 + 8 + 49 個位元組（PPP id、8 個位元組的 challenge、LM 回應 24、NT 回應 24、旗標 1）或旗標沒有設 NT 位元（bit 0，只有 LM 回應）、MS-CHAPv2 的 challenge 不是 16 個位元組時直接回 FAIL 並記錄，不執行串接（RFC 8907 的建議與要求）。
+  - MS-CHAP 與 MS-CHAPv2 只回 PASS：MS-CHAPv2 不帶 authenticator response（RFC 8907 沒有定義它放在哪裡），需要雙向驗證的 PPP 用戶端可能因此失敗，這種情況改用 RADIUS；MPPE 金鑰也不經 TACACS+ 給設備。
+  - 沒有串接的 client、串接裡只有沒設 `verifies_password` 的 `lua` 處理器的 client，以及 enable 請求，CHAP、MS-CHAP 和 MS-CHAPv2 照舊回 RESTART，設備可以改用 PAP：腳本沒有可以比對的密碼。
+- **不支援的驗證方式**（ARAP，以及上一項說的情況）的 START 回 RESTART，不執行串接或腳本，設備可以改用 PAP 或 ASCII 重試；不支援 RESTART 的設備會當成 FAIL（RFC 8907）。改密碼這類非 LOGIN 動作與被拒的 enable 仍回 FAIL。
 - **設了 `authorize_group` 的 client，授權不執行腳本，** 由授權群組的規則決定（2.3 節），腳本只處理它的認證和計費。
 - 授權接受時，`set_attr` 加入的屬性以 `name=value` AV pair 回傳（PASS_ADD），每個 AV pair 不可超過 255 個位元組，一個回覆最多 255 個 AV pair，超過時回 ERROR 並記錄。
 - 計費腳本回傳 `'accept'` 時回 SUCCESS，出錯或回傳其他值時回 ERROR，連線維持開啟。
@@ -2094,7 +2094,20 @@ CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固�
 - **只能搭配明文、`{clear}` 或 `{nthash}`。** 其他格式都會拒絕，因為這個協定需要 NT hash。AD 帳號用 `netlogon` 處理器，由 DC 驗證。
 - **MS-CHAPv2 本身很弱：** 擷取到的交換可以離線破解，而且 NT hash 外洩就等於密碼外洩。請只用在加密通道內，能用其他方式就不要用它。
 - **使用者名稱：** 驗證時只用最後一個反斜線之後的部分（`BIGCO\alice` 用 `alice`）。查帳號時預設用完整的 `User-Name`，要忽略網域請設定 `strip_realm`（見 3.6 節），或自行寫在查詢裡。正規化只影響查帳號，驗證仍用收到的名稱。
-- **不支援：** `ldap` 處理器的 `bind` 模式、最上層腳本和 `lua` 處理器、MS-CHAPv1。EAP-TLS 不用密碼，PEAP、TTLS 內層的 MS-CHAPv2 見 2.12 節。
+- **不支援：** `ldap` 處理器的 `bind` 模式、最上層腳本和 `lua` 處理器。EAP-TLS 不用密碼，PEAP、TTLS 內層的 MS-CHAPv2 見 2.12 節。MS-CHAPv1 見 5.2 節。
+
+### 5.2 MS-CHAPv1
+
+PPTP VPN 和舊的撥接設備仍會用 MS-CHAPv1（RFC 2433）。RADIUS 的 `MS-CHAP-Challenge`（8 個位元組）加 `MS-CHAP-Response`（50 個位元組：識別碼、旗標、LM 回應、NT 回應），和 TACACS+ 的 MSCHAP 認證（`authen_type` 5，4.6 節）都支援，由 `sql` 處理器和 `ldap` 處理器的 `attribute` 模式驗證，儲存格式與 MS-CHAPv2 相同（明文、`{clear}` 或 `{nthash}`）。**沒有設定開關，用的人自己決定。**
+
+> **風險：MS-CHAPv1 的密碼雜湊只用 DES（56 位元），擷取到的挑戰與回應可以幾乎即時還原 NT hash，和密碼強度無關；NT hash 外洩就等於密碼外洩。Windows 也已預設關閉它。** 只在管理網路或無法升級的舊設備上使用，能用 MS-CHAPv2、PEAP 或 EAP-TLS 就不要用它。
+
+- **只驗 NT 回應。** 旗標的 bit 0 沒設（要求用 LM 回應）、或只有 LM 回應的請求一律拒絕（RADIUS 當成沒有帳密，TACACS+ 回 FAIL）；LM 回應不看，也沒有 `{lmhash}` 儲存格式。
+- **MPPE 金鑰只有 128 位元。** 成功時回 `MS-CHAP-MPPE-Keys`（8 個位元組的零當 LM-Key，加 16 個位元組的 NT-Key，即 NT hash 的 MD4，RFC 3079 第 2.3 節；依 RFC 2548 第 2.4.1 節用 User-Password 的方法加密，所以在封包裡是 32 個位元組）和 `MS-MPPE-Encryption-Types`（2，只允許 128 位元）。**40/56 位元的 MPPE 不支援**，PPTP 設備只能協商 128 位元時才會成功；LM-Key 是零，沒有用實體設備驗證。
+- **失敗時** Access-Reject 帶 `MS-CHAP-Error`（`E=691 R=0`），不回 `MS-CHAP2-Success`（版本 1 沒有伺服器的證明）。
+- **不能驗證的處理器：** `ldap` 處理器的 `bind` 模式（目錄只看到密碼）拒絕；`netlogon` 處理器只處理 MS-CHAPv2，MS-CHAPv1 略過，所以只有它的串接會拒絕；最上層腳本和 `lua` 處理器看不到回應，不替腳本驗，腳本看得到的是請求的屬性。
+- **不支援：** 換密碼（`MS-CHAP-CPW`）、EAP 內層的 MS-CHAPv1（PEAP、TTLS）、LM 回應。請求同時帶 `User-Password`、`CHAP-Password` 或 `MS-CHAP2-Response` 時，照 PAP、CHAP、MS-CHAPv2 的順序，MS-CHAPv1 排在最後。
+- **字典：** `MS-CHAP-MPPE-Keys` 是 `encrypt=1` 的屬性，`set_attr` 現在支援 `encrypt=1`（4.5 節）；長度固定的 `octets[N]` 屬性也能用 `set_attr` 設，值要剛好 N 個位元組。
 
 ## 6. 範例：VPN 閘道走 LDAP、其他設備走 SQL
 
