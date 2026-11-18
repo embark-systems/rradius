@@ -3577,7 +3577,9 @@ pub(crate) mod tests {
     /// The nodes of a new cluster in this process, each with its own directory
     /// and ports, on a runtime that lives as long as the process.
     fn start_cluster(count: u64) -> Vec<Db> {
-        let free_port = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        // From the lanes of the test support, not from the operating system: a port found by binding
+        // port 0 and letting go is free only until the system gives it to a connection some test opens.
+        let free_port = || format!("127.0.0.1:{}", crate::test_support::server::free_port());
         let nodes: Vec<_> = (1..=count).map(|id| crate::config::ClusterNode { id, raft: free_port(), api: free_port() }).collect();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
