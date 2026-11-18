@@ -659,10 +659,9 @@ mod tests {
     async fn test_current_members_from_the_configuration() -> Result<(), String> {
         let mut nodes = Vec::new();
         for id in [1, 2] {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
-            let address = listener.local_addr().map_err(|e| e.to_string())?;
-            drop(listener);
-            nodes.push(ClusterNode { id, raft: format!("node{id}:8100"), api: address.to_string() });
+            // A port that no test of this or another process is handed, so nothing answers on it.
+            let address = format!("127.0.0.1:{}", crate::test_support::server::free_port());
+            nodes.push(ClusterNode { id, raft: format!("node{id}:8100"), api: address });
         }
         let api = Api::new("secret".to_string())?;
         let (members, leader, source) = current_members(&api, &nodes).await?;
@@ -752,12 +751,7 @@ mod tests {
         let restarting = ClusterNode { id: 2, raft: "node2:8100".to_string(), api: running.clone() };
         check_node_id_free(&restarting, &nodes, "secret").await?;
         // The same id on a host that replaces a stopped one: nothing answers at the old address.
-        let gone = {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
-            let address = listener.local_addr().map_err(|e| e.to_string())?.to_string();
-            drop(listener);
-            address
-        };
+        let gone = format!("127.0.0.1:{}", crate::test_support::server::free_port());
         let voice_of_gone = serve_metrics(metrics_with_node_2_at(&gone)).await?;
         let nodes = vec![ClusterNode { id: 1, raft: "node1:8100".to_string(), api: voice_of_gone }, nodes[1].clone()];
         check_node_id_free(&nodes[1], &nodes, "secret").await?;

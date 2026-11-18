@@ -618,10 +618,8 @@ pub(crate) mod tests {
 
     /// A URL on a port with nothing listening.
     async fn refused_url() -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        format!("ldap://{}", addr)
+        // A port that no test of this or another process is handed, so nothing listens on it.
+        format!("ldap://127.0.0.1:{}", crate::test_support::server::free_port())
     }
 
     /// A URL whose server accepts connections and never answers.

@@ -1611,9 +1611,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_with_nothing_there() -> Result<(), String> {
-        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.map_err(|e| e.to_string())?;
-        let address = listener.local_addr().map_err(|e| e.to_string())?;
-        drop(listener);
+        // A port that no test of this or another process is handed, so nothing listens on it.
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, crate::test_support::server::free_port()));
         assert!(matches!(get(address, "/metrics").await, Err(FetchError::Unreachable(_))));
         // Something that takes the connection and never answers.
         let silent = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.map_err(|e| e.to_string())?;

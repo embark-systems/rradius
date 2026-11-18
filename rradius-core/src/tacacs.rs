@@ -2063,9 +2063,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_connections_counted() {
         let engine = script_engine("return 'accept'").await;
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let addr = SocketAddr::from(([127, 0, 0, 1], crate::test_support::server::free_port()));
         let metrics = Arc::new(Metrics::default());
         let server = Arc::new(TacacsServer::from_state(addr, state_with_secret(Some(SECRET), &engine), MAX_BODY_LEN).with_max_connections(1).with_metrics(metrics.clone()));
         tokio::spawn(async move { server.run().await });
@@ -2578,9 +2576,10 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// A port nothing listens on just now.
+    /// A port nothing listens on: one that the test support hands to no one else, which no test of this or
+    /// another process opens (a port found by binding port 0 and letting go can be taken before it is used).
     fn unused_port() -> io::Result<u16> {
-        Ok(std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
+        Ok(crate::test_support::server::free_port())
     }
 
     /// With an extension serving TACACS+ over TLS only, the server opens no port of its own.
@@ -2877,7 +2876,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_connection_limit() {
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let port = SocketAddr::from(([127, 0, 0, 1], crate::test_support::server::free_port()));
         let clients = ClientTable::new(vec![("127.0.0.1", None, SECRET.to_vec(), None)]).unwrap();
         let server = TacacsServer::new(port, Arc::new(clients), test_engine().await, MAX_BODY_LEN).with_max_connections(1);
         tokio::spawn(async move { server.run().await });
@@ -2910,9 +2909,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_lines_for_unknown_clients_are_limited() {
         let clients = ClientTable::new(vec![("192.0.2.5", None, b"k".to_vec(), None)]).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let addr = SocketAddr::from(([127, 0, 0, 1], crate::test_support::server::free_port()));
         let metrics = Arc::new(Metrics::default());
         let server = TacacsServer::new(addr, Arc::new(clients), test_engine().await, MAX_BODY_LEN).with_metrics(metrics.clone());
         tokio::spawn(async move { server.run().await });
@@ -2994,9 +2991,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_idle_connection_gives_its_place_back() {
         let engine = script_engine("return 'accept'").await;
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let addr = SocketAddr::from(([127, 0, 0, 1], crate::test_support::server::free_port()));
         let metrics = Arc::new(Metrics::default());
         let server = Arc::new(TacacsServer::from_state(addr, state_with_secret(Some(SECRET), &engine), MAX_BODY_LEN).with_max_connections(1).with_idle_timeout(std::time::Duration::from_millis(100)).with_metrics(metrics.clone()));
         tokio::spawn(async move { server.run().await });

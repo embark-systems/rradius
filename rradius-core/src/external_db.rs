@@ -689,10 +689,8 @@ pub(crate) mod test_support {
 
     /// A port nothing listens on.
     pub(crate) fn closed_port() -> Result<u16, String> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-        drop(listener);
-        Ok(port)
+        // One that no test of this or another process is handed, so nothing listens on it.
+        Ok(crate::test_support::server::free_port())
     }
 }
 
