@@ -251,9 +251,9 @@ const CHAP_RESPONSE_LEN: usize = 16;
 /// RFC 8907 section 5.4.2.3 recommends refusing shorter CHAP challenges.
 const MIN_CHAP_CHALLENGE_LEN: usize = 8;
 /// MS-CHAP (v1) response size (RFC 8907 section 5.4.2.4): LM response (24), NT response (24), flags (1).
-const MSCHAP_RESPONSE_LEN: usize = 49;
+const MSCHAPV1_RESPONSE_LEN: usize = 49;
 /// The challenge of MS-CHAP (v1) is 8 octets (RFC 2433).
-const MSCHAP_CHALLENGE_LEN: usize = 8;
+const MSCHAPV1_CHALLENGE_LEN: usize = 8;
 /// MS-CHAPv2 response size (RFC 8907 section 5.4.2.5): peer challenge (16), reserved (8),
 /// NT response (24), flags (1), as in RFC 2759.
 const MSCHAPV2_RESPONSE_LEN: usize = 49;
@@ -273,10 +273,10 @@ fn challenge_secret(authen_type: u8, data: &[u8]) -> Option<Secret> {
         AUTHEN_TYPE_MSCHAP => {
             // The LM response is dropped: only the NT response is checked, and a response whose flag
             // does not say it is the one to use is no login.
-            if rest.len() != MSCHAP_CHALLENGE_LEN + MSCHAP_RESPONSE_LEN || rest[rest.len() - 1] & 1 == 0 {
+            if rest.len() != MSCHAPV1_CHALLENGE_LEN + MSCHAPV1_RESPONSE_LEN || rest[rest.len() - 1] & 1 == 0 {
                 return None;
             }
-            let (challenge, response) = rest.split_at(MSCHAP_CHALLENGE_LEN);
+            let (challenge, response) = rest.split_at(MSCHAPV1_CHALLENGE_LEN);
             Some(Secret::MsChapV1 { ident: id, challenge: challenge.try_into().ok()?, nt_response: response[24..48].try_into().ok()? })
         }
         AUTHEN_TYPE_MSCHAPV2 => {
@@ -406,7 +406,7 @@ pub const AUTHEN_TYPE_ASCII: u8 = 0x01;
 pub const AUTHEN_TYPE_PAP: u8 = 0x02;
 /// Authentication type CHAP in an Authentication START (RFC 8907 section 5.1).
 pub const AUTHEN_TYPE_CHAP: u8 = 0x03;
-/// Authentication type MS-CHAPv2 in an Authentication START (RFC 8907 section 5.1).
+/// Authentication type MS-CHAP, version 1 (RFC 8907 section 5.4.2.4).
 pub const AUTHEN_TYPE_MSCHAP: u8 = 0x05;
 /// Authentication type MS-CHAPv2 (RFC 8907 section 5.4.2.5).
 pub const AUTHEN_TYPE_MSCHAPV2: u8 = 0x06;
@@ -1877,6 +1877,20 @@ pub(crate) mod tests {
             let mut connection = AsciiConnection::with_enable(script_engine("return 'reject'").await, Some(chains.clone()), EnableMode::Login).await;
             let (seq, status, ..) = connection.ask(ASCII_SESSION, 1, &body).await;
             assert_eq!((seq, status), (2, expected), "{password}");
+        }
+        Ok(())
+    }
+
+    /// MS-CHAP (v1) through a chain whose only handler is `netlogon`: that handler ignores it and nothing else
+    /// checks it, so the login fails whatever the response.
+    #[tokio::test]
+    async fn test_mschap_through_netlogon_only_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let chains = Arc::new(AuthChains::new(Some(crate::netlogon::handler::test_support::chain("secret").await?), Vec::new()));
+        for password in ["secret", "wrong"] {
+            let body = typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &[0x11; 8], password, 1));
+            let mut connection = AsciiConnection::with_enable(script_engine("return 'reject'").await, Some(chains.clone()), EnableMode::Login).await;
+            let (seq, status, ..) = connection.ask(ASCII_SESSION, 1, &body).await;
+            assert_eq!((seq, status), (2, AUTHEN_STATUS_FAIL), "{password}");
         }
         Ok(())
     }
