@@ -3,7 +3,7 @@
 //! the tests of crates built on this library.
 use crate::config::{ClusterNode, ClusterSettings, DEFAULT_SNAPSHOT_EVERY};
 use crate::lua_engine::{Db, LuaVms};
-use std::net::{IpAddr, Ipv4Addr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -97,16 +97,11 @@ pub fn test_db() -> Db {
     .clone()
 }
 
-/// A free local port for the test node, as `127.0.0.1:<port>`.
+/// A free local port for the test node, as `127.0.0.1:<port>`: one of the lanes of `server::free_port`,
+/// which no other test of this or another process is handed, and which the operating system does not give
+/// to the connections a test opens (a port found by binding port 0 and letting go was taken that way).
 fn free_port() -> String {
-    let listener = match TcpListener::bind("127.0.0.1:0") {
-        Ok(listener) => listener,
-        Err(e) => panic!("test database: cannot find a free port: {e}"),
-    };
-    match listener.local_addr() {
-        Ok(address) => address.to_string(),
-        Err(e) => panic!("test database: cannot read the free port: {e}"),
-    }
+    format!("127.0.0.1:{}", server::free_port())
 }
 
 /// Whether this process keeps what it logs for tests to look at, in `logged_errors` and
