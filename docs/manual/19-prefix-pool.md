@@ -171,7 +171,7 @@ sum by (pool) (max by (pool, state) (rradius_query_prefix_leases{state=~"reserve
 3. **計費：** 把兩個 `accounting.lua` 合併成一個。一個計費封包可以同時有 `Framed-IP-Address` 和 `Delegated-IPv6-Prefix`：位址的部分照第 14 章處理（有 `Framed-IP-Address` 才做），前綴的部分照這一章處理；Accounting-On、Off 兩邊的釋放都要做。請求觸發的回收兩邊各用自己的 `housekeeping` 列。
 4. **一個認證兩邊都拿不到時的處理：** 其中一邊用盡時整個登入被拒絕（`all_accept`）；要「有 IPv4 沒前綴也放行」，就把前綴腳本的 `return 'reject'` 改成不設屬性就 `return 'accept'`。
 
-這一章沒有附合併後的腳本，因為沒有測過；改的時候用兩邊現有的測試當底。
+以帳號密碼為身分的用戶照上面合併。線路身分（Option 82）的用戶沒有可用的帳號，處理器之間又不傳值，不能這樣串：合併後的腳本、計費與測試在[第 22 章](22-dual-stack-lines.md)。
 
 ## 換成自己的資料
 
@@ -190,7 +190,7 @@ sum by (pool) (max by (pool, state) (rradius_query_prefix_leases{state=~"reserve
 - **池用盡時的拒絕要掃整個池：** 沒有 `released` 列、窗口沒有空位時，要整池找空位才能確定用盡，成本和已佔用的列數成正比；池一直在用盡的狀態時，這會讓被拒絕的登入變貴，要靠使用率告警避免。
 - **晚到的 Start 補不回過期的預留**（見計費）。
 - **沒有 WAN 的 /64 池。** 回的 `Framed-IPv6-Pool` 只是池的名稱，由 BNG 自己的池決定連線本身的位址。
-- **沒有附雙堆疊的合併腳本。**
+- **帳號密碼身分的雙堆疊沒有附合併腳本**；線路身分的在[第 22 章](22-dual-stack-lines.md)。
 - **量測是容量 65,536 的池。** 更大的池沒有用伺服器量過。
 - **沒有對真實 BNG 驗證。** 屬性用 RFC 4818 的 `Delegated-IPv6-Prefix`，計費封包要帶它。
 

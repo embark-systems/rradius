@@ -29,6 +29,7 @@
 | IPv6 用戶（DHCPv6-PD）的委派前綴，從池動態分配、計費確認與釋放 | [19](19-prefix-pool.md) |
 | 只有一台 Synology NAS，用 Docker 當 RADIUS 伺服器 | [20](20-synology.md) |
 | 節點掛了、沒有 leader、計費沒寫進去時要被通知；NOC 只收 SNMP trap | [21](21-monitoring.md) |
+| 線路身分的 IPoE 用戶要完整的雙堆疊：固定的 IPv4 與前綴，或從 IPv4 池與前綴池各拿一個 | [22](22-dual-stack-lines.md) |
 | 帳號已經在別的系統裡，不想複製 | 目錄（LDAP／AD）看 [5](05-remote-access.md)，HTTP API 看 [10](10-external-api.md)，MySQL／PostgreSQL 看 [9](09-migrate-users.md#帳號留在原本的資料庫) |
 | 從舊的認證系統搬過來，不想讓大家重設密碼 | [9](09-migrate-users.md) |
 | 上線之後的日常工作 | [11](11-operations.md) |
@@ -57,6 +58,7 @@
 | [19. IPv6 前綴池](19-prefix-pool.md) | 委派前綴（/56、/60、/64）從池分配，表只放在線與剛離線的前綴，雜湊起點，離線後暫時保留（released），計費確認與釋放，池很滿時的行為 | `all_accept` 串接、SQL 算 64 位元前綴與文字、`INSERT OR IGNORE` 搶佔、請求觸發的回收、命名查詢監控 | `prefix-pool/` |
 | [20. Synology NAS](20-synology.md) | 一台 NAS 用 Container Manager 跑單一節點：自己建映像再匯入、設定與密鑰的資料夾、防火牆、更新與備份 | Docker、`compose.yaml`、`/run/secrets` | `deploy/synology/`（不在 scenarios 裡） |
 | [21. 監控與告警](21-monitoring.md) | 19 條 Prometheus 告警規則（附 promtool 測試）、用 Alertmanager 加 `snmp_notifier` 發 SNMP trap；沒有 SNMP 輪詢 | Prometheus、Alertmanager、`snmp_notifier` | `deploy/monitoring/`（不在 scenarios 裡） |
+| [22. 雙堆疊線路](22-dual-stack-lines.md) | 線路身分（Option 82）加固定 IPv4、路由網段、WAN 與委派前綴，沒有固定資料的線路從 IPv4 位址池與前綴池各拿一個，計費同時確認與釋放，前綴用盡時放回剛預留的 IPv4 | 單一 `lua` 處理器（處理器之間不傳值）、`Class` 帶回計費、條件 `UPDATE` 搶位址、`INSERT OR IGNORE` 搶前綴 | `dual-stack-lines/` |
 
 ## 上線之後
 
