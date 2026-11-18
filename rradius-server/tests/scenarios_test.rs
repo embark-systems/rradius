@@ -281,6 +281,25 @@ fn test_wired_mab() {
     assert_eq!(mab("00ffffffffff", "00:ff:ff:ff:ff:ff").code, ACCESS_REJECT, "unknown");
 }
 
+/// A port of the server's that something outside the test holds is changed for a new one, instead of the
+/// test failing: the cluster API port is held here, and the server still starts and answers.
+#[test]
+fn test_server_start_takes_another_port_when_one_is_taken() -> TestResult {
+    let held = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let taken = held.local_addr()?.port();
+    let mut server = Server::start(SCENARIOS, "line-identity", "rradius.toml", |text| {
+        // The API address of the one node, whichever port the test support gave it.
+        let start = text.rfind("api = \"127.0.0.1:").map_or(0, |at| at + "api = \"127.0.0.1:".len());
+        let end = start + text[start..].find('"').unwrap_or(0);
+        format!("{}{}{}", &text[..start], taken, &text[end..])
+    });
+    server.secret = secret_of(SCENARIOS, "line-identity", "bng.secret");
+    assert!(!server.stderr().contains("Address already in use"), "the second start's log is the one kept: {}", server.stderr());
+    assert!(server.port("radius.auth_port") > 0);
+    drop(held);
+    Ok(())
+}
+
 /// Chapter 16: a line is known by the circuit-id and remote-id the BNG relays from DHCP Option 82
 /// (RFC 4679 attributes in vendor 3561), and answered with the plan's pool and profile.
 #[test]
