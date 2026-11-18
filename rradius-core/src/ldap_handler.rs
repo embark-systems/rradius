@@ -726,6 +726,35 @@ pub(crate) mod tests {
         assert!(crate::auth_chain::verify_secret(&stored, "Other", &secret).await.is_none());
     }
 
+    /// MS-CHAPv1 with the attribute check (RFC 2433 appendix B.2) is verified against the stored password.
+    #[tokio::test]
+    async fn test_attribute_check_with_mschapv1() -> Result<(), String> {
+        let entry = SearchEntry {
+            dn: "uid=User".to_string(),
+            attrs: [("userPassword".to_string(), vec!["MyPw".to_string()])].into(),
+            bin_attrs: Default::default(),
+        };
+        let nt_response = [0x4E, 0x9D, 0x3C, 0x8F, 0x9C, 0xFD, 0x38, 0x5D, 0x5B, 0xF4, 0xD3, 0x24, 0x67, 0x91, 0x95, 0x6C, 0xA4, 0xC3, 0x51, 0xAB, 0x40, 0x9A, 0x3D, 0x61];
+        let secret = |nt_response| Secret::MsChapV1 { ident: 3, challenge: [0x10, 0x2D, 0xB5, 0xDF, 0x08, 0x5D, 0x30, 0x41], nt_response };
+        let stored = stored_password(&entry, "userPassword").ok_or("no stored password")?;
+        let attributes = crate::auth_chain::verify_secret(&stored, "User", &secret(nt_response)).await.ok_or("not verified")?;
+        assert_eq!(attributes[0].0, "MS-CHAP-MPPE-Keys");
+        assert!(crate::auth_chain::verify_secret(&stored, "User", &secret([0u8; 24])).await.is_none());
+        Ok(())
+    }
+
+    /// With the bind check the directory sees only a password, so an MS-CHAPv1 response cannot be checked.
+    #[tokio::test]
+    async fn test_mschapv1_with_bind_check_rejected() -> Result<(), String> {
+        let (url, log) = mock_server().await;
+        let creds = Credentials { user: Some("alice".to_string()), secret: Secret::MsChapV1 { ident: 1, challenge: [0; 8], nt_response: [0; 24] } };
+        let (outcome, _) = run(settings(vec![url], PasswordCheck::Bind), &creds).await;
+        assert_eq!(outcome, Outcome::Reject);
+        let binds = log.lock().map_err(|e| e.to_string())?.binds.clone();
+        assert_eq!(binds, vec![SERVICE_DN]);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_attribute_check() {
         let (url, _) = mock_server().await;

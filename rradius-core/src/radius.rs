@@ -44,6 +44,7 @@ const EVS_TYPE: u8 = 26;
 const VENDOR_CONTINUATION: u8 = 0x80;
 pub const CHAP_CHALLENGE: u8 = 60;
 const MICROSOFT_VENDOR_ID: u32 = 311;
+const MS_CHAP_RESPONSE: u8 = 1;
 const MS_CHAP_CHALLENGE: u8 = 11;
 const MS_CHAP2_RESPONSE: u8 = 25;
 pub const MESSAGE_AUTHENTICATOR: u8 = 80;
@@ -257,6 +258,33 @@ pub fn decrypt_user_password(cipher: &[u8], shared_secret: &[u8], request_authen
         plain.pop();
     }
     plain
+}
+
+/// The longest value an `encrypt=1` attribute takes, which is what User-Password takes.
+const MAX_USER_PASSWORD_VALUE: usize = 128;
+
+/// Encrypts a value as RFC 2865 section 5.2 does User-Password, which RFC 2548 section 2.4.1 asks for
+/// `MS-CHAP-MPPE-Keys`: zero padding up to a multiple of 16, then b1 = MD5(secret + Request
+/// Authenticator), bi = MD5(secret + c(i-1)), c = p XOR b. The inverse of `decrypt_user_password`,
+/// except that the zeros of a value that ends in zeros are kept by the one and lost by the other.
+fn encrypt_user_password(value: &[u8], shared_secret: &[u8], request_authenticator: &[u8; 16]) -> Result<Vec<u8>, String> {
+    if value.is_empty() || value.len() > MAX_USER_PASSWORD_VALUE {
+        return Err(format!("value must be 1 to {MAX_USER_PASSWORD_VALUE} octets, not {}", value.len()));
+    }
+    let mut cipher = Vec::with_capacity(value.len().div_ceil(16) * 16);
+    let mut previous: Vec<u8> = request_authenticator.to_vec();
+    for chunk in value.chunks(16) {
+        let mut hasher = Md5::new();
+        hasher.update(shared_secret);
+        hasher.update(&previous);
+        let pad = hasher.finalize();
+        let mut block = [0u8; 16];
+        block[..chunk.len()].copy_from_slice(chunk);
+        let encrypted: Vec<u8> = block.iter().zip(pad.iter()).map(|(p, b)| p ^ b).collect();
+        cipher.extend_from_slice(&encrypted);
+        previous = encrypted;
+    }
+    Ok(cipher)
 }
 
 /// Converts a raw attribute value to its Lua form according to the dictionary type.
@@ -587,12 +615,14 @@ fn read_vendor_specific(dictionary: &Dictionary, attributes: &[(u8, Vec<u8>)], m
 /// RFC 2759 section 6: what tells an MS-CHAPv2 client it was refused. 691 is "authentication
 /// failure"; `R=0` asks for no retry, and the challenge a retry would use is then unused.
 fn mschap_error(dictionary: &Dictionary, credentials: Option<&Credentials>) -> Vec<(u8, Vec<u8>)> {
-    let Some(Credentials { secret: Secret::MsChapV2 { ident, challenge, .. }, .. }) = credentials else {
-        return Vec::new();
+    // Version 1 (RFC 2433 section 8) says the same with `E=691 R=0`; no `V=` means version 1.
+    let (ident, message) = match credentials.map(|credentials| &credentials.secret) {
+        Some(Secret::MsChapV2 { ident, challenge, .. }) => (*ident, format!("E=691 R=0 C={} V=3", challenge.iter().map(|b| format!("{b:02X}")).collect::<String>())),
+        Some(Secret::MsChapV1 { ident, .. }) => (*ident, "E=691 R=0".to_string()),
+        _ => return Vec::new(),
     };
-    let hex: String = challenge.iter().map(|b| format!("{b:02X}")).collect();
-    let mut text = vec![*ident];
-    text.extend_from_slice(format!("E=691 R=0 C={hex} V=3").as_bytes());
+    let mut text = vec![ident];
+    text.extend_from_slice(message.as_bytes());
     encode_response_attribute(dictionary, "MS-CHAP-Error", &AttrValue::Bytes(text), b"", &[0; 16], &mut Vec::new())
         .map_or_else(|_| Vec::new(), |attribute| vec![attribute])
 }
@@ -929,7 +959,10 @@ fn encode_value(
         }
         Ok((n as u64).to_be_bytes()[8 - max_bytes..].to_vec())
     };
-    let bytes = match attribute.data_type.as_str() {
+    // `octets[24]` is octets of exactly that many.
+    let fixed_length = attribute.data_type.strip_prefix("octets[").and_then(|rest| rest.strip_suffix(']')).and_then(|length| length.parse::<usize>().ok());
+    let data_type = if fixed_length.is_some() { "octets" } else { attribute.data_type.as_str() };
+    let bytes = match data_type {
         "string" | "text" | "octets" => match value {
             AttrValue::Bytes(b) => b.clone(),
             AttrValue::Number(n) => n.to_string().into_bytes(),
@@ -975,12 +1008,26 @@ fn encode_value(
         }
         other => return Err(format!("attribute type '{}' of '{}' is not supported by set_attr", other, name)),
     };
-    let is_string = matches!(attribute.data_type.as_str(), "string" | "text" | "octets");
-    if has_option(attribute, "encrypt=1") || has_option(attribute, "encrypt=3") {
-        // Sending these as they are would put a secret on the wire in plain text.
+    let is_string = matches!(data_type, "string" | "text" | "octets");
+    if let Some(length) = fixed_length.filter(|length| bytes.len() != *length) {
+        return Err(format!("'{}' takes {length} octets, not {}", name, bytes.len()));
+    }
+    if has_option(attribute, "encrypt=3") {
+        // Sending this as it is would put a secret on the wire in plain text.
         return Err(format!("'{}' uses an encryption set_attr does not support", name));
     }
-    let bytes = if has_option(attribute, "encrypt=2") {
+    let bytes = if has_option(attribute, "encrypt=1") {
+        if !is_string {
+            return Err(format!("'{}' is encrypted but is not a string", name));
+        }
+        // RFC 2868 puts a tag only before the other encryption; there is no place for it here.
+        if has_option(attribute, "has_tag") {
+            return Err(format!("'{}' uses encrypt=1, which takes no tag", name));
+        }
+        // A copy of a key, which nothing else clears.
+        let plain = Zeroizing::new(bytes);
+        encrypt_user_password(&plain, shared_secret, request_authenticator).map_err(|e| format!("'{}': {}", name, e))?
+    } else if has_option(attribute, "encrypt=2") {
         if !is_string {
             return Err(format!("'{}' is encrypted but is not a string", name));
         }
@@ -1049,9 +1096,23 @@ fn mschapv2_secret(packet: &RadiusPacket) -> Option<Secret> {
     })
 }
 
+/// RFC 2548 section 2.1: MS-CHAP-Challenge of 8 octets and MS-CHAP-Response, 50 octets of the identifier,
+/// the flags, the LM-Response and the NT-Response. Only a request that asks for the NT-Response (bit 0 of
+/// the flags) is credentials: one for the LM-Response alone would need the LM hash, which is not kept.
+fn mschapv1_secret(packet: &RadiusPacket) -> Option<Secret> {
+    let challenge: [u8; 8] = microsoft_attribute(packet, MS_CHAP_CHALLENGE)?.try_into().ok()?;
+    let response = microsoft_attribute(packet, MS_CHAP_RESPONSE)?;
+    let [ident, flags, rest @ ..] = response else { return None };
+    let rest: &[u8; 48] = rest.try_into().ok()?;
+    if flags & 1 == 0 {
+        return None;
+    }
+    Some(Secret::MsChapV1 { ident: *ident, challenge, nt_response: rest[24..].try_into().ok()? })
+}
+
 /// The user name and secret of an Access-Request: User-Password (decrypted) as
 /// PAP, or CHAP-Password with CHAP-Challenge, falling back to the Request
-/// Authenticator as the challenge (RFC 2865 section 2.2).
+/// Authenticator as the challenge (RFC 2865 section 2.2); then MS-CHAPv2, then MS-CHAPv1.
 pub fn request_credentials(packet: &RadiusPacket, shared_secret: &[u8]) -> Credentials {
     let user = packet.attribute(1).map(|name| String::from_utf8_lossy(name).into_owned());
     let secret = if let Some(cipher) = packet.attribute(USER_PASSWORD) {
@@ -1060,7 +1121,7 @@ pub fn request_credentials(packet: &RadiusPacket, shared_secret: &[u8]) -> Crede
         let challenge = packet.attribute(CHAP_CHALLENGE).map(<[u8]>::to_vec).unwrap_or_else(|| packet.authenticator.to_vec());
         Secret::Chap { id: chap[0], response: chap[1..].to_vec(), challenge }
     } else {
-        mschapv2_secret(packet).unwrap_or(Secret::None)
+        mschapv2_secret(packet).or_else(|| mschapv1_secret(packet)).unwrap_or(Secret::None)
     };
     Credentials { user, secret }
 }
@@ -3801,6 +3862,103 @@ pub(crate) mod tests {
         assert_eq!(recv, [0xD5, 0xF0, 0xE9, 0x52, 0x1E, 0x3E, 0xA9, 0x58, 0x96, 0x45, 0xE8, 0x60, 0x51, 0xC8, 0x22, 0x26]);
     }
 
+    const V1_CHALLENGE: [u8; 8] = [0x10, 0x2D, 0xB5, 0xDF, 0x08, 0x5D, 0x30, 0x41];
+
+    /// The NT-Response of `password` to `V1_CHALLENGE`.
+    fn v1_nt_response(password: &str) -> [u8; 24] {
+        // A wrong value would fail the tests that need it right, so a missing one is zeros.
+        crate::mschap::challenge_response(&V1_CHALLENGE, &crate::mschap::nt_password_hash(password)).unwrap_or([0; 24])
+    }
+
+    /// An MS-CHAPv1 Access-Request for `user` with `password`; the identifier is 5, the LM-Response zeros.
+    fn mschapv1_request(user: &str, password: &str, flags: u8, challenge_len: usize, response_len: usize) -> Vec<u8> {
+        let mut response = vec![5u8, flags];
+        response.extend_from_slice(&[0; 24]);
+        response.extend_from_slice(&v1_nt_response(password));
+        response.resize(response_len, 0);
+        let attributes = vec![(1, user.as_bytes().to_vec()), microsoft_vsa(11, &V1_CHALLENGE.repeat(2)[..challenge_len]), microsoft_vsa(1, &response)];
+        RadiusPacket::create_access_request(9, [4; 16], attributes, SECRET)
+    }
+
+    async fn reply_to(server: &RadiusServer, request: &[u8]) -> Result<RadiusPacket, String> {
+        let bytes = server.handle_auth(request, LOCALHOST).await.ok_or("no answer")?;
+        RadiusPacket::parse(&bytes).map_err(|e| format!("{e:?}"))
+    }
+
+    /// RFC 2548: `MS-CHAP-MPPE-Keys` are encrypted as User-Password is: 24 octets and 8 of padding.
+    #[tokio::test]
+    async fn test_mschapv1_accepted_with_keys() -> Result<(), String> {
+        let server = chain_server().await;
+        let reply = reply_to(&server, &mschapv1_request("User", "clientPass", 1, 8, 50)).await?;
+        assert_eq!(reply.code, ACCESS_ACCEPT);
+        let keys = microsoft_attribute(&reply, 12).ok_or("no MS-CHAP-MPPE-Keys")?;
+        assert_eq!(keys.len(), 32);
+        let mut plain = Vec::new();
+        let mut previous = [4u8; 16].to_vec();
+        for chunk in keys.chunks(16) {
+            let pad = Md5::digest([SECRET, previous.as_slice()].concat());
+            plain.extend(chunk.iter().zip(pad.iter()).map(|(c, b)| c ^ b));
+            previous = chunk.to_vec();
+        }
+        // The LM-Key is zeros, the NT-Key the PasswordHashHash of RFC 3079 section 2.5.3, then the padding.
+        assert_eq!(plain[..8], [0u8; 8]);
+        assert_eq!(plain[8..24], [0x41, 0xC0, 0x0C, 0x58, 0x4B, 0xD2, 0xD9, 0x1C, 0x40, 0x17, 0xA2, 0xA1, 0x2F, 0xA5, 0x9F, 0x3F]);
+        assert_eq!(plain[24..], [0u8; 8]);
+        assert_eq!(microsoft_attribute(&reply, 8), Some(vec![0, 0, 0, 2]), "MS-MPPE-Encryption-Types: 128-bit only");
+        assert!(microsoft_attribute(&reply, 26).is_none(), "version 1 has no MS-CHAP2-Success");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mschapv1_wrong_password_has_the_error() -> Result<(), String> {
+        let server = chain_server().await;
+        let reply = reply_to(&server, &mschapv1_request("User", "wrong", 1, 8, 50)).await?;
+        assert_eq!(reply.code, ACCESS_REJECT);
+        let error = microsoft_attribute(&reply, 2).ok_or("no MS-CHAP-Error")?;
+        assert_eq!(error[0], 5, "the identifier of the request");
+        assert_eq!(&error[1..], b"E=691 R=0");
+        assert!(microsoft_attribute(&reply, 12).is_none(), "no keys for a refusal");
+        Ok(())
+    }
+
+    /// Anything but a challenge of 8 octets, a response of 50, and the NT bit is no credentials at all, so
+    /// not an MS-CHAP request to refuse with an MS-CHAP-Error.
+    #[tokio::test]
+    async fn test_mschapv1_malformed_attributes() -> Result<(), String> {
+        let server = chain_server().await;
+        for (flags, challenge, response) in [(0, 8, 50), (2, 8, 50), (1, 7, 50), (1, 9, 50), (1, 8, 49), (1, 8, 51), (1, 8, 2)] {
+            let reply = reply_to(&server, &mschapv1_request("User", "clientPass", flags, challenge, response)).await?;
+            assert_eq!(reply.code, ACCESS_REJECT, "flags {flags}, challenge {challenge}, response {response}");
+            assert!(microsoft_attribute(&reply, 2).is_none(), "flags {flags}, challenge {challenge}, response {response}: it is not an MS-CHAPv1 request at all");
+        }
+        Ok(())
+    }
+
+    /// MS-CHAPv1 is read last: PAP, CHAP and MS-CHAPv2 come before it, so an MS-CHAP-Response next to them is not looked at.
+    #[tokio::test]
+    async fn test_mschapv1_comes_last() -> Result<(), String> {
+        let server = chain_server().await;
+        let mut v1 = vec![5u8, 1];
+        v1.extend_from_slice(&[0; 24]);
+        v1.extend_from_slice(&v1_nt_response("wrong"));
+        // MS-CHAPv2 right, MS-CHAP-Response wrong.
+        let mut response = vec![7u8, 0];
+        response.extend_from_slice(&MSCHAP_PEER_CHALLENGE);
+        response.extend_from_slice(&[0; 8]);
+        response.extend_from_slice(&MSCHAP_NT_RESPONSE);
+        let attributes = vec![(1, b"User".to_vec()), microsoft_vsa(11, &MSCHAP_AUTH_CHALLENGE), microsoft_vsa(25, &response), microsoft_vsa(1, &v1)];
+        let reply = reply_to(&server, &RadiusPacket::create_access_request(9, [4; 16], attributes, SECRET)).await?;
+        assert_eq!(reply.code, ACCESS_ACCEPT, "the MS-CHAPv2 response is right, the v1 one wrong");
+        assert!(microsoft_attribute(&reply, 26).is_some(), "answered as MS-CHAPv2");
+        // PAP right, MS-CHAP-Response wrong.
+        let ra = [4u8; 16];
+        let attributes = vec![(1, b"User".to_vec()), (USER_PASSWORD, encrypt_password("clientPass", &ra)), microsoft_vsa(11, &V1_CHALLENGE), microsoft_vsa(1, &v1)];
+        let reply = reply_to(&server, &RadiusPacket::create_access_request(9, ra, attributes, SECRET)).await?;
+        assert_eq!(reply.code, ACCESS_ACCEPT, "the PAP password is right, the v1 response wrong");
+        assert!(microsoft_attribute(&reply, 12).is_none(), "answered as PAP");
+        Ok(())
+    }
+
     /// Tables shared with `test_two_steps_with_totp`, whichever runs first.
     async fn two_step_tables() {
         static CREATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -4082,7 +4240,8 @@ pub(crate) mod tests {
             ("Filter-Id:1", "'x'"),
             ("Tunnel-Password", "string.rep('x', 240)"),
             ("Login-IPv6-Host", "'not an address'"),
-            ("User-Password", "'x'"),
+            // encrypt=3 is still not sent (encrypt=1 is, as RFC 2548 asks for the MPPE keys).
+            ("Ascend-Send-Secret", "'x'"),
         ] {
             let script = format!("if pcall(set_attr, '{name}', {value}) then return 'accept' end return 'reject'");
             let (response, _) = rfc_request_response(&script).await;
@@ -4101,6 +4260,62 @@ pub(crate) mod tests {
         let value = AttrValue::Bytes(b"x".to_vec());
         assert!(encode_response_attribute(&dictionary, "Ascend-Style", &value, b"s", &[0; 16], &mut Vec::new()).is_err());
         assert!(encode_response_attribute(&dictionary, "Salted", &value, b"s", &[0; 16], &mut Vec::new()).is_ok());
+    }
+
+    /// RFC 2865 section 5.2 written out here rather than using the code under test.
+    fn user_password_cipher(plain: &[u8], secret: &[u8], request_authenticator: &[u8; 16]) -> Vec<u8> {
+        let mut padded = plain.to_vec();
+        padded.resize(plain.len().div_ceil(16) * 16, 0);
+        let mut cipher: Vec<u8> = Vec::new();
+        let mut previous = request_authenticator.to_vec();
+        for chunk in padded.chunks(16) {
+            let pad = Md5::digest([secret, previous.as_slice()].concat());
+            let block: Vec<u8> = chunk.iter().zip(pad.iter()).map(|(p, b)| p ^ b).collect();
+            previous = block.clone();
+            cipher.extend(block);
+        }
+        cipher
+    }
+
+    #[test]
+    fn test_encrypt_user_password() -> Result<(), String> {
+        let authenticator = [7u8; 16];
+        // The 24 octets of MS-CHAP-MPPE-Keys come out as 32; any length up to 128 is padded to a multiple of 16.
+        for length in [1usize, 15, 16, 17, 24, 32, 100, 128] {
+            let plain: Vec<u8> = (1..=length).map(|i| (i % 250 + 1) as u8).collect();
+            let cipher = encrypt_user_password(&plain, b"secret", &authenticator)?;
+            assert_eq!(cipher.len(), length.div_ceil(16) * 16, "length {length}");
+            assert_eq!(cipher, user_password_cipher(&plain, b"secret", &authenticator), "length {length}");
+            // The inverse of what decrypt_user_password does for a value that does not end in zeros.
+            assert_eq!(decrypt_user_password(&cipher, b"secret", &authenticator), plain, "length {length}");
+        }
+        // Another secret or another authenticator makes another cipher; the value is not in it.
+        let plain = [0x11u8; 24];
+        let cipher = encrypt_user_password(&plain, b"secret", &authenticator)?;
+        assert_ne!(cipher, encrypt_user_password(&plain, b"other", &authenticator)?);
+        assert_ne!(cipher, encrypt_user_password(&plain, b"secret", &[8u8; 16])?);
+        assert!(!cipher.windows(8).any(|window| window == [0x11u8; 8]));
+        // Nothing, and too long, are refused.
+        assert!(encrypt_user_password(&[], b"secret", &authenticator).is_err());
+        assert!(encrypt_user_password(&[1u8; 129], b"secret", &authenticator).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_encrypt_1_attributes() -> Result<(), String> {
+        let mut dictionary = Dictionary::new();
+        dictionary.add_attribute("Keys", "octets", 0, vec![202], Some("encrypt=1".to_string()));
+        dictionary.add_attribute("Number-Keys", "integer", 0, vec![203], Some("encrypt=1".to_string()));
+        let authenticator = [3u8; 16];
+        let plain = vec![9u8; 24];
+        let (kind, value) = encode_response_attribute(&dictionary, "Keys", &AttrValue::Bytes(plain.clone()), b"secret", &authenticator, &mut Vec::new())?;
+        assert_eq!(kind, 202);
+        assert_eq!(value.len(), 32, "24 octets are 32 when encrypted");
+        assert_eq!(value, user_password_cipher(&plain, b"secret", &authenticator));
+        // An integer is not a key; a value that is too long does not fit.
+        assert!(encode_response_attribute(&dictionary, "Number-Keys", &AttrValue::Number(5.0), b"secret", &authenticator, &mut Vec::new()).is_err());
+        assert!(encode_response_attribute(&dictionary, "Keys", &AttrValue::Bytes(vec![1u8; 129]), b"secret", &authenticator, &mut Vec::new()).is_err());
+        Ok(())
     }
 
     #[tokio::test]

@@ -169,6 +169,27 @@ fn proof(hash_hash: &[u8; 16], response: &[u8; 24], challenge: &[u8; 8]) -> Proo
     }
 }
 
+/// What a verified MS-CHAPv1 response proves, for the Access-Accept (RFC 2548 section 2.4.1).
+pub struct ProofV1 {
+    /// The `MS-CHAP-MPPE-Keys` before they are encrypted: 8 zero octets for the LM-Key, which only the
+    /// plaintext password could give, then the 16 octets of the NT-Key, the hash of the NT hash
+    /// (RFC 3079 section 2.3). That is a 128-bit key and nothing more.
+    pub mppe_keys: Zeroizing<[u8; 24]>,
+}
+
+/// Checks the NT-Response of an MS-CHAPv1 response (RFC 2433 section 6) against a stored password.
+/// The LM-Response is not looked at: it is built on a weaker hash that needs the plaintext.
+pub fn verify_v1(stored: &str, challenge: &[u8; 8], nt_response: &[u8; 24]) -> Option<ProofV1> {
+    let hash = stored_hash(stored)?;
+    let expected = challenge_response(challenge, &hash)?;
+    if !constant_time_eq(&expected, nt_response) {
+        return None;
+    }
+    let mut mppe_keys = Zeroizing::new([0u8; 24]);
+    mppe_keys[8..].copy_from_slice(&*hash_nt_password_hash(&hash));
+    Some(ProofV1 { mppe_keys })
+}
+
 /// The response a client would send, for tests elsewhere.
 #[cfg(test)]
 pub(crate) fn response_for(password: &str, user: &str, peer_challenge: &[u8; 16], authenticator_challenge: &[u8; 16]) -> [u8; 24] {
@@ -195,6 +216,47 @@ mod tests {
         assert_eq!(challenge_hash(&PEER_CHALLENGE, &AUTH_CHALLENGE, "User"), [0xD0, 0x2E, 0x43, 0x86, 0xBC, 0xE9, 0x12, 0x26]);
         assert_eq!(challenge_response(&[0xD0, 0x2E, 0x43, 0x86, 0xBC, 0xE9, 0x12, 0x26], &PASSWORD_HASH).unwrap(), NT_RESPONSE);
         assert_eq!(*hash_nt_password_hash(&PASSWORD_HASH), [0x41, 0xC0, 0x0C, 0x58, 0x4B, 0xD2, 0xD9, 0x1C, 0x40, 0x17, 0xA2, 0xA1, 0x2F, 0xA5, 0x9F, 0x3F]);
+    }
+
+    // RFC 2433 appendix B.2, and RFC 3079 section 2.5.3 for the hash of the hash.
+    const V1_CHALLENGE: [u8; 8] = [0x10, 0x2D, 0xB5, 0xDF, 0x08, 0x5D, 0x30, 0x41];
+    const V1_NT_RESPONSE: [u8; 24] = [
+        0x4E, 0x9D, 0x3C, 0x8F, 0x9C, 0xFD, 0x38, 0x5D, 0x5B, 0xF4, 0xD3, 0x24, 0x67, 0x91, 0x95, 0x6C, 0xA4, 0xC3, 0x51, 0xAB, 0x40, 0x9A, 0x3D, 0x61,
+    ];
+    const V1_NT_HASH: [u8; 16] = [0xFC, 0x15, 0x6A, 0xF7, 0xED, 0xCD, 0x6C, 0x0E, 0xDD, 0xE3, 0x33, 0x7D, 0x42, 0x7F, 0x4E, 0xAC];
+    const CLIENT_PASS_HASH_HASH: [u8; 16] = [0x41, 0xC0, 0x0C, 0x58, 0x4B, 0xD2, 0xD9, 0x1C, 0x40, 0x17, 0xA2, 0xA1, 0x2F, 0xA5, 0x9F, 0x3F];
+
+    #[test]
+    fn test_rfc2433_example() -> Result<(), String> {
+        assert_eq!(*nt_password_hash("MyPw"), V1_NT_HASH);
+        assert_eq!(challenge_response(&V1_CHALLENGE, &V1_NT_HASH).ok_or("no response")?, V1_NT_RESPONSE);
+        Ok(())
+    }
+
+    #[test]
+    fn test_verify_v1() -> Result<(), String> {
+        // Plaintext, {clear} and {nthash} all give the same proof; the keys are 8 zeros, then the hash of the hash.
+        let hex: String = V1_NT_HASH.iter().map(|byte| format!("{byte:02x}")).collect();
+        let proofs = [verify_v1("MyPw", &V1_CHALLENGE, &V1_NT_RESPONSE), verify_v1("{clear}MyPw", &V1_CHALLENGE, &V1_NT_RESPONSE), verify_v1(&format!("{{nthash}}{hex}"), &V1_CHALLENGE, &V1_NT_RESPONSE)];
+        for proof in proofs {
+            let proof = proof.ok_or("not verified")?;
+            assert_eq!(proof.mppe_keys[..8], [0u8; 8]);
+            assert_eq!(proof.mppe_keys[8..], *hash_nt_password_hash(&V1_NT_HASH));
+        }
+        // The hash of the hash of RFC 3079 section 2.5.3.
+        let response = challenge_response(&V1_CHALLENGE, &PASSWORD_HASH).ok_or("no response")?;
+        let proof = verify_v1("clientPass", &V1_CHALLENGE, &response).ok_or("not verified")?;
+        assert_eq!(proof.mppe_keys[8..], CLIENT_PASS_HASH_HASH);
+        // Another password, another challenge, a flipped bit of the response.
+        assert!(verify_v1("MyPw2", &V1_CHALLENGE, &V1_NT_RESPONSE).is_none());
+        assert!(verify_v1("MyPw", &[0u8; 8], &V1_NT_RESPONSE).is_none());
+        let mut flipped = V1_NT_RESPONSE;
+        flipped[23] ^= 1;
+        assert!(verify_v1("MyPw", &V1_CHALLENGE, &flipped).is_none());
+        // A stored form that cannot give the NT hash is no match, whatever the response.
+        assert!(verify_v1("{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=", &V1_CHALLENGE, &V1_NT_RESPONSE).is_none());
+        assert!(verify_v1("{nthash}nothex", &V1_CHALLENGE, &V1_NT_RESPONSE).is_none());
+        Ok(())
     }
 
     #[test]

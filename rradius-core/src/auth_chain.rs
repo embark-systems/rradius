@@ -17,6 +17,9 @@ use std::time::Duration;
 pub enum Secret {
     Pap(zeroize::Zeroizing<Vec<u8>>),
     Chap { id: u8, response: Vec<u8>, challenge: Vec<u8> },
+    /// RFC 2433, with only what a check of the NT-Response needs: the LM-Response is dropped when the
+    /// request is read, and a request that does not ask for the NT-Response is no credentials at all.
+    MsChapV1 { ident: u8, challenge: [u8; 8], nt_response: [u8; 24] },
     MsChapV2 { ident: u8, peer_challenge: [u8; 16], response: [u8; 24], challenge: [u8; 16] },
     /// EAP-TLS has verified a certificate for this name. Nothing but finishing that handshake
     /// makes one of these: no attribute of a request can.
@@ -34,7 +37,7 @@ pub struct Credentials {
 pub(crate) fn wipe_keys(attributes: &mut [(String, AttrValue)]) {
     for (name, value) in attributes {
         // DPSK replies carry the PMK in these.
-        let key_holder = name.starts_with("MS-MPPE-") || name.eq_ignore_ascii_case("Tunnel-Password") || name.eq_ignore_ascii_case("Ruckus-DPSK");
+        let key_holder = name.starts_with("MS-MPPE-") || name.eq_ignore_ascii_case("MS-CHAP-MPPE-Keys") || name.eq_ignore_ascii_case("Tunnel-Password") || name.eq_ignore_ascii_case("Ruckus-DPSK");
         if let (true, AttrValue::Bytes(key)) = (key_holder, value) {
             zeroize::Zeroize::zeroize(key);
         }
@@ -64,6 +67,7 @@ impl std::fmt::Debug for Secret {
         f.write_str(match self {
             Self::Pap(_) => "Pap",
             Self::Chap { .. } => "Chap",
+            Self::MsChapV1 { .. } => "MsChapV1",
             Self::MsChapV2 { .. } => "MsChapV2",
             Self::Certificate => "Certificate",
             Self::None => "None",
@@ -485,6 +489,10 @@ pub(crate) async fn verify_secret(stored: &str, user: &str, secret: &Secret) -> 
     let verified = match secret {
         Secret::Pap(password) => passwords::verify_pap_blocking(stored, password).await,
         Secret::Chap { id, response, challenge } => passwords::verify_chap(stored, *id, response, challenge),
+        Secret::MsChapV1 { challenge, nt_response, .. } => {
+            let proof = mschap::verify_v1(stored, challenge, nt_response)?;
+            return Some(mschapv1_success(&proof));
+        }
         Secret::MsChapV2 { ident, peer_challenge, response, challenge } => {
             let proof = mschap::verify(stored, user, peer_challenge, challenge, response)?;
             return Some(mschapv2_success(*ident, &proof));
@@ -493,6 +501,19 @@ pub(crate) async fn verify_secret(stored: &str, user: &str, secret: &Secret) -> 
     };
     verified.then(Vec::new)
 }
+
+/// What a verified MS-CHAPv1 response adds to the accept (RFC 2548 section 2.4): the keys for MPPE,
+/// encrypted when the attribute is sent, and that only 128-bit keys are allowed, as the LM-Key in them
+/// is zeros. There is no `MS-CHAP2-Success`: version 1 has no proof of the server's.
+pub(crate) fn mschapv1_success(proof: &mschap::ProofV1) -> Vec<(String, AttrValue)> {
+    vec![
+        ("MS-CHAP-MPPE-Keys".to_string(), AttrValue::Bytes(proof.mppe_keys.to_vec())),
+        ("MS-MPPE-Encryption-Types".to_string(), AttrValue::Number(MPPE_128_BIT_ALLOWED)),
+    ]
+}
+
+/// The S bit of `MS-MPPE-Encryption-Types`: RC4 with a 128-bit key is allowed (RFC 2548 section 2.4.5).
+const MPPE_128_BIT_ALLOWED: f64 = 2.0;
 
 /// What a verified MS-CHAPv2 response adds to the accept: `MS-CHAP2-Success` and the keys.
 pub(crate) fn mschapv2_success(ident: u8, proof: &mschap::Proof) -> Vec<(String, AttrValue)> {
@@ -776,6 +797,60 @@ mod tests {
             secret: Secret::MsChapV2 { ident: 9, peer_challenge: peer, response: over_account, challenge },
         };
         assert!(!chain.authenticate(&credentials, &request()).await.accepted());
+    }
+
+    /// MS-CHAPv1 through a `sql` handler (RFC 2433 appendix B.2 for the response): the NT-Response is checked
+    /// against plaintext and `{nthash}`, the accept carries the MPPE keys and the 128-bit type, and nothing else
+    /// stored, no other password and no other challenge gives an accept.
+    #[tokio::test]
+    async fn test_mschapv1_through_sql() -> Result<(), String> {
+        static SEEDED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+        SEEDED
+            .get_or_try_init(|| async {
+                let db = test_db();
+                db.execute("CREATE TABLE v1_users (username TEXT, password TEXT)").await.map_err(|e| e.to_string())?;
+                db.execute("INSERT INTO v1_users VALUES ('plain', 'MyPw'), ('hashed', '{nthash}fc156af7edcd6c0edde3337d427f4eac'), ('sha', '{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g='), ('other', 'MyPw2')").await.map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            })
+            .await?;
+        let handler = Handler::Sql {
+            source: SqlSource::Cluster(test_db()),
+            user_query: "SELECT password FROM v1_users WHERE username = ?".to_string(),
+            reply_query: None,
+            certificate_query: None,
+            default_user: None,
+            timeout: Duration::from_secs(5),
+        };
+        let chain = AuthChain::new(AuthPolicy::FirstMatch, vec![handler]);
+        let challenge = [0x10, 0x2D, 0xB5, 0xDF, 0x08, 0x5D, 0x30, 0x41];
+        let nt_response = [0x4E, 0x9D, 0x3C, 0x8F, 0x9C, 0xFD, 0x38, 0x5D, 0x5B, 0xF4, 0xD3, 0x24, 0x67, 0x91, 0x95, 0x6C, 0xA4, 0xC3, 0x51, 0xAB, 0x40, 0x9A, 0x3D, 0x61];
+        let v1 = |user: &str, challenge: [u8; 8], nt_response: [u8; 24]| Credentials { user: Some(user.to_string()), secret: Secret::MsChapV1 { ident: 5, challenge, nt_response } };
+        for user in ["plain", "hashed"] {
+            let result = chain.authenticate(&v1(user, challenge, nt_response), &request()).await;
+            assert!(result.accepted(), "{user}");
+            assert_eq!(result.attributes.len(), 2, "{user}");
+            let (name, keys) = &result.attributes[0];
+            assert_eq!(name, "MS-CHAP-MPPE-Keys");
+            let AttrValue::Bytes(keys) = keys else { return Err("the keys are not bytes".to_string()) };
+            assert_eq!(keys.len(), 24);
+            assert_eq!(keys[..8], [0u8; 8], "no LM-Key");
+            assert_eq!(keys[8..], *mschap::hash_nt_password_hash(&mschap::nt_password_hash("MyPw")), "the NT-Key is the hash of the NT hash");
+            assert_eq!(result.attributes[1], ("MS-MPPE-Encryption-Types".to_string(), AttrValue::Number(2.0)), "128-bit only");
+        }
+        // Another password (a stored password that does not match), another challenge, a damaged response.
+        assert!(!chain.authenticate(&v1("other", challenge, nt_response), &request()).await.accepted());
+        assert!(!chain.authenticate(&v1("plain", [0; 8], nt_response), &request()).await.accepted());
+        let mut damaged = nt_response;
+        damaged[0] ^= 0x80;
+        assert!(!chain.authenticate(&v1("plain", challenge, damaged), &request()).await.accepted());
+        // A stored form that cannot give the NT hash never matches, and a name that is not there is not accepted.
+        assert!(!chain.authenticate(&v1("sha", challenge, nt_response), &request()).await.accepted());
+        assert!(!chain.authenticate(&v1("nobody", challenge, nt_response), &request()).await.accepted());
+        // The keys are wiped when a later handler refuses, like those of MS-CHAPv2.
+        let mut kept = vec![("MS-CHAP-MPPE-Keys".to_string(), AttrValue::Bytes(vec![7u8; 24]))];
+        wipe_keys(&mut kept);
+        assert_eq!(kept[0].1, AttrValue::Bytes(Vec::new()), "zeroized, which clears a vector");
+        Ok(())
     }
 
     #[tokio::test]
