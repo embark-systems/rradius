@@ -529,6 +529,9 @@ impl Db {
             read_pool_size: settings.read_connections,
             ..Default::default()
         };
+        if let Some(own) = settings.nodes.iter().find(|n| n.id == settings.node_id) {
+            crate::cluster_commands::check_node_id_free(own, &settings.nodes, &settings.secret_api).await?;
+        }
         #[cfg(feature = "backup")]
         crate::backup::configure(&mut config, extensions.get::<crate::backup::ClusterBackup>()).await?;
         #[cfg(not(feature = "backup"))]

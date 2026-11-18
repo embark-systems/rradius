@@ -257,6 +257,42 @@ pub(crate) async fn current_members(api: &Api, configured: &[ClusterNode]) -> Re
     Ok((configured_members(configured), None, Source::Configuration))
 }
 
+/// Refuses to start a node whose `node_id` another, running node of the cluster already has.
+/// Joining under a member's id rewrites that member's addresses to this node's, so the cluster
+/// would take the running node for another host. Asks the other configured nodes, each for up
+/// to `PING_WAIT`; the first that answers speaks for the cluster. Passes when none answers (a
+/// first start, or a cluster that is down), when the cluster has the id at this node's own
+/// address (a restart), and when the address it has does not answer (a replaced host). A refused
+/// secret passes too: the node's own start reports that.
+pub(crate) async fn check_node_id_free(own: &ClusterNode, configured: &[ClusterNode], secret_api: &str) -> Result<(), String> {
+    let api = Api::new(secret_api.to_string())?;
+    for node in configured.iter().filter(|node| node.id != own.id) {
+        match api.metrics_within(&node.api, PING_WAIT).await {
+            Ok(metrics) => {
+                let Some(taken) = taken_by_another(own, &metrics.members) else {
+                    return Ok(());
+                };
+                if !api.answers(&taken.api).await {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "node id {} is in use: the cluster has it at api {} (raft {}), and that node answers, but this node's configuration gives it api {} (raft {}); \
+                     use an id no node has (see `rradius-server cluster members`), or stop the running node first",
+                    own.id, taken.api, taken.raft, own.api, own.raft
+                ));
+            }
+            Err(Failure::Secret(_)) => return Ok(()),
+            Err(Failure::Unusable(e) | Failure::Silent(e)) => tracing::debug!("{e}"),
+        }
+    }
+    Ok(())
+}
+
+/// The member the cluster has under this node's id, when its api address is not this node's.
+fn taken_by_another<'a>(own: &ClusterNode, members: &'a Members) -> Option<&'a Member> {
+    members.nodes.get(&own.id).filter(|member| member.api != own.api)
+}
+
 /// The configured nodes as members, all of them voters.
 fn configured_members(configured: &[ClusterNode]) -> Members {
     let nodes = configured.iter().map(|node| (node.id, Member { raft: node.raft.clone(), api: node.api.clone() })).collect();
@@ -661,5 +697,73 @@ mod tests {
         assert!(removal_allowed(&two, 2, true).is_ok());
         let one = members(&[1], &[]);
         assert!(removal_allowed(&one, 1, true).is_err_and(|e| e.contains("last voter")));
+    }
+
+    #[test]
+    fn test_taken_by_another() {
+        let own = |api: &str| ClusterNode { id: 2, raft: "x:8100".to_string(), api: api.to_string() };
+        let cluster = members(&[1, 2, 3], &[]);
+        assert_eq!(taken_by_another(&own("node2:8200"), &cluster), None);
+        assert_eq!(taken_by_another(&own("other:8200"), &cluster).map(|m| m.api.as_str()), Some("node2:8200"));
+        // An id the cluster does not have is free.
+        let new = ClusterNode { id: 4, raft: "x:8100".to_string(), api: "other:8200".to_string() };
+        assert_eq!(taken_by_another(&new, &cluster), None);
+    }
+
+    /// Serves `/cluster/metrics/sqlite` with `body`, and `/ping`, on a local port.
+    async fn serve_metrics(body: String) -> Result<String, String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let address = listener.local_addr().map_err(|e| e.to_string())?.to_string();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 2048];
+                    let Ok(read) = stream.read(&mut buffer).await else { return };
+                    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                    let answer = if request.starts_with("GET /ping") { "ok".to_string() } else { body };
+                    let reply = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", answer.len(), answer);
+                    let _ = stream.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        Ok(address)
+    }
+
+    /// Metrics of a cluster whose node 2 is at `api`, answered by the node at `api`.
+    fn metrics_with_node_2_at(api: &str) -> String {
+        METRICS.replace("node2:8200", api)
+    }
+
+    #[tokio::test]
+    async fn test_check_node_id_free() -> Result<(), String> {
+        // A running node 2, and node 1 as the cluster's voice.
+        let running = serve_metrics(String::new()).await?;
+        let voice = serve_metrics(metrics_with_node_2_at(&running)).await?;
+        let nodes = vec![
+            ClusterNode { id: 1, raft: "node1:8100".to_string(), api: voice.clone() },
+            ClusterNode { id: 2, raft: "new:8100".to_string(), api: "127.0.0.1:1".to_string() },
+        ];
+        // A new host with node 2's id while node 2 answers: refused.
+        let error = check_node_id_free(&nodes[1], &nodes, "secret").await.err().ok_or("accepted")?;
+        assert!(error.contains("node id 2 is in use") && error.contains(&running), "{error}");
+        // The running node itself, restarting: its own address is the one the cluster has.
+        let restarting = ClusterNode { id: 2, raft: "node2:8100".to_string(), api: running.clone() };
+        check_node_id_free(&restarting, &nodes, "secret").await?;
+        // The same id on a host that replaces a stopped one: nothing answers at the old address.
+        let gone = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+            let address = listener.local_addr().map_err(|e| e.to_string())?.to_string();
+            drop(listener);
+            address
+        };
+        let voice_of_gone = serve_metrics(metrics_with_node_2_at(&gone)).await?;
+        let nodes = vec![ClusterNode { id: 1, raft: "node1:8100".to_string(), api: voice_of_gone }, nodes[1].clone()];
+        check_node_id_free(&nodes[1], &nodes, "secret").await?;
+        // No node answers: a first start.
+        let silent = vec![ClusterNode { id: 1, raft: "node1:8100".to_string(), api: gone }, nodes[1].clone()];
+        check_node_id_free(&silent[1], &silent, "secret").await?;
+        Ok(())
     }
 }
