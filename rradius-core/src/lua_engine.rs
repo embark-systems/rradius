@@ -1912,7 +1912,7 @@ fn log_script_error(request: &LuaRequest, error: &mlua::Error) {
 
 pub fn log_line(level: tracing::Level, line: String) {
     #[cfg(any(test, feature = "test-support"))]
-    if crate::test_support::keeping() {
+    if crate::logging::keeping() {
         crate::test_support::logged_errors().lock().unwrap_or_else(PoisonError::into_inner).push(line.clone());
     }
     match level {

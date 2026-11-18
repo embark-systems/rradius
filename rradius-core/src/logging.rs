@@ -120,10 +120,27 @@ fn text_fields() -> impl for<'writer> FormatFields<'writer> + 'static {
     .delimited(" ")
 }
 
+/// Whether this process keeps what it logs for tests to look at, in `test_support::logged_errors` and
+/// `records_for_client`: in a test binary, yes. A program that `cargo test` starts
+/// is built with this feature too, as a dev-dependency's features reach it, and would keep
+/// every login for good; `init`, which only a running program calls, turns it off.
+#[cfg(any(test, feature = "test-support"))]
+static KEEPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn keeping() -> bool {
+    KEEPING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn stop_keeping() {
+    KEEPING.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Starts logging as `settings` says. Until `flush`, lines go through a background thread.
 pub fn init(settings: &LogSettings) {
     #[cfg(any(test, feature = "test-support"))]
-    crate::test_support::stop_keeping();
+    stop_keeping();
     let (writer, worker) = NonBlockingBuilder::default().lossy(true).finish(CountingStderr);
     let _ = DROPPED.set(writer.error_counter());
     *WORKER.lock().unwrap_or_else(PoisonError::into_inner) = Some(worker);
@@ -191,7 +208,7 @@ pub struct AuthRecord<'a> {
 /// Writes a record, if `[log].auth` asks for them.
 pub fn auth_record(record: &AuthRecord) {
     #[cfg(any(test, feature = "test-support"))]
-    if crate::test_support::keeping() {
+    if keeping() {
         records().lock().unwrap_or_else(PoisonError::into_inner).push(OwnedRecord::from(record));
     }
     tracing::info!(
