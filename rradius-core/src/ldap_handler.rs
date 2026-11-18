@@ -880,7 +880,7 @@ pub(crate) mod tests {
         };
         let handler = LdapHandler::new(with_groups(url.clone(), PasswordCheck::Bind, groups)).unwrap();
         assert_eq!(handler.authenticate(&pap("alice", "secret")).await.0, Outcome::Reject);
-        let logged = crate::test_support::logged_errors().lock().unwrap().clone();
+        let logged = crate::logging::logged_errors().lock().unwrap().clone();
         assert!(logged.iter().any(|line| line.contains(&url) && line.contains("group search failed")), "{logged:?}");
         // The failed connection is not used again.
         assert_eq!(handler.authenticate(&pap("alice", "secret")).await.0, Outcome::Reject);

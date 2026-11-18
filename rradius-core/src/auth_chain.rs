@@ -716,7 +716,7 @@ mod tests {
         let mut for_client = request();
         for_client.client = "norm-log-nas".to_string();
         chain.authenticate(&pap("bad\nname", "x"), &for_client).await;
-        let lines = crate::test_support::logged_errors().lock().unwrap().clone();
+        let lines = crate::logging::logged_errors().lock().unwrap().clone();
         let lines: Vec<_> = lines.iter().filter(|line| line.contains("norm-log-nas")).collect();
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("allowed"), "{lines:?}");

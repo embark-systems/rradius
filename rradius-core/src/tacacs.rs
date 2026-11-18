@@ -1695,7 +1695,7 @@ pub(crate) mod tests {
         let script = "log('ascii-script-ran') return (get_attr('user') == 'alice' and get_attr('data') == 'secret' and get_attr('authen_type') == 1) and 'accept' or 'reject'";
         let mut connection = AsciiConnection::with(script_engine(script).await, None).await;
         assert_eq!(connection.login(b"", &[b"alice", b"secret"]).await, AUTHEN_STATUS_PASS);
-        let runs = crate::test_support::logged_errors().lock().unwrap().iter().filter(|line| line.contains("ascii-script-ran")).count();
+        let runs = crate::logging::logged_errors().lock().unwrap().iter().filter(|line| line.contains("ascii-script-ran")).count();
         assert_eq!(runs, 1);
     }
 
@@ -2445,7 +2445,7 @@ pub(crate) mod tests {
         let request = || encrypted_request(TYPE_AUTHOR, 1, 0, &author_body(b"alice", &[]));
         let reply = exchange_with(script_engine(&script(256)).await, request()).await;
         assert_eq!(reply.body, vec![AUTHOR_STATUS_ERROR, 0, 0, 0, 0, 0]);
-        let logged = crate::test_support::logged_errors().lock().unwrap().clone();
+        let logged = crate::logging::logged_errors().lock().unwrap().clone();
         assert!(logged.iter().any(|line| line.contains(&test_client().name) && line.contains("256 AV pairs")), "{logged:?}");
         let reply = exchange_with(script_engine(&script(255)).await, request()).await;
         assert_eq!((reply.body[0], reply.body[1]), (AUTHOR_STATUS_PASS_ADD, 255));

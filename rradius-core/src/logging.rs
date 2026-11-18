@@ -120,7 +120,7 @@ fn text_fields() -> impl for<'writer> FormatFields<'writer> + 'static {
     .delimited(" ")
 }
 
-/// Whether this process keeps what it logs for tests to look at, in `test_support::logged_errors` and
+/// Whether this process keeps what it logs for tests to look at, in `logged_errors` and
 /// `records_for_client`: in a test binary, yes. A program that `cargo test` starts
 /// is built with this feature too, as a dev-dependency's features reach it, and would keep
 /// every login for good; `init`, which only a running program calls, turns it off.
@@ -135,6 +135,13 @@ pub(crate) fn keeping() -> bool {
 #[cfg(any(test, feature = "test-support"))]
 fn stop_keeping() {
     KEEPING.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Every line `log_script_error` wrote in this test binary.
+#[cfg(any(test, feature = "test-support"))]
+pub fn logged_errors() -> &'static Mutex<Vec<String>> {
+    static LINES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    LINES.get_or_init(Mutex::default)
 }
 
 /// Starts logging as `settings` says. Until `flush`, lines go through a background thread.

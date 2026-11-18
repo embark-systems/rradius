@@ -1054,7 +1054,7 @@ mod tests {
         let kept = fs::read(dir.path().join("truncated.log")).unwrap();
         assert_eq!(kept[4..], removed[4..], "the other records can still be read from it");
         assert_eq!(fs::metadata(dir.path().join("truncated.log")).unwrap().permissions().mode() & 0o777, 0o600);
-        let logged = crate::test_support::logged_errors().lock().unwrap().clone();
+        let logged = crate::logging::logged_errors().lock().unwrap().clone();
         assert!(logged.iter().any(|line| line.contains(path.to_str().unwrap()) && line.contains("kept in truncated.log")), "someone is told where it went");
     }
 
@@ -1079,7 +1079,7 @@ mod tests {
         assert_eq!(drain(&reopened).await, [1, 2, 4]);
         assert_eq!(reopened.counters.corrupt.get(), 1);
         assert_eq!(fs::read(path.with_extension("corrupt")).unwrap(), bytes, "all of it is kept");
-        let logged = crate::test_support::logged_errors().lock().unwrap().clone();
+        let logged = crate::logging::logged_errors().lock().unwrap().clone();
         assert!(logged.iter().any(|line| line.contains(path.to_str().unwrap()) && line.contains("could not")), "{logged:?}");
     }
 

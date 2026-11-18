@@ -5,7 +5,7 @@ use crate::config::{ClusterNode, ClusterSettings, DEFAULT_SNAPSHOT_EVERY};
 use crate::lua_engine::{Db, LuaVms};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 pub mod bench;
@@ -102,12 +102,6 @@ pub fn test_db() -> Db {
 /// to the connections a test opens (a port found by binding port 0 and letting go was taken that way).
 fn free_port() -> String {
     format!("127.0.0.1:{}", server::free_port())
-}
-
-/// Every line `log_script_error` wrote in this test binary.
-pub fn logged_errors() -> &'static Mutex<Vec<String>> {
-    static LINES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-    LINES.get_or_init(Mutex::default)
 }
 
 /// A revocation check for tests: refuses a chain whose end-entity certificate was revoked,
