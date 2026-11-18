@@ -1,0 +1,165 @@
+# Prometheus alerting rules for rradius-server. Chapter 21 of the manual,
+# docs/manual/21-monitoring.md, says what each alert means and what to do about it.
+#
+# They assume the scrape job is named "rradius" (see README.md). The rules for the external
+# databases, the accounting log and the named queries only match when that feature is
+# configured: the metrics are not there otherwise, and nothing fires.
+groups:
+  - name: rradius-availability
+    rules:
+      - alert: RradiusDown
+        expr: up{job="rradius"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} cannot be scraped"
+          description: "Prometheus has not reached /metrics of {{ $labels.instance }} for 2 minutes: the process is down, or [metrics] is not reachable from the monitoring host."
+
+      - alert: RradiusNoLeader
+        expr: rradius_cluster_leader == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} has no leader"
+          description: "The node cannot write: accounting goes to its spool and logins that need a write are refused. It was cut off from the cluster, or the cluster has lost its majority."
+
+      - alert: RradiusNotCaughtUp
+        expr: rradius_cluster_caught_up == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} has not caught up with the cluster"
+          description: "The node serves from a local copy that is behind the cluster for more than 5 minutes."
+
+  - name: rradius-traffic
+    rules:
+      - alert: RradiusOverload
+        expr: increase(rradius_radius_discarded_total{reason="overload"}[5m]) > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} drops requests because it is too busy"
+          description: "More requests arrive than the node handles. Look for a slow database, directory or script."
+
+      - alert: RradiusDiscardingForTheDatabase
+        expr: increase(rradius_radius_discarded_total{reason=~"database|no_leader"}[5m]) > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} drops requests: {{ $labels.reason }}"
+          description: "Requests are dropped because the database cannot answer or there is no leader to write through."
+
+      - alert: RradiusManyRejects
+        expr: |
+          sum by (instance) (rate(rradius_radius_responses_total{code="access_reject"}[10m]))
+            / sum by (instance) (rate(rradius_radius_responses_total{code=~"access_accept|access_reject"}[10m])) > 0.5
+          and sum by (instance) (rate(rradius_radius_responses_total{code=~"access_accept|access_reject"}[10m])) > 0.2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "More than half the logins on {{ $labels.instance }} are rejected"
+          description: "A directory that is down, a configuration mistake, or someone trying passwords."
+
+      - alert: RradiusInvalidPackets
+        expr: sum by (instance) (rate(rradius_radius_discarded_total{reason="invalid"}[10m])) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} discards packets with a bad signature or format"
+          description: "Usually a device with a wrong shared secret."
+
+      - alert: RradiusSlowLogins
+        expr: histogram_quantile(0.99, sum by (le, instance) (rate(rradius_radius_response_seconds_bucket{kind="auth"}[5m]))) > 1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "p99 of the login response time on {{ $labels.instance }} is over 1 second"
+          description: "The database, the directory or a script has become slow."
+
+  - name: rradius-accounting
+    rules:
+      - alert: RradiusAccountingSpoolBacklog
+        expr: rradius_acct_spool_bytes > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} has accounting that is not in the database"
+          description: "The spool has held accounting for 15 minutes: the database or the cluster is in trouble."
+
+      - alert: RradiusAccountingSpoolLoss
+        expr: increase(rradius_acct_spool_rejected_total[1h]) > 0 or increase(rradius_acct_spool_corrupt_total[1h]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} gave up accounting records"
+          description: "Records were rejected on replay or found corrupt: look in rejected.log of the spool directory."
+
+      - alert: RradiusAccountingLogDropping
+        expr: increase(rradius_accounting_log_dropped_total[10m]) > 0 or increase(rradius_accounting_log_failures_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} does not write all accounting to its log file"
+          description: "The disk is slow, full or not writable."
+
+  - name: rradius-dependencies
+    rules:
+      - alert: RradiusExternalDatabaseUnreachable
+        expr: rradius_external_db_reachable == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} cannot reach database {{ $labels.database }}"
+          description: "With required_for_ready set, the node answers 503 on /readyz and a load balancer takes it out."
+
+      - alert: RradiusExternalDatabaseFailing
+        expr: increase(rradius_external_db_failures_total{reason="unavailable"}[5m]) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Calls to database {{ $labels.database }} fail on {{ $labels.instance }}"
+          description: "The database is down, slow, or the network to it is broken."
+
+      - alert: RradiusExternalDatabasePoolFull
+        expr: rradius_external_db_connections{state="in_use"} >= on (instance, database) rradius_external_db_connections_max
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "The pool of database {{ $labels.database }} on {{ $labels.instance }} is full"
+          description: "Calls queue for a connection: queries have become slow, or pool_size is too small."
+
+      - alert: RradiusNamedQueryStale
+        expr: time() - rradius_query_last_success_timestamp_seconds > 120
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Named query {{ $labels.query }} has not succeeded for 2 minutes on {{ $labels.instance }}"
+          description: "The numbers of the query are as old as its last success."
+
+      - alert: RradiusNamedQueryFailing
+        expr: increase(rradius_query_failures_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Named query {{ $labels.query }} fails on {{ $labels.instance }} ({{ $labels.reason }})"
+          description: "A timeout, a statement the database refuses, or rows that do not fit the labels and the value."
+
+  - name: rradius-operations
+    rules:
+      - alert: RradiusReloadFailed
+        expr: increase(rradius_reload_total{result="error"}[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "A reload of rradius on {{ $labels.instance }} failed"
+          description: "The node keeps running with the old configuration; the log says why."
+
+      - alert: RradiusLogLinesDropped
+        expr: increase(rradius_log_dropped_lines_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "rradius on {{ $labels.instance }} drops log lines"
+          description: "Where the log goes is too slow."
+
+      - alert: RradiusEapSessionsLost
+        expr: sum by (instance, method) (increase(rradius_eap_sessions_total{result=~"evicted|overload"}[10m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "802.1X conversations ({{ $labels.method }}) on {{ $labels.instance }} are pushed out or refused"
+          description: "More conversations are open at once than the node keeps; see chapter 12."

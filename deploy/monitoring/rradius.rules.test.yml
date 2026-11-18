@@ -1,0 +1,175 @@
+# promtool test rules rradius.rules.test.yml
+# Each test feeds series for one node and says which alerts fire at a time and which do not.
+rule_files:
+  - rradius.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    name: node down, then back
+    input_series:
+      - series: 'up{job="rradius", instance="a:9812"}'
+        values: '1 1 0 0 0 0 1 1'
+    alert_rule_test:
+      - {eval_time: 3m, alertname: RradiusDown, exp_alerts: []}   # down for one minute only
+      - eval_time: 5m
+        alertname: RradiusDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: rradius, instance: "a:9812"}
+            exp_annotations:
+              summary: "rradius on a:9812 cannot be scraped"
+              description: "Prometheus has not reached /metrics of a:9812 for 2 minutes: the process is down, or [metrics] is not reachable from the monitoring host."
+      - {eval_time: 7m, alertname: RradiusDown, exp_alerts: []}   # back
+
+  - interval: 1m
+    name: no leader
+    input_series:
+      - series: 'rradius_cluster_leader{instance="a:9812"}'
+        values: '1 1 0 0 0 1'
+      - series: 'rradius_cluster_leader{instance="b:9812"}'
+        values: '1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RradiusNoLeader
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: "a:9812"}
+            exp_annotations:
+              summary: "rradius on a:9812 has no leader"
+              description: "The node cannot write: accounting goes to its spool and logins that need a write are refused. It was cut off from the cluster, or the cluster has lost its majority."
+      - {eval_time: 5m, alertname: RradiusNoLeader, exp_alerts: []}
+
+  - interval: 1m
+    name: overload and quiet
+    input_series:
+      - series: 'rradius_radius_discarded_total{reason="overload", instance="a:9812"}'
+        values: '0 0 0 5 10 15 15 15 15 15 15 15 15'
+      - series: 'rradius_radius_discarded_total{reason="unknown_client", instance="a:9812"}'
+        values: '0 5 10 15 20 25 30 35 40 45 50 55 60'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RradiusOverload
+        exp_alerts:
+          - exp_labels: {severity: critical, reason: overload, instance: "a:9812"}
+            exp_annotations:
+              summary: "rradius on a:9812 drops requests because it is too busy"
+              description: "More requests arrive than the node handles. Look for a slow database, directory or script."
+      - {eval_time: 12m, alertname: RradiusOverload, exp_alerts: []}   # a quarter of an hour later: no new drops
+
+  - interval: 1m
+    name: rejects in proportion
+    input_series:
+      # a: 80 % rejected at 1 request a second for 15 minutes; b: the same rate, 10 % rejected;
+      # c: nearly all rejected but only a handful of requests
+      - series: 'rradius_radius_responses_total{code="access_reject", instance="a:9812"}'
+        values: '0+48x15'
+      - series: 'rradius_radius_responses_total{code="access_accept", instance="a:9812"}'
+        values: '0+12x15'
+      - series: 'rradius_radius_responses_total{code="access_reject", instance="b:9812"}'
+        values: '0+6x15'
+      - series: 'rradius_radius_responses_total{code="access_accept", instance="b:9812"}'
+        values: '0+54x15'
+      - series: 'rradius_radius_responses_total{code="access_reject", instance="c:9812"}'
+        values: '0+1x15'
+      - series: 'rradius_radius_responses_total{code="access_accept", instance="c:9812"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: RradiusManyRejects
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "a:9812"}
+            exp_annotations:
+              summary: "More than half the logins on a:9812 are rejected"
+              description: "A directory that is down, a configuration mistake, or someone trying passwords."
+
+  - interval: 1m
+    name: accounting spool
+    input_series:
+      - series: 'rradius_acct_spool_bytes{instance="a:9812"}'
+        values: '0 0 5000x20'
+      - series: 'rradius_acct_spool_bytes{instance="b:9812"}'
+        values: '0 0 5000 5000 0x16'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RradiusAccountingSpoolBacklog
+        exp_alerts: []        # only 8 minutes so far
+      - eval_time: 20m
+        alertname: RradiusAccountingSpoolBacklog
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "a:9812"}
+            exp_annotations:
+              summary: "rradius on a:9812 has accounting that is not in the database"
+              description: "The spool has held accounting for 15 minutes: the database or the cluster is in trouble."
+
+  - interval: 1m
+    name: spool gave up records
+    input_series:
+      - series: 'rradius_acct_spool_rejected_total{instance="a:9812"}'
+        values: '0 0 0 3 3 3'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RradiusAccountingSpoolLoss
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: "a:9812"}
+            exp_annotations:
+              summary: "rradius on a:9812 gave up accounting records"
+              description: "Records were rejected on replay or found corrupt: look in rejected.log of the spool directory."
+
+  - interval: 1m
+    name: external database
+    input_series:
+      - series: 'rradius_external_db_reachable{instance="a:9812", database="billing"}'
+        values: '1 0 0 0 0'
+      - series: 'rradius_external_db_connections{instance="a:9812", database="billing", state="in_use"}'
+        values: '3 10 10 10 10 10 10 10'
+      - series: 'rradius_external_db_connections_max{instance="a:9812", database="billing"}'
+        values: '10 10 10 10 10 10 10 10'
+      - series: 'rradius_external_db_connections{instance="b:9812", database="billing", state="in_use"}'
+        values: '3 3 3 3 3 3 3 3'
+      - series: 'rradius_external_db_connections_max{instance="b:9812", database="billing"}'
+        values: '10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RradiusExternalDatabaseUnreachable
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: "a:9812", database: billing}
+            exp_annotations:
+              summary: "rradius on a:9812 cannot reach database billing"
+              description: "With required_for_ready set, the node answers 503 on /readyz and a load balancer takes it out."
+      - eval_time: 7m
+        alertname: RradiusExternalDatabasePoolFull
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "a:9812", database: billing}
+            exp_annotations:
+              summary: "The pool of database billing on a:9812 is full"
+              description: "Calls queue for a connection: queries have become slow, or pool_size is too small."
+
+  - interval: 1m
+    name: named query stops succeeding
+    input_series:
+      # time() in a test starts at 0, so a last success at 0 is 300 seconds old at 5 minutes
+      - series: 'rradius_query_last_success_timestamp_seconds{instance="a:9812", query="pool_usage"}'
+        values: '0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RradiusNamedQueryStale
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "a:9812", query: pool_usage}
+            exp_annotations:
+              summary: "Named query pool_usage has not succeeded for 2 minutes on a:9812"
+              description: "The numbers of the query are as old as its last success."
+
+  - interval: 1m
+    name: reload failed once
+    input_series:
+      - series: 'rradius_reload_total{result="error", instance="a:9812"}'
+        values: '0 0 1 1 1 1'
+      - series: 'rradius_reload_total{result="success", instance="a:9812"}'
+        values: '0 1 2 3 4 5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: RradiusReloadFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, result: error, instance: "a:9812"}
+            exp_annotations:
+              summary: "A reload of rradius on a:9812 failed"
+              description: "The node keeps running with the old configuration; the log says why."

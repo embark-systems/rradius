@@ -178,7 +178,7 @@ kill -HUP $(pidof rradius-server)
 
 ## 監控
 
-`[metrics]` 開啟後，`GET /metrics` 是 Prometheus 格式。建議先看這幾個：
+`[metrics]` 開啟後，`GET /metrics` 是 Prometheus 格式。要被通知、或要送 SNMP trap，用[第 21 章](21-monitoring.md)的告警規則。建議先看這幾個：
 
 | 指標 | 代表 | 建議 |
 | --- | --- | --- |
