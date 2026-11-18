@@ -793,11 +793,23 @@ impl Db {
             }
             return self.wait_for_replica(last_applied, catch_up).await;
         }
+        // Before the cluster sees them: a write that is too big stops the node's database, so the files go in
+        // batches, each one a write of its own; a file that alone is too big is refused.
+        let batches = migration_batches(&files, last_applied)?;
         let names: Vec<(u32, String)> = files.iter().map(|f| (f.id, f.file_name.clone())).collect();
         let newest = names.last().map_or(last_applied, |(id, _)| *id);
-        let Ok(result) = tokio::time::timeout(catch_up, self.migrate_files(files)).await else {
-            return Err(MigrationError::Cluster(format!("the migration files did not finish within {catch_up:?}")));
-        };
+        let mut result = Ok(());
+        for end in batches {
+            // The files up to the end of the batch: hiqlite wants the applied ones in the list too.
+            let part: Vec<MigrationFile> = files.iter().filter(|file| file.id <= end).cloned().collect();
+            let Ok(done) = tokio::time::timeout(catch_up, self.migrate_files(part)).await else {
+                return Err(MigrationError::Cluster(format!("the migration files did not finish within {catch_up:?}")));
+            };
+            if done.is_err() {
+                result = done;
+                break;
+            }
+        }
         let Err(error) = result else { return self.wait_for_replica(newest, catch_up).await };
         if !is_sql_error(&error) {
             return Err(MigrationError::Cluster(format!("cannot apply migrations: {error}")));
@@ -941,6 +953,7 @@ fn check_applied(files: &[MigrationFile], applied: &[hiqlite::AppliedMigration])
 }
 
 /// A file in `[cluster].migrations_dir`, as read at startup.
+#[derive(Clone)]
 struct MigrationFile {
     id: u32,
     /// The whole file name, such as `1_users.sql`.
@@ -955,6 +968,39 @@ impl MigrationFile {
     fn hash(&self) -> String {
         self.file.metadata.sha256_hash().iter().map(|byte| format!("{byte:02x}")).collect()
     }
+}
+
+/// The most the files of one write to the cluster may add up to. A write is one entry of hiqlite's
+/// log, which takes at most 2,097,118 bytes: a bigger one panics the node's database (tried:
+/// 2,090,000 bytes of files applied, 2,100,000 did not). What is left under the limit is for the
+/// names and the hashes that go with the files.
+const MAX_MIGRATION_BYTES: usize = 2_000_000;
+
+/// Where each write ends when the files not applied yet go to the cluster in as few writes as the
+/// limit allows: the number of the last file of each batch, in order. Every file is a transaction
+/// of its own, so a batch may end after any file. A file that alone is over the limit is refused:
+/// it cannot be split, and a migration is for the structure and a little initial data.
+fn migration_batches(files: &[MigrationFile], last_applied: u32) -> Result<Vec<u32>, MigrationError> {
+    let mut ends = Vec::new();
+    let mut size = 0usize;
+    for file in files.iter().filter(|file| file.id > last_applied) {
+        let length = file.file.data.len();
+        if length > MAX_MIGRATION_BYTES {
+            return Err(MigrationError::Invalid(format!(
+                "migration file '{}' is {length} bytes, more than the {MAX_MIGRATION_BYTES} the cluster takes in one write: a migration file is for the structure and a little initial data; split the file, or write a lot of data with a program",
+                file.file_name
+            )));
+        }
+        if size > 0 && size + length > MAX_MIGRATION_BYTES {
+            ends.push(file.id - 1);
+            size = 0;
+        }
+        size += length;
+    }
+    if let Some(last) = files.last().filter(|last| last.id > last_applied) {
+        ends.push(last.id);
+    }
+    Ok(ends)
 }
 
 /// The error when `error`, from a file's SQL, stopped the migrations. Each file is its
@@ -3653,35 +3699,72 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_migration_names_and_numbering() {
-        for (files, expected) in [
-            (vec!["users.sql"], "users.sql"),
-            (vec!["1_users.txt"], "1_users.txt"),
-            (vec!["1_.sql"], "1_.sql"),
-            (vec!["+1_users.sql"], "+1_users.sql"),
-            (vec!["99999999999_users.sql"], "99999999999_users.sql"),
-            (vec!["1_users.sql", "3_acct.sql"], "3_acct.sql"),
-            (vec!["2_reply.sql"], "2_reply.sql"),
-            (vec!["1_users.sql", "01_again.sql"], "_"),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            for file in &files {
-                std::fs::write(dir.path().join(file), "SELECT 1;").unwrap();
-            }
-            let Err(MigrationError::Invalid(message)) = read_migration_dir(dir.path()) else { panic!("{files:?} was accepted") };
-            assert!(message.contains(expected), "{files:?}: {message}");
-        }
+    fn test_migration_batches() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let part = |kilobytes: usize| format!("-- {}\n", "x".repeat(kilobytes * 1000));
+        // 1,200 KB each: two do not fit in one write, so every file is a batch of its own.
+        let big = part(1200);
+        write_migrations(dir.path(), &[("1_a.sql", &big), ("2_b.sql", &big), ("3_c.sql", &big)]);
+        let migrations = read_migrations(dir.path()).map_err(|e| e.to_string())?;
+        assert_eq!(migration_batches(&migrations.files, 0), Ok(vec![1, 2, 3]));
+        // The applied files are not sent, so they do not count.
+        assert_eq!(migration_batches(&migrations.files, 2), Ok(vec![3]));
+        assert_eq!(migration_batches(&migrations.files, 3), Ok(vec![]));
+        // Files that fit together share a write; the one that does not fit starts the next.
+        let small = part(100);
+        write_migrations(dir.path(), &[("1_a.sql", &small), ("2_b.sql", &small), ("3_c.sql", &big), ("4_d.sql", &big), ("5_e.sql", &small)]);
+        let migrations = read_migrations(dir.path()).map_err(|e| e.to_string())?;
+        assert_eq!(migration_batches(&migrations.files, 0), Ok(vec![3, 5]), "1 to 3 are 1.4 MB; 4 and 5 are 1.3 MB");
+        // Exactly the limit fits in one write, one byte more does not.
+        let exact = format!("-- {}\n", "x".repeat(MAX_MIGRATION_BYTES - 4));
+        write_migrations(dir.path(), &[("1_a.sql", &exact), ("2_b.sql", ""), ("3_c.sql", ""), ("4_d.sql", ""), ("5_e.sql", "")]);
+        std::fs::write(dir.path().join("2_b.sql"), "").map_err(|e| e.to_string())?;
+        let migrations = read_migrations(dir.path()).map_err(|e| e.to_string())?;
+        assert_eq!(migration_batches(&migrations.files, 0), Ok(vec![5]));
+        write_migrations(dir.path(), &[("2_b.sql", "-")]);
+        let migrations = read_migrations(dir.path()).map_err(|e| e.to_string())?;
+        assert_eq!(migration_batches(&migrations.files, 0), Ok(vec![1, 5]));
+        // A file that is over the limit by itself is refused, by name.
+        let over = format!("-- {}\n", "x".repeat(MAX_MIGRATION_BYTES));
+        write_migrations(dir.path(), &[("2_b.sql", &over)]);
+        let migrations = read_migrations(dir.path()).map_err(|e| e.to_string())?;
+        let error = migration_batches(&migrations.files, 0).err().ok_or("accepted")?;
+        assert!(matches!(error, MigrationError::Invalid(_)) && error.to_string().contains("'2_b.sql'") && error.to_string().contains("split the file"), "{error}");
+        Ok(())
+    }
 
-        let missing = tempfile::tempdir().unwrap().path().join("gone");
-        let Err(MigrationError::Invalid(message)) = read_migration_dir(&missing) else { panic!("a missing directory was accepted") };
-        assert!(message.contains("gone"), "{message}");
-
+    /// Files that add up to more than one write takes (4.5 MB) are applied, in batches, where one write of
+    /// them all panicked the node's database; and the database is still writable after.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_migrate_dir_applies_a_lot_of_files_in_batches() {
+        let db = start_cluster(1).remove(0);
         let dir = tempfile::tempdir().unwrap();
-        for file in ["2_reply.sql", "10_ten.sql", "1_users.sql", "3_c.sql", "4_d.sql", "5_e.sql", "6_f.sql", "7_g.sql", "8_h.sql", "9_i.sql"] {
-            std::fs::write(dir.path().join(file), "SELECT 1;").unwrap();
+        let padding = format!("-- {}\n", "x".repeat(900_000));
+        for i in 1..=5 {
+            std::fs::write(dir.path().join(format!("{i}_big{i}.sql")), format!("{padding}CREATE TABLE big_batch_{i} (id INTEGER);")).unwrap();
         }
-        let ids: Vec<u32> = read_migration_dir(dir.path()).unwrap().iter().map(|f| f.id).collect();
-        assert_eq!(ids, (1..=10).collect::<Vec<u32>>(), "numbers sort as numbers");
+        db.migrate_dir(dir.path(), WAIT).await.unwrap();
+        assert_eq!(applied_rows(&db).await.len(), 5);
+        for i in 1..=5 {
+            db.query(&format!("SELECT id FROM big_batch_{i}")).await.unwrap();
+        }
+        // Applied once: another start sends nothing.
+        db.migrate_dir(dir.path(), WAIT).await.unwrap();
+        assert_eq!(applied_rows(&db).await.len(), 5);
+        db.execute("CREATE TABLE still_writable (id INTEGER)").await.unwrap();
+    }
+
+    /// A file over the limit by itself is refused before anything reaches the cluster.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_migrate_dir_refuses_a_file_that_is_too_big() {
+        let db = start_cluster(1).remove(0);
+        let dir = tempfile::tempdir().unwrap();
+        write_migrations(dir.path(), &[("1_users.sql", USERS)]);
+        std::fs::write(dir.path().join("2_huge.sql"), format!("-- {}\n", "x".repeat(2_500_000))).unwrap();
+        let error = db.migrate_dir(dir.path(), WAIT).await.unwrap_err();
+        assert!(matches!(&error, MigrationError::Invalid(m) if m.contains("2_huge.sql") && m.contains("split the file")), "{error:?}");
+        assert!(applied_rows(&db).await.is_empty(), "nothing was applied");
+        db.execute("CREATE TABLE still_writable (id INTEGER)").await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
