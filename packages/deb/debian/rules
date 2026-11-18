@@ -38,9 +38,11 @@ override_dh_auto_install:
 override_dh_compress:
 	dh_compress -Xusr/share/doc/rradius
 
-# The service starts once the configuration exists, and only when the operator enables it.
+# The package does not enable the service: the operator does, once the configuration exists (the
+# unit does not start without it either). Without --no-start a service that is enabled and running
+# is restarted by an upgrade; with it, the upgrade stopped the service and left it stopped.
 override_dh_installsystemd:
-	dh_installsystemd --no-enable --no-start
+	dh_installsystemd --no-enable
 
 # Rust binaries carry no DWARF the tool can compress, and the debug info is not packaged.
 override_dh_dwz:
