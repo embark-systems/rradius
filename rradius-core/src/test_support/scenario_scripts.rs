@@ -6,40 +6,40 @@
 //! its own, in the schema and the script alike.
 
 use crate::lua_engine::{DbValue, LuaAuthEngine, LuaRequest};
-use crate::test_support::{test_db, test_vms};
+use super::{test_db, test_vms};
 use crate::common::{AttrValue, Outcome};
 
-const QUICK_START_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/quick-start/migrations/1_schema.sql");
-const QUICK_START_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/quick-start/accounting.lua");
-const DEVICE_ADMIN_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/device-admin/migrations/1_schema.sql");
-const DEVICE_ADMIN_DATA: &str = include_str!("../../rradius-server/examples/scenarios/device-admin/migrations/2_demo_data.sql");
-const DEVICE_ADMIN_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/device-admin/tacacs.lua");
-const IP_POOL_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/migrations/1_schema.sql");
-const IP_POOL_DATA: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/migrations/2_demo_data.sql");
-const IP_POOL_ALLOCATE: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/allocate.lua");
-const LINE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/migrations/1_schema.sql");
-const LINE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/migrations/2_demo_data.sql");
-const LINE_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/line-identity/auth.lua");
-const STATIC_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/migrations/1_schema.sql");
-const STATIC_DATA: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/migrations/2_demo_data.sql");
-const STATIC_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/static.lua");
-const STATIC_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/static-ip/accounting.lua");
-const RATE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/migrations/1_schema.sql");
-const RATE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/migrations/2_demo_data.sql");
-const RATE_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/rate-limit/rate.lua");
-const PREFIX_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/migrations/1_schema.sql");
-const PREFIX_DATA: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/migrations/2_demo_data.sql");
-const PREFIX_ALLOCATE: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/allocate.lua");
-const PREFIX_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/prefix-pool/accounting.lua");
-const IP_POOL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
-const DUAL_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/dual-stack-lines/migrations/1_schema.sql");
-const DUAL_DATA: &str = include_str!("../../rradius-server/examples/scenarios/dual-stack-lines/migrations/2_demo_data.sql");
-const DUAL_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/dual-stack-lines/line.lua");
-const DUAL_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/dual-stack-lines/accounting.lua");
-const USAGE_SCHEMA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/1_schema.sql");
-const USAGE_DATA: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/migrations/2_demo_data.sql");
-const USAGE_LIMITS: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/limits.lua");
-const USAGE_ACCOUNTING: &str = include_str!("../../rradius-server/examples/scenarios/usage-control/accounting.lua");
+const QUICK_START_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/quick-start/migrations/1_schema.sql");
+const QUICK_START_ACCOUNTING: &str = include_str!("../../../rradius-server/examples/scenarios/quick-start/accounting.lua");
+const DEVICE_ADMIN_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/device-admin/migrations/1_schema.sql");
+const DEVICE_ADMIN_DATA: &str = include_str!("../../../rradius-server/examples/scenarios/device-admin/migrations/2_demo_data.sql");
+const DEVICE_ADMIN_SCRIPT: &str = include_str!("../../../rradius-server/examples/scenarios/device-admin/tacacs.lua");
+const IP_POOL_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/ip-pool/migrations/1_schema.sql");
+const IP_POOL_DATA: &str = include_str!("../../../rradius-server/examples/scenarios/ip-pool/migrations/2_demo_data.sql");
+const IP_POOL_ALLOCATE: &str = include_str!("../../../rradius-server/examples/scenarios/ip-pool/allocate.lua");
+const LINE_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/line-identity/migrations/1_schema.sql");
+const LINE_DATA: &str = include_str!("../../../rradius-server/examples/scenarios/line-identity/migrations/2_demo_data.sql");
+const LINE_SCRIPT: &str = include_str!("../../../rradius-server/examples/scenarios/line-identity/auth.lua");
+const STATIC_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/static-ip/migrations/1_schema.sql");
+const STATIC_DATA: &str = include_str!("../../../rradius-server/examples/scenarios/static-ip/migrations/2_demo_data.sql");
+const STATIC_SCRIPT: &str = include_str!("../../../rradius-server/examples/scenarios/static-ip/static.lua");
+const STATIC_ACCOUNTING: &str = include_str!("../../../rradius-server/examples/scenarios/static-ip/accounting.lua");
+const RATE_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/rate-limit/migrations/1_schema.sql");
+const RATE_DATA: &str = include_str!("../../../rradius-server/examples/scenarios/rate-limit/migrations/2_demo_data.sql");
+const RATE_SCRIPT: &str = include_str!("../../../rradius-server/examples/scenarios/rate-limit/rate.lua");
+const PREFIX_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/prefix-pool/migrations/1_schema.sql");
+const PREFIX_DATA: &str = include_str!("../../../rradius-server/examples/scenarios/prefix-pool/migrations/2_demo_data.sql");
+const PREFIX_ALLOCATE: &str = include_str!("../../../rradius-server/examples/scenarios/prefix-pool/allocate.lua");
+const PREFIX_ACCOUNTING: &str = include_str!("../../../rradius-server/examples/scenarios/prefix-pool/accounting.lua");
+const IP_POOL_ACCOUNTING: &str = include_str!("../../../rradius-server/examples/scenarios/ip-pool/accounting.lua");
+const DUAL_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/dual-stack-lines/migrations/1_schema.sql");
+const DUAL_DATA: &str = include_str!("../../../rradius-server/examples/scenarios/dual-stack-lines/migrations/2_demo_data.sql");
+const DUAL_SCRIPT: &str = include_str!("../../../rradius-server/examples/scenarios/dual-stack-lines/line.lua");
+const DUAL_ACCOUNTING: &str = include_str!("../../../rradius-server/examples/scenarios/dual-stack-lines/accounting.lua");
+const USAGE_SCHEMA: &str = include_str!("../../../rradius-server/examples/scenarios/usage-control/migrations/1_schema.sql");
+const USAGE_DATA: &str = include_str!("../../../rradius-server/examples/scenarios/usage-control/migrations/2_demo_data.sql");
+const USAGE_LIMITS: &str = include_str!("../../../rradius-server/examples/scenarios/usage-control/limits.lua");
+const USAGE_ACCOUNTING: &str = include_str!("../../../rradius-server/examples/scenarios/usage-control/accounting.lua");
 
 /// `text` with each of `tables` renamed to `prefix_table`, whole words only, and not where the
 /// word is a quoted string of its own, such as the phase `'accounting'`.
@@ -206,7 +206,7 @@ fn code_block<'a>(markdown: &'a str, lang: &str, first_line: &str) -> &'a str {
 /// that are old enough.
 #[tokio::test]
 async fn test_manual_purge_snippet() {
-    let manual = include_str!("../../docs/manual/11-operations.md");
+    let manual = include_str!("../../../docs/manual/11-operations.md");
     let tables = ["users", "user_reply", "accounting", "user_reply_user", "accounting_user", "housekeeping"];
     apply(&renamed(QUICK_START_SCHEMA, "hk", &tables)).await;
     apply(&renamed(code_block(manual, "sql", "-- 3_housekeeping.sql"), "hk", &tables)).await;
@@ -229,7 +229,7 @@ async fn test_manual_purge_snippet() {
     assert_eq!(rows("SELECT count(*) FROM hk_accounting WHERE session_id = 'old2'").await, [vec![int(1)]], "not again within the hour");
 }
 
-const EXTERNAL_API_SCRIPT: &str = include_str!("../../rradius-server/examples/scenarios/external-api/member-api.lua");
+const EXTERNAL_API_SCRIPT: &str = include_str!("../../../rradius-server/examples/scenarios/external-api/member-api.lua");
 
 /// The text a `Bytes` value of `attributes` named `name` holds.
 fn reply_text(attributes: &[(String, AttrValue)], name: &str) -> Option<String> {

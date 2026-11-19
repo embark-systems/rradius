@@ -50,8 +50,6 @@ pub mod config_tools;
 pub mod backup;
 pub mod lua_engine;
 pub mod passwords;
-#[cfg(test)]
-mod scenario_scripts;
 // Test code, where an unwrap that panics is a failed test.
 #[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

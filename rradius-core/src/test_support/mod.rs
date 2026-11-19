@@ -13,6 +13,8 @@ pub mod certs;
 pub mod eap;
 pub mod radius;
 pub mod scenario;
+#[cfg(test)]
+mod scenario_scripts;
 pub mod schema;
 pub mod server;
 
