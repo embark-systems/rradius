@@ -41,6 +41,20 @@ jobs:
       - run: cargo clippy --locked -p rradius-core -p rradius-server --all-targets
       - run: cargo test --locked -p rradius-core -p rradius-server
 
+  deny:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # The crates of Cargo.lock against the RustSec advisory database, and where they come from. It
+    # runs here and not on every push because the database changes: the same lock file can pass
+    # today and fail next week. The licenses are checked by packages/tarball/release.sh.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - run: cargo install --locked cargo-deny@0.20.2
+      - run: cargo deny --locked check advisories sources
+      - run: cargo deny --locked --manifest-path rradius-server/fuzz/Cargo.toml check advisories sources
+
   ldap:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # Runs a real OpenLDAP server in Docker, which `cargo test` skips.

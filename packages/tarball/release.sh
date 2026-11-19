@@ -85,10 +85,11 @@ trap 'rm -rf "$work"; rm -f "$out"/*.tar.gz.partial' EXIT
 mkdir "$work/src"
 git -C "$root" archive "$hash" | tar -x -C "$work/src"
 
-# Every crate under a license deny.toml allows, before anything is built. Then the sources of
+# Every crate under a license deny.toml allows, with no advisory that is not ignored there and from
+# crates.io only, before anything is built. Then the sources of
 # the crates of every platform, which the license lists are read from.
 # The exception deny.toml makes for the fuzz targets is not met here.
-(cd "$work/src" && cargo deny --locked check --allow license-exception-not-encountered licenses) || fail "a crate's license is not one deny.toml allows"
+(cd "$work/src" && cargo deny --locked check --allow license-exception-not-encountered advisories sources licenses) || fail "a crate has an advisory, comes from outside crates.io, or has a license deny.toml does not allow"
 (cd "$work/src" && cargo fetch --locked) || fail "cannot fetch the crates"
 
 # Where a program's binary for a target goes once built.

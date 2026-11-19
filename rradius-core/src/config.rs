@@ -1613,6 +1613,7 @@ fn databases(raw: BTreeMap<String, RawDatabase>, base: &Path) -> Result<BTreeMap
             (Some(password), None) => Some(zeroize::Zeroizing::new(password)),
             (None, Some(file)) => {
                 let path = base.join(file);
+                crate::common::seal::warn_if_open(&field("password_file"), &path);
                 let text = zeroize::Zeroizing::new(fs::read_to_string(&path).map_err(|e| format!("{}: cannot read '{}': {}", field("password_file"), path.display(), e))?);
                 let password = text.trim_end_matches(['\r', '\n']);
                 if password.is_empty() {
@@ -2421,6 +2422,7 @@ fn ldap_settings(raw: RawLdap, base: &Path) -> Result<LdapSettings, String> {
         (Some(pw), None) => pw,
         (None, Some(file)) => {
             let path = base.join(file);
+            crate::common::seal::warn_if_open("bind_password_file", &path);
             let text = fs::read_to_string(&path).map_err(|e| format!("bind_password_file: cannot read '{}': {}", path.display(), e))?;
             text.trim_end_matches(['\r', '\n']).to_string()
         }
@@ -2493,6 +2495,7 @@ fn netlogon_settings(raw: RawNetlogon, base: &Path) -> Result<NetlogonSettings, 
         return Err(format!("computer_name '{name}' must have 1 to {MAX_COMPUTER_NAME} characters and no trailing $"));
     }
     let path = base.join(&raw.machine_password_file);
+    crate::common::seal::warn_if_open("machine_password_file", &path);
     let text = zeroize::Zeroizing::new(fs::read_to_string(&path).map_err(|e| format!("machine_password_file: cannot read '{}': {}", path.display(), e))?);
     let password = text.trim_end_matches(['\r', '\n']);
     if password.is_empty() {
@@ -2659,6 +2662,7 @@ fn cluster_secret(name: &str, value: Option<String>, file: Option<PathBuf>, base
         (Some(value), None) => value,
         (None, Some(file)) => {
             let path = base.join(file);
+            crate::common::seal::warn_if_open(&format!("cluster.{name}_file"), &path);
             let text = fs::read_to_string(&path).map_err(|e| format!("cannot read cluster.{}_file '{}': {}", name, path.display(), e))?;
             text.trim_end_matches(['\r', '\n']).to_string()
         }
@@ -2787,6 +2791,7 @@ fn client_secret(client: &RawClient, base: &Path) -> Result<Vec<u8>, String> {
         (Some(secret), None) => secret.as_bytes().to_vec(),
         (None, Some(file)) => {
             let path = base.join(file);
+            crate::common::seal::warn_if_open("secret_file", &path);
             let mut bytes = fs::read(&path).map_err(|e| format!("cannot read secret_file '{}': {}", path.display(), e))?;
             while matches!(bytes.last(), Some(b'\n') | Some(b'\r')) {
                 bytes.pop();
@@ -2996,6 +3001,16 @@ mod tests {
         fs::write(&path, base("\n[radius]\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret_file = \"nas.secret\"\n")).unwrap();
         let clients = load(&path).unwrap().radius.unwrap().clients;
         assert_eq!(clients.lookup("127.0.0.1".parse().unwrap()).unwrap().secret, b"s3cret");
+
+        // A mode that others can reach is warned about, not refused: the secret is read as before.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.path().join("nas.secret"), fs::Permissions::from_mode(0o666)).unwrap();
+            assert!(crate::common::seal::open_file_warning("secret_file", &dir.path().join("nas.secret")).is_some());
+            let clients = load(&path).unwrap().radius.unwrap().clients;
+            assert_eq!(clients.lookup("127.0.0.1".parse().unwrap()).unwrap().secret, b"s3cret");
+        }
 
         fs::write(&path, base("\n[radius]\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret_file = \"empty.secret\"\n")).unwrap();
         let err = load(&path).unwrap_err().to_string();

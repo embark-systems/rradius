@@ -29,7 +29,7 @@ pub enum SecondFactorMode {
 pub const DEFAULT_COA_PORT: u16 = 3799;
 
 /// A RADIUS or TACACS+ client (NAS) and its shared secret.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Client {
     /// The configured `name`, or the configured address string when unnamed.
     pub name: String,
@@ -55,6 +55,27 @@ pub struct Client {
     pub coa_sender: bool,
     /// How its users give a second factor; `None` asks for none.
     pub mfa: Option<SecondFactorMode>,
+}
+
+// By hand, so that `{:?}` of a client never prints its shared secret.
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("name", &self.name)
+            .field("secret", &"<redacted>")
+            .field("auth", &self.auth)
+            .field("require_message_authenticator", &self.require_message_authenticator)
+            .field("limit_proxy_state", &self.limit_proxy_state)
+            .field("coa_port", &self.coa_port)
+            .field("tls_name", &self.tls_name)
+            .field("eap_methods", &self.eap_methods)
+            .field("max_radsec_connections", &self.max_radsec_connections)
+            .field("radsec_subject", &self.radsec_subject)
+            .field("authorize_group", &self.authorize_group)
+            .field("coa_sender", &self.coa_sender)
+            .field("mfa", &self.mfa)
+            .finish()
+    }
 }
 
 /// The settings of a client other than its address, name and secret.
@@ -293,6 +314,16 @@ mod tests {
         assert_eq!(table.lookup(ip("192.168.1.7")).unwrap().name, "nas7");
         assert_eq!(table.lookup(ip("192.168.1.7")).unwrap().secret, b"s2");
         assert_eq!(table.lookup(ip("192.168.1.20")).unwrap().name, "core");
+    }
+
+    #[test]
+    fn test_debug_of_a_client_hides_its_secret() -> Result<(), Box<dyn std::error::Error>> {
+        let table = ClientTable::new(vec![entry("192.168.1.7", Some("nas7"), "hunter2-secret")])?;
+        let client = table.lookup(ip("192.168.1.7")).ok_or("no client")?;
+        let text = format!("{client:?} {:#?}", client);
+        assert!(!text.contains("hunter2"), "Debug holds the secret: {text}");
+        assert!(text.contains("<redacted>") && text.contains("nas7"), "unexpected Debug: {text}");
+        Ok(())
     }
 
     #[test]

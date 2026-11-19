@@ -1,6 +1,8 @@
 # License check of every dependency: `cargo deny --locked check licenses`, here and with
 # `--manifest-path rradius-server/fuzz/Cargo.toml`. packages/tarball/release.sh runs it before it
-# packages anything. Only licenses are checked; advisories, bans and sources are not.
+# packages anything. Licenses, advisories (known vulnerabilities and unmaintained crates) and
+# sources are checked; bans are not. The advisories check reads the RustSec database, so what it
+# finds changes over time: CI runs it weekly and on request, not on every push.
 
 [licenses]
 # Permissive licenses only; about.toml's `accepted` lists the same, change both. An expression passes when one of its OR branches is all allowed,
@@ -30,3 +32,19 @@ exceptions = [
 [licenses.private]
 # The crates of this repository, all `publish = false`: rradius-enterprise is proprietary.
 ignore = true
+
+[advisories]
+# Every crate of Cargo.lock is checked against the RustSec database. An advisory that cannot be
+# fixed yet goes into `ignore` with its id and the reason, never without one.
+ignore = [
+    # chrono is marked unmaintained, with no replacement version to upgrade to. It comes in through
+    # hiqlite, openraft and rusqlite, none of which this repository controls; look at it again when
+    # hiqlite moves to another crate. Unmaintained, not a known vulnerability.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; a dependency of hiqlite" },
+]
+
+[sources]
+# Crates come from crates.io only; there is no git or alternative-registry dependency.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
