@@ -419,7 +419,7 @@ api = "10.0.0.3:8200"
   - 有 `migrations_dir` 時，啟動節點本身也受 `migrations_wait_ms` 限制，所以它要大於約 6 秒（預設 60 秒），否則在 hiqlite 返回前就逾時結束。
   - 代價：停機很久的節點在網路分割時重新啟動，會用停機前的資料服務，例如這段期間停用的帳號還能登入。在意這點時設 `stop_without_leader_ms`。
 - **落後太多的 follower 會壞掉，要重新啟動。** follower 停住或斷線期間，叢集寫入超過 `snapshot_every`（預設 10 萬筆）、leader 做了快照並丟掉舊日誌時，follower 回來後 hiqlite 0.16 讀不到自己的日誌，Raft 核心停止（記錄 `quit RaftCore ... Integrity: Attempt to read non-existent data`）。2026-11-10 在三節點上用預設設定、暫停一台時寫入 13 萬筆重現；`snapshot_every = 50` 時每次都重現。這時節點會用不再跟隨叢集的副本回答，所以 rradius 偵測到後會乾淨關閉並以狀態碼 1 結束（見 1. 節〈停止〉），重新啟動後它會追上、恢復正常。沒有自動重啟時，要手動啟動它。
-- **停掉 leader 時不會先交出 leader。** hiqlite 0.16 在關閉前先等 9.5 秒（仍是 leader），之後其他節點要 1.5 到 3 秒選出新的，這幾秒寫入逾時。所以升級時最後才停 leader（`rradius_cluster_is_leader` 為 1 的那台）。
+- **停掉 leader 時不會先交出 leader。** hiqlite 0.16 在關閉前先等 9.5 秒（仍是 leader），之後其他節點要 1.5 到 3 秒選出新的，選舉期間寫入逾時；用戶端重連還會拖長中斷（強制停掉 leader 時量到約 15 秒，見[手冊第 7 章](manual/07-ha-cluster.md#跨機房)；正常停止的情形沒有量）。所以升級時最後才停 leader（`rradius_cluster_is_leader` 為 1 的那台）。
 - **錯誤怎麼分類。** 逾時、找不到 leader、連不到節點、內部通道關閉、快照失敗都算資料庫不能用；SQL 寫錯、違反限制（例如 UNIQUE）算語句的錯，照樣拒絕或回錯誤。管理指令 `user` 遇到前者以狀態碼 3 結束。
 - **可用的 leader：** follower 知道 leader 是誰；leader 在 5 秒內得到多數節點確認（被隔開的 leader 仍自認是 leader，用這個分辨）。
 
@@ -435,7 +435,7 @@ api = "10.0.0.3:8200"
 | `rradius_cluster_seconds_without_leader` | 沒有可用 leader 的秒數，有時是 0 |
 | `rradius_cluster_caught_up` | 啟動後本機副本已追上叢集時 1；沒有 leader 而先用本機副本服務、還沒追上時 0 |
 
-升級時最後才停 `rradius_cluster_is_leader` 為 1 的那台：停掉 leader 要重新選舉，那幾秒的寫入會逾時。
+升級時最後才停 `rradius_cluster_is_leader` 為 1 的那台：停掉 leader 要重新選舉，約 15 秒內的寫入會逾時（見[手冊第 7 章](manual/07-ha-cluster.md#跨機房)）。
 
 #### 增減節點：`cluster` 指令
 
