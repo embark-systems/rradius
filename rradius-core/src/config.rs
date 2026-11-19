@@ -3021,6 +3021,34 @@ mod tests {
         assert!(err.contains("missing.secret"), "unexpected error: {err}");
     }
 
+    /// What the log holds, not just what the helper returns: a secret file others can reach is warned about
+    /// by name on every load (so on every reload too), the warning never holds the secret, and a closed file is silent.
+    #[cfg(unix)]
+    #[test]
+    fn test_open_secret_file_warning_is_logged() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        let secret = dir.path().join("nas.secret");
+        fs::write(&secret, "hunter2-secret\n").map_err(|e| e.to_string())?;
+        let path = dir.path().join("rradius.toml");
+        fs::write(&path, base("\n[radius]\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret_file = \"nas.secret\"\n")).map_err(|e| e.to_string())?;
+        let loaded = |times: usize| -> Result<String, String> {
+            let log = crate::test_support::radius::CapturedLog::default();
+            let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
+            tracing::subscriber::with_default(subscriber, || (0..times).try_for_each(|_| load(&path).map(|_| ()).map_err(|e| e.to_string())))?;
+            let text = log.0.lock().map_err(|e| e.to_string())?.clone();
+            String::from_utf8(text).map_err(|e| e.to_string())
+        };
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;
+        let open = loaded(2)?;
+        assert_eq!(open.matches("WARN").count(), 2, "one warning per load: {open}");
+        assert!(open.contains("secret_file") && open.contains("nas.secret") && open.contains("644"), "{open}");
+        assert!(!open.contains("hunter2"), "the log holds the secret: {open}");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+        assert_eq!(loaded(1)?, "", "a closed file is not warned about");
+        Ok(())
+    }
+
     #[test]
     fn test_duplicate_client_network() {
         let err = error(&base("\n[radius]\n[[radius.clients]]\naddress = \"10.0.0.5\"\nsecret = \"a\"\n[[radius.clients]]\naddress = \"10.0.0.5/32\"\nsecret = \"b\"\n"));
