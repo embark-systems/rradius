@@ -170,7 +170,7 @@ impl RadiusPacket {
     pub fn verify_accounting_request(&self, shared_secret: &[u8]) -> bool {
         let mut packet = self.encode();
         packet[4..HEADER_LEN].fill(0);
-        md5_with_secret(&packet, shared_secret) == self.authenticator
+        crate::passwords::constant_time_eq(&md5_with_secret(&packet, shared_secret), &self.authenticator)
     }
 
     /// Builds a response whose Response Authenticator is
