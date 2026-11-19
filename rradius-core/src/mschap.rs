@@ -131,6 +131,9 @@ pub(crate) fn parse_nt_hash(value: &str) -> Option<Zeroizing<[u8; 16]>> {
 /// The NT hash of a stored password, if it can be known: plaintext, `{clear}` or
 /// `{nthash}`. Salted and one-way formats cannot be used with MS-CHAPv2.
 fn stored_hash(stored: &str) -> Option<Zeroizing<[u8; 16]>> {
+    if crate::passwords::looks_like_unprefixed_hash(stored) {
+        return None;
+    }
     let (scheme, value) = split_scheme(stored);
     match scheme.as_deref() {
         None | Some("clear") => Some(nt_password_hash(value)),
@@ -200,6 +203,13 @@ pub(crate) fn response_for(password: &str, user: &str, peer_challenge: &[u8; 16]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_stored_hash_refuses_an_unprefixed_hash() {
+        assert!(stored_hash("$6$salt$abcdef").is_none());
+        assert!(stored_hash("{clear}$6$salt$abcdef").is_some());
+        assert!(stored_hash("hunter2").is_some());
+    }
 
     // RFC 2759 section 9.2, and the same exchange in RFC 3079 section 3.5.3.
     const AUTH_CHALLENGE: [u8; 16] = [0x5B, 0x5D, 0x7C, 0x7D, 0x7B, 0x3F, 0x2F, 0x3E, 0x3C, 0x2C, 0x60, 0x21, 0x32, 0x26, 0x26, 0x28];

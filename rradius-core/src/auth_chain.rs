@@ -486,6 +486,11 @@ pub(crate) async fn verify_secret(stored: &str, user: &str, secret: &Secret) -> 
     if passwords::split_scheme(stored).1.is_empty() {
         return None;
     }
+    // A hash stored without its prefix is not a password; the functions below refuse it too.
+    if passwords::looks_like_unprefixed_hash(stored) {
+        warn_unprefixed_hash(user);
+        return None;
+    }
     let verified = match secret {
         Secret::Pap(password) => passwords::verify_pap_blocking(stored, password).await,
         Secret::Chap { id, response, challenge } => passwords::verify_chap(stored, *id, response, challenge),
@@ -500,6 +505,26 @@ pub(crate) async fn verify_secret(stored: &str, user: &str, secret: &Secret) -> 
         Secret::Certificate | Secret::None => false,
     };
     verified.then(Vec::new)
+}
+
+/// How many user names `warn_unprefixed_hash` remembers.
+const UNPREFIXED_WARNINGS_MAX: usize = 1024;
+
+/// Whether `user` is new to `warned`, which holds at most `cap` names; remembers it if so.
+fn first_warning(warned: &mut std::collections::HashSet<String>, user: &str, cap: usize) -> bool {
+    warned.len() < cap && warned.insert(user.to_string())
+}
+
+/// Says once per process for each user that the stored password looks like a hash with no
+/// `{scheme}` prefix. Never logs the stored value. User names come from the table, not from
+/// the request, so the set is bounded by the data; the cap guards against a table full of them.
+fn warn_unprefixed_hash(user: &str) {
+    static WARNED: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+    let Ok(mut warned) = WARNED.lock() else { return };
+    if !first_warning(warned.get_or_insert_with(Default::default), user, UNPREFIXED_WARNINGS_MAX) {
+        return;
+    }
+    tracing::warn!(user, "the stored password looks like a hash with no scheme prefix and is refused; add {{crypt}} or {{argon2}} before it, or {{clear}} if it is the password itself");
 }
 
 /// What a verified MS-CHAPv1 response adds to the accept (RFC 2548 section 2.4): the keys for MPPE,
@@ -1014,6 +1039,52 @@ mod tests {
         ] {
             assert!(verify_secret("{clear}", "alice", &secret).await.is_none(), "{secret:?}");
         }
+    }
+
+    #[test]
+    fn test_warning_names_are_capped() {
+        let mut warned = std::collections::HashSet::new();
+        for i in 0..UNPREFIXED_WARNINGS_MAX {
+            assert!(first_warning(&mut warned, &format!("user{i}"), UNPREFIXED_WARNINGS_MAX));
+        }
+        assert!(!first_warning(&mut warned, "user0", UNPREFIXED_WARNINGS_MAX));
+        assert!(!first_warning(&mut warned, "one-too-many", UNPREFIXED_WARNINGS_MAX));
+        assert_eq!(warned.len(), UNPREFIXED_WARNINGS_MAX);
+    }
+
+    #[tokio::test]
+    async fn test_unprefixed_hash_is_refused_and_logged_once() {
+        let hash = "$2y$04$i9AYrtz6ptiaUcesbfLap.sLiLXOvohQ9gYya7aS8q4sz5.UJ0FGW";
+        let (peer, challenge) = ([1u8; 16], [2u8; 16]);
+        let chap_for = |password: &str| Md5::digest([&[7u8][..], password.as_bytes(), &challenge].concat()).to_vec();
+        let secrets = || {
+            vec![
+                Secret::pap(hash.as_bytes().to_vec()),
+                Secret::pap(b"password".to_vec()),
+                Secret::Chap { id: 7, response: chap_for(hash), challenge: challenge.to_vec() },
+                Secret::MsChapV1 { ident: 1, challenge: [3u8; 8], nt_response: crate::mschap::challenge_response(&[3u8; 8], &crate::mschap::nt_password_hash(hash)).unwrap_or([0u8; 24]) },
+                Secret::MsChapV2 { ident: 1, peer_challenge: peer, response: crate::mschap::response_for(hash, "unprefixed-alice", &peer, &challenge), challenge },
+            ]
+        };
+        let log = crate::test_support::radius::logged_during(async {
+            for secret in secrets() {
+                assert!(verify_secret(hash, "unprefixed-alice", &secret).await.is_none(), "{secret:?}");
+            }
+        })
+        .await;
+        let warnings: Vec<&str> = log.lines().filter(|line| line.contains("WARN")).collect();
+        assert_eq!(warnings.len(), 1, "{log}");
+        assert!(warnings[0].contains("unprefixed-alice") && !warnings[0].contains("$2y$"), "{log}");
+
+        // The same value with {clear} is the password, and says nothing.
+        let log = crate::test_support::radius::logged_during(async {
+            let stored = format!("{{clear}}{hash}");
+            assert!(verify_secret(&stored, "clear-bob", &Secret::pap(hash.as_bytes().to_vec())).await.is_some());
+            assert!(verify_secret(&stored, "clear-bob", &Secret::Chap { id: 7, response: chap_for(hash), challenge: challenge.to_vec() }).await.is_some());
+            assert!(verify_secret("hunter2", "plain-carol", &Secret::pap(b"hunter2".to_vec())).await.is_some());
+        })
+        .await;
+        assert!(!log.contains("WARN"), "{log}");
     }
 
     #[tokio::test]

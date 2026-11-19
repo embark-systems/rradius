@@ -31,6 +31,15 @@ pub(crate) fn split_scheme(stored: &str) -> (Option<String>, &str) {
     (None, stored)
 }
 
+/// Whether `stored` has no `{scheme}` prefix but starts like a crypt(3), bcrypt, SHA-crypt or
+/// argon2 hash. Such a value was most likely imported without its prefix, and comparing it as
+/// plaintext would let whoever holds the hash log in by sending the hash itself.
+/// A deliberate plaintext password that looks like this takes `{clear}`.
+pub(crate) fn looks_like_unprefixed_hash(stored: &str) -> bool {
+    const MARKERS: [&str; 7] = ["$2a$", "$2b$", "$2y$", "$1$", "$5$", "$6$", "$argon2"];
+    split_scheme(stored).0.is_none() && MARKERS.iter().any(|marker| stored.starts_with(marker))
+}
+
 /// Checks `given` against Base64 of a digest, followed by a salt of at least one octet if
 /// `salted`: the digest covers the password and then the salt.
 fn verify_digest<D: Digest>(value: &str, given: &[u8], salted: bool) -> bool {
@@ -144,8 +153,12 @@ fn verify_ns_mta_md5(value: &str, given: &[u8]) -> bool {
     constant_time_eq(&hasher.finalize(), &*digest)
 }
 
-/// Checks a PAP password against `stored`. Unknown schemes never match.
+/// Checks a PAP password against `stored`. Unknown schemes never match, and neither does a
+/// hash stored without its prefix (see `looks_like_unprefixed_hash`).
 pub fn verify_pap(stored: &str, given: &[u8]) -> bool {
+    if looks_like_unprefixed_hash(stored) {
+        return false;
+    }
     let (scheme, value) = split_scheme(stored);
     match scheme.as_deref() {
         None | Some("clear") => constant_time_eq(value.as_bytes(), given),
@@ -209,6 +222,9 @@ pub async fn verify_pap_blocking(stored: &str, given: &[u8]) -> bool {
 /// Checks a CHAP response: MD5(id + password + challenge). Only plaintext or
 /// `{clear}` stored passwords can be checked, since CHAP needs the password.
 pub fn verify_chap(stored: &str, id: u8, response: &[u8], challenge: &[u8]) -> bool {
+    if looks_like_unprefixed_hash(stored) {
+        return false;
+    }
     let password = match split_scheme(stored) {
         (None, value) => value,
         (Some(scheme), value) if scheme == "clear" => value,
@@ -244,6 +260,35 @@ mod tests {
         fn drop(&mut self) {
             RUNNING.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn test_looks_like_unprefixed_hash() {
+        for stored in ["$2a$10$x", "$2b$10$x", "$2y$10$x", "$2y$10$abcdefghijklmnopqrstuu", "$1$saltsalt$qjXMvbEw8oaL.CzflDtaK/", "$6$salt$hash", "$1$salt$x", "$5$salt$x", "$6$salt$x", "$argon2id$v=19$x"] {
+            assert!(looks_like_unprefixed_hash(stored), "{stored}");
+        }
+        for stored in ["hunter2", "$dollar", "{clear}$2y$10$x", "{crypt}$2y$10$x", "", "$2y", "$2Y$10$x"] {
+            assert!(!looks_like_unprefixed_hash(stored), "{stored}");
+        }
+    }
+
+    #[test]
+    fn test_an_unprefixed_hash_is_not_a_password() {
+        let hash = "$2y$04$i9AYrtz6ptiaUcesbfLap.sLiLXOvohQ9gYya7aS8q4sz5.UJ0FGW";
+        assert!(!verify_pap(hash, hash.as_bytes()));
+        assert!(!verify_pap(hash, b"password"));
+        assert!(verify_pap(&format!("{{clear}}{hash}"), hash.as_bytes()));
+        assert!(verify_pap("hunter2", b"hunter2"));
+        let md5 = |password: &str| {
+            let mut hasher = Md5::new();
+            hasher.update([7]);
+            hasher.update(password.as_bytes());
+            hasher.update(b"challenge");
+            hasher.finalize()
+        };
+        assert!(!verify_chap(hash, 7, &md5(hash), b"challenge"));
+        assert!(verify_chap(&format!("{{clear}}{hash}"), 7, &md5(hash), b"challenge"));
+        assert!(verify_chap("hunter2", 7, &md5("hunter2"), b"challenge"));
     }
 
     // Generated with `openssl passwd` and Python hashlib for the password "password".
