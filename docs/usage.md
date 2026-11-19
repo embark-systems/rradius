@@ -2082,6 +2082,8 @@ return response.status == 200 and 'accept' or 'reject'
 
 這些遷移用的格式是為了從舊系統搬帳號時不必重設密碼，`{MD5}`、`{NS-MTA-MD5}`、沒有鹽的 SHA-2 和以 SHA-1 推導的 PBKDF2 特別弱，新帳號請用下面建議的格式。PBKDF2 的次數由雜湊本身決定，會在處理請求的執行緒之外驗證，太高時認證會變慢。格式錯誤的值一律不符。
 
+**沒有前綴、卻以 `$2a$`、`$2b$`、`$2y$`、`$1$`、`$5$`、`$6$` 或 `$argon2` 開頭的值，不當明文：** 這幾乎一定是匯入時漏了前綴的雜湊，當明文比對的話，拿到雜湊的人把雜湊字串當密碼送出就能登入。這種值對 PAP、CHAP、MS-CHAP 與 MS-CHAPv2 一律不符，每個使用者每個行程記一次 WARN（指名使用者，不含儲存值），例如 `the stored password looks like a hash with no scheme prefix and is refused; add {crypt} or {argon2} before it, or {clear} if it is the password itself`。補法有三種：bcrypt、SHA-crypt 等 crypt 雜湊補 `{crypt}`，argon2 補 `{argon2}`，真的是以這些字元開頭的明文密碼補 `{clear}`。沒有設定開關；`{clear}` 就是明確的放行。
+
 CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固定時間比較。儲存值是空字串或 `{clear}` 後面沒有內容時，一律視為沒有密碼，任何密碼都不符。
 
 `{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradius-server user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
