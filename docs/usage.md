@@ -1762,6 +1762,27 @@ DC 回覆的對應：
 - 只支援 AES secure channel。停用 AES 的舊 DC（Windows Server 2008 以前）不支援。
 - 在 Samba 4.17 AD DC 上以 `docker/interop-netlogon/run.sh` 實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、各種拒絕、群組、DC 重啟後重建 channel、電腦帳號密碼錯誤），也在 Windows Server 2022 的 DC 上實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、群組、錯誤密碼、停用帳號、不在群組、不存在的使用者）。
 
+### 3.8 限制登入失敗 `[auth.lockout]`
+
+核心本身不限制猜密碼的次數；寫了 `[auth.lockout]` 才啟用，沒寫就完全不變。
+
+```toml
+[auth.lockout]
+max_failures = 10             # 視窗內失敗幾次就鎖定，預設 10
+window_seconds = 300          # 從第一次失敗起算，計數持續多久，預設 300
+lock_seconds = 300            # 鎖定多久，預設 300
+max_entries = 100000          # 每個節點最多記住幾個鍵，預設 100000
+# account_max_failures = 50   # 選用：同一個帳號不分來源的失敗總數（必須大於 max_failures）
+```
+
+- **鍵：** 同一個帳號（小寫）加來源裝置：RADIUS 的 `Calling-Station-Id`，TACACS+ 的 `rem_addr`（沒有就是空的）。同一個鍵在視窗內失敗達到 `max_failures` 次，就在 `lock_seconds` 內直接拒絕，連正確的密碼也不驗；換一台裝置不受影響。鎖定期間不延長。
+- **只算真正的拒絕：** 資料庫或 LDAP 掛掉（`unavailable`）不算，EAP-TLS 憑證登入與 EAP-AKA'／SIM 不算，成功登入把這個鍵的計數清零。帳號不存在也照算，所以鎖定不會洩漏哪些帳號存在。
+- **範圍：** 驗證鏈涵蓋的登入：RADIUS 的 PAP、CHAP、MS-CHAP，PEAP／TTLS 的內層，和 TACACS+ 的驗證（跨連線，斷線重連不會歸零）。**不涵蓋**沒設驗證鏈、直接由 `[lua].script` 驗證的登入，也不涵蓋 TACACS+ 的第二因素流程。
+- **每個節點各自計數，** 記在記憶體裡：重啟歸零，叢集裡攻擊者可以分散到各節點，實際的上限約為節點數倍。設定重新載入時保留計數；移除 `[auth.lockout]` 並重新載入後，計數清空。
+- **來源欄位由發送端填。** 持有共用密碼的人可以每次換一個假的 `Calling-Station-Id`，繞過「帳號加來源」的鎖。要擋這種人，設 `account_max_failures`：同一個帳號不分來源失敗達到這個數就對所有來源鎖定。代價是猜密碼的人也能用它把受害者的帳號鎖住，所以預設不設定。
+- **計數表有上限。** 滿了先丟過期的，再丟最舊的未鎖定的，鎖定中的不會被擠掉；全是鎖定中時，新的鍵不追蹤，計入 `rradius_auth_lockout_untracked_total`，並每分鐘最多記一行 `the table of N keys is full of locks`。
+- **記錄與統計：** 每次新鎖定記一行 INFO：`auth lockout: client <名稱>: account "<帳號>" from "<來源>" is locked (this origin)`，括號裡也可能是 `all origins`，不含密碼。metrics：`rradius_auth_lockout_rejected_total`（因鎖定被拒絕的登入）、`rradius_auth_lockouts_total`（開始的鎖定）、`rradius_auth_lockout_untracked_total`。沒設定時這三個都不輸出。
+
 ## 4. Lua 腳本
 
 ### 4.1 執行環境

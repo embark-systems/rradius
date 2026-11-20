@@ -6,6 +6,7 @@ pub mod sessions;
 pub mod admin;
 pub mod aligned_alloc;
 pub mod auth_chain;
+pub mod auth_lockout;
 pub mod cli;
 pub mod client_source;
 pub mod clients;

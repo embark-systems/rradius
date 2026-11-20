@@ -92,6 +92,16 @@ secret_api_file = "api.secret"
 # [auth]
 # policy = "first_match"
 #
+# Limits failed logins of the chains (RADIUS and TACACS+). Off unless this section is
+# there. A key (account plus Calling-Station-Id or rem_addr) that fails max_failures times
+# within window_seconds is rejected for lock_seconds without checking a password.
+# Counted per node in memory; docs/usage.md section 3.8 says what it does not cover.
+# [auth.lockout]
+# max_failures = 10
+# window_seconds = 300
+# lock_seconds = 300
+# # account_max_failures = 50   # any origin; also lets a guesser lock the account
+#
 # SQL: each query takes the user name as its only parameter. The ? count is
 # checked as plain characters, so do not put ? inside string literals.
 # Stored passwords may be plaintext, {clear}, {crypt}, {SHA}, {SSHA}, {nthash} or

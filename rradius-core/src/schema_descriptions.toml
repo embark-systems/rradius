@@ -58,6 +58,30 @@ zh-TW = "`session show` 執行並原樣印出的 SQL，`disconnect --user` 與 `
 en = "Named authentication chains, each with the same fields as [auth]; a client picks one with `auth`."
 zh-TW = "具名的認證串接，欄位和 [auth] 相同；client 用 `auth` 指定。"
 
+[fields."auth.lockout"]
+en = "Limits failed logins: a key (account and the device it comes from) that fails max_failures times within window_seconds is rejected for lock_seconds without checking a password. Not set: nothing is counted."
+zh-TW = "限制登入失敗：同一個鍵（帳號加來源裝置）在 window_seconds 內失敗 max_failures 次，就在 lock_seconds 內直接拒絕、不驗密碼。不設定就不計數。"
+
+[fields."auth.lockout.max_failures"]
+en = "Failures within the window that lock a key. Default 10."
+zh-TW = "視窗內失敗幾次就鎖定這個鍵。預設 10。"
+
+[fields."auth.lockout.window_seconds"]
+en = "How long after its first failure a key keeps counting. Default 300."
+zh-TW = "從第一次失敗起算，計數持續多久。預設 300。"
+
+[fields."auth.lockout.lock_seconds"]
+en = "How long a locked key is rejected. Default 300."
+zh-TW = "鎖定多久。預設 300。"
+
+[fields."auth.lockout.max_entries"]
+en = "The most keys remembered per node. When full, expired and then the oldest unlocked ones are dropped; locked ones are kept. Default 100000."
+zh-TW = "每個節點最多記住幾個鍵。滿了先丟過期的，再丟最舊的未鎖定的；鎖定中的不丟。預設 100000。"
+
+[fields."auth.lockout.account_max_failures"]
+en = "Failures of one account from any device that lock it for every device; must be greater than max_failures. Not set: no account-wide limit. A guesser can use it to lock out the account."
+zh-TW = "同一個帳號不分來源的失敗總數，達到就對所有來源鎖定；必須大於 max_failures。不設定就沒有帳號總上限。猜密碼的人可以用它把帳號鎖住。"
+
 [fields."auth.policy"]
 en = "How the handlers decide: first_match takes the first that answers, all_accept needs every handler to accept."
 zh-TW = "處理器怎麼決定：first_match 採用第一個有答案的，all_accept 要每個處理器都接受。"

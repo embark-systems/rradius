@@ -110,7 +110,11 @@ pub fn build(config: &ServerConfig, shared: &Shared) -> Result<Generation, Strin
     // the chains, so each handler, LDAP pools included, exists once.
     let limits = LuaLimits { dynamic_auth, http, databases: shared.databases.clone(), ..LuaLimits::from_settings(&config.lua) };
     let chains = match &config.auth {
-        Some(auth) => Some(Arc::new(AuthChains::from_settings(auth, &shared.db, &shared.vms, &limits)?)),
+        Some(auth) => {
+            let chains = AuthChains::from_settings(auth, &shared.db, &shared.vms, &limits)?;
+            let chains = if auth.lockout.is_some() { chains.with_lockout(shared.metrics.auth_lockout.clone()) } else { chains };
+            Some(Arc::new(chains))
+        }
         None => None,
     };
 
@@ -119,6 +123,9 @@ pub fn build(config: &ServerConfig, shared: &Shared) -> Result<Generation, Strin
         None => None,
     };
     let second_factor = shared.extensions.second_factor(&crate::second_factor::SecondFactorContext { config, db: &shared.db });
+    // The failure counts are kept by the process, so a reload changes the limits and not the counts.
+    // Only now: a reload that fails leaves the running server's limits as they were.
+    shared.metrics.auth_lockout.configure(config.auth.as_ref().and_then(|auth| auth.lockout));
     Ok(Generation {
         radius: config.radius.as_ref().map(|radius| RadiusState::new(radius.clients.clone(), engine.clone(), chains.clone())
                 .with_radsec_network_names(config.extension::<RadsecClients>().is_some_and(|radsec| radsec.network_clients_need_tls_name))
@@ -332,6 +339,66 @@ mod tests {
         assert_eq!(lines.len(), 2, "{log}");
         assert!(lines.iter().any(|l| l.contains("RADIUS client 'nas1'")) && lines.iter().any(|l| l.contains("TACACS+ client 'router1'")), "{log}");
         assert!(!log.contains("router2") && !log.to_lowercase().contains("change-me-0123"), "{log}");
+        Ok(())
+    }
+
+    /// Spec Authentication Failure Lockout, end to end over RADIUS: failures lock a key, the lock
+    /// is kept by a reload, another device is not locked, and removing `[auth.lockout]` ends it.
+    #[tokio::test]
+    async fn test_lockout_over_radius_and_through_a_reload() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let db = test_db();
+        db.execute("CREATE TABLE IF NOT EXISTS lockout_flag (v TEXT)").await?;
+        db.execute("DELETE FROM lockout_flag").await?;
+        db.execute("INSERT INTO lockout_flag VALUES ('reject')").await?;
+        std::fs::write(dir.path().join("chain.lua"), "local r = sql_query('SELECT v FROM lockout_flag') return r[1].v == 'accept' and 'accept' or 'reject'").map_err(|e| e.to_string())?;
+        let chain = "[auth]\n[[auth.handlers]]\ntype = \"lua\"\nscript = \"chain.lua\"\n";
+        let text = format!("{}{chain}[auth.lockout]\nmax_failures = 3\n", config_text(CLIENT));
+        let (serving, server) = serving(dir.path(), "return 'accept'", &text);
+        let source = std::net::IpAddr::from([127, 0, 0, 1]);
+        let login = |identifier: u8, device: &str| RadiusPacket::create_access_request(identifier, [identifier; 16], vec![(1, b"alice".to_vec()), (31, device.as_bytes().to_vec())], b"s");
+        for identifier in 1..=2 {
+            assert_eq!(code(server.handle_auth(&login(identifier, "aa-bb-cc-dd-ee-01"), source).await), ACCESS_REJECT);
+        }
+        // A reload with the same settings keeps the two failures.
+        write_config(dir.path(), &text);
+        serving.try_reload().map_err(|e| e.to_string())?;
+        assert_eq!(code(server.handle_auth(&login(3, "aa-bb-cc-dd-ee-01"), source).await), ACCESS_REJECT);
+        assert_eq!(serving.shared.metrics.auth_lockout.lockouts.get(), 1, "the third failure locked it");
+        db.execute("UPDATE lockout_flag SET v = 'accept'").await?;
+        assert_eq!(code(server.handle_auth(&login(4, "aa-bb-cc-dd-ee-01"), source).await), ACCESS_REJECT, "locked, although the chain would accept");
+        assert_eq!(code(server.handle_auth(&login(5, "aa-bb-cc-dd-ee-02"), source).await), ACCESS_ACCEPT, "another device");
+        assert_eq!(serving.shared.metrics.auth_lockout.rejected.get(), 1);
+        assert!(serving.shared.metrics.render().contains("rradius_auth_lockouts_total 1"));
+        // Without the section the limit and its counters are gone.
+        write_config(dir.path(), &format!("{}{chain}", config_text(CLIENT)));
+        serving.try_reload().map_err(|e| e.to_string())?;
+        assert_eq!(code(server.handle_auth(&login(6, "aa-bb-cc-dd-ee-01"), source).await), ACCESS_ACCEPT);
+        assert!(!serving.shared.metrics.render().contains("rradius_auth_lockout"));
+        Ok(())
+    }
+
+    /// A reload that fails does not change the limits or forget the counts of the running server.
+    #[tokio::test]
+    async fn test_failed_reload_keeps_the_lockout() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        std::fs::write(dir.path().join("chain.lua"), "return 'reject'").map_err(|e| e.to_string())?;
+        let chain = "[auth]\n[[auth.handlers]]\ntype = \"lua\"\nscript = \"chain.lua\"\n";
+        let text = format!("{}{chain}[auth.lockout]\nmax_failures = 3\n", config_text(CLIENT));
+        let (serving, server) = serving(dir.path(), "return 'accept'", &text);
+        let source = std::net::IpAddr::from([127, 0, 0, 1]);
+        let login = |identifier: u8| RadiusPacket::create_access_request(identifier, [identifier; 16], vec![(1, b"alice".to_vec()), (31, b"aa-bb".to_vec())], b"s");
+        for identifier in 1..=3 {
+            server.handle_auth(&login(identifier), source).await;
+        }
+        assert!(serving.shared.metrics.auth_lockout.admit("alice", "aa-bb", std::time::Instant::now()).is_none());
+        // Without [auth.lockout], and a handler on a database a reload cannot add: the chains fail to build.
+        let database = "[databases.billing]\nkind = \"postgresql\"\nhost = \"127.0.0.1\"\ndatabase = \"d\"\nuser = \"u\"\n[[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE name = ?\"\ndatabase = \"billing\"\n";
+        write_config(dir.path(), &format!("{}{chain}{database}", config_text(CLIENT)));
+        let error = serving.try_reload().err().ok_or("the reload worked")?;
+        assert!(error.contains("'billing' is not open"), "{error}");
+        assert!(serving.shared.metrics.auth_lockout.enabled());
+        assert!(serving.shared.metrics.auth_lockout.admit("alice", "aa-bb", std::time::Instant::now()).is_none(), "the lock is still there");
         Ok(())
     }
 

@@ -1690,6 +1690,33 @@ pub(crate) mod tests {
         assert_eq!(connection.login(b"alice", &[b"wrong"]).await, AUTHEN_STATUS_FAIL);
     }
 
+    /// Spec Authentication Failure Lockout, TACACS+ reconnects: the failures of one rem_addr count
+    /// across connections, so a new connection does not start again.
+    #[tokio::test]
+    async fn test_lockout_holds_across_connections() {
+        let db = crate::test_support::test_db();
+        db.execute("CREATE TABLE IF NOT EXISTS tacacs_lockout_users (username TEXT, password TEXT)").await.unwrap();
+        db.execute("INSERT INTO tacacs_lockout_users VALUES ('alice', 'secret')").await.unwrap();
+        let handler = Handler::Sql {
+            source: crate::auth_chain::SqlSource::Cluster(db),
+            user_query: "SELECT password FROM tacacs_lockout_users WHERE username = ?".to_string(),
+            reply_query: None,
+            certificate_query: None, default_user: None,
+            timeout: std::time::Duration::from_secs(5),
+        };
+        let lockout = Arc::new(crate::auth_lockout::Lockout::default());
+        lockout.configure(Some(crate::config::LockoutSettings { max_failures: 3, window: std::time::Duration::from_secs(300), lock: std::time::Duration::from_secs(300), max_entries: 100, account_max_failures: None }));
+        let chains = Arc::new(AuthChains::new(Some(AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![handler])), Vec::new()).with_lockout(lockout.clone()));
+        let engine = script_engine("return 'reject'").await;
+        for _ in 0..3 {
+            let mut connection = AsciiConnection::with(engine.clone(), Some(chains.clone())).await;
+            assert_eq!(connection.login(b"alice", &[b"wrong"]).await, AUTHEN_STATUS_FAIL);
+        }
+        let mut connection = AsciiConnection::with(engine, Some(chains)).await;
+        assert_eq!(connection.login(b"alice", &[b"secret"]).await, AUTHEN_STATUS_FAIL, "locked on a new connection, with the right password");
+        assert_eq!((lockout.lockouts.get(), lockout.rejected.get()), (1, 1));
+    }
+
     #[tokio::test]
     async fn test_ascii_script_sees_the_result() {
         let script = "log('ascii-script-ran') return (get_attr('user') == 'alice' and get_attr('data') == 'secret' and get_attr('authen_type') == 1) and 'accept' or 'reject'";

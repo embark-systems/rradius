@@ -178,6 +178,25 @@ kill -HUP $(pidof rradius-server)
 
 共用密碼和叢集密碼含 `change-me` 時也有警告（`has the public shared secret shipped with the examples`）：那是範例附的公開值，任何人都知道，請換成隨機值（`openssl rand -hex 32`）。照範例或手冊的教學環境看到這個警告是預期的。
 
+## 限制猜密碼
+
+預設不限制登入失敗的次數。持有共用密碼的人、或躲在 NAS 後面的人，可以一直猜。要限制就在 `[auth]` 下加：
+
+```toml
+[auth.lockout]
+max_failures = 10      # 5 分鐘內同一個帳號、同一台裝置失敗 10 次，
+window_seconds = 300   # 就鎖 5 分鐘，鎖定期間連正確的密碼也直接拒絕
+lock_seconds = 300
+```
+
+這在 RADIUS 和 TACACS+ 都有效，TACACS+ 斷線重連也不會歸零。幾件事要知道：
+
+- **每個節點各自計數，重啟歸零。** 叢集裡攻擊者可以分散到各節點，所以實際上限約是節點數的倍數。
+- **「裝置」是封包自己寫的**（RADIUS 的 `Calling-Station-Id`、TACACS+ 的 `rem_addr`）。拿到共用密碼的人可以每次換一個，繞過這道鎖。要擋這種人，加 `account_max_failures = 50`：同一個帳號不分裝置失敗 50 次就全部鎖住。代價是猜密碼的人也能用它把受害者的帳號鎖住，所以預設不開。
+- **資料庫或 LDAP 故障不算失敗，** 後端掛掉不會把大家鎖在外面。
+- **沒設驗證鏈、直接用 `[lua].script` 驗證的登入不受保護。**
+- 看有沒有人被鎖：`rradius_auth_lockouts_total`、`rradius_auth_lockout_rejected_total`，和記錄裡的 `auth lockout:` 行（含客戶端、帳號、裝置，不含密碼）。完整說明見 `docs/usage.md` 第 3.8 節。
+
 ## 監控
 
 `[metrics]` 開啟後，`GET /metrics` 是 Prometheus 格式。要被通知、或要送 SNMP trap，用[第 21 章](21-monitoring.md)的告警規則。建議先看這幾個：
