@@ -314,6 +314,7 @@ secret_file = "192.secret"
 # port = 49
 # max_body_len = 65536
 # max_connections = 1024                  # further connections are closed at once
+# max_connections_per_source = 64         # one source address; more from it are closed at once
 # idle_timeout_ms = 300000                # closed without a complete packet for this long
 #
 # [[tacacs.clients]]

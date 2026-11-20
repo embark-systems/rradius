@@ -124,7 +124,7 @@ systemctl reload rradius        # 服務檔有 ExecReload=/bin/kill -HUP $MAINPI
 | `[log.trace]` | SIGHUP |
 | 字典、`[cluster]`（含新的 migration）、`[log]` 的其他設定、`[metrics]` | 重啟 |
 | 所有監聽位址和埠；新增或移除 `[radius]`、`[tacacs]` | 重啟 |
-| 同時處理的上限（`max_auth_inflight`、`max_acct_inflight`、`max_connections`）、`idle_timeout_ms`、`[lua] max_memory_mb` | 重啟 |
+| 同時處理的上限（`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_connections_per_source`）、`idle_timeout_ms`、`[lua] max_memory_mb` | 重啟 |
 | 計費暫存（`[radius.accounting_spool]`） | 重啟 |
 
 - **要重啟的設定改了時，** SIGHUP 會在記錄列出它們（`these need a restart to apply: ...`），其他的照常套用。
@@ -278,7 +278,7 @@ rradius 太忙時不會回錯誤，而是**不回應**，讓 NAS 重送或改用
 - **同時處理的請求有上限：** 登入 `max_auth_inflight`、計費 `max_acct_inflight`，預設各 4096，分開計算，所以計費暴增不會占掉登入的名額。超過的封包直接丟棄，記錄每秒最多一行 `RADIUS ... overloaded: discarded N packets`，`rradius_radius_discarded_total{reason="overload"}` 增加。
 - **NAS 的重送不會重做一次：** 同一個請求還在處理時，重送的封包丟棄；處理完 10 秒內的重送直接回上次的答案，不再查資料庫或目錄。
 - **調高上限通常沒有用。** 合適的值大約是「每秒處理量 × NAS 的重送逾時」，再大也只是讓更多請求排到 NAS 已經放棄。出現過載時，先找出是什麼讓每個請求變慢（資料庫、目錄、上游、API、密碼雜湊），見[第 12 章](12-troubleshooting.md#登入很慢或時好時壞)。
-- **TACACS+** 用連線數當上限（`max_connections`，預設 1024），超過時新連線立刻關閉。
+- **TACACS+** 用連線數當上限（`max_connections`，預設 1024），超過時新連線立刻關閉。另外每個來源位址同時開著的連線也有上限（`max_connections_per_source`，預設 64），網段內一台主機開滿連線時只有它被擋，其他主機不受影響。位址後面藏很多設備（NAT、跳板）時要調高；IPv6 不依前綴合併，同一個 /64 內換位址的來源擋不住。
 - **Linux 上** 每個 UDP 埠預設開和 CPU 數一樣多的接收 socket；專門跑 rradius 的實體機還可以開 `[runtime] pin_threads = true`。其他平台只有一個 socket。見 [usage 2.4 節](../usage.md#24-過載與重送)。
 
 ## 計費暫存的日常

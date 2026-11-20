@@ -268,6 +268,7 @@ pub fn needs_restart(running: &ServerConfig, new: &ServerConfig, extensions: &cr
             differs("tacacs.bind", running.addr.ip() != new.addr.ip());
             differs("tacacs.port", running.addr.port() != new.addr.port());
             differs("tacacs.max_connections", running.max_connections != new.max_connections);
+            differs("tacacs.max_connections_per_source", running.max_connections_per_source != new.max_connections_per_source);
             differs("tacacs.max_body_len", running.max_body_len != new.max_body_len);
             differs("tacacs.idle_timeout_ms", running.idle_timeout != new.idle_timeout);
         }
@@ -551,6 +552,7 @@ mod tests {
             (tacacs(""), tacacs("bind = \"127.0.0.1\""), "tacacs.bind"),
             (tacacs(""), tacacs("port = 1"), "tacacs.port"),
             (tacacs(""), tacacs("max_connections = 1"), "tacacs.max_connections"),
+            (tacacs(""), tacacs("max_connections_per_source = 1"), "tacacs.max_connections_per_source"),
             (tacacs(""), tacacs("max_body_len = 1"), "tacacs.max_body_len"),
             (tacacs(""), tacacs("idle_timeout_ms = 1"), "tacacs.idle_timeout_ms"),
             (plain.clone(), plain.replace("[lua]\n", "[lua]\nmax_memory_mb = 1\n"), "lua.max_memory_mb"),

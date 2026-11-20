@@ -52,6 +52,10 @@ pub const MAX_BODY_LEN: usize = 64 * 1024;
 /// Default limit of open connections.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 
+/// Default of `[tacacs].max_connections_per_source`: how many connections one source address
+/// may hold open at once.
+pub const DEFAULT_MAX_CONNECTIONS_PER_SOURCE: usize = 64;
+
 pub struct TacacsPacket {
     pub version: u8,
     pub type_: u8,
@@ -649,7 +653,54 @@ enum Transport {
 pub struct Admitted {
     source: SocketAddr,
     _slot: tokio::sync::OwnedSemaphorePermit,
+    _source_slot: SourceSlot,
     _open: Open,
+}
+
+/// How many connections each source address holds open, for `max_connections_per_source`.
+type SourceCounts = Arc<parking_lot::Mutex<std::collections::HashMap<IpAddr, usize>>>;
+
+/// One place of a source address among its `max_connections_per_source`, given back when it is
+/// dropped; a source with no connection left has no entry.
+struct SourceSlot {
+    source: IpAddr,
+    counts: SourceCounts,
+}
+
+impl SourceSlot {
+    /// Takes a place for `source`, or `None` when it already holds `limit` of them.
+    fn take(counts: &SourceCounts, source: IpAddr, limit: usize) -> Option<Self> {
+        let mut table = counts.lock();
+        let held = table.entry(source).or_insert(0);
+        if *held >= limit {
+            if *held == 0 {
+                table.remove(&source);
+            }
+            return None;
+        }
+        *held += 1;
+        Some(Self { source, counts: counts.clone() })
+    }
+}
+
+impl Drop for SourceSlot {
+    fn drop(&mut self) {
+        let mut table = self.counts.lock();
+        if let Some(held) = table.get_mut(&self.source) {
+            *held = held.saturating_sub(1);
+            if *held == 0 {
+                table.remove(&self.source);
+            }
+        }
+    }
+}
+
+/// What `admit` logs of the connections it refuses, each at most once a second.
+#[derive(Default)]
+struct Refusals {
+    strangers: DiscardLog,
+    overloaded: DiscardLog,
+    per_source: DiscardLog,
 }
 
 impl Admitted {
@@ -714,7 +765,10 @@ pub struct TacacsServer {
     /// TACACS+ over TLS, when an extension serves it, and whether only it does.
     tls_served: Option<TacacsTlsServed>,
     /// What `admit` logs of connections it refuses, at most once a second each.
-    refusals: parking_lot::Mutex<(DiscardLog, DiscardLog)>,
+    refusals: parking_lot::Mutex<Refusals>,
+    /// Connections open from each source address, and how many one may hold.
+    source_counts: SourceCounts,
+    max_per_source: usize,
     /// How many places `connection_slots` has, for `drain` to wait for all of them.
     connection_capacity: usize,
     /// Cancelled when the server stops taking requests.
@@ -727,7 +781,7 @@ impl TacacsServer {
     }
 
     pub fn from_state(addr: SocketAddr, state: TacacsState, max_body_len: usize) -> Self {
-        Self { addr, max_body_len, state: Arc::new(Live::new(state)), metrics: Arc::default(), connection_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONNECTIONS)), timeouts: Timeouts::default(), tls_served: None, refusals: parking_lot::Mutex::default(), connection_capacity: DEFAULT_MAX_CONNECTIONS, stopping: Stopping::new() }
+        Self { addr, max_body_len, state: Arc::new(Live::new(state)), metrics: Arc::default(), connection_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONNECTIONS)), timeouts: Timeouts::default(), tls_served: None, refusals: parking_lot::Mutex::default(), source_counts: SourceCounts::default(), max_per_source: DEFAULT_MAX_CONNECTIONS_PER_SOURCE, connection_capacity: DEFAULT_MAX_CONNECTIONS, stopping: Stopping::new() }
     }
 
     /// How long connections may go idle and take to write; an extension that makes connections
@@ -741,15 +795,26 @@ impl TacacsServer {
     /// when `max_connections` are open.
     pub fn admit(&self, source: SocketAddr) -> Option<Admitted> {
         let mut refusals = self.refusals.lock();
-        let (strangers, discards) = &mut *refusals;
-        self.admit_with(source, strangers, discards)
+        self.admit_with(source, &mut refusals)
     }
 
-    fn admit_with(&self, source: SocketAddr, strangers: &mut DiscardLog, discards: &mut DiscardLog) -> Option<Admitted> {
+    fn admit_with(&self, source: SocketAddr, refusals: &mut Refusals) -> Option<Admitted> {
+        let Refusals { strangers, overloaded: discards, per_source } = refusals;
         // Unknown sources are closed before any data is read.
         let Some(client) = self.state.get().clients.lookup(source.ip()).cloned() else {
             self.metrics.tacacs_refused.inc();
             if let Some(line) = strangers.line(std::time::Instant::now(), || format!("TACACS+ connection from unknown client {} closed", source.ip())) {
+                tracing::warn!("{line}");
+            }
+            return None;
+        };
+        // The address as a client table sees it, so an IPv4-mapped IPv6 address and the IPv4 address
+        // it maps are one source. Taken before the overall place: a source over its limit uses none.
+        let ip = source.ip().to_canonical();
+        let Some(source_slot) = SourceSlot::take(&self.source_counts, ip, self.max_per_source) else {
+            self.metrics.tacacs_refused.inc();
+            let limit = self.max_per_source;
+            if let Some(line) = per_source.line(std::time::Instant::now(), || format!("TACACS+ connection from {ip} closed: it already holds max_connections_per_source = {limit} connections")) {
                 tracing::warn!("{line}");
             }
             return None;
@@ -763,7 +828,7 @@ impl TacacsServer {
         };
         tracing::debug!("New TACACS+ connection from {} ({})", source, client.name);
         self.metrics.tacacs_accepted.inc();
-        Some(Admitted { source, _slot: slot, _open: Open::new(self.metrics.clone(), |metrics| &metrics.tacacs_open) })
+        Some(Admitted { source, _slot: slot, _source_slot: source_slot, _open: Open::new(self.metrics.clone(), |metrics| &metrics.tacacs_open) })
     }
 
     /// Serves packets in the clear on `stream`, a connection `admit` took on and the extension
@@ -784,6 +849,12 @@ impl TacacsServer {
     pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
         self.metrics = metrics;
         self
+    }
+
+    /// How many of the overall places are in use.
+    #[cfg(test)]
+    fn open_connections(&self) -> usize {
+        self.connection_capacity.saturating_sub(self.connection_slots.available_permits())
     }
 
     #[cfg(test)]
@@ -808,6 +879,12 @@ impl TacacsServer {
     pub fn with_max_connections(mut self, max_connections: usize) -> Self {
         self.connection_slots = Arc::new(Semaphore::new(max_connections));
         self.connection_capacity = max_connections;
+        self
+    }
+
+    /// Sets how many connections one source address may hold open at once.
+    pub fn with_max_connections_per_source(mut self, max_per_source: usize) -> Self {
+        self.max_per_source = max_per_source;
         self
     }
 
@@ -861,9 +938,8 @@ impl TacacsServer {
     /// Accepts connections on `listener`.
     async fn serve(&self, listener: TcpListener) -> io::Result<()> {
         let label = "TACACS+";
-        let mut discards = DiscardLog::default();
+        let mut refusals = Refusals::default();
         let mut failures = DiscardLog::default();
-        let mut strangers = DiscardLog::default();
 
         loop {
             // Stopped: the listener closes, and new connections are refused.
@@ -872,7 +948,7 @@ impl TacacsServer {
                 () = self.stopping.cancelled() => return Ok(()),
                 accepted = accept_next(&listener, label, &mut failures) => accepted,
             };
-            let Some(admitted) = self.admit_with(addr, &mut strangers, &mut discards) else {
+            let Some(admitted) = self.admit_with(addr, &mut refusals) else {
                 drop(socket);
                 continue;
             };
@@ -2107,6 +2183,46 @@ pub(crate) mod tests {
         assert_eq!(metrics.tacacs_open.get(), 0);
     }
 
+    /// Over a real socket: a second connection from the same address is closed without a reply
+    /// while the first keeps working, and once the first closes a new one is served.
+    #[tokio::test]
+    async fn test_a_second_connection_from_one_source_is_closed() -> Result<(), String> {
+        let engine = script_engine("return 'accept'").await;
+        let addr = SocketAddr::from(([127, 0, 0, 1], crate::test_support::server::free_port()));
+        let metrics = Arc::new(Metrics::default());
+        let server = Arc::new(TacacsServer::from_state(addr, state_with_secret(Some(SECRET), &engine), MAX_BODY_LEN).with_max_connections_per_source(1).with_metrics(metrics.clone()));
+        tokio::spawn(async move { server.run().await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        async fn login(stream: &mut tokio::net::TcpStream) -> Result<u8, String> {
+            stream.write_all(&encrypted_request(TYPE_AUTHEN, 1, 0, &start_body(b"alice", b"pw"))).await.map_err(|e| e.to_string())?;
+            let mut reply = tokio::time::timeout(Duration::from_secs(5), read_packet(stream, MAX_BODY_LEN)).await.map_err(|_| "no reply".to_string())?.map_err(|e| e.to_string())?.ok_or("closed")?;
+            reply.body = TacacsPacket::encrypt_decrypt(&reply.body, SECRET, reply.session_id, reply.version, reply.seq_num);
+            reply.body.first().copied().ok_or_else(|| "empty reply".to_string())
+        }
+
+        let mut first = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        assert_eq!(login(&mut first).await?, AUTHEN_STATUS_PASS);
+        let mut second = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        assert_eq!(read_end(&mut second).await?, 0, "closed without a reply");
+        assert_eq!(metrics.tacacs_refused.get(), 1);
+        first.write_all(&encrypted_request(TYPE_AUTHEN, 1, 0, &start_body(b"alice", b"pw"))).await.map_err(|e| e.to_string())?;
+        assert!(read_packet(&mut first, MAX_BODY_LEN).await.map_err(|e| e.to_string())?.is_some(), "the first connection still works");
+        drop(first);
+        // The place is free once the server has seen the first connection end: try until a new one is served.
+        let mut served = None;
+        for _ in 0..50 {
+            let mut third = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+            if let Ok(status) = login(&mut third).await {
+                served = Some(status);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(served, Some(AUTHEN_STATUS_PASS), "served once the place is free");
+        Ok(())
+    }
+
     /// After `stopping` is cancelled: the reply being made is sent and its connection then ends,
     /// an idle connection ends, new connections are refused, and `drain` counts what is open.
     async fn read_end(stream: &mut tokio::net::TcpStream) -> Result<usize, String> {
@@ -2556,6 +2672,90 @@ pub(crate) mod tests {
         assert!(served.is_err(), "an obfuscated packet ends the connection");
         let reply = read_packet(&mut near, MAX_BODY_LEN).await?.ok_or_else(|| io::Error::other("no ERROR"))?;
         assert_eq!((reply.flags & UNENCRYPTED_FLAG, reply.body.first().copied()), (UNENCRYPTED_FLAG, Some(AUTHEN_STATUS_ERROR)));
+        Ok(())
+    }
+
+    /// A server whose one client is the network 10.0.0.0/24.
+    async fn network_server(max_connections: usize, max_per_source: usize, metrics: &Arc<Metrics>) -> io::Result<TacacsServer> {
+        let engine = script_engine("return 'accept'").await;
+        let mut clients = ClientTable::default();
+        clients.add("10.0.0.0/24", Some("net".to_string()), SECRET.to_vec(), ClientOptions::default()).map_err(|e| io::Error::other(e.to_string()))?;
+        let server = TacacsServer::new("127.0.0.1:0".parse().map_err(io::Error::other)?, Arc::new(clients), engine, MAX_BODY_LEN);
+        Ok(server.with_max_connections(max_connections).with_max_connections_per_source(max_per_source).with_metrics(metrics.clone()))
+    }
+
+    fn at(address: &str) -> io::Result<SocketAddr> {
+        address.parse().map_err(io::Error::other)
+    }
+
+    /// One source holds at most `max_connections_per_source` connections, a closed one gives its
+    /// place back, and another source is not affected.
+    #[tokio::test]
+    async fn test_a_source_holds_at_most_its_limit() -> io::Result<()> {
+        let metrics = Arc::new(Metrics::default());
+        let server = network_server(10, 2, &metrics).await?;
+        let first = server.admit(at("10.0.0.5:4001")?).ok_or_else(|| io::Error::other("first"))?;
+        let _second = server.admit(at("10.0.0.5:4002")?).ok_or_else(|| io::Error::other("second"))?;
+        assert!(server.admit(at("10.0.0.5:4003")?).is_none(), "a third from the same address");
+        assert_eq!(metrics.tacacs_refused.get(), 1);
+        // The source took two of the ten overall places, so the rest are free for others.
+        assert_eq!(server.open_connections(), 2);
+        let _other = server.admit(at("10.0.0.6:4001")?).ok_or_else(|| io::Error::other("another source"))?;
+        drop(first);
+        let _again = server.admit(at("10.0.0.5:4004")?).ok_or_else(|| io::Error::other("after one closed"))?;
+        assert_eq!((metrics.tacacs_accepted.get(), metrics.tacacs_refused.get()), (4, 1));
+        Ok(())
+    }
+
+    /// A connection refused at the overall limit leaves no count against its source, and one
+    /// refused at the source limit takes no overall place.
+    #[tokio::test]
+    async fn test_the_two_limits_leave_nothing_behind() -> io::Result<()> {
+        let metrics = Arc::new(Metrics::default());
+        let server = network_server(2, 2, &metrics).await?;
+        let a = server.admit(at("10.0.0.1:4001")?).ok_or_else(|| io::Error::other("a"))?;
+        let b = server.admit(at("10.0.0.1:4002")?).ok_or_else(|| io::Error::other("b"))?;
+        assert!(server.admit(at("10.0.0.1:4003")?).is_none(), "over the source limit");
+        assert_eq!(server.open_connections(), 2, "the refused one took no overall place");
+        drop(a);
+        drop(b);
+        // Both overall places are held by one source, and a second source finds none.
+        let c = server.admit(at("10.0.0.2:4001")?).ok_or_else(|| io::Error::other("c"))?;
+        let d = server.admit(at("10.0.0.2:4002")?).ok_or_else(|| io::Error::other("d"))?;
+        assert!(server.admit(at("10.0.0.3:4001")?).is_none(), "overall limit");
+        drop(c);
+        drop(d);
+        // The refused connection of 10.0.0.3 left no count: it can open up to its own limit.
+        let _e = server.admit(at("10.0.0.3:4002")?).ok_or_else(|| io::Error::other("e"))?;
+        let _f = server.admit(at("10.0.0.3:4003")?).ok_or_else(|| io::Error::other("f"))?;
+        assert!(server.admit(at("10.0.0.3:4004")?).is_none());
+        Ok(())
+    }
+
+    /// An IPv4-mapped IPv6 address and the IPv4 address it maps are one source.
+    #[tokio::test]
+    async fn test_a_mapped_address_is_the_same_source() -> io::Result<()> {
+        let metrics = Arc::new(Metrics::default());
+        let server = network_server(10, 1, &metrics).await?;
+        let _first = server.admit(at("10.0.0.7:4001")?).ok_or_else(|| io::Error::other("first"))?;
+        assert!(server.admit(at("[::ffff:10.0.0.7]:4002")?).is_none());
+        Ok(())
+    }
+
+    /// The line names the setting and the source, and is not repeated within a second.
+    #[tokio::test]
+    async fn test_the_source_limit_is_logged_once_a_second() -> io::Result<()> {
+        let metrics = Arc::new(Metrics::default());
+        let server = network_server(10, 1, &metrics).await?;
+        let _held = server.admit(at("10.0.0.8:4001")?).ok_or_else(|| io::Error::other("held"))?;
+        let log = crate::test_support::radius::logged_during(async {
+            for port in 4002..4007 {
+                assert!(server.admit(SocketAddr::from(([10, 0, 0, 8], port))).is_none());
+            }
+        })
+        .await;
+        assert_eq!(log.lines().filter(|line| line.contains("max_connections_per_source = 1") && line.contains("10.0.0.8")).count(), 1, "{log}");
+        assert_eq!(metrics.tacacs_refused.get(), 5);
         Ok(())
     }
 

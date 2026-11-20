@@ -542,6 +542,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     if let (Some(tacacs), Some(state)) = (&config.tacacs, generation.tacacs) {
         let tacacs_server = TacacsServer::from_state(tacacs.addr, state, tacacs.max_body_len)
             .with_max_connections(tacacs.max_connections)
+            .with_max_connections_per_source(tacacs.max_connections_per_source)
             .with_idle_timeout(tacacs.idle_timeout)
             .with_tls_served(config.extension::<crate::tacacs_transport::TacacsTlsServed>().copied())
             .with_stopping(stopping.clone())

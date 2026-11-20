@@ -486,6 +486,7 @@ bind = "0.0.0.0"     # 預設 0.0.0.0
 port = 49            # 預設 49（需要權限）
 max_body_len = 65536 # 預設 65536，超過的封包會中斷連線
 max_connections = 1024 # 預設 1024，同時開啟的連線數
+max_connections_per_source = 64 # 預設 64，同一個來源位址同時開啟的連線數，必須大於 0
 idle_timeout_ms = 300000 # 預設，這段時間沒有收到完整封包就關閉，必須大於 0
 enable = "deny"      # 預設；enable 請求直接 FAIL。"login" 時和登入一樣驗證（4.6 節）
 # TACACS+ over TLS（[tacacs.tls]）需要 rradius-enterprise
@@ -674,7 +675,7 @@ TACACS+ over TLS（`[tacacs.tls]`）需要 rradius-enterprise。
 - TACACS+ 封包的序號是偶數或 255 時，連線會直接關閉且不回覆（RFC 8907 第 4.1 節）。
 - TACACS+ 封包解密後格式不對（通常是共用密碼不同）時，回 ERROR 後關閉連線，記錄 `a body did not decode, so the shared secret may be wrong`，並計入 `rradius_tacacs_malformed_total`。依 RFC 8907 第 10.5.2 節，這條連線不再接受新的請求；設備會重新連線。序號不符這類和密碼無關的錯誤只回 ERROR，連線保持開啟。
 - **single-connection：** 設備在連線的第一個封包設了 single-connection 旗標時，回覆也設這個旗標，表示接受在同一條連線上處理多個 session（RFC 8907 第 4.3 節），設備就不必每次重新連線。沒有設旗標的設備也可以沿用連線，rradius 不會在 session 結束時主動關閉。
-- TACACS+ 超過 `max_connections` 時，新連線會被立刻關閉。設定內用戶端的閒置連線也佔額度，超過 `idle_timeout_ms` 沒有收到完整封包，或回應 10 秒寫不出去，就會關閉並釋放。腳本執行的時間不算閒置。長時間不送封包的設備要重新連線，通常不影響服務。
+- TACACS+ 超過 `max_connections` 時，新連線會被立刻關閉。同一個來源位址同時開著的連線超過 `max_connections_per_source`（預設 64）時，它的新連線也會被立刻關閉，而且不佔 `max_connections` 的名額，所以網段內一台主機開滿連線時，其他主機仍連得上；來源位址以正規形式比較，IPv4-mapped IPv6 位址與它對應的 IPv4 位址算同一個來源，IPv6 不依前綴合併，每個位址各算一個來源。一個位址後面藏很多設備（NAT、跳板）時，要把 `max_connections_per_source` 調高到比它們同時開的連線數多。設定內用戶端的閒置連線也佔額度，超過 `idle_timeout_ms` 沒有收到完整封包，或回應 10 秒寫不出去，就會關閉並釋放。腳本執行的時間不算閒置。長時間不送封包的設備要重新連線，通常不影響服務。
 - 丟棄或關閉時，每個連接埠最多每秒記錄一行，例如 `RADIUS accounting overloaded: discarded 37 packets`。
 
 這三個設定都必須大於 0。預設值是估計值。適合的值大約是「吞吐 × 設備的重送逾時」，再大也沒有幫助，因為設備已經放棄等待。
@@ -953,7 +954,7 @@ docker compose kill -s HUP rradius
 收到 SIGHUP 時重讀設定檔（包含 `secret_file`）並套用，結果寫一行到記錄：`configuration reloaded from ...` 或 `reload failed, keeping the running configuration: ...`。
 
 - **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）、`[lua.http]`，以及 `[radius.accounting_log]` 的 `file`（重新開檔，見 2.18 節）。
-- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[queries]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
+- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_connections_per_source`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[queries]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
 - **全部成功才會套用。** 檢查和啟動時相同，任何一項有誤就全部維持原狀，程序繼續服務；修正後再送一次 SIGHUP 即可。
 - 進行中的請求用舊內容做完，不會中斷。已開啟的 TACACS+ 連線不會因此斷線，但下一個封包會依新名單處理：client 被移除時關閉連線，密碼更換後要用新密碼。
 - `auto` 學到的值和重送快取會保留。每次重新載入都會重建 LDAP 連線池。
@@ -2255,6 +2256,7 @@ cd rradius-server/fuzz && mkdir -p corpus/radius_packet && cargo +nightly-2026-1
 | RADIUS 沒有回應 | 來源位址不在 `[[radius.clients]]` 中、共用密碼不符、請求沒帶 Message-Authenticator，或已達同時處理上限 |
 | `RADIUS ... overloaded: discarded N packets` | 已達 `max_auth_inflight` 或 `max_acct_inflight`；通常要先找出處理變慢的原因（LDAP、資料庫），再考慮調高上限 |
 | `TACACS+ overloaded: closed N connections` | 已達 `max_connections` |
+| `TACACS+ connection from <位址> closed: it already holds max_connections_per_source = N connections` | 這個來源位址開著的連線已達 `max_connections_per_source`；每秒最多一行，多條時行尾帶「(N since the last line)」。設備開了連線不關時，調低 `idle_timeout_ms`；位址後面是 NAT 或跳板時，調高這個值 |
 | `cluster was not ready to apply migrations` | 叢集沒有在 `migrations_wait_ms` 內就緒、SQL 檔執行太久，或本機副本沒有追上；啟動其他節點，或調高這個值。節點反覆以狀態碼 1 結束時，通常是這個值比最長的 SQL 檔執行時間小 |
 | `migration file '...' ...` | 見 2.5 節：檔名、編號、修改過已套用的檔案，或 SQL 出錯 |
 | `reload failed, keeping the running configuration: ...` | 重新載入失敗，服務維持原狀；修正訊息指出的問題後再送一次 SIGHUP |
@@ -2465,7 +2467,7 @@ UDP 的接收迴圈也用和 RadSec 相同的方式：收到一個封包後，�
 - **`--tacacs-connect per-request`：** 每個請求開一條新連線，收到最後的回覆後由工具關閉，延遲包含建立連線。連不上算 `socket_errors`。
 - **不重送。** 超過 `--timeout` 沒有完成算 `timeouts`（`tacacs-ascii` 是整個登入的三個來回加起來），並關閉那條連線（`keep` 會重新連線），因為晚到的回覆會被當成下一個請求的。`--retries` 不套用到 TACACS+ 負載。
 - **回覆要對得上才算。** 序號和 session id 要對上，解密後各欄位的長度要和封包長度相符，不然算 `invalid`。共用密碼設錯時解出來是亂碼，就是這樣被擋下，標準錯誤會印一次 `lengths: ...`。
-- **`concurrency` 不能超過伺服器的 `max_connections`**（預設 1024）。伺服器先完成 TCP 連線再立刻關閉多的連線，所以工具在量測前看不出來，兩種模式都表現為 `socket_errors`；`keep` 還會一直重連（`reconnects` 增加，還沒收到任何回覆就被關閉的連線每 100 ms 才重試一次）。`tacacs.toml` 把它調到 8192。
+- **`concurrency` 不能超過伺服器的 `max_connections`**（預設 1024）**和 `max_connections_per_source`**（預設 64，工具的連線都來自同一個位址）。伺服器先完成 TCP 連線再立刻關閉多的連線，所以工具在量測前看不出來，兩種模式都表現為 `socket_errors`；`keep` 還會一直重連（`reconnects` 增加，還沒收到任何回覆就被關閉的連線每 100 ms 才重試一次）。`tacacs.toml` 把兩個都調到 8192。
 - **`per-request` 會在工具這端留下 TIME_WAIT。** 由工具關閉的連線，在工具端停留一段時間（Linux 約 60 秒）才放掉連接埠。Linux 預設可用的連接埠約 28,000 個（`net.ipv4.ip_local_port_range` 是 32768–60999），所以持續每秒新開超過約 470 條連線，連接埠就會用完，出現連不上的 `socket_errors`。Linux 的 `net.ipv4.tcp_tw_reuse` 預設是 2，只在 loopback 重用 TIME_WAIT 的連接埠，所以工具和伺服器在同一台時不受這個限制，連到別台才會碰到。量更高的速率要放寬範圍（例如 `sysctl -w net.ipv4.ip_local_port_range="1024 65535"`）並把 `net.ipv4.tcp_tw_reuse` 設成 1，或用 `--bind` 分到多個來源位址；`ss -s` 的 `timewait` 可以看目前有多少。macOS 的範圍是 49152–65535（約 16,000 個），TIME_WAIT 約 30 秒，上限約每秒 540 條，超過時錯誤是 `Can't assign requested address`。
 
 在 `rradius-server/benchmarks/` 以 `tacacs.toml` 啟動伺服器，再從專案根目錄分別跑四種負載：

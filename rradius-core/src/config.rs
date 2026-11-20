@@ -571,6 +571,8 @@ pub struct TacacsSettings {
     pub max_body_len: usize,
     pub clients: Arc<ClientTable>,
     pub max_connections: usize,
+    /// How many connections one source address may hold open at once.
+    pub max_connections_per_source: usize,
     pub idle_timeout: Duration,
 }
 
@@ -1297,6 +1299,8 @@ struct RawTacacs {
     max_body_len: usize,
     #[serde(default = "default_max_connections")]
     max_connections: usize,
+    #[serde(default = "default_max_connections_per_source")]
+    max_connections_per_source: usize,
     #[serde(default = "default_tacacs_idle_timeout_ms")]
     idle_timeout_ms: u64,
     #[serde(default)]
@@ -1337,6 +1341,10 @@ fn default_tacacs_port() -> u16 {
 
 fn default_max_inflight() -> usize {
     crate::radius::DEFAULT_MAX_INFLIGHT
+}
+
+fn default_max_connections_per_source() -> usize {
+    crate::tacacs::DEFAULT_MAX_CONNECTIONS_PER_SOURCE
 }
 
 pub fn default_max_connections() -> usize {
@@ -1548,6 +1556,7 @@ fn load_text(path: &Path, text: &str, extensions: &crate::extension::Extensions)
             max_body_len: t.max_body_len,
             clients: client_table("tacacs", t.clients, base, chains, None, Some(&authorize_groups(t.authorize_groups).map_err(fail)?), &[]).map_err(fail)?,
             max_connections: above_zero("tacacs.max_connections", t.max_connections).map_err(fail)?,
+            max_connections_per_source: above_zero("tacacs.max_connections_per_source", t.max_connections_per_source).map_err(fail)?,
             idle_timeout: Duration::from_millis(above_zero("tacacs.idle_timeout_ms", t.idle_timeout_ms as usize).map_err(fail)? as u64),
         }),
         None => None,
@@ -3132,11 +3141,11 @@ mod tests {
 
         let config = load_str(&limits("", "")).1.unwrap();
         let (radius, tacacs) = (config.radius.unwrap(), config.tacacs.unwrap());
-        assert_eq!((radius.max_auth_inflight, radius.max_acct_inflight, tacacs.max_connections), (4096, 4096, 1024));
+        assert_eq!((radius.max_auth_inflight, radius.max_acct_inflight, tacacs.max_connections, tacacs.max_connections_per_source), (4096, 4096, 1024, 64));
 
-        let config = load_str(&limits("max_auth_inflight = 100\nmax_acct_inflight = 50\n", "max_connections = 10\n")).1.unwrap();
+        let config = load_str(&limits("max_auth_inflight = 100\nmax_acct_inflight = 50\n", "max_connections = 10\nmax_connections_per_source = 3\n")).1.unwrap();
         let (radius, tacacs) = (config.radius.unwrap(), config.tacacs.unwrap());
-        assert_eq!((radius.max_auth_inflight, radius.max_acct_inflight, tacacs.max_connections), (100, 50, 10));
+        assert_eq!((radius.max_auth_inflight, radius.max_acct_inflight, tacacs.max_connections, tacacs.max_connections_per_source), (100, 50, 10, 3));
 
         let err = error(&limits("max_auth_inflight = 0\n", ""));
         assert!(err.contains("radius.max_auth_inflight"), "unexpected error: {err}");
@@ -3144,6 +3153,8 @@ mod tests {
         assert!(err.contains("radius.max_acct_inflight"), "unexpected error: {err}");
         let err = error(&limits("", "max_connections = 0\n"));
         assert!(err.contains("tacacs.max_connections"), "unexpected error: {err}");
+        let err = error(&limits("", "max_connections_per_source = 0\n"));
+        assert!(err.contains("tacacs.max_connections_per_source"), "unexpected error: {err}");
     }
 
     #[test]
