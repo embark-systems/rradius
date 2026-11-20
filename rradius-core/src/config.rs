@@ -352,6 +352,19 @@ impl PartialEq for AllowedNames {
 pub struct AuthSettings {
     pub default: Option<ChainSettings>,
     pub chains: BTreeMap<String, ChainSettings>,
+    /// `[auth.lockout]`; without it failed logins are not counted.
+    pub lockout: Option<LockoutSettings>,
+}
+
+/// `[auth.lockout]`: how many failed logins a key may have, and for how long it is locked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockoutSettings {
+    pub max_failures: u32,
+    pub window: Duration,
+    pub lock: Duration,
+    pub max_entries: usize,
+    /// Failures of one account from any origin that lock it for every origin.
+    pub account_max_failures: Option<u32>,
 }
 
 /// One member of the hiqlite cluster.
@@ -837,6 +850,47 @@ struct RawAuth {
     handlers: Vec<RawAuthHandler>,
     #[serde(default)]
     chains: BTreeMap<String, RawChain>,
+    lockout: Option<RawLockout>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawLockout {
+    #[serde(default = "default_lockout_max_failures")]
+    max_failures: u32,
+    #[serde(default = "default_lockout_seconds")]
+    window_seconds: u64,
+    #[serde(default = "default_lockout_seconds")]
+    lock_seconds: u64,
+    #[serde(default = "default_lockout_max_entries")]
+    max_entries: usize,
+    account_max_failures: Option<u32>,
+}
+
+fn default_lockout_max_failures() -> u32 {
+    10
+}
+
+fn default_lockout_seconds() -> u64 {
+    300
+}
+
+fn default_lockout_max_entries() -> usize {
+    100_000
+}
+
+fn lockout_settings(raw: RawLockout) -> Result<LockoutSettings, String> {
+    for (name, zero) in [("max_failures", raw.max_failures == 0), ("window_seconds", raw.window_seconds == 0), ("lock_seconds", raw.lock_seconds == 0), ("max_entries", raw.max_entries == 0)] {
+        if zero {
+            return Err(format!("auth.lockout.{name} must be greater than 0"));
+        }
+    }
+    if let Some(account) = raw.account_max_failures {
+        if account <= raw.max_failures {
+            return Err(format!("auth.lockout.account_max_failures must be greater than max_failures ({}), not {account}", raw.max_failures));
+        }
+    }
+    Ok(LockoutSettings { max_failures: raw.max_failures, window: Duration::from_secs(raw.window_seconds), lock: Duration::from_secs(raw.lock_seconds), max_entries: raw.max_entries, account_max_failures: raw.account_max_failures })
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -2103,7 +2157,8 @@ fn auth_settings(raw: RawAuth, base: &Path) -> Result<AuthSettings, String> {
         let username = chain.username.map(|username| username_settings(&format!("auth.chains.{}.username", name), username)).transpose()?;
         chains.insert(name, ChainSettings { policy: chain.policy, handlers, username });
     }
-    Ok(AuthSettings { default, chains })
+    let lockout = raw.lockout.map(lockout_settings).transpose()?;
+    Ok(AuthSettings { default, chains, lockout })
 }
 
 fn script_http_settings(raw: RawScriptHttp, base: &Path) -> Result<ScriptHttpSettings, String> {
@@ -3857,6 +3912,34 @@ mod tests {
         assert_eq!(auth.handlers.len(), 2);
         assert!(matches!(&auth.handlers[0], AuthHandlerSettings::Sql { reply_query: Some(_), default_user: None, .. }));
         assert_eq!(auth.handlers[1], AuthHandlerSettings::Lua { script: dir.path().join("site.lua"), verifies_password: false });
+    }
+
+    /// `[auth.lockout]`: absent, with every default, with every field, and what is refused.
+    #[test]
+    fn test_auth_lockout_settings() -> Result<(), String> {
+        let lockout = |body: &str| -> Result<Option<LockoutSettings>, String> {
+            let (_dir, result) = load_str(&base(&format!("\n[auth]\n{SQL_HANDLER}[auth.lockout]\n{body}{RADIUS_CLIENT}")));
+            Ok(result.map_err(|e| e.to_string())?.auth.ok_or("no [auth]")?.lockout)
+        };
+        let (_dir, result) = load_str(&base(&format!("\n[auth]\n{SQL_HANDLER}{RADIUS_CLIENT}")));
+        assert_eq!(result.map_err(|e| e.to_string())?.auth.ok_or("no [auth]")?.lockout, None);
+        let defaults = lockout("")?.ok_or("no lockout")?;
+        assert_eq!((defaults.max_failures, defaults.window, defaults.lock, defaults.max_entries, defaults.account_max_failures), (10, Duration::from_secs(300), Duration::from_secs(300), 100_000, None));
+        let every = lockout("max_failures = 3\nwindow_seconds = 60\nlock_seconds = 900\nmax_entries = 50\naccount_max_failures = 20\n")?.ok_or("no lockout")?;
+        assert_eq!((every.max_failures, every.window, every.lock, every.max_entries, every.account_max_failures), (3, Duration::from_secs(60), Duration::from_secs(900), 50, Some(20)));
+        for (body, expected) in [
+            ("max_failures = 0\n", "auth.lockout.max_failures must be greater than 0"),
+            ("window_seconds = 0\n", "auth.lockout.window_seconds must be greater than 0"),
+            ("lock_seconds = 0\n", "auth.lockout.lock_seconds must be greater than 0"),
+            ("max_entries = 0\n", "auth.lockout.max_entries must be greater than 0"),
+            ("account_max_failures = 10\n", "account_max_failures must be greater than max_failures (10), not 10"),
+            ("max_failures = 10\naccount_max_failures = 5\n", "account_max_failures must be greater than max_failures"),
+            ("colour = \"red\"\n", "colour"),
+        ] {
+            let error = lockout(body).err().ok_or_else(|| format!("loaded: {body}"))?;
+            assert!(error.contains(expected), "{body}: {error}");
+        }
+        Ok(())
     }
 
     #[test]

@@ -285,6 +285,8 @@ pub struct Metrics {
     /// By client name. Names come from the configuration, so this does not grow with traffic.
     radius_clients: parking_lot::RwLock<std::collections::BTreeMap<String, Arc<ClientResponses>>>,
     pub eap_open: Counter,
+    /// The failure counts of `[auth.lockout]`; they outlive a reload.
+    pub auth_lockout: Arc<crate::auth_lockout::Lockout>,
     pub eap_tls: EapCounters,
     pub eap_peap: EapCounters,
     pub eap_ttls: EapCounters,
@@ -588,6 +590,7 @@ impl Metrics {
         let (version, started) = self.started.get().map_or(("unknown", 0), |started| (started.version, started.at));
         write_family(&mut out, "rradius_build_info", "gauge", "Always 1; the version of the program in its label.", &[(&format!("{{version=\"{}\"}}", label_value(version)), 1)]);
         write_family(&mut out, "rradius_start_time_seconds", "gauge", "The Unix time the program started; 0 when unknown.", &[("", started)]);
+        self.auth_lockout.render(&mut out);
         extensions.render_metrics(&mut out);
         out
     }

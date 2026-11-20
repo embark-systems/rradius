@@ -134,11 +134,26 @@ pub struct AuthChain {
     policy: AuthPolicy,
     handlers: Vec<Handler>,
     username: Option<UsernameSettings>,
+    /// The failure counts of `[auth.lockout]`, when the chains have them.
+    lockout: Option<Arc<crate::auth_lockout::Lockout>>,
+}
+
+/// The longest origin kept in a failure key.
+const MAX_ORIGIN_LEN: usize = 64;
+
+/// Where a login comes from, as its sender says: the Calling-Station-Id of a RADIUS request or the
+/// rem_addr of a TACACS+ one, in lowercase and cut at `MAX_ORIGIN_LEN`; empty when it has none.
+fn origin_of(request: &LuaRequest) -> String {
+    let name = if request.protocol == "tacacs" { "rem_addr" } else { "Calling-Station-Id" };
+    let Some((_, AttrValue::Bytes(value))) = request.attributes.iter().find(|(attribute, _)| attribute == name) else {
+        return String::new();
+    };
+    String::from_utf8_lossy(value).chars().take(MAX_ORIGIN_LEN).collect::<String>().to_ascii_lowercase()
 }
 
 impl AuthChain {
     pub fn new(policy: AuthPolicy, handlers: Vec<Handler>) -> Self {
-        Self { policy, handlers, username: None }
+        Self { policy, handlers, username: None, lockout: None }
     }
 
     /// Whether a handler compares passwords, so that a secret a script cannot check, such as a
@@ -195,6 +210,44 @@ impl AuthChain {
     /// Runs the handlers according to the policy. `request` is what Lua
     /// handlers see (phase `authentication`).
     pub async fn authenticate(&self, credentials: &Credentials, request: &LuaRequest) -> AuthResult {
+        // A login by certificate proves a name and guesses nothing, so it is neither limited nor counted.
+        let lockout = self.lockout.as_ref().filter(|_| credentials.secret != Secret::Certificate && credentials.user.is_some());
+        let Some(lockout) = lockout else {
+            return self.decide(credentials, request).await;
+        };
+        // The key is the account the chain would look up, so a name that normalizes to another is not a way round.
+        let Some(account) = self.account_of(credentials) else {
+            return self.decide(credentials, request).await;
+        };
+        let origin = origin_of(request);
+        // The place is taken before the handlers run, so logins that start together cannot all guess.
+        let Some(reservation) = lockout.admit(&account, &origin, std::time::Instant::now()) else {
+            return AuthResult { decision: Outcome::Reject, attributes: Vec::new(), handler: "lockout", account: Some(account), verified: false, unavailable: false };
+        };
+        let result = self.decide(credentials, request).await;
+        match result.decision {
+            Outcome::Accept => reservation.succeed(),
+            // A refusal for a reason of the configuration, or one a failing backend gave, is not a wrong password.
+            Outcome::Reject if !result.unavailable && !matches!(result.handler, "no_password_check" | "normalization") => {
+                if let Some(lock) = reservation.fail(std::time::Instant::now()) {
+                    tracing::info!("auth lockout: client {}: account {account:?} from {origin:?} is locked ({})", request.client, if lock == crate::auth_lockout::Locked::Account { "all origins" } else { "this origin" });
+                }
+            }
+            _ => drop(reservation),
+        }
+        result
+    }
+
+    /// The account name the handlers would look up for `credentials`; `None` when the chain refuses it.
+    fn account_of(&self, credentials: &Credentials) -> Option<String> {
+        let received = credentials.user.as_deref()?;
+        match &self.username {
+            Some(settings) => account_name(settings, received).ok(),
+            None => Some(received.to_string()),
+        }
+    }
+
+    async fn decide(&self, credentials: &Credentials, request: &LuaRequest) -> AuthResult {
         let received = credentials.user.as_deref();
         let normalized = match (&self.username, received) {
             (Some(settings), Some(name)) => match account_name(settings, name).and_then(|account| {
@@ -300,6 +353,14 @@ pub struct AuthChains {
 }
 
 impl AuthChains {
+    /// Gives every chain the failure counts of `[auth.lockout]`.
+    pub fn with_lockout(mut self, lockout: Arc<crate::auth_lockout::Lockout>) -> Self {
+        for chain in self.default.iter_mut().chain(self.named.values_mut()) {
+            chain.lockout = Some(lockout.clone());
+        }
+        self
+    }
+
     pub fn new(default: Option<AuthChain>, named: impl IntoIterator<Item = (String, AuthChain)>) -> Self {
         Self { default, named: named.into_iter().collect() }
     }
@@ -1015,6 +1076,144 @@ mod tests {
         Ok(())
     }
 
+    fn lockout_settings(max_failures: u32) -> crate::config::LockoutSettings {
+        crate::config::LockoutSettings { max_failures, window: Duration::from_secs(300), lock: Duration::from_secs(300), max_entries: 1000, account_max_failures: None }
+    }
+
+    fn from_device(protocol: &'static str, attribute: &str, device: &str) -> LuaRequest {
+        LuaRequest::new(protocol, "authentication", vec![(attribute.to_string(), AttrValue::Bytes(device.as_bytes().to_vec()))])
+    }
+
+    /// A SQL chain with the failure counts on, over a table with `alice`.
+    async fn lockout_chain(table: &str, max_failures: u32, timeout: Duration) -> Result<(AuthChain, Arc<crate::auth_lockout::Lockout>), String> {
+        let db = test_db();
+        db.execute(&format!("CREATE TABLE {table} (username TEXT, password TEXT)")).await?;
+        db.execute(&format!("INSERT INTO {table} VALUES ('alice', '{{clear}}secret')")).await?;
+        let lockout = Arc::new(crate::auth_lockout::Lockout::default());
+        lockout.configure(Some(lockout_settings(max_failures)));
+        let sql = Handler::Sql { source: SqlSource::Cluster(db), user_query: format!("SELECT password FROM {table} WHERE username = ?"), reply_query: None, certificate_query: None, default_user: None, timeout };
+        let mut chain = AuthChain::new(AuthPolicy::FirstMatch, vec![sql]);
+        chain.lockout = Some(lockout.clone());
+        Ok((chain, lockout))
+    }
+
+    /// Wrong logins that all start together do not get more guesses than the limit.
+    #[tokio::test]
+    async fn test_parallel_wrong_logins_stop_at_the_limit() -> Result<(), String> {
+        let (chain, _lockout) = lockout_chain("lock_parallel", 3, Duration::from_secs(5)).await?;
+        let here = from_device("radius", "Calling-Station-Id", "AA-BB-CC-DD-EE-01");
+        let guesses = ["g"; 50].map(|g| pap("alice", g));
+        let results = futures::future::join_all(guesses.iter().map(|credentials| chain.authenticate(credentials, &here))).await;
+        let checked = results.iter().filter(|result| result.handler == "sql").count();
+        assert_eq!(checked, 3, "only as many as the limit reach the password check");
+        assert_eq!(results.iter().filter(|result| result.handler == "lockout").count(), 47);
+        Ok(())
+    }
+
+    /// Spec Authentication Failure Lockout: a locked key is rejected before any password is
+    /// checked, the same for an account nobody has, and another device is not affected.
+    #[tokio::test]
+    async fn test_lockout_rejects_before_the_handlers() -> Result<(), String> {
+        let (chain, lockout) = lockout_chain("lock_users", 3, Duration::from_secs(5)).await?;
+        let here = from_device("radius", "Calling-Station-Id", "AA-BB-CC-DD-EE-01");
+        for _ in 0..3 {
+            let refused = chain.authenticate(&pap("alice", "wrong"), &here).await;
+            assert!(!refused.accepted() && refused.handler == "sql", "{refused:?}");
+        }
+        let locked = chain.authenticate(&pap("alice", "secret"), &here).await;
+        assert!(!locked.accepted() && locked.handler == "lockout" && !locked.unavailable, "the right password is not even checked: {locked:?}");
+        // The origin is compared in lowercase.
+        let same = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
+        assert_eq!(chain.authenticate(&pap("alice", "secret"), &same).await.handler, "lockout");
+        let elsewhere = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-02");
+        assert!(chain.authenticate(&pap("alice", "secret"), &elsewhere).await.accepted());
+        // An account no handler has is limited in the same way and answered in the same way.
+        for _ in 0..3 {
+            chain.authenticate(&pap("nobody", "x"), &here).await;
+        }
+        let nobody = chain.authenticate(&pap("nobody", "x"), &here).await;
+        assert!(!nobody.accepted() && nobody.handler == "lockout");
+        assert_eq!((lockout.lockouts.get(), lockout.rejected.get()), (2, 3));
+        Ok(())
+    }
+
+    /// A TACACS+ login is keyed by its rem_addr.
+    #[tokio::test]
+    async fn test_lockout_by_the_rem_addr_of_tacacs() -> Result<(), String> {
+        let (chain, _lockout) = lockout_chain("lock_users_tacacs", 2, Duration::from_secs(5)).await?;
+        let device = from_device("tacacs", "rem_addr", "10.1.2.3");
+        for _ in 0..2 {
+            chain.authenticate(&pap("alice", "wrong"), &device).await;
+        }
+        assert_eq!(chain.authenticate(&pap("alice", "secret"), &device).await.handler, "lockout");
+        assert!(chain.authenticate(&pap("alice", "secret"), &from_device("tacacs", "rem_addr", "10.1.2.4")).await.accepted());
+        Ok(())
+    }
+
+    /// A backend that is down, a login by certificate, and an accept do not count as failures.
+    #[tokio::test]
+    async fn test_lockout_counts_only_real_refusals() -> Result<(), String> {
+        let (chain, lockout) = lockout_chain("lock_users_counted", 2, Duration::from_secs(5)).await?;
+        let here = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
+        // The database cannot be used: every query is cut short.
+        let slow = "SELECT password FROM lock_users_counted, (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 500000) SELECT max(x) FROM c) WHERE username = ?";
+        let mut down = AuthChain::new(AuthPolicy::FirstMatch, vec![Handler::Sql { source: SqlSource::Cluster(test_db()), user_query: slow.to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: Duration::from_millis(5) }]);
+        down.lockout = Some(lockout.clone());
+        for _ in 0..5 {
+            let result = down.authenticate(&pap("alice", "secret"), &here).await;
+            assert!(result.unavailable && result.handler != "lockout", "{result:?}");
+        }
+        assert_eq!(lockout.lockouts.get(), 0);
+        // A certificate that is refused guesses nothing.
+        let mut rejecting = AuthChain::new(AuthPolicy::FirstMatch, vec![lua("return 'reject'")]);
+        rejecting.lockout = Some(lockout.clone());
+        let certificate = Credentials { user: Some("alice".to_string()), secret: Secret::Certificate };
+        for _ in 0..5 {
+            assert_eq!(rejecting.authenticate(&certificate, &here).await.handler, "lua");
+        }
+        // One failure, then an accept: the count starts again.
+        chain.authenticate(&pap("alice", "wrong"), &here).await;
+        assert!(chain.authenticate(&pap("alice", "secret"), &here).await.accepted());
+        chain.authenticate(&pap("alice", "wrong"), &here).await;
+        assert!(chain.authenticate(&pap("alice", "secret"), &here).await.accepted(), "one failure after an accept does not lock");
+        assert_eq!(lockout.lockouts.get(), 0);
+        Ok(())
+    }
+
+    /// A new lock is logged once, with the client, the account and the origin, and never a password.
+    #[tokio::test]
+    async fn test_lockout_is_logged_once_without_the_password() -> Result<(), String> {
+        let (chain, _lockout) = lockout_chain("lock_users_logged", 2, Duration::from_secs(5)).await?;
+        let mut here = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
+        here.client = "nas1".to_string();
+        let log = crate::test_support::radius::logged_during(async {
+            for _ in 0..4 {
+                chain.authenticate(&pap("alice", "hunter2-wrong"), &here).await;
+            }
+        })
+        .await;
+        let lines: Vec<&str> = log.lines().filter(|line| line.contains("auth lockout")).collect();
+        assert_eq!(lines.len(), 1, "{log}");
+        let line = lines.first().ok_or("no line")?;
+        assert!(line.contains("INFO") && line.contains("nas1") && line.contains("alice") && line.contains("aa-bb-cc-dd-ee-01"), "{line}");
+        assert!(!log.contains("hunter2-wrong"), "{log}");
+        Ok(())
+    }
+
+    /// Without `[auth.lockout]` nothing is counted.
+    #[tokio::test]
+    async fn test_no_lockout_without_the_section() -> Result<(), String> {
+        let (mut chain, lockout) = lockout_chain("lock_users_off", 2, Duration::from_secs(5)).await?;
+        chain.lockout = None;
+        let here = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
+        for _ in 0..50 {
+            assert_eq!(chain.authenticate(&pap("alice", "wrong"), &here).await.handler, "sql");
+        }
+        assert!(chain.authenticate(&pap("alice", "secret"), &here).await.accepted());
+        assert_eq!(lockout.lockouts.get(), 0);
+        Ok(())
+    }
+
     /// A 256 MiB hash, slower than the limit, with a query well inside it.
     #[tokio::test]
     async fn test_timeout_covers_password_verification() {
@@ -1554,7 +1753,7 @@ mod tests {
             handlers: vec![AuthHandlerSettings::Ldap(settings(vec![url], PasswordCheck::Bind))],
             username: None,
         };
-        let auth = AuthSettings { default: None, chains: [("vpn".to_string(), vpn)].into_iter().collect() };
+        let auth = AuthSettings { default: None, chains: [("vpn".to_string(), vpn)].into_iter().collect(), lockout: None };
         let chains = AuthChains::from_settings(&auth, &test_db(), &crate::test_support::test_vms(), &LuaLimits::default()).unwrap();
         // A RADIUS NAS and a TACACS+ router both select `vpn`.
         for name in ["radius-nas", "tacacs-router"] {
