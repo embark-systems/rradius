@@ -2586,6 +2586,9 @@ fn cluster_settings(raw: RawCluster, base: &Path) -> Result<ClusterSettings, Str
     if raw.node_id == 0 {
         return Err("cluster.node_id must be at least 1".to_string());
     }
+    if raw.listen.is_none() && raw.nodes.is_some() {
+        tracing::warn!("cluster.listen is not set, so the cluster's Raft and API ports are on all interfaces, with nothing but their shared secrets to protect them; set listen to this node's private or WireGuard address, or to \"0.0.0.0\" to keep it and silence this warning");
+    }
     // A single node has nobody to reach it, and the database API has only a shared secret.
     let listen = raw.listen.unwrap_or(if raw.nodes.is_some() { any_address() } else { IpAddr::V4(Ipv4Addr::LOCALHOST) });
     let nodes: Vec<ClusterNode> = match raw.nodes {
@@ -2670,6 +2673,9 @@ fn cluster_secret(name: &str, value: Option<String>, file: Option<PathBuf>, base
     };
     if secret.chars().count() < MIN_CLUSTER_SECRET_LEN {
         return Err(format!("cluster.{} must be at least {} characters", name, MIN_CLUSTER_SECRET_LEN));
+    }
+    if crate::common::seal::is_example_secret(&secret) {
+        tracing::warn!("cluster.{name} is the public value shipped with the examples; replace it with a random one, for example from `openssl rand -hex 32`");
     }
     Ok(secret)
 }
@@ -3384,6 +3390,54 @@ mod tests {
         let nodes = "[[cluster.nodes]]\nid = 1\nraft = \"10.0.0.1:8100\"\napi = \"10.0.0.1:8200\"\n";
         let (_dir, result) = load_str(&cluster_config(&format!("data_dir = \"data\"\n{}{}", CLUSTER_SECRETS, nodes)));
         assert_eq!(result.unwrap().cluster.listen, "0.0.0.0".parse::<IpAddr>().unwrap(), "other nodes must reach it");
+    }
+
+    /// What loading `body` logs at WARN, and whether it loaded.
+    fn warnings_of(body: &str) -> Result<(Vec<String>, bool), String> {
+        let log = crate::test_support::radius::CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
+        let (_dir, result) = tracing::subscriber::with_default(subscriber, || load_str(body));
+        let text = String::from_utf8(log.0.lock().map_err(|e| e.to_string())?.clone()).map_err(|e| e.to_string())?;
+        Ok((text.lines().map(str::to_string).collect(), result.is_ok()))
+    }
+
+    #[test]
+    fn test_cluster_listen_default_is_warned_about() -> Result<(), String> {
+        let nodes = "[[cluster.nodes]]\nid = 1\nraft = \"10.0.0.1:8100\"\napi = \"10.0.0.1:8200\"\n";
+        let config = |extra: &str| cluster_config(&format!("data_dir = \"data\"\n{CLUSTER_SECRETS}{extra}"));
+        // Nodes and no listen: warned, and still on 0.0.0.0.
+        let (lines, loaded) = warnings_of(&config(nodes))?;
+        assert!(loaded);
+        assert_eq!(lines.iter().filter(|line| line.contains("cluster.listen")).count(), 1, "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("0.0.0.0")), "{lines:?}");
+        // Set, even to 0.0.0.0: not warned about. Nodes in the list come after the keys of [cluster].
+        for listen in ["listen = \"0.0.0.0\"\n", "listen = \"10.0.0.1\"\n"] {
+            let body = cluster_config(&format!("data_dir = \"data\"\n{CLUSTER_SECRETS}{listen}{nodes}"));
+            let (lines, loaded) = warnings_of(&body)?;
+            assert!(loaded);
+            assert!(lines.iter().all(|line| !line.contains("cluster.listen")), "{listen}: {lines:?}");
+        }
+        // No nodes: 127.0.0.1, not warned about.
+        let (lines, loaded) = warnings_of(&config(""))?;
+        assert!(loaded);
+        assert!(lines.iter().all(|line| !line.contains("cluster.listen")), "{lines:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_cluster_secrets_from_the_examples_are_warned_about() -> Result<(), String> {
+        let secrets = |raft: &str, api: &str| format!("secret_raft = \"{raft}\"\nsecret_api = \"{api}\"\n");
+        let body = |raft: &str, api: &str| cluster_config(&format!("data_dir = \"data\"\n{}", secrets(raft, api)));
+        let (lines, loaded) = warnings_of(&body("demo-raft-secret-Change-Me", "api-secret-0123456789"))?;
+        assert!(loaded);
+        assert_eq!(lines.iter().filter(|line| line.contains("cluster.secret_raft")).count(), 1, "{lines:?}");
+        assert!(lines.iter().all(|line| !line.contains("cluster.secret_api") && !line.contains("Change-Me")), "{lines:?}");
+        let (lines, _) = warnings_of(&body("raft-secret-0123456789", "demo-api-secret-change-me"))?;
+        assert_eq!(lines.iter().filter(|line| line.contains("cluster.secret_api")).count(), 1, "{lines:?}");
+        assert!(lines.iter().all(|line| !line.contains("demo-api-secret")), "{lines:?}");
+        let (lines, _) = warnings_of(&body("raft-secret-0123456789", "api-secret-0123456789"))?;
+        assert!(lines.iter().all(|line| !line.contains("examples")), "{lines:?}");
+        Ok(())
     }
 
     #[test]

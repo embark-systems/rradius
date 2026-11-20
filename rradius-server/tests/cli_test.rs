@@ -1662,6 +1662,21 @@ fn test_short_secret_warning_at_startup() {
 }
 
 #[test]
+fn test_example_secret_warning_at_startup_and_in_check() -> Result<(), String> {
+    const EXAMPLE: &str = "nas-shared-secret-change-me";
+    let server = server_with_secret(EXAMPLE);
+    let stderr = server.wait_for_log("Servers started");
+    let warning = stderr.lines().find(|line| line.contains("shipped with the examples")).ok_or_else(|| stderr.clone())?;
+    assert!(warning.contains("WARN") && warning.contains("nas1") && warning.contains("RADIUS"), "{warning}");
+    assert!(!stderr.contains(EXAMPLE), "{stderr}");
+    let (code, _, check_stderr) = check_command(PROGRAM, &server.config);
+    assert_eq!(code, Some(0), "{check_stderr}");
+    assert!(check_stderr.contains("shipped with the examples") && check_stderr.contains("nas1"), "{check_stderr}");
+    assert!(!check_stderr.contains(EXAMPLE), "{check_stderr}");
+    Ok(())
+}
+
+#[test]
 fn test_no_warning_for_a_long_enough_secret() {
     let server = server_with_secret("sixteen-octets-1");
     let stderr = server.wait_for_log("Servers started");

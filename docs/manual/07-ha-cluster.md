@@ -111,7 +111,7 @@ api = "10.99.0.1:8200"
 ```
 
 - **每台都列出全部三個節點（包含自己），** `node_id` 指出自己是哪一個，一定要有編號 1。
-- **`listen` 寫明 WireGuard 位址。** 有 `[[cluster.nodes]]` 時預設是 `0.0.0.0`，會在所有介面上開 raft 和 api，而這兩個埠的連線沒有加密。
+- **`listen` 寫明 WireGuard 位址。** 有 `[[cluster.nodes]]` 時預設是 `0.0.0.0`，會在所有介面上開 raft 和 api，而這兩個埠的連線沒有加密；沒有明確寫 `listen` 時，啟動、重新載入和 `check` 都會記一行警告（`cluster.listen is not set`）。Docker 與 Kubernetes 的範例在容器裡必須接受其他節點，所以明確寫了 `listen = "0.0.0.0"`；放在實體主機上時改成它的 WireGuard 位址。
 - **`[lua] query_timeout_ms = 2000`：** 失去多數節點時，寫入要等這麼久才失敗、計費才寫進暫存。預設 5 秒比很多 NAS 的重送間隔長，重送會被當成處理中而丟棄。
 - **`[radius.accounting_spool]`：** 各節點只重放自己的暫存檔，所以放在持久的磁碟。`rradius_acct_spool_bytes` 大於 0 代表有還沒寫進資料庫的計費，可以用來告警。
 - **`[log] format = "json"`：** 三台的記錄送到同一個收集系統時比較好處理。

@@ -65,6 +65,9 @@ pub fn warn_about_short_secrets(config: &ServerConfig) {
         for client in clients.clients().filter(|client| client.secret.len() < MIN_SECRET_LEN) {
             tracing::warn!("{protocol} client '{}' has a shared secret shorter than {MIN_SECRET_LEN} octets; use at least 24 random octets", client.name);
         }
+        for client in clients.clients().filter(|client| crate::common::seal::is_example_secret(&String::from_utf8_lossy(&client.secret))) {
+            tracing::warn!("{protocol} client '{}' has the public shared secret shipped with the examples; replace it with a random one, for example from `openssl rand -hex 32`", client.name);
+        }
     }
     crate::extension::installed().warn_about(config);
 }
@@ -314,6 +317,22 @@ mod tests {
 
     fn code(response: Option<Vec<u8>>) -> u8 {
         RadiusPacket::parse(&response.expect("no response")).unwrap().code
+    }
+
+    #[tokio::test]
+    async fn test_example_secrets_of_both_protocols_are_warned_about() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let text = format!(
+            "dictionary = \"d\"\n[lua]\nscript = \"auth.lua\"\n{CLUSTER}[radius]\n[[radius.clients]]\nname = \"nas1\"\naddress = \"127.0.0.1\"\nsecret = \"Radius-Secret-Change-Me-0123\"\n\
+             [tacacs]\n[[tacacs.clients]]\nname = \"router1\"\naddress = \"10.0.0.5\"\nsecret = \"tacacs-secret-change-me-0123\"\n[[tacacs.clients]]\nname = \"router2\"\naddress = \"10.0.0.6\"\nsecret = \"0123456789abcdef0123456789\"\n"
+        );
+        let config = config::load(&write_config(dir.path(), &text)).map_err(|e| e.to_string())?;
+        let log = crate::test_support::radius::logged_during(async { warn_about_short_secrets(&config) }).await;
+        let lines: Vec<&str> = log.lines().filter(|line| line.contains("shipped with the examples")).collect();
+        assert_eq!(lines.len(), 2, "{log}");
+        assert!(lines.iter().any(|l| l.contains("RADIUS client 'nas1'")) && lines.iter().any(|l| l.contains("TACACS+ client 'router1'")), "{log}");
+        assert!(!log.contains("router2") && !log.to_lowercase().contains("change-me-0123"), "{log}");
+        Ok(())
     }
 
     #[tokio::test]
