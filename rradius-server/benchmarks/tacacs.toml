@@ -12,12 +12,13 @@ secret_raft = "bench-raft-secret-012345"
 secret_api = "bench-api-secret-0123456"
 
 # Port 4949 rather than 49, which needs privileges. rradius-bench takes it with --tacacs-port.
-# Each TACACS+ socket of the tool is one connection, so a load with concurrency above
-# max_connections would have connections refused.
+# Each TACACS+ socket of the tool is one connection, all from 127.0.0.1, so a load with
+# concurrency above max_connections or max_connections_per_source would have connections refused.
 [tacacs]
 bind = "127.0.0.1"
 port = 4949
 max_connections = 8192
+max_connections_per_source = 8192
 
 [[tacacs.clients]]
 name = "local"

@@ -133,6 +133,7 @@ authentication protocol="radius" client="wlc" source=10.30.0.10 user="Staff1@cor
 | CHAP、MS-CHAPv2 登入收到 RESTART | 這個 client 沒有認證串接，或串接裡只有沒設 `verifies_password` 的腳本 |
 | 登入一直回 ERROR | 一條連線上未完成的登入超過 8 個，或一次登入超過 60 秒 |
 | `TACACS+ overloaded: closed N connections` | 到了 `max_connections`。設備開了連線不關時，調低 `idle_timeout_ms` |
+| `TACACS+ connection from <位址> closed: it already holds max_connections_per_source = N connections` | 這個來源位址開著的連線到了上限（預設 64）。設備開了連線不關時，調低 `idle_timeout_ms`；位址後面是 NAT 或跳板、連線數本來就多時，調高 `max_connections_per_source` |
 
 ## 啟動失敗
 

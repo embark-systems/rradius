@@ -727,6 +727,10 @@ zh-TW = "TACACS+ 埠。"
 en = "Connections open at once; more are closed at once."
 zh-TW = "同時開啟的連線數，超過的立刻關閉。"
 
+[fields."tacacs.max_connections_per_source"]
+en = "Connections one source address may hold open at once; more from it are closed at once."
+zh-TW = "同一個來源位址同時開啟的連線數，超過的立刻關閉。"
+
 [fields."tacacs.idle_timeout_ms"]
 en = "Close a connection that sends no whole packet for this long, in milliseconds."
 zh-TW = "這段時間內沒有收到完整封包就關閉連線，毫秒。"

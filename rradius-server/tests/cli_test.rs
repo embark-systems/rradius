@@ -1514,7 +1514,7 @@ fn test_out_of_file_descriptors() {
     let (config, auth_port) = write_config(dir.path(), "return 'accept'", None);
     let (tacacs_port, metrics_port) = (free_port(), free_port());
     let text = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(&config, format!("{text}[metrics]\nport = {metrics_port}\n[tacacs]\nport = {tacacs_port}\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n")).unwrap();
+    std::fs::write(&config, format!("{text}[metrics]\nport = {metrics_port}\n[tacacs]\nport = {tacacs_port}\n# All the test's connections come from one address, and must reach the file descriptor limit.\nmax_connections_per_source = 1024\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n")).unwrap();
     let child = Command::new("sh")
         .args(["-c", "ulimit -n 128 && exec \"$0\" server --config \"$1\"", env!("CARGO_BIN_EXE_rradius-server"), config.to_str().unwrap()])
         .current_dir(dir.path())
