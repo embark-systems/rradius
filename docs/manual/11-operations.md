@@ -176,6 +176,8 @@ kill -HUP $(pidof rradius-server)
 
 共用密碼少於 16 個字元時，啟動、重新載入和 `check` 都會有警告（`has a shared secret shorter than 16 octets`），但不會拒絕啟動。有些舊設備限制長度或字元，產生後先確認設備接受。
 
+共用密碼和叢集密碼含 `change-me` 時也有警告（`has the public shared secret shipped with the examples`）：那是範例附的公開值，任何人都知道，請換成隨機值（`openssl rand -hex 32`）。照範例或手冊的教學環境看到這個警告是預期的。
+
 ## 監控
 
 `[metrics]` 開啟後，`GET /metrics` 是 Prometheus 格式。要被通知、或要送 SNMP trap，用[第 21 章](21-monitoring.md)的告警規則。建議先看這幾個：

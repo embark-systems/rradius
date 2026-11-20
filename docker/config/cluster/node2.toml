@@ -9,6 +9,8 @@ node_id = 2
 data_dir = "/var/lib/rradius"
 secret_raft_file = "/run/secrets/raft"
 secret_api_file = "/run/secrets/api"
+# The ports are for the other nodes, and a container has no other address: on a host, use its private or WireGuard address.
+listen = "0.0.0.0"
 migrations_dir = "../migrations"
 
 [[cluster.nodes]]

@@ -119,7 +119,7 @@ pub fn write_config_with(dir: &Path, script: &str, handler: Option<&str>, cluste
         &path,
         format!(
             "dictionary = \"{}\"\n[lua]\nscript = \"top.lua\"\n\
-             [cluster]\ndata_dir = \"data\"\nsecret_raft = \"test-raft-secret-0123\"\nsecret_api = \"test-api-secret-01234\"\n{}\
+             [cluster]\ndata_dir = \"data\"\nsecret_raft = \"test-raft-secret-0123\"\nsecret_api = \"test-api-secret-01234\"\nlisten = \"127.0.0.1\"\n{}\
              [[cluster.nodes]]\nid = 1\nraft = \"127.0.0.1:{}\"\napi = \"127.0.0.1:{}\"\n{}\
              [radius]\nauth_port = {}\nacct_port = {}\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n",
             super::dictionary().display(),

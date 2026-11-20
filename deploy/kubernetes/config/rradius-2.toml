@@ -10,6 +10,8 @@ node_id = 3
 data_dir = "/var/lib/rradius"
 secret_raft_file = "/run/secrets/rradius/raft"
 secret_api_file = "/run/secrets/rradius/api"
+# The other pods reach the node through its pod address, so it listens on all of the pod's interfaces.
+listen = "0.0.0.0"
 migrations_dir = "migrations"
 # Past this long without a leader the node stops answering, so that a NAS asks another
 # server, and /readyz turns 503, so that the Service leaves the pod out meanwhile.

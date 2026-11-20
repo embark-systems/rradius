@@ -77,6 +77,12 @@ pub fn open_file_warning(setting: &str, path: &std::path::Path) -> Option<String
     None
 }
 
+/// Whether a shared secret is one of the public values shipped with the examples, which all
+/// contain `change-me`. Warned about, not refused: it still works.
+pub fn is_example_secret(secret: &str) -> bool {
+    secret.to_ascii_lowercase().contains("change-me")
+}
+
 /// Logs one WARN line when `open_file_warning` has something to say, and goes on: the file is read
 /// as before. For the files whose mode is not refused (a client's `secret_file`, the passwords of
 /// the cluster, a database, LDAP and Netlogon): the example configurations are checked out as 0644.

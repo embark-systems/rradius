@@ -237,7 +237,7 @@ rradius-server config init --lang zh-TW > rradius.toml           # 起始設定�
 | `secret_raft` / `secret_raft_file` | （二擇一） | Raft 通訊密碼，至少 16 個字元 |
 | `secret_api` / `secret_api_file` | （二擇一） | API 通訊密碼，至少 16 個字元 |
 | `node_id` | 1 | 本節點編號，必須 ≥ 1 並出現在 `nodes` 中 |
-| `listen` | 沒有 `[[cluster.nodes]]` 時 `127.0.0.1`，有時 `0.0.0.0` | 監聽位址（IPv4 或 IPv6）。單節點沒有其他節點要連，資料庫 API 又只靠共用密碼保護，所以預設不對外 |
+| `listen` | 沒有 `[[cluster.nodes]]` 時 `127.0.0.1`，有時 `0.0.0.0` | 監聽位址（IPv4 或 IPv6）。單節點沒有其他節點要連，資料庫 API 又只靠共用密碼保護，所以預設不對外。有 `[[cluster.nodes]]` 而沒有寫 `listen` 時，載入設定（啟動、重新載入、`check`）會記一行警告（`cluster.listen is not set`）：改成這台的私網或 WireGuard 位址，要保留 `0.0.0.0` 就明確寫 `listen = "0.0.0.0"`，警告就消失 |
 | `migrations_dir` | （無） | 啟動時套用的 SQL 檔目錄，見 2.5 節 |
 | `migrations_wait_ms` | 60000 | 啟動時等待叢集就緒、本機副本追上的時限（每段各自計時），必須大於 0，見下方〈啟動時追上叢集〉 |
 | `stop_without_leader_ms` | （不設） | 沒有 leader 超過這段時間時，認證和 Status-Server 都不回應，必須大於 0，改了要重啟，見下方〈資料庫不能用時〉 |
@@ -303,7 +303,7 @@ api = "10.0.0.3:8200"
 - **`secret_api` 會以明文送出：** 節點查詢成員時放在 HTTP 標頭裡。側錄到它的人，連得到 `api` 埠就能在資料庫執行 SQL，例如新增或修改使用者。
 - **`secret_raft` 不會直接送出，但連線內容不受保護：** 能攔截連線的人可以竄改握手之後的內容。
 
-所以節點之間要走你信任的網路。跨機房或跨不信任的網段時，把這段連線放進 WireGuard 或 IPsec，並把 `raft` 和 `api` 的位址設成那個網路上的位址。不論哪一種，都用防火牆把這兩個埠限制成只有其他節點連得到，並用 `listen` 綁定到那個介面。預設的 `0.0.0.0` 會監聽所有介面。
+所以節點之間要走你信任的網路。跨機房或跨不信任的網段時，把這段連線放進 WireGuard 或 IPsec，並把 `raft` 和 `api` 的位址設成那個網路上的位址。不論哪一種，都用防火牆把這兩個埠限制成只有其他節點連得到，並用 `listen` 綁定到那個介面。預設的 `0.0.0.0` 會監聽所有介面，所以沒有明確寫 `listen` 時會記一行警告。
 
 **用 WireGuard 保護節點之間的連線。** 以下是三個節點的例子：實體位址 `192.0.2.1` 到 `192.0.2.3`，WireGuard 網路 `10.99.0.0/24`，介面 `wg0`，以 Linux 和 `wg-quick` 為例。NAS 照樣連各節點的實體位址，`[radius]` 和 `[tacacs]` 不用改。
 
@@ -742,16 +742,18 @@ require_message_authenticator = "no"   # 覆寫 [radius] 的值
 
 **短共用密碼：** RADIUS 或 TACACS+ client的密碼少於 16 octets 時，啟動、SIGHUP 和 `check` 都會記錄警告（`has a shared secret shorter than 16 octets`），但不會拒絕啟動。16 是 RFC 8907 第 10.5.1 節和 RFC 2865 建議的下限；以前的門檻是 12 octets，所以 13–15 octets 的密碼升級後開始出現警告。建議至少 24 個隨機 octets。TACACS+ 的封包內容完全靠這個密碼保護。
 
+**範例附的密碼：** RADIUS 或 TACACS+ client 的共用密碼，以及叢集的 `secret_raft`、`secret_api`，含 `change-me`（不分大小寫）時，啟動、SIGHUP 和 `check` 都會記錄警告（`has the public shared secret shipped with the examples`，叢集的是 `cluster.secret_raft is the public value shipped with the examples`），指名 client 或設定名稱，不含密碼，也不會拒絕啟動。這些是範例附的公開值，任何人都知道；換成隨機值（例如 `openssl rand -hex 32`）警告就消失。照著範例或手冊的教學環境會看到這個警告，是預期的。
+
 **升級注意：預設會丟棄不帶 Message-Authenticator 的 Access-Request。** 不會送這個屬性的舊設備，升級後要設定 `no` 或 `auto`，否則認證會失敗，記錄中會出現 `lacking a Message-Authenticator`。
 
 | 設定 | `yes` | `no` | `auto` |
 | --- | --- | --- | --- |
-| `require_message_authenticator` | 沒帶就丟棄 | 允許沒帶，再看 `limit_proxy_state` | 由第一個請求決定：有帶就變 `yes`，沒帶就變 `no` |
-| `limit_proxy_state` | 帶 Proxy-State 但沒帶 Message-Authenticator 就丟棄 | 允許，**有 BlastRADIUS 風險** | 由第一個請求決定：帶 Proxy-State 但沒帶 Message-Authenticator 就變 `no`，否則變 `yes` |
+| `require_message_authenticator` | 沒帶就丟棄 | 允許沒帶，再看 `limit_proxy_state` | 由第一個請求決定：有帶就變 `yes`，沒帶就變 `no`，變成 `no` 時記一行警告 |
+| `limit_proxy_state` | 帶 Proxy-State 但沒帶 Message-Authenticator 就丟棄 | 允許，**有 BlastRADIUS 風險** | 由第一個請求決定：帶 Proxy-State 但沒帶 Message-Authenticator 就變 `no`（記一行警告），否則變 `yes` |
 
 - `limit_proxy_state` 只在不要求 Message-Authenticator 時才有作用。
 - `auto` 只能用在單一主機的 client，用在網段時啟動失敗。學到的值在重啟後重新學習。
-- `auto` 的第一個封包如果沒帶 Message-Authenticator，來源就無法驗證，攻擊者可以偽造這個封包把 client 降級。可以的話請明確設定 `yes`。
+- `auto` 的第一個封包如果沒帶 Message-Authenticator，來源就無法驗證，攻擊者可以偽造這個封包把 client 降級。所以學成 `no` 的那一刻，伺服器對該來源記一行警告（`the first request had no Message-Authenticator, so ... (auto) became no`，指名 client 與來源位址，每個來源每個行程一次）。可以的話請明確設定 `yes`，不行就明確設 `no`。
 - 這些設定是緩解措施。設成 `no` 或 `auto` 的 client 仍有風險，根本解法是 RadSec（RADIUS over TLS，需要 rradius-enterprise）；用不了 RadSec 的設備跨不受信任的網路時，請用 VPN。
 
 **回應：** Access-Accept 和 Access-Reject 一律帶 Message-Authenticator，放在第一個屬性。Access 和 Accounting 的回應會依序複製請求中的 Proxy-State。回應超過 4096 octets 時改回 Access-Reject 並記錄（EAP 的 Access-Challenge 也一樣，會結束這段對話），連 Access-Reject 都放不下時不回應。

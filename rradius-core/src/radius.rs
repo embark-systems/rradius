@@ -2193,12 +2193,34 @@ impl RadiusServer {
         let has_authenticator = packet.attribute(MESSAGE_AUTHENTICATOR).is_some();
         let has_proxy_state = packet.attribute(PROXY_STATE).is_some();
         let mut learned = Learned::default();
+        // The settings this very request taught the server to stop asking about.
+        let mut learned_off: Vec<&str> = Vec::new();
         if client.require_message_authenticator == MessageAuthenticatorPolicy::Auto || client.limit_proxy_state == MessageAuthenticatorPolicy::Auto {
             let mut all = self.learned.lock().unwrap_or_else(PoisonError::into_inner);
             let entry = all.entry(source).or_default();
+            let first = entry.require.is_none();
             entry.require.get_or_insert(has_authenticator);
             entry.limit.get_or_insert(has_authenticator || !has_proxy_state);
             learned = *entry;
+            if first {
+                if client.require_message_authenticator == MessageAuthenticatorPolicy::Auto && entry.require == Some(false) {
+                    learned_off.push("require_message_authenticator");
+                }
+                if client.limit_proxy_state == MessageAuthenticatorPolicy::Auto && entry.limit == Some(false) {
+                    learned_off.push("limit_proxy_state");
+                }
+            }
+        }
+        if !learned_off.is_empty() {
+            // Once per source until a restart, as a source is learned once. Logged after the lock is released.
+            log_line(
+                tracing::Level::WARN,
+                format!(
+                    "RADIUS client '{}' ({source}): the first request had no Message-Authenticator, so {} (auto) became no and stays no until the server restarts; a forged first packet can switch this protection off; set it to \"yes\" or \"no\" in the client's settings",
+                    client.name,
+                    learned_off.join(" and ")
+                ),
+            );
         }
         let setting = |policy, learned: Option<bool>| match policy {
             MessageAuthenticatorPolicy::Yes => true,
@@ -4417,9 +4439,39 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn test_learning_that_none_is_required_is_logged_once() {
+        // Policies, first request, later request, whether the first request is logged.
+        for (require, limit, first, logged) in [
+            (Policy::Auto, Policy::Yes, bare_request(false), Some("require_message_authenticator")),
+            (Policy::Auto, Policy::Yes, signed_request(), None),
+            (Policy::No, Policy::Auto, bare_request(true), Some("limit_proxy_state")),
+            (Policy::No, Policy::Auto, bare_request(false), None),
+            (Policy::No, Policy::No, bare_request(false), None),
+            (Policy::Yes, Policy::Yes, signed_request(), None),
+        ] {
+            let server = enforcing_server(require, limit).await;
+            let log = crate::test_support::radius::logged_during(async {
+                for _ in 0..3 {
+                    let _ = server.handle_auth(&first, LOCALHOST).await;
+                }
+            })
+            .await;
+            let warnings: Vec<&str> = log.lines().filter(|line| line.contains("WARN")).collect();
+            match logged {
+                Some(setting) => {
+                    assert_eq!(warnings.len(), 1, "{log}");
+                    assert!(warnings[0].contains(setting) && warnings[0].contains("127.0.0.1") && warnings[0].contains("'"), "{log}");
+                }
+                None => assert!(warnings.is_empty(), "{log}"),
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_invalid_message_authenticator_is_not_learned() {
         let server = enforcing_server(Policy::Auto, Policy::Yes).await;
-        assert!(server.handle_auth(&badly_signed_request(), LOCALHOST).await.is_none());
+        let log = crate::test_support::radius::logged_during(async { assert!(server.handle_auth(&badly_signed_request(), LOCALHOST).await.is_none()) }).await;
+        assert!(!log.contains("became no"), "an invalid first packet is not learned from: {log}");
         // Still `auto`: this first valid request decides, and has none.
         assert!(server.handle_auth(&bare_request(false), LOCALHOST).await.is_some());
         assert!(server.handle_auth(&bare_request(false), LOCALHOST).await.is_some());
