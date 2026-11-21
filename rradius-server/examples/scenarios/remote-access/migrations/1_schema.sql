@@ -1,7 +1,7 @@
 -- 跳板機的兩步驟驗證（two-step-totp.lua 用的表）和計費。
 CREATE TABLE mfa_users (
   username TEXT PRIMARY KEY,
-  password TEXT,                          -- two-step-totp.lua 比對明文；要雜湊請自行改寫腳本
+  password TEXT,                          -- 帶前綴的儲存密碼，例如 {crypt}$6$... 或 {argon2}$...；two-step-totp.lua 用 password_verify 驗證
   totp_secret TEXT,                       -- Base32，和使用者手機上的驗證器 App 相同
   last_step INTEGER NOT NULL DEFAULT 0,
   failed_attempts INTEGER NOT NULL DEFAULT 0,

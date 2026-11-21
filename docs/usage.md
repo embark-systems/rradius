@@ -1827,6 +1827,7 @@ max_entries = 100000          # 每個節點最多記住幾個鍵，預設 10000
 | `db_execute(name, sql [, params])` | 在 `[databases.<name>]` 執行寫入，回傳受影響的列數 |
 | `now_unix()` | 目前的 Unix 時間（秒） |
 | `totp_verify(secret, code)` | 以 RFC 6238 驗證 TOTP 驗證碼（HMAC-SHA-1、6 位數、30 秒一步，前後各容許一步）。符合時回傳時間步，否則回傳 `nil`；`secret` 不是 Base32 時腳本出錯 |
+| `password_verify(stored, given)` | 用驗證鏈比對 PAP 密碼的方式，檢查 `given` 是不是儲存值 `stored` 對應的密碼，回傳 `true` 或 `false`。支援所有儲存格式（明文、`{clear}`、`{crypt}`、`{argon2}`、`{SHA}`、`{nthash}` 等，見第 5 節），慢的雜湊在請求執行緒之外計算，並套用 `[auth.password_limits]` 的成本上限、沒有前綴的雜湊不當密碼、沒有前綴的摘要警告，也計入 `rradius_password_checks_total`。`stored` 要是文字；`stored` 或 `given` 是 `nil`、`stored` 去掉前綴後是空的、或被上述規則拒絕時回傳 `false`，不會讓腳本出錯。警告指名請求的 `User-Name`，不含儲存值與密碼。**不計失敗、不鎖定：** 直接由腳本驗證的登入不受 `[auth.lockout]` 保護，要限制猜測就改用 `[auth]` 驗證鏈 |
 | `random_token()` | 回傳 32 個十六進位字元的隨機值，可用來產生 `State` |
 | `wpa_pmk(passphrase, ssid)` | 回傳 WPA2 的 PMK（PBKDF2-HMAC-SHA1、4096 輪、32 octets）的 64 個小寫十六進位字元。`passphrase` 要是 8–63 個可列印 ASCII 字元（或 64 個十六進位字元的 PSK，原樣回傳），`ssid` 要是 1–32 octets，否則腳本出錯，訊息不含密碼。每次呼叫都要跑 4096 輪，約數毫秒，見 2.15 節 |
 | `send_disconnect`、`send_coa` | 要求 NAS 中斷連線或變更權限（RFC 5176），需要 rradius-enterprise；rradius-server 呼叫時腳本出錯 |
@@ -1881,7 +1882,7 @@ db_execute('billing', 'INSERT INTO acct (id, octets) VALUES (?, ?)', {get_attr('
 
 **Access-Challenge 能帶的屬性：** `Reply-Message`、最多一個 `State`、廠商屬性、`Idle-Timeout`、`Session-Timeout`（RFC 2865 第 4.4 節）。帶了其他屬性時會改回 Access-Reject 並記錄原因。設備會把 `State` 原樣帶回下一個請求，腳本用 `get_attr('State')` 讀取。
 
-**兩步驟驗證範例：** 見 [`rradius-server/examples/two-step-totp.lua`](../rradius-server/examples/two-step-totp.lua)，檔案開頭有需要的資料表，測試也直接執行這份腳本。第一個請求檢查密碼，回傳 `'challenge'`；第二個請求帶回 `State`，`User-Password` 是驗證碼。範例處理了這些事，自己寫腳本時也要處理：
+**兩步驟驗證範例：** 見 [`rradius-server/examples/two-step-totp.lua`](../rradius-server/examples/two-step-totp.lua)，檔案開頭有需要的資料表，測試也直接執行這份腳本；密碼欄存帶前綴的雜湊（例如 `{crypt}$6$...`、`{argon2}...`），用 `password_verify` 驗證。密碼那一步刻意不限制次數（否則知道帳號名稱的人可以把受害者鎖住），要限制就在 `[auth]` 驗證鏈驗密碼、由 `[auth.lockout]` 計數，腳本只處理驗證碼。第一個請求檢查密碼，回傳 `'challenge'`；第二個請求帶回 `State`，`User-Password` 是驗證碼。範例處理了這些事，自己寫腳本時也要處理：
 
 - **挑戰只能用一次，而且會過期：** `State` 存在資料庫，用 `DELETE` 回傳的列數確認是否由這個請求取得。
 - **驗證碼只能用一次：** 把 `totp_verify` 回傳的時間步存起來，只接受更新的時間步。只回傳對錯的話做不到這點，RFC 6238 也要求防止重複使用。

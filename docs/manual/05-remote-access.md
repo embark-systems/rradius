@@ -126,7 +126,7 @@ pam_radius 會把 Access-Challenge 的 `Reply-Message` 顯示給使用者，再�
 
 ### 換成自己的帳號
 
-- `two-step-totp.lua` 的密碼存在 `mfa_users.password`，**以明文比對。** 要用雜湊或改用 LDAP 驗證密碼，就要改寫腳本：例如串接改成 `all_accept`，前面放 LDAP 處理器比對密碼，腳本只做驗證碼。這時第二步的「密碼」是驗證碼，LDAP 會拒絕，所以腳本要在有 `State` 時接手，寫法較複雜，建議先在測試環境確認。
+- `two-step-totp.lua` 的密碼存在 `mfa_users.password`，**存帶前綴的雜湊**（例如 `{crypt}$6$...`、`{argon2}...`；範例資料用 SHA-512 crypt），腳本用 `password_verify` 驗證，格式與驗證鏈相同。**密碼那一步沒有次數限制**：直接由腳本驗證的登入不受 `[auth.lockout]` 保護，而範例只限制驗證碼的猜測（連續 5 次錯鎖 5 分鐘），因為限制密碼會讓知道帳號的人把受害者鎖住。要限制密碼猜測，改成 `all_accept`，前面放 LDAP 或資料庫處理器比對密碼、由 `[auth.lockout]` 計數，腳本只做驗證碼。這時第二步的「密碼」是驗證碼，前面的處理器會拒絕，所以腳本要在有 `State` 時接手，寫法較複雜，建議先在測試環境確認。
 - 驗證碼金鑰用 Base32，每人一把，產生後以 QR code（`otpauth://totp/...`）給使用者掃描。
 - rradius-enterprise 有內建的雙因素（`[mfa]`）：client 加一行 `mfa = "challenge"`，密碼照樣由 LDAP 或資料表比對，驗證碼由程式處理，不必寫這份腳本，也支援 TACACS+ 和 HOTP 硬體 token。
 

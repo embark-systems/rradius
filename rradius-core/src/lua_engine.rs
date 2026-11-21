@@ -1972,7 +1972,7 @@ impl mlua::UserData for RequestData {}
 /// `...` keeps the script's arguments where the script put them, so a wrong one is
 /// reported at the same position as before.
 const BINDER: &str = r#"
-local meta, get_attr, get_attrs, set_attr, sql_query, sql_execute, db_query, db_execute, log, send_disconnect, send_coa, http_request, url_encode, now_unix, totp_verify, random_token, wpa_pmk = ...
+local meta, get_attr, get_attrs, set_attr, sql_query, sql_execute, db_query, db_execute, log, send_disconnect, send_coa, http_request, url_encode, now_unix, totp_verify, random_token, wpa_pmk, password_verify = ...
 local setmetatable = setmetatable
 return function(request, protocol, phase, client, auth_user, replayed, eap_method, tls_subject, tls_subject_attrs, radsec_subject, radsec_subject_attrs)
 	local env = setmetatable({
@@ -2000,6 +2000,7 @@ return function(request, protocol, phase, client, auth_user, replayed, eap_metho
 		totp_verify = totp_verify,
 		random_token = random_token,
 		wpa_pmk = wpa_pmk,
+		password_verify = function(...) return password_verify(request, ...) end,
 	}, meta)
 	if http_request then
 		env.http_request = function(...) return http_request(request, ...) end
@@ -2347,13 +2348,27 @@ impl LuaAuthEngine {
             Ok(crate::common::hex::encode_hex(&pmk[..]))
         })?;
 
+        // The check of a PAP login against a stored password, as the authentication chain makes
+        // it: every format, the cost limits, the unprefixed hashes. Nothing here counts failures.
+        let password_verify = request_async_function(lua, |_, request, (stored, given): (Option<String>, Option<mlua::LuaString>)| {
+            let user = request.attributes.iter().find(|(name, _)| name == "User-Name").and_then(|(_, value)| match value {
+                AttrValue::Bytes(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+                AttrValue::Number(_) => None,
+            });
+            let given = given.map(|given| given.as_bytes().to_vec());
+            async move {
+                let (Some(stored), Some(given)) = (stored, given) else { return Ok(false) };
+                Ok(crate::auth_chain::verify_secret(&stored, user.as_deref().unwrap_or(""), &crate::auth_chain::Secret::pap(given)).await.is_some())
+            }
+        })?;
+
         // More than a tuple converts: in the order BINDER takes them, nil for those left out.
         let function = |function: Option<Function>| function.map_or(Value::Nil, Value::Function);
         let arguments: MultiValue = [Value::Table(meta)]
             .into_iter()
             .chain([get_attr, get_attrs, set_attr, sql_query, sql_execute, db_query, db_execute, log, send_disconnect, send_coa].map(Value::Function))
             .chain([function(http_request), function(url_encode)])
-            .chain([clock, totp_verify, random_token, wpa_pmk].map(Value::Function))
+            .chain([clock, totp_verify, random_token, wpa_pmk, password_verify].map(Value::Function))
             .collect();
         lua.load(BINDER).set_name("=rradius").call(arguments)
     }
@@ -2599,6 +2614,55 @@ pub(crate) mod tests {
         let wrong: Option<u64> = lua.load(format!("return totp_verify('{SECRET}', 'abcdef')")).eval_async().await.unwrap();
         assert_eq!(wrong, None);
         assert!(lua.load("return totp_verify('not base32!', '123456')").exec_async().await.is_err());
+    }
+
+    /// Spec Stored Password Verification From Scripts: the check of the authentication chain,
+    /// for a script.
+    #[tokio::test]
+    async fn test_password_verify_from_a_script() -> Result<(), String> {
+        let lua = engine_with_test_db().await.new_state(&test_request()).map_err(|e| e.to_string())?;
+        macro_rules! check {
+            ($call:expr) => {
+                lua.load(format!("return {}", $call)).eval_async::<bool>().await.map_err(|e| format!("{}: {e}", $call))?
+            };
+        }
+        let sha512 = pwhash::sha512_crypt::hash("secret").map_err(|e| e.to_string())?;
+        assert!(check!(format!("password_verify('{{crypt}}{sha512}', 'secret')")));
+        assert!(!check!(format!("password_verify('{{crypt}}{sha512}', 'other')")));
+        assert!(check!("password_verify('hunter2', 'hunter2')") && check!("password_verify('{clear}hunter2', 'hunter2')"));
+        assert!(!check!("password_verify('hunter2', 'hunter3')"));
+        for nothing in ["password_verify(nil, 'x')", "password_verify('{clear}', '')", "password_verify('', '')", "password_verify('{argon2}x', nil)", "password_verify(nil, nil)"] {
+            assert!(!check!(nothing), "{nothing}");
+        }
+        // A hash without its prefix is not a password, not even when it is sent as one.
+        let bcrypt = "$2y$04$i9AYrtz6ptiaUcesbfLap.sLiLXOvohQ9gYya7aS8q4sz5.UJ0FGW";
+        assert!(!check!(format!("password_verify('{bcrypt}', '{bcrypt}')")));
+        // The cost it asks for is over the limit: refused, as the chain does.
+        assert!(!check!("password_verify('{PBKDF2-SHA256}4294967295$c2FsdA$AAAA', 'x')"));
+        // It is counted like any check.
+        let before = crate::passwords::checks_counted("sha", true);
+        assert!(check!("password_verify('{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=', 'password')"));
+        assert!(crate::passwords::checks_counted("sha", true) > before);
+        Ok(())
+    }
+
+    /// The warnings of `password_verify` name the request's User-Name, and hold neither the
+    /// stored value nor the password.
+    #[tokio::test]
+    async fn test_password_verify_warnings_name_the_user() -> Result<(), String> {
+        let request = LuaRequest::new("radius", "authentication", vec![("User-Name".to_string(), AttrValue::Bytes(b"verify-alice".to_vec()))]);
+        let lua = engine_with_test_db().await.new_state(&request).map_err(|e| e.to_string())?;
+        let digest = "8846f7eaee8fb117ad06bdd830b7586c";
+        let log = crate::test_support::radius::logged_during(async {
+            // A digest with no prefix is still compared as plaintext, and says so.
+            let accepted = lua.load(format!("return password_verify('{digest}', 'not-the-digest-pw')")).eval_async::<bool>().await;
+            assert_eq!(accepted.ok(), Some(false));
+        })
+        .await;
+        let warnings: Vec<&str> = log.lines().filter(|line| line.contains("WARN")).collect();
+        assert_eq!(warnings.len(), 1, "{log}");
+        assert!(warnings[0].contains("verify-alice") && !warnings[0].contains(digest) && !warnings[0].contains("not-the-digest-pw"), "{log}");
+        Ok(())
     }
 
     #[tokio::test]
