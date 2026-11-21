@@ -82,6 +82,10 @@ zh-TW = "每個節點最多記住幾個鍵。滿了先丟過期的，再丟最�
 en = "Failures of one account from any device that lock it for every device; must be greater than max_failures. Not set: no account-wide limit. A guesser can use it to lock out the account."
 zh-TW = "同一個帳號不分來源的失敗總數，達到就對所有來源鎖定；必須大於 max_failures。不設定就沒有帳號總上限。猜密碼的人可以用它把帳號鎖住。"
 
+[fields."auth.lockout.max_in_flight"]
+en = "Logins of one key that may be waiting for a decision at once; one more is rejected. The account-wide limit scales with account_max_failures. Default 5 times max_failures."
+zh-TW = "同一個鍵同時最多有幾個登入在等待判定，多的直接拒絕。帳號總上限依 account_max_failures 按比例放大。預設是 max_failures 的 5 倍。"
+
 [fields."auth.password_limits"]
 en = "The most a stored hash may ask of one password check. A hash above a limit is refused without being computed, like a wrong password. Every key has a default, so the limits hold without this section."
 zh-TW = "儲存的雜湊在一次密碼比對裡最多可以要求多少成本。超過上限的雜湊不計算，直接當作密碼錯誤拒絕。每個鍵都有預設值，沒寫這一節上限照樣生效。"

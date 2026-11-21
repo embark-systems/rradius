@@ -2,7 +2,9 @@
 //! on a key that fails too often. The counts are in this node's memory.
 //!
 //! A login takes a place before it is checked and gives it back after, so that a burst of
-//! logins that all start before any has failed cannot guess more often than the limit says.
+//! logins that all start before any has failed cannot guess more often than `max_in_flight`
+//! allows. The places are limited apart from the failures: logins waiting do not use up the
+//! failure limit.
 
 use crate::config::LockoutSettings;
 use crate::metrics::{write_family, Counter};
@@ -47,10 +49,10 @@ impl Entry {
         self.pending == 0 && self.stale(now, window)
     }
 
-    /// Whether one more login can be let through: not locked, and the failures it has and the
-    /// logins still being decided do not already add up to `limit`.
-    fn full(&self, now: Instant, limit: u32) -> bool {
-        self.locked(now) || self.count.saturating_add(self.pending) >= limit
+    /// Whether one more login can be let through: not locked, and fewer than `in_flight` logins
+    /// still being decided. Failures reach their own limit in `Lockout::count`.
+    fn full(&self, now: Instant, in_flight: u32) -> bool {
+        self.locked(now) || self.pending >= in_flight
     }
 }
 
@@ -116,7 +118,7 @@ impl Lockout {
     }
 
     /// Takes a place for a login of `account` from `origin`, or `None`, counting it as rejected,
-    /// when its key or its account is locked or already has as many logins coming as it may fail.
+    /// when its key or its account is locked or already has `max_in_flight` logins waiting for a decision.
     pub fn admit(&self, account: &str, origin: &str, now: Instant) -> Option<Reservation<'_>> {
         let mut table = self.table.lock();
         let Some(settings) = table.settings else {
@@ -125,7 +127,11 @@ impl Lockout {
         let account = account_key(account);
         let origin_key = (account.clone(), Some(origin.to_string()));
         let account_key = (account, None);
-        let limits = [(&origin_key, settings.max_failures), (&account_key, settings.account_max_failures.unwrap_or(u32::MAX))];
+        let account_in_flight = settings.account_max_failures.map_or(u32::MAX, |account| {
+            let scaled = (u64::from(settings.max_in_flight) * u64::from(account)).div_ceil(u64::from(settings.max_failures));
+            u32::try_from(scaled).unwrap_or(u32::MAX)
+        });
+        let limits = [(&origin_key, settings.max_in_flight), (&account_key, account_in_flight)];
         for (key, limit) in limits {
             if table.entries.get(key).is_some_and(|entry| entry.expired(now, settings.window)) {
                 table.entries.remove(key);
@@ -290,7 +296,7 @@ mod tests {
     use super::*;
 
     fn settings() -> LockoutSettings {
-        LockoutSettings { max_failures: 10, window: Duration::from_secs(300), lock: Duration::from_secs(300), max_entries: 100_000, account_max_failures: None }
+        LockoutSettings { max_failures: 10, window: Duration::from_secs(300), lock: Duration::from_secs(300), max_entries: 100_000, account_max_failures: None, max_in_flight: 50 }
     }
 
     fn lockout(settings: LockoutSettings) -> Lockout {
@@ -494,24 +500,60 @@ mod tests {
         }
     }
 
-    /// Logins that start before any is decided cannot together guess more often than the limit.
+    /// Logins waiting for a decision are limited by `max_in_flight`, not by the failure limit.
     #[test]
-    fn test_logins_in_flight_count_against_the_limit() {
-        let lockout = lockout(LockoutSettings { max_failures: 3, ..settings() });
+    fn test_logins_in_flight_do_not_use_up_the_failure_limit() {
+        let lockout = lockout(LockoutSettings { max_failures: 3, max_in_flight: 15, ..settings() });
         let now = Instant::now();
-        let started: Vec<_> = (0..50).filter_map(|_| lockout.admit("alice", DEVICE, now)).collect();
-        assert_eq!(started.len(), 3);
-        assert_eq!(lockout.rejected.get(), 47);
-        // One that ends without a decision gives its place back; a failure counts.
-        let mut started = started.into_iter();
-        drop(started.next());
-        let replacement = lockout.admit("alice", DEVICE, now);
-        assert!(replacement.is_some());
+        let started: Vec<_> = (0..10).filter_map(|_| lockout.admit("alice", DEVICE, now)).collect();
+        assert_eq!(started.len(), 10);
+        assert_eq!(lockout.rejected.get(), 0);
+        for reservation in started {
+            reservation.succeed();
+        }
+        assert!(lockout.admit("alice", DEVICE, now).is_some());
+        assert_eq!(lockout.lockouts.get(), 0);
+    }
+
+    /// A full set of places turns the next login away; a place given back can be taken again.
+    #[test]
+    fn test_in_flight_limit_rejects_and_frees() {
+        let lockout = lockout(LockoutSettings { max_failures: 3, max_in_flight: 5, ..settings() });
+        let now = Instant::now();
+        let mut started: Vec<_> = (0..5).filter_map(|_| lockout.admit("alice", DEVICE, now)).collect();
+        assert_eq!(started.len(), 5);
+        assert!(lockout.admit("alice", DEVICE, now).is_none());
+        assert_eq!(lockout.rejected.get(), 1);
+        drop(started.pop());
+        assert!(lockout.admit("alice", DEVICE, now).is_some());
+    }
+
+    /// A burst that all fails guesses at most `max_in_flight` times, and then the key is locked.
+    #[test]
+    fn test_burst_of_failures_is_bounded_by_in_flight() {
+        let lockout = lockout(LockoutSettings { max_failures: 3, max_in_flight: 5, ..settings() });
+        let now = Instant::now();
+        let started: Vec<_> = (0..20).filter_map(|_| lockout.admit("alice", DEVICE, now)).collect();
+        assert_eq!(started.len(), 5);
         for reservation in started {
             reservation.fail(now);
         }
-        // Two failures and the one place just taken: the next is turned away until that is decided.
         assert!(lockout.admit("alice", DEVICE, now).is_none());
+        assert_eq!(lockout.lockouts.get(), 1);
+    }
+
+    /// The account across all origins has `max_in_flight` scaled by `account_max_failures / max_failures`.
+    #[test]
+    fn test_account_in_flight_limit_scales() {
+        let lockout = lockout(LockoutSettings { max_failures: 10, max_in_flight: 50, account_max_failures: Some(30), ..settings() });
+        let now = Instant::now();
+        let mut started = Vec::new();
+        for n in 0..200 {
+            if let Some(reservation) = lockout.admit("alice", &format!("device-{n}"), now) {
+                started.push(reservation);
+            }
+        }
+        assert_eq!(started.len(), 150);
     }
 
     /// An entry with a login waiting is not dropped to make room.

@@ -1108,7 +1108,7 @@ mod tests {
     }
 
     fn lockout_settings(max_failures: u32) -> crate::config::LockoutSettings {
-        crate::config::LockoutSettings { max_failures, window: Duration::from_secs(300), lock: Duration::from_secs(300), max_entries: 1000, account_max_failures: None }
+        crate::config::LockoutSettings { max_failures, window: Duration::from_secs(300), lock: Duration::from_secs(300), max_entries: 1000, account_max_failures: None, max_in_flight: max_failures.saturating_mul(5) }
     }
 
     fn from_device(protocol: &'static str, attribute: &str, device: &str) -> LuaRequest {
@@ -1128,7 +1128,7 @@ mod tests {
         Ok((chain, lockout))
     }
 
-    /// Wrong logins that all start together do not get more guesses than the limit.
+    /// Wrong logins that all start together do not get more guesses than `max_in_flight`.
     #[tokio::test]
     async fn test_parallel_wrong_logins_stop_at_the_limit() -> Result<(), String> {
         let (chain, _lockout) = lockout_chain("lock_parallel", 3, Duration::from_secs(5)).await?;
@@ -1136,8 +1136,22 @@ mod tests {
         let guesses = ["g"; 50].map(|g| pap("alice", g));
         let results = futures::future::join_all(guesses.iter().map(|credentials| chain.authenticate(credentials, &here))).await;
         let checked = results.iter().filter(|result| result.handler == "sql").count();
-        assert_eq!(checked, 3, "only as many as the limit reach the password check");
-        assert_eq!(results.iter().filter(|result| result.handler == "lockout").count(), 47);
+        assert_eq!(checked, 15, "only as many as max_in_flight reach the password check");
+        assert_eq!(results.iter().filter(|result| result.handler == "lockout").count(), 35);
+        Ok(())
+    }
+
+    /// Spec Authentication Failure Lockout: right logins that are decided together do not use up
+    /// the failure limit.
+    #[tokio::test]
+    async fn test_parallel_right_logins_are_not_rejected() -> Result<(), String> {
+        let (chain, lockout) = lockout_chain("lock_parallel_right", 3, Duration::from_secs(5)).await?;
+        let here = from_device("radius", "Calling-Station-Id", "AA-BB-CC-DD-EE-01");
+        let logins = ["secret"; 10].map(|password| pap("alice", password));
+        let results = futures::future::join_all(logins.iter().map(|credentials| chain.authenticate(credentials, &here))).await;
+        assert!(results.iter().all(|result| result.accepted() && result.handler != "lockout"), "{results:?}");
+        assert_eq!((lockout.lockouts.get(), lockout.rejected.get()), (0, 0));
+        assert!(chain.authenticate(&pap("alice", "secret"), &here).await.accepted());
         Ok(())
     }
 

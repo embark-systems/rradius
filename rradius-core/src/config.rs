@@ -367,6 +367,8 @@ pub struct LockoutSettings {
     pub max_entries: usize,
     /// Failures of one account from any origin that lock it for every origin.
     pub account_max_failures: Option<u32>,
+    /// Logins of one key that may be waiting for a decision at once.
+    pub max_in_flight: u32,
 }
 
 /// One member of the hiqlite cluster.
@@ -902,6 +904,7 @@ struct RawLockout {
     #[serde(default = "default_lockout_max_entries")]
     max_entries: usize,
     account_max_failures: Option<u32>,
+    max_in_flight: Option<u32>,
 }
 
 fn default_lockout_max_failures() -> u32 {
@@ -927,7 +930,11 @@ fn lockout_settings(raw: RawLockout) -> Result<LockoutSettings, String> {
             return Err(format!("auth.lockout.account_max_failures must be greater than max_failures ({}), not {account}", raw.max_failures));
         }
     }
-    Ok(LockoutSettings { max_failures: raw.max_failures, window: Duration::from_secs(raw.window_seconds), lock: Duration::from_secs(raw.lock_seconds), max_entries: raw.max_entries, account_max_failures: raw.account_max_failures })
+    if raw.max_in_flight == Some(0) {
+        return Err("auth.lockout.max_in_flight must be greater than 0".to_string());
+    }
+    let max_in_flight = raw.max_in_flight.unwrap_or_else(|| raw.max_failures.saturating_mul(5));
+    Ok(LockoutSettings { max_failures: raw.max_failures, window: Duration::from_secs(raw.window_seconds), lock: Duration::from_secs(raw.lock_seconds), max_entries: raw.max_entries, account_max_failures: raw.account_max_failures, max_in_flight })
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -3972,13 +3979,16 @@ mod tests {
         assert_eq!(result.map_err(|e| e.to_string())?.auth.ok_or("no [auth]")?.lockout, None);
         let defaults = lockout("")?.ok_or("no lockout")?;
         assert_eq!((defaults.max_failures, defaults.window, defaults.lock, defaults.max_entries, defaults.account_max_failures), (10, Duration::from_secs(300), Duration::from_secs(300), 100_000, None));
-        let every = lockout("max_failures = 3\nwindow_seconds = 60\nlock_seconds = 900\nmax_entries = 50\naccount_max_failures = 20\n")?.ok_or("no lockout")?;
-        assert_eq!((every.max_failures, every.window, every.lock, every.max_entries, every.account_max_failures), (3, Duration::from_secs(60), Duration::from_secs(900), 50, Some(20)));
+        assert_eq!(defaults.max_in_flight, 50);
+        let every = lockout("max_failures = 3\nwindow_seconds = 60\nlock_seconds = 900\nmax_entries = 50\naccount_max_failures = 20\nmax_in_flight = 7\n")?.ok_or("no lockout")?;
+        assert_eq!((every.max_failures, every.window, every.lock, every.max_entries, every.account_max_failures, every.max_in_flight), (3, Duration::from_secs(60), Duration::from_secs(900), 50, Some(20), 7));
+        assert_eq!(lockout("max_failures = 4\n")?.ok_or("no lockout")?.max_in_flight, 20);
         for (body, expected) in [
             ("max_failures = 0\n", "auth.lockout.max_failures must be greater than 0"),
             ("window_seconds = 0\n", "auth.lockout.window_seconds must be greater than 0"),
             ("lock_seconds = 0\n", "auth.lockout.lock_seconds must be greater than 0"),
             ("max_entries = 0\n", "auth.lockout.max_entries must be greater than 0"),
+            ("max_in_flight = 0\n", "auth.lockout.max_in_flight must be greater than 0"),
             ("account_max_failures = 10\n", "account_max_failures must be greater than max_failures (10), not 10"),
             ("max_failures = 10\naccount_max_failures = 5\n", "account_max_failures must be greater than max_failures"),
             ("colour = \"red\"\n", "colour"),
