@@ -591,6 +591,7 @@ impl Metrics {
         write_family(&mut out, "rradius_build_info", "gauge", "Always 1; the version of the program in its label.", &[(&format!("{{version=\"{}\"}}", label_value(version)), 1)]);
         write_family(&mut out, "rradius_start_time_seconds", "gauge", "The Unix time the program started; 0 when unknown.", &[("", started)]);
         self.auth_lockout.render(&mut out);
+        crate::passwords::render_checks(&mut out);
         extensions.render_metrics(&mut out);
         out
     }
@@ -925,6 +926,21 @@ mod tests {
         assert!((before..=after).contains(&started), "{started} not in {before}..={after}");
         assert!(Metrics::default().render().contains("rradius_build_info{version=\"unknown\"} 1\n"));
         Ok(())
+    }
+
+    /// The password check counters are in the text from the start, every format with both
+    /// results, and no label holds a value outside the fixed set.
+    #[test]
+    fn test_password_check_counters_are_always_rendered() {
+        let rendered = Metrics::default().render();
+        let lines: Vec<&str> = rendered.lines().filter(|line| line.starts_with("rradius_password_checks_total{")).collect();
+        assert_eq!(lines.len(), crate::passwords::SCHEME_LABELS.len() * 2, "{rendered}");
+        for line in &lines {
+            let scheme = line.split("scheme=\"").nth(1).and_then(|rest| rest.split('"').next()).unwrap_or_default();
+            assert!(crate::passwords::SCHEME_LABELS.contains(&scheme), "{line}");
+            assert!(line.contains("result=\"ok\"") || line.contains("result=\"failed\""), "{line}");
+        }
+        assert!(rendered.contains("# TYPE rradius_password_checks_total counter\n"));
     }
 
     #[tokio::test]

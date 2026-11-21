@@ -215,6 +215,7 @@ lock_seconds = 300
 | `rradius_eap_sessions_total{result="timeout"}`、`{result="evicted"}` | 沒走完的、被擠掉的 802.1X 對話 | 持續增加，見[第 12 章](12-troubleshooting.md#wi-fi8021x) |
 | `rradius_script_http_requests_total{result="timeout"}` | 腳本呼叫的 API 逾時 | 增加：API 有問題 |
 | `rradius_reload_total{result="error"}` | 重新載入失敗 | 大於 0 就要看記錄 |
+| `rradius_password_checks_total{scheme="md5",...}` 等舊格式 | 還有人用偏弱的舊雜湊登入 | 只是看進度，不是警報：`ok` 一直在增加表示還有人沒換，見[第 9 章](09-migrate-users.md#把舊格式換掉) |
 | `rradius_log_dropped_lines_total` | 記錄來不及寫 | 增加：記錄的去處太慢 |
 | `rradius_radius_response_seconds`、`rradius_tacacs_response_seconds` | 回應花了多久 | p99 變大：資料庫、目錄或腳本變慢，見下面的查詢 |
 | `rradius_external_db_failures_total{reason="unavailable"}` | 外部資料庫（MySQL、PostgreSQL）連不上或逾時 | 增加：資料庫、網路或帳號有問題；`reason="mistake"` 增加是 SQL 或值的錯 |

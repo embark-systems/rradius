@@ -827,6 +827,7 @@ port = 9812         # 預設
 | `rradius_external_db_connections_max{database="..."}` | 連線池的上限，也就是 `pool_size`。`in_use` 一直等於它時，呼叫在排隊等連線 |
 | `rradius_external_db_reachable{database="..."}` | 只有設了 `required_for_ready` 的資料庫才有：檢查連得上是 1，否則 0（2.17 節） |
 | `rradius_reload_total{result="ok\|error"}` | 重新載入的結果 |
+| `rradius_password_checks_total{scheme="...",result="ok\|failed"}` | 登入與儲存的密碼比對的次數，依儲存值的格式與結果分開；格式的固定集合與怎麼用它淘汰舊格式見第 5 節 |
 | `rradius_reload_last_success_timestamp_seconds` | 上次成功重新載入的時間，還沒有時是 0 |
 | `rradius_radius_requests_in_progress{kind="auth\|acct"}` | 目前正在處理的登入、計費請求數 |
 | `rradius_radius_requests_limit{kind="auth\|acct"}` | 同時處理的上限，也就是 `max_auth_inflight`、`max_acct_inflight`（2.4 節）。正在處理的數量接近它時，再來的封包會以 `overload` 丟棄 |
@@ -2114,6 +2115,31 @@ CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固�
 `{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradius-server user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
 
 `{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時視為拒絕。`{argon2}` 的成本由雜湊本身的參數決定，設得太高時認證會變慢，也會用掉更多記憶體。
+
+### 哪些格式偏弱，怎麼逐步淘汰
+
+沒有設定開關停用任何格式：其中多數是搬帳號、或 CHAP 與 MS-CHAP 這些協定需要的，一關就會有人登不進來。要淘汰得先知道還在用哪些，所以有統計可以看。
+
+- **偏弱、只應該用來遷移：** `{MD5}`、`{SMD5}`、`{SHA}`、`{SSHA}`、`{SHA224}`、`{SHA256}`、`{SHA384}`、`{SHA512}` 與它們加鹽的版本、`{NS-MTA-MD5}`：都是只算一次的雜湊，攻擊者拿到資料庫之後可以很快地猜。以 SHA-1 推導的 `{PBKDF2}` 與 `{PBKDF2-SHA1}`有迭代，但演算法老。`{crypt}` 裡的 DES 與 `$1$`（MD5-crypt）也是老格式。
+- **弱，但協定需要，不能淘汰：** `{nthash}`（沒有鹽的 MD4）與明文、`{clear}`。CHAP 需要明文，MS-CHAP、MS-CHAPv2、PEAP 需要明文或 `{nthash}`（5.1 節）。這些帳號要靠資料庫的存取控制保護，也不要讓不需要的帳號用它們。
+- **新帳號用：** `{crypt}` 的 bcrypt、`$5$`、`$6$`，或 `{argon2}`（見上面）。
+
+**用統計看還在用什麼：** `rradius_password_checks_total{scheme="...",result="ok|failed"}` 記每一次用儲存的密碼比對登入（PAP、CHAP、MS-CHAP、MS-CHAPv2），依儲存值的格式與結果加一。`scheme` 的值是固定的：`clear`、`none`（沒有前綴的明文）、`crypt`、`md5`、`smd5`、`sha`、`ssha`、`sha224`、`ssha224`、`sha256`、`ssha256`、`sha384`、`ssha384`、`sha512`、`ssha512`、`pbkdf2-sha1`（`{PBKDF2}` 也算在這裡）、`pbkdf2-sha256`、`pbkdf2-sha512`、`x-pbkdf2`、`ns-mta-md5`、`nthash`、`argon2`、`unknown`（不認得的前綴），每個格式兩個結果的組合從啟動就有，沒發生過的是 0。資料庫裡寫什麼前綴都不會變成標籤。格式是 `unknown` 或結果一直是 `failed` 的，多半是匯入的值有問題，見上面沒有前綴的雜湊。LDAP 的 `bind` 模式、`netlogon`、Lua 處理器與憑證登入不比對儲存的密碼，不計。空值、沒有前綴的雜湊與逾時也不計。
+
+這個統計只看到有人登入的帳號，從沒登入過的舊帳號不會出現。要盤點資料庫裡全部帳號的格式，用查詢（`users` 與 `password` 換成你的資料表與欄位）：
+
+```sql
+SELECT CASE WHEN password LIKE '{%}%' THEN lower(substr(password, 1, instr(password, '}')))
+            ELSE 'none' END AS scheme,
+       count(*) AS accounts
+FROM users
+GROUP BY scheme
+ORDER BY accounts DESC, scheme;
+```
+
+這個查詢在 SQLite 跑過：沒有前綴的值（包含少了 `}` 的 `{broken`）算 `none`，前綴不分大小寫，`{SSHA}` 與 `{ssha}` 算在一起。其他資料庫的函式名稱可能不同。
+
+**淘汰的做法：** 先盤點，再看統計：某個偏弱格式盤點是 0 之前還不算淘汰，盤點有帳號、統計卻長期沒有成功登入的，是沒在用的帳號，可以請他們改密碼、或依期限清掉。有人還在用的帳號，用 `user passwd` 換成新格式（見手冊第 9 章）；rradius 不會在登入時自動換，也沒有停用格式的設定。
 
 ### 5.1 MS-CHAPv2
 

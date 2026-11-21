@@ -40,6 +40,70 @@ pub(crate) fn looks_like_unprefixed_hash(stored: &str) -> bool {
     split_scheme(stored).0.is_none() && MARKERS.iter().any(|marker| stored.starts_with(marker))
 }
 
+/// The formats `rradius_password_checks_total` tells apart, as its `scheme` label has them:
+/// a fixed set, so that nothing the data holds becomes a label.
+pub const SCHEME_LABELS: [&str; 23] = [
+    "clear",
+    "none",
+    "crypt",
+    "md5",
+    "smd5",
+    "sha",
+    "ssha",
+    "sha224",
+    "ssha224",
+    "sha256",
+    "ssha256",
+    "sha384",
+    "ssha384",
+    "sha512",
+    "ssha512",
+    "pbkdf2-sha1",
+    "pbkdf2-sha256",
+    "pbkdf2-sha512",
+    "x-pbkdf2",
+    "ns-mta-md5",
+    "nthash",
+    "argon2",
+    "unknown",
+];
+
+/// The label of the format `stored` is in: `none` without a prefix, `unknown` for a prefix that
+/// is not a format, and `pbkdf2-sha1` for both of its names.
+pub fn scheme_label(stored: &str) -> &'static str {
+    let (scheme, _) = split_scheme(stored);
+    let Some(scheme) = scheme else { return "none" };
+    let scheme = if scheme == "pbkdf2" { "pbkdf2-sha1" } else { scheme.as_str() };
+    SCHEME_LABELS.iter().copied().find(|label| *label == scheme && *label != "none" && *label != "unknown").unwrap_or("unknown")
+}
+
+/// Comparisons of a login against a stored password, by format and result: two places for each
+/// of `SCHEME_LABELS`, the failed ones first.
+static CHECKS: [std::sync::atomic::AtomicU64; SCHEME_LABELS.len() * 2] = [const { std::sync::atomic::AtomicU64::new(0) }; SCHEME_LABELS.len() * 2];
+
+/// Counts one comparison against a value in the format `label`, which `scheme_label` gave.
+pub fn record_check(label: &'static str, ok: bool) {
+    let Some(index) = SCHEME_LABELS.iter().position(|known| *known == label) else { return };
+    CHECKS[index * 2 + usize::from(ok)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many comparisons have been counted for `label` with this result.
+#[cfg(test)]
+pub(crate) fn checks_counted(label: &str, ok: bool) -> u64 {
+    SCHEME_LABELS.iter().position(|known| *known == label).map_or(0, |index| CHECKS[index * 2 + usize::from(ok)].load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Writes `rradius_password_checks_total` in the Prometheus text format, every combination.
+pub fn render_checks(out: &mut String) {
+    use std::fmt::Write;
+    let _ = writeln!(out, "# HELP rradius_password_checks_total Logins compared with a stored password, by the format of the stored value and the result.\n# TYPE rradius_password_checks_total counter");
+    for (index, label) in SCHEME_LABELS.iter().enumerate() {
+        for (offset, result) in ["failed", "ok"].into_iter().enumerate() {
+            let _ = writeln!(out, "rradius_password_checks_total{{scheme=\"{label}\",result=\"{result}\"}} {}", CHECKS[index * 2 + offset].load(std::sync::atomic::Ordering::Relaxed));
+        }
+    }
+}
+
 /// Checks `given` against Base64 of a digest, followed by a salt of at least one octet if
 /// `salted`: the digest covers the password and then the salt.
 fn verify_digest<D: Digest>(value: &str, given: &[u8], salted: bool) -> bool {
@@ -360,6 +424,70 @@ mod tests {
     fn test_malformed_argon2_rejects() {
         assert!(!verify_pap("{argon2}not-a-phc-string", b"password"));
         assert!(!verify_pap("{argon2}", b"password"));
+    }
+
+    /// Every supported prefix has its label, whatever its case; no prefix is `none`; a prefix that
+    /// is not a format is `unknown`, and the text of it never becomes a label.
+    #[test]
+    fn test_scheme_labels() {
+        for (stored, label) in [
+            ("{clear}x", "clear"),
+            ("{CLEAR}x", "clear"),
+            ("hunter2", "none"),
+            ("{crypt}$6$s$h", "crypt"),
+            ("{MD5}x", "md5"),
+            ("{SMD5}x", "smd5"),
+            ("{SHA}x", "sha"),
+            ("{SSHA}x", "ssha"),
+            ("{sha224}x", "sha224"),
+            ("{SSHA224}x", "ssha224"),
+            ("{SHA256}x", "sha256"),
+            ("{SSHA256}x", "ssha256"),
+            ("{SHA384}x", "sha384"),
+            ("{SSHA384}x", "ssha384"),
+            ("{SHA512}x", "sha512"),
+            ("{SSHA512}x", "ssha512"),
+            ("{PBKDF2-SHA1}x", "pbkdf2-sha1"),
+            ("{PBKDF2}x", "pbkdf2-sha1"),
+            ("{PBKDF2-SHA256}x", "pbkdf2-sha256"),
+            ("{PBKDF2-SHA512}x", "pbkdf2-sha512"),
+            ("{X-PBKDF2}x", "x-pbkdf2"),
+            ("{NS-MTA-MD5}x", "ns-mta-md5"),
+            ("{nthash}x", "nthash"),
+            ("{argon2}x", "argon2"),
+            ("{weird}x", "unknown"),
+            ("{none}x", "unknown"),
+            ("{unknown}x", "unknown"),
+            ("{", "none"),
+            ("{}x", "unknown"),
+        ] {
+            assert_eq!(scheme_label(stored), label, "{stored}");
+        }
+        // Every label a stored value can get is in the fixed set.
+        assert!(SCHEME_LABELS.contains(&scheme_label("{anything at all}x")));
+        assert_eq!(SCHEME_LABELS.len(), 23);
+    }
+
+    /// The text has every combination, in the fixed order, with what was counted.
+    #[test]
+    fn test_checks_are_rendered_for_every_combination() {
+        let (ok_before, failed_before) = (checks_counted("md5", true), checks_counted("md5", false));
+        record_check("md5", true);
+        record_check("md5", true);
+        record_check("md5", false);
+        record_check("not a label", true);
+        let mut out = String::new();
+        render_checks(&mut out);
+        let lines: Vec<&str> = out.lines().filter(|line| line.starts_with("rradius_password_checks_total{")).collect();
+        assert_eq!(lines.len(), SCHEME_LABELS.len() * 2);
+        for label in SCHEME_LABELS {
+            for result in ["failed", "ok"] {
+                assert!(lines.iter().any(|line| line.starts_with(&format!("rradius_password_checks_total{{scheme=\"{label}\",result=\"{result}\"}} "))), "{label} {result}");
+            }
+        }
+        // Other tests count md5 logins too, so at least what was counted here.
+        assert!(checks_counted("md5", true) >= ok_before + 2 && checks_counted("md5", false) > failed_before);
+        assert!(!out.contains("not a label"));
     }
 
     #[tokio::test]
