@@ -1799,7 +1799,7 @@ pub(crate) mod tests {
             timeout: std::time::Duration::from_secs(5),
         };
         let lockout = Arc::new(crate::auth_lockout::Lockout::default());
-        lockout.configure(Some(crate::config::LockoutSettings { max_failures: 3, window: std::time::Duration::from_secs(300), lock: std::time::Duration::from_secs(300), max_entries: 100, account_max_failures: None }));
+        lockout.configure(Some(crate::config::LockoutSettings { max_failures: 3, window: std::time::Duration::from_secs(300), lock: std::time::Duration::from_secs(300), max_entries: 100, account_max_failures: None, max_in_flight: 15 }));
         let chains = Arc::new(AuthChains::new(Some(AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![handler])), Vec::new()).with_lockout(lockout.clone()));
         let engine = script_engine("return 'reject'").await;
         for _ in 0..3 {
