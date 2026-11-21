@@ -193,7 +193,7 @@ lock_seconds = 300
 
 - **每個節點各自計數，重啟歸零。** 叢集裡攻擊者可以分散到各節點，所以實際上限約是節點數的倍數。
 - **「裝置」是封包自己寫的**（RADIUS 的 `Calling-Station-Id`、TACACS+ 的 `rem_addr`）。拿到共用密碼的人可以每次換一個，繞過這道鎖。要擋這種人，加 `account_max_failures = 50`：同一個帳號不分裝置失敗 50 次就全部鎖住。代價是猜密碼的人也能用它把受害者的帳號鎖住，所以預設不開。
-- **資料庫或 LDAP 故障不算失敗，** 後端掛掉不會把大家鎖在外面。
+- **資料庫、LDAP 或網域控制站故障，以及密碼驗證逾時，不算失敗，** 後端掛掉不會把大家鎖在外面；這類登入 RADIUS 不回應、TACACS+ 回 ERROR。
 - **沒設驗證鏈、直接用 `[lua].script` 驗證的登入不受保護。**
 - 看有沒有人被鎖：`rradius_auth_lockouts_total`、`rradius_auth_lockout_rejected_total`，和記錄裡的 `auth lockout:` 行（含客戶端、帳號、裝置，不含密碼）。完整說明見 `docs/usage.md` 第 3.8 節。
 

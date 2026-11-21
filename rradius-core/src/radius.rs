@@ -2329,7 +2329,7 @@ impl RadiusServer {
         // Not a refusal: the NAS sends it again, or asks a server that can reach the database.
         if unavailable {
             self.metrics.radius_discarded_database.inc();
-            log_line(tracing::Level::WARN, format!("RADIUS Access-Request from client {} not answered: the cluster database could not be used", client.name));
+            log_line(tracing::Level::WARN, format!("RADIUS Access-Request from client {} not answered: the authentication backend could not be used", client.name));
             return None;
         }
         // The chain accepted the password: the second factor asks for the code, or checks one.
@@ -5996,6 +5996,25 @@ pub(crate) mod tests {
         let refusing = RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine_with("return 'reject'", Duration::from_secs(5)), share_dictionary());
         let answer = refusing.handle_auth(&request, LOCALHOST).await.ok_or("no answer")?;
         assert_eq!(RadiusPacket::parse(&answer)?.code, ACCESS_REJECT);
+        Ok(())
+    }
+
+    /// A directory that is down leaves a login unanswered and counted, as an unavailable
+    /// database does, and logs no particular backend.
+    #[tokio::test]
+    async fn test_unavailable_directory_leaves_login_unanswered() -> Result<(), String> {
+        use crate::ldap_handler::{tests::settings, LdapHandler, PasswordCheck};
+        let url = format!("ldap://127.0.0.1:{}", crate::test_support::server::free_port());
+        let handler = LdapHandler::new(settings(vec![url], PasswordCheck::Bind)).map_err(|e| format!("{e:?}"))?;
+        let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![crate::auth_chain::Handler::Ldap(handler)]);
+        let server = RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine_with("return 'reject'", Duration::from_secs(5)), share_dictionary()).with_auth_chains(Arc::new(AuthChains::new(Some(chain), Vec::new())));
+        let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec())], b"xyzzy5461");
+        let log = crate::test_support::radius::logged_during(async {
+            assert!(server.handle_auth(&request, LOCALHOST).await.is_none(), "not answered");
+        })
+        .await;
+        assert_eq!(server.metrics.radius_discarded_database.get(), 1);
+        assert!(log.contains("not answered: the authentication backend could not be used") && !log.contains("cluster database"), "{log}");
         Ok(())
     }
 

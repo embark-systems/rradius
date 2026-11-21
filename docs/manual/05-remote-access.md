@@ -38,7 +38,7 @@ required_groups = ["CN=vpn-users,OU=Groups,DC=corp,DC=example,DC=com"]
 ```
 
 - **流程：** 用服務帳號 bind，以 `filter` 找使用者（`{user}` 會跳脫），再用使用者的 DN 和密碼 bind 一次驗證密碼。找不到就略過（交給下一個處理器），找到多筆就拒絕。
-- **`urls` 依序嘗試，** 只有連不上或逾時才換下一台。一台回錯誤（例如服務帳號密碼錯）會直接拒絕，不換台，所以服務帳號的問題會立刻浮現。
+- **`urls` 依序嘗試，** 只有連不上或逾時才換下一台。一台回錯誤（例如服務帳號密碼錯）會直接拒絕，不換台，所以服務帳號的問題會立刻浮現。目錄不能用（所有 URL 都連不上、服務帳號登入或搜尋出錯、儲存密碼比對逾時）時，RADIUS 不回應、TACACS+ 回 ERROR，也不計入 `[auth.lockout]`：NAS 會重送或改問別台，使用者不會因此被鎖。使用者自己的登入被拒（密碼錯、帳號停用）仍照常拒絕並計入失敗。
 - **`filter` 排除停用帳號：** 上面是 AD 的寫法。OpenLDAP 可以用 `(&(uid={user})(!(pwdAccountLockedTime=*)))`，依目錄的設定而定，請先在自己的目錄上確認。
 - **`required_groups`：** 不在群組裡的人和密碼錯誤一樣被拒絕。預設看使用者的 `memberOf`；目錄沒有 `memberOf` 時改用 `group_base_dn` 和 `group_filter` 搜尋群組，見 [usage 3.5 節](../usage.md#35-ldap-處理器)。
 - **`ldaps://` 或 StartTLS。** `ldap://` 會自動用 StartTLS 升級；目錄憑證不是系統信任的 CA 簽的，設 `ca_file`。明文 LDAP 要另外設 `allow_plaintext = true`，不建議。

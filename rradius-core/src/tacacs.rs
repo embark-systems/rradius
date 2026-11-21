@@ -1210,7 +1210,7 @@ impl TacacsServer {
         };
         // Not a refusal: ERROR sends the device to its next server (RFC 8907 section 5.2).
         if unavailable {
-            crate::lua_engine::log_line(tracing::Level::WARN, format!("TACACS+ authentication for client {} answered ERROR: the cluster database could not be used", client.name));
+            crate::lua_engine::log_line(tracing::Level::WARN, format!("TACACS+ authentication for client {} answered ERROR: the authentication backend could not be used", client.name));
             return Login::Reply(authen_reply(AUTHEN_STATUS_ERROR, 0, &[]));
         }
         // The password was accepted: the second factor asks for the code, or checks one.
@@ -1644,6 +1644,24 @@ pub(crate) mod tests {
                 }
             })
         }
+    }
+
+    /// A directory that is down answers an ASCII login with ERROR, not FAIL, and logs no
+    /// particular backend.
+    #[tokio::test]
+    async fn test_unavailable_directory_answers_error() -> Result<(), String> {
+        use crate::ldap_handler::{tests::settings, LdapHandler, PasswordCheck};
+        let url = format!("ldap://127.0.0.1:{}", crate::test_support::server::free_port());
+        let handler = LdapHandler::new(settings(vec![url], PasswordCheck::Bind)).map_err(|e| format!("{e:?}"))?;
+        let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![crate::auth_chain::Handler::Ldap(handler)]);
+        let engine = script_engine("return 'reject'").await;
+        let mut connection = AsciiConnection::with(engine, Some(Arc::new(AuthChains::new(Some(chain), Vec::new())))).await;
+        let log = crate::test_support::radius::logged_during(async {
+            assert_eq!(connection.login(b"alice", &[b"secret"]).await, AUTHEN_STATUS_ERROR);
+        })
+        .await;
+        assert!(log.contains("answered ERROR: the authentication backend could not be used"), "{log}");
+        Ok(())
     }
 
     /// An ASCII login of a `challenge` client: GETPASS, then GETDATA for the code, then PASS;
@@ -2527,6 +2545,19 @@ pub(crate) mod tests {
         let top = Arc::new(engine("return 'reject'")?);
         assert_eq!(authen_status(test_client(), chain(slow)?, top.clone(), b"alice", b"pw").await, AUTHEN_STATUS_ERROR);
         assert_eq!(authen_status(test_client(), chain("return 'reject'")?, top, b"alice", b"pw").await, AUTHEN_STATUS_FAIL);
+        Ok(())
+    }
+
+    /// A PAP login whose chain cannot reach the directory answers ERROR, not FAIL.
+    #[tokio::test]
+    async fn test_unavailable_directory_answers_error_for_pap() -> Result<(), String> {
+        use crate::ldap_handler::{tests::settings, LdapHandler, PasswordCheck};
+        let url = format!("ldap://127.0.0.1:{}", crate::test_support::server::free_port());
+        let handler = LdapHandler::new(settings(vec![url], PasswordCheck::Bind)).map_err(|e| format!("{e:?}"))?;
+        let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![crate::auth_chain::Handler::Ldap(handler)]);
+        let chains = Arc::new(AuthChains::new(Some(chain), []));
+        let engine = script_engine("return 'reject'").await;
+        assert_eq!(authen_status(test_client(), chains, engine, b"alice", b"pw").await, AUTHEN_STATUS_ERROR);
         Ok(())
     }
 
