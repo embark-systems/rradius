@@ -2297,7 +2297,10 @@ fn eap_settings(raw: RawEap, base: &Path, extensions: &crate::extension::Extensi
     // EAP-TLS, PEAP and TTLS; the methods of the extensions have no TLS.
     let with_tls = methods.iter().any(|method| matches!(*method, crate::eap::TYPE_TLS | crate::eap::TYPE_PEAP | crate::eap::TYPE_TTLS));
     let (cert_file, key_file) = if with_tls {
-        (needed(raw.cert_file, "cert_file")?, needed(raw.key_file, "key_file")?)
+        let (cert_file, key_file) = (needed(raw.cert_file, "cert_file")?, needed(raw.key_file, "key_file")?);
+        // The private key of the server certificate: whoever reads it can pose as this server.
+        crate::common::seal::warn_if_open("radius.eap.key_file", &key_file);
+        (cert_file, key_file)
     } else {
         // Left over from a method with TLS, these would look like they did something.
         for (name, file) in [("cert_file", &raw.cert_file), ("key_file", &raw.key_file)] {
@@ -4221,6 +4224,37 @@ mod tests {
     }
 
     const EAP_FILES: &str = "cert_file = \"server.pem\"\nkey_file = \"server.key\"\nclient_ca_file = \"ca.pem\"\n";
+
+    /// `[radius.eap]` `key_file` that others can reach is warned about on every load, without
+    /// holding the key, and a closed file is not.
+    #[cfg(unix)]
+    #[test]
+    fn test_open_eap_key_file_warning_is_logged() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        write_certificates(dir.path());
+        let path = dir.path().join("rradius.toml");
+        std::fs::write(&path, base(&format!("\n[radius]\n[radius.eap]\nmethods = [\"tls\"]\ncert_file = \"server.pem\"\nkey_file = \"server.key\"\nclient_ca_file = \"ca.pem\"\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n"))).map_err(|e| e.to_string())?;
+        let key = dir.path().join("server.key");
+        let loaded = |mode: u32, times: usize| -> Result<String, String> {
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
+            let log = crate::test_support::radius::CapturedLog::default();
+            let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
+            tracing::subscriber::with_default(subscriber, || (0..times).try_for_each(|_| load(&path).map(|_| ()).map_err(|e| e.to_string())))?;
+            let text = log.0.lock().map_err(|e| e.to_string())?.clone();
+            String::from_utf8(text).map_err(|e| e.to_string())
+        };
+        for (mode, shown) in [(0o644, "644"), (0o660, "660")] {
+            let open = loaded(mode, 2)?;
+            assert_eq!(open.matches("WARN").count(), 2, "one warning per load: {open}");
+            assert!(open.contains("radius.eap.key_file") && open.contains("server.key") && open.contains(shown), "{open}");
+            assert!(!open.contains("PRIVATE KEY"), "the log holds the key: {open}");
+        }
+        for mode in [0o600, 0o640] {
+            assert_eq!(loaded(mode, 1)?, "", "mode {mode:o} is not warned about");
+        }
+        Ok(())
+    }
 
     /// A configuration with `[radius.eap]` holding `settings`, in a directory with certificates.
     fn load_eap(settings: &str) -> Result<ServerConfig, String> {
