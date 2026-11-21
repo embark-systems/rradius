@@ -6,9 +6,16 @@
 --                           locked_until INTEGER NOT NULL DEFAULT 0);
 --   CREATE TABLE mfa_pending (state TEXT PRIMARY KEY, username TEXT, expires INTEGER);
 --
+-- The password column holds a stored password with its prefix, like {crypt}$6$... or
+-- {argon2}$argon2id$...; password_verify checks it as the authentication chain does.
+--
 -- A challenge can come back to another node, whose copy of the database may lag slightly.
 -- This limits guesses at the code, not at the password: only someone who knows the
--- password can lock an account.
+-- password can lock an account. The password step is not limited on purpose, because
+-- anyone who knows an account name could otherwise lock that account by guessing. A script
+-- that verifies logins itself is not covered by [auth.lockout]; to limit guesses at the
+-- password too, verify it in an [auth] chain, where [auth.lockout] counts the failures, and
+-- let this script handle only the code.
 
 if phase ~= 'authentication' then
   return 'accept'
@@ -42,7 +49,7 @@ local function record_failure()
 end
 
 if not state then
-  if get_attr('User-Password') ~= account.password then
+  if not password_verify(account.password, get_attr('User-Password')) then
     return 'reject'
   end
   local token = random_token()
