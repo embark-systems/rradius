@@ -1276,18 +1276,18 @@ mod tests {
         db.execute("CREATE TABLE slow_hash_lock_users (username TEXT, password TEXT)").await?;
         db.execute("INSERT INTO slow_hash_lock_users VALUES ('alice', '{argon2}$argon2id$v=19$m=262144,t=2,p=1$c29tZXNhbHQ$eP4eyR+zqlZX1y5xCFTkw9m5GYx0L5YWwvCFvtlbLow')").await?;
         db.execute("INSERT INTO slow_hash_lock_users VALUES ('bob', '{clear}right')").await?;
-        let handler = Handler::Sql {
-            source: SqlSource::Cluster(db),
+        let handler = |timeout: Duration| Handler::Sql {
+            source: SqlSource::Cluster(db.clone()),
             user_query: "SELECT password FROM slow_hash_lock_users WHERE username = ?".to_string(),
             certificate_query: None,
             reply_query: None,
             default_user: None,
-            timeout: Duration::from_millis(300),
+            timeout,
         };
         let request = LuaRequest::new("radius", "authorize", Vec::new());
-        let (outcome, _, _, unavailable) = handler.run(&pap("alice", "password"), Some("alice"), &request).await;
+        let (outcome, _, _, unavailable) = handler(Duration::from_millis(300)).run(&pap("alice", "password"), Some("alice"), &request).await;
         assert_eq!((outcome, unavailable), (Outcome::Reject, true));
-        let (outcome, _, _, unavailable) = handler.run(&pap("bob", "wrong"), Some("bob"), &request).await;
+        let (outcome, _, _, unavailable) = handler(Duration::from_secs(30)).run(&pap("bob", "wrong"), Some("bob"), &request).await;
         assert_eq!((outcome, unavailable), (Outcome::Reject, false));
         Ok(())
     }
