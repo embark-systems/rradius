@@ -106,6 +106,7 @@ radtest alice alice-password <NAS 的位址> 0 <radius.secret 的內容>
 | 所有設備來源位址都一樣 | 把 `compose.yaml` 的 `ports:` 拿掉，改成 `network_mode: host`，容器直接用 NAS 的網路。這時 NAS 自己的服務不能佔用 1812、1813 |
 | 啟動就結束，記錄寫 `migration file ... changed after it was applied` | 改了已套用的 migration；改回原來的內容，另加新檔案 |
 | 啟動就結束，權限錯誤 | `data` 若改成了 File Station 建立的資料夾，容器的使用者寫不進去；用範例的具名磁碟，或把那個資料夾的擁有者改成 uid 10001 |
+| 記錄寫 `Read-only file system` | 範例 `compose.yaml` 把容器的根檔案系統設成唯讀（`read_only: true`），只有資料磁碟和 `/tmp` 可寫；設定裡有路徑指到別處（例如計費暫存、記錄檔）時，掛一個磁碟給它，或改成指向 `/var/lib/rradius` 底下 |
 | 重開機後專案沒有起來 | `restart: unless-stopped` 在 Docker 啟動後會帶起容器；若 NAS 重開機後套件還沒啟動完成，等一下再看，仍然沒起來就手動啟動專案 |
 
 ## 為什麼是這個做法
@@ -117,5 +118,5 @@ radtest alice alice-password <NAS 的位址> 0 <radius.secret 的內容>
 
 ## 驗證過什麼
 
-- **在一般 Linux 的 Docker 上：** 用官方 Dockerfile 建置映像，照 `compose.yaml` 的資料夾結構啟動，`docker/smoke-test.py` 通過（Status-Server、拒絕不存在的用戶、計費紀錄寫入）。
+- **在一般 Linux 的 Docker 上：** 用官方 Dockerfile 建置映像，照 `compose.yaml` 的資料夾結構啟動，`docker/smoke-test.py` 通過（Status-Server、拒絕不存在的用戶、計費紀錄寫入）。倉庫根目錄的 `compose.yaml` 與 `compose.cluster.yaml` 帶著 `read_only`、`tmpfs`、`cap_drop` 與 `no-new-privileges`，在這些設定下單節點與三節點都通過；`deploy/synology/compose.yaml` 帶同樣四個設定，本身只驗證過 `docker compose config` 能解析，沒有實際啟動。
 - **沒有驗證：** DSM 的 Container Manager 與舊版 Docker 套件的畫面與行為、各型號的支援、DSM 防火牆、位址轉換是否保留來源位址、Hyper Backup、NAS 重開機後的自動啟動。

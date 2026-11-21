@@ -12,6 +12,15 @@ services:
     restart: unless-stopped
     # Time to finish the database shutdown; the default 10 s can cut it short.
     stop_grace_period: 30s
+    # The server only writes to the data volume and /tmp, and runs as an ordinary user, so the
+    # root file system can be read-only and no capability is needed.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "1812:1812/udp"
       - "1813:1813/udp"

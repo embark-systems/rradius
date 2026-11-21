@@ -97,6 +97,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 - **看狀態：** 範例設定開了 `[metrics]`（容器內的 `127.0.0.1:9812`，沒有對外開埠），用 `docker compose exec rradius rradius-server status --config /etc/rradius/rradius.toml --watch` 看這個節點在做什麼（見 2.8 節）。
 - **重新載入：** 修改 `docker/config/` 的腳本或 client 後，執行 `docker compose kill -s HUP rradius` 就會套用，不必重啟（見 2.9 節）。
 - **資料：** 放在 Compose 的具名 volume。`docker compose down --volumes` 會刪除資料。
+- **容器的權限：** 範例 Compose 的每個服務都設了 `read_only: true`（根檔案系統唯讀）、`tmpfs: [/tmp]`、`cap_drop: [ALL]` 與 `no-new-privileges`。伺服器以一般使用者（uid 10001）執行，只寫資料 volume（`/var/lib/rradius`）和 `/tmp`，所以這些限制不影響運作；單節點與三節點的 smoke test 都在這些設定下通過。自己加的東西（例如記錄檔、計費暫存、憑證檔的輸出）若要寫別的路徑，要掛一個 volume 給它，否則會因為唯讀而失敗。已部署的容器要用 `docker compose up --detach` 重新建立才會套用。
 - **EAP：** 範例沒有啟用。要用時加上 `[radius.eap]`，憑證放在 `docker/config/`（見 2.12 節）。
 - **計費暫存：** 範例沒有啟用。要用時，`[radius.accounting_spool].dir` 要指向 volume 裡的路徑（例如 `/var/lib/rradius/spool`；`/etc/rradius` 是唯讀的），否則換掉容器就遺失已確認的計費（見 2.11 節）。
 - **停止：** `docker stop` 送的 SIGTERM 和 Ctrl+C 的 SIGINT 都會依序：先讓 `/readyz` 回 503、照常回應一段時間，再停止接收新的請求、等處理中的請求回應完，然後正常關閉資料庫，並等還在緩衝的記錄寫出，最多 5 秒（細節與兩段等待的設定見 2.16 節）。SIGKILL 不會，下次啟動時本機資料庫會重建。啟動途中也一樣能停止：等待叢集或套用 migration 時收到，會關閉節點後以狀態碼 0 結束，下次啟動接著做。正在跑超過 25 秒的 migration 檔時，等滿 25 秒就結束，這次不算乾淨關閉，下次啟動會重建本機資料庫；節點還沒起來時收到，會先等它起來（最多 25 秒）再正常關閉；25 秒內起不來（例如叢集沒有多數節點）就直接結束，這時無法乾淨關閉，資料目錄可能留下 `lock` 檔，下次啟動會重建本機資料庫。

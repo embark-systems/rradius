@@ -7,6 +7,15 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     command: ["server", "--config", "/etc/rradius/cluster/node1.toml"]
+    # The server only writes to the data volume and /tmp, and runs as an ordinary user, so the
+    # root file system can be read-only and no capability is needed.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "1812:1812/udp"
       - "1813:1813/udp"
@@ -24,6 +33,15 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     command: ["server", "--config", "/etc/rradius/cluster/node2.toml"]
+    # The server only writes to the data volume and /tmp, and runs as an ordinary user, so the
+    # root file system can be read-only and no capability is needed.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "2812:1812/udp"
       - "2813:1813/udp"
@@ -41,6 +59,15 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     command: ["server", "--config", "/etc/rradius/cluster/node3.toml"]
+    # The server only writes to the data volume and /tmp, and runs as an ordinary user, so the
+    # root file system can be read-only and no capability is needed.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "3812:1812/udp"
       - "3813:1813/udp"
