@@ -452,7 +452,8 @@ impl Handler {
     /// `account` is the name to look the user up by; proving the secret uses the name
     /// in `credentials`, which is the one the client computed its response over. The last
     /// value is the account that was accepted in its place, if any.
-    /// The last value says a refusal came of the cluster database being unavailable.
+    /// The last value says a refusal came of the backend (the cluster database, a directory, a domain
+    /// controller, or a password check that ran out of time) being unavailable.
     async fn run(&self, credentials: &Credentials, account: Option<&str>, request: &LuaRequest) -> (Outcome, Vec<(String, AttrValue)>, Option<String>, bool) {
         match self {
             Handler::Lua(engine) | Handler::LuaVerifying(engine) => {
@@ -470,8 +471,8 @@ impl Handler {
                 (decision.outcome, decision.response_attributes, None, unavailable)
             }
             Handler::Ldap(ldap) => {
-                let (outcome, attributes) = ldap.authenticate_account(credentials, account).await;
-                (outcome, attributes, None, false)
+                let (outcome, attributes, unavailable) = ldap.authenticate_account(credentials, account).await;
+                (outcome, attributes, None, unavailable)
             }
             Handler::Netlogon(netlogon) => {
                 let (outcome, attributes, unavailable) = netlogon.authenticate(credentials, account).await;
@@ -688,7 +689,7 @@ async fn sql_handler(
         // The limit covers waiting for a turn at a slow hash, and the hash.
         let verified = tokio::time::timeout(timeout, verify_secret(&stored, user, &credentials.secret))
             .await
-            .map_err(|_| crate::lua_engine::DbFailure::other(format!("verifying the password timed out after {} ms", timeout.as_millis())))?;
+            .map_err(|_| crate::lua_engine::DbFailure::verification_timed_out(timeout))?;
         let Some(attributes) = verified else {
             return Ok((Outcome::Reject, Vec::new(), None));
         };
@@ -1236,6 +1237,59 @@ mod tests {
         let result = sql_handler(&SqlSource::Cluster(db.clone()), SqlQueries { user: query, certificate: None, reply: None }, None, Duration::from_millis(300), &pap("alice", "password"), Some("alice")).await;
         let error = result.unwrap_err();
         assert!(error.to_string().contains("verifying the password timed out"), "{error}");
+        assert!(error.unavailable(), "a refusal that says nothing of the user");
+    }
+
+    /// A directory that is down is not a wrong password: 20 logins from one origin count for
+    /// nothing, and once it is back the right password is accepted; wrong ones still lock.
+    #[tokio::test]
+    async fn test_directory_down_does_not_lock() {
+        use crate::ldap_handler::tests::{mock_server, settings};
+        use crate::ldap_handler::PasswordCheck;
+        let lockout = Arc::new(crate::auth_lockout::Lockout::default());
+        lockout.configure(Some(lockout_settings(3)));
+        let here = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
+        let down_url = format!("ldap://127.0.0.1:{}", crate::test_support::server::free_port());
+        let mut down = AuthChain::new(AuthPolicy::FirstMatch, vec![Handler::Ldap(LdapHandler::new(settings(vec![down_url], PasswordCheck::Bind)).unwrap())]);
+        down.lockout = Some(lockout.clone());
+        for _ in 0..20 {
+            let result = down.authenticate(&pap("alice", "secret"), &here).await;
+            assert!(result.unavailable && result.handler != "lockout", "{result:?}");
+        }
+        assert_eq!(lockout.lockouts.get(), 0);
+        let (url, _) = mock_server().await;
+        let mut up = AuthChain::new(AuthPolicy::FirstMatch, vec![Handler::Ldap(LdapHandler::new(settings(vec![url], PasswordCheck::Bind)).unwrap())]);
+        up.lockout = Some(lockout.clone());
+        assert!(up.authenticate(&pap("alice", "secret"), &here).await.accepted());
+        for _ in 0..3 {
+            let result = up.authenticate(&pap("alice", "wrong"), &here).await;
+            assert!(!result.unavailable, "{result:?}");
+        }
+        assert_eq!(lockout.lockouts.get(), 1, "wrong passwords still count");
+    }
+
+    /// Passwords that cannot be verified in time are not failed logins, and the sql handler
+    /// reports that as unavailable; a wrong password in time still counts.
+    #[tokio::test]
+    async fn test_verification_timeout_does_not_lock() -> Result<(), Box<dyn std::error::Error>> {
+        let db = test_db();
+        db.execute("CREATE TABLE slow_hash_lock_users (username TEXT, password TEXT)").await?;
+        db.execute("INSERT INTO slow_hash_lock_users VALUES ('alice', '{argon2}$argon2id$v=19$m=262144,t=2,p=1$c29tZXNhbHQ$eP4eyR+zqlZX1y5xCFTkw9m5GYx0L5YWwvCFvtlbLow')").await?;
+        db.execute("INSERT INTO slow_hash_lock_users VALUES ('bob', '{clear}right')").await?;
+        let handler = Handler::Sql {
+            source: SqlSource::Cluster(db),
+            user_query: "SELECT password FROM slow_hash_lock_users WHERE username = ?".to_string(),
+            certificate_query: None,
+            reply_query: None,
+            default_user: None,
+            timeout: Duration::from_millis(300),
+        };
+        let request = LuaRequest::new("radius", "authorize", Vec::new());
+        let (outcome, _, _, unavailable) = handler.run(&pap("alice", "password"), Some("alice"), &request).await;
+        assert_eq!((outcome, unavailable), (Outcome::Reject, true));
+        let (outcome, _, _, unavailable) = handler.run(&pap("bob", "wrong"), Some("bob"), &request).await;
+        assert_eq!((outcome, unavailable), (Outcome::Reject, false));
+        Ok(())
     }
 
     /// A template writing `'{clear}' || password` turns "no password" into this value.

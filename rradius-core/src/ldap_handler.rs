@@ -109,8 +109,12 @@ enum Checked {
 enum Failure {
     /// Connection or TLS failure, a connection that broke, or timeout: try the next URL.
     Unreachable(String),
-    /// The server answered that the service account or search failed.
-    Fatal(String),
+    /// The server answered that the service account or a search failed: the directory cannot
+    /// be used, and no other URL is tried.
+    Backend(String),
+    /// The server refused the bind of the user for a reason other than a wrong password. That
+    /// is its answer about this user, not a fault of the directory.
+    User(String),
 }
 
 impl Failure {
@@ -121,7 +125,7 @@ impl Failure {
         let message = format!("{what}: {error}");
         match error {
             E::Io { .. } | E::EndOfStream | E::OpSend { .. } | E::ResultRecv { .. } | E::IdScrubSend { .. } | E::Timeout { .. } => Failure::Unreachable(message),
-            _ => Failure::Fatal(message),
+            _ => Failure::Backend(message),
         }
     }
 }
@@ -141,7 +145,7 @@ impl LdapManager {
     async fn service_bind(&self, ldap: &mut Ldap) -> Result<(), Failure> {
         match ldap.simple_bind(&self.bind_dn, &self.bind_password).await {
             Ok(r) if r.rc == 0 => Ok(()),
-            Ok(r) => Err(Failure::Fatal(format!("service account bind failed: {}", r))),
+            Ok(r) => Err(Failure::Backend(format!("service account bind failed: {}", r))),
             Err(e) => Err(Failure::of("service account bind failed", e)),
         }
     }
@@ -168,7 +172,7 @@ impl managed::Manager for LdapManager {
         }
         ldap.with_timeout(self.recycle_timeout);
         self.service_bind(ldap).await.map_err(|failure| match failure {
-            Failure::Unreachable(message) | Failure::Fatal(message) => RecycleError::message(message),
+            Failure::Unreachable(message) | Failure::Backend(message) | Failure::User(message) => RecycleError::message(message),
         })
     }
 }
@@ -229,33 +233,40 @@ impl LdapHandler {
 
     /// Authenticates under the name in `creds`.
     pub async fn authenticate(&self, creds: &Credentials) -> Decision {
-        self.authenticate_account(creds, creds.user.as_deref()).await
+        let (outcome, attributes, _) = self.authenticate_account(creds, creds.user.as_deref()).await;
+        (outcome, attributes)
     }
 
     /// Tries each URL in order until one gives a decision; server errors reject. The search
     /// uses `account`; a stored password is checked with the name in `creds`, which is the
-    /// one an MS-CHAPv2 response was computed over.
-    pub async fn authenticate_account(&self, creds: &Credentials, account: Option<&str>) -> Decision {
+    /// one an MS-CHAPv2 response was computed over. The last value says a refusal came of the
+    /// directory not being usable (no URL answered, the service account or a search failed, or
+    /// the stored password was not compared in time), which says nothing of the user.
+    pub async fn authenticate_account(&self, creds: &Credentials, account: Option<&str>) -> (Outcome, Vec<(String, AttrValue)>, bool) {
         let (Some(user), Some(account)) = (creds.user.as_deref(), account) else {
-            return (Outcome::Ignore, Vec::new());
+            return (Outcome::Ignore, Vec::new(), false);
         };
         if creds.secret == Secret::Certificate && self.settings.certificate_filter.is_none() {
             tracing::warn!("auth ldap handler: ignoring a certificate login: this handler has no certificate_filter");
-            return (Outcome::Ignore, Vec::new());
+            return (Outcome::Ignore, Vec::new(), false);
         }
         for (url, pool) in &self.pools {
             match self.attempt(pool, account, &creds.secret).await {
-                Ok(Checked::Decided(decision)) => return decision,
+                Ok(Checked::Decided((outcome, attributes))) => return (outcome, attributes, false),
                 Ok(Checked::Stored { stored, reply, allowed }) => return self.verify_stored(&stored, user, &creds.secret, reply, allowed).await,
-                Err(Failure::Fatal(e)) => {
+                Err(Failure::Backend(e)) => {
                     crate::lua_engine::log_line(tracing::Level::ERROR, format!("auth ldap handler: {}: {}; rejecting", url, e));
-                    return (Outcome::Reject, Vec::new());
+                    return (Outcome::Reject, Vec::new(), true);
+                }
+                Err(Failure::User(e)) => {
+                    crate::lua_engine::log_line(tracing::Level::ERROR, format!("auth ldap handler: {}: {}; rejecting", url, e));
+                    return (Outcome::Reject, Vec::new(), false);
                 }
                 Err(Failure::Unreachable(e)) => tracing::warn!("auth ldap handler: {}: {}", url, e),
             }
         }
         tracing::error!("auth ldap handler: no server reachable; rejecting");
-        (Outcome::Reject, Vec::new())
+        (Outcome::Reject, Vec::new(), true)
     }
 
     /// Takes a connection and runs the search and password check, all within
@@ -284,17 +295,17 @@ impl LdapHandler {
 
     /// Compares a stored password once the connection is back in the pool, so a slow hash
     /// does not hold one, and a timeout here is not mistaken for an unreachable server.
-    async fn verify_stored(&self, stored: &str, user: &str, secret: &Secret, reply: Vec<(String, AttrValue)>, allowed: bool) -> Decision {
+    async fn verify_stored(&self, stored: &str, user: &str, secret: &Secret, reply: Vec<(String, AttrValue)>, allowed: bool) -> (Outcome, Vec<(String, AttrValue)>, bool) {
         match tokio::time::timeout(self.settings.timeout, crate::auth_chain::verify_secret(stored, user, secret)).await {
-            Ok(Some(_)) if !allowed => (Outcome::Reject, Vec::new()),
+            Ok(Some(_)) if !allowed => (Outcome::Reject, Vec::new(), false),
             Ok(Some(mut attributes)) => {
                 attributes.extend(reply);
-                (Outcome::Accept, attributes)
+                (Outcome::Accept, attributes, false)
             }
-            Ok(None) => (Outcome::Reject, Vec::new()),
+            Ok(None) => (Outcome::Reject, Vec::new(), false),
             Err(_) => {
                 tracing::error!(user, "auth ldap handler: verifying the password timed out; rejecting");
-                (Outcome::Reject, Vec::new())
+                (Outcome::Reject, Vec::new(), true)
             }
         }
     }
@@ -385,6 +396,21 @@ impl LdapHandler {
 
 /// Binds as `dn`; only non-empty PAP passwords are tried, because an empty
 /// password makes an unauthenticated bind that succeeds (RFC 4513 5.1.2).
+/// The server's refusal of the bind of a user. The result codes busy (51), unavailable (52) and
+/// serverDown (81) say it could not process the request at all, which is the directory's fault;
+/// the rest, unwillingToPerform (53) among them, is its answer about this user, such as a
+/// disabled account.
+fn bind_refusal(rc: u32, message: String) -> Failure {
+    const BUSY: u32 = 51;
+    const UNAVAILABLE: u32 = 52;
+    const SERVER_DOWN: u32 = 81;
+    if matches!(rc, BUSY | UNAVAILABLE | SERVER_DOWN) {
+        Failure::Backend(message)
+    } else {
+        Failure::User(message)
+    }
+}
+
 /// A wrong password is `Ok(false)`; any other bind error is a server error,
 /// which rejects and discards the connection.
 async fn bind_check(ldap: &mut Ldap, dn: &str, secret: &Secret) -> Result<bool, Failure> {
@@ -396,8 +422,11 @@ async fn bind_check(ldap: &mut Ldap, dn: &str, secret: &Secret) -> Result<bool, 
     match ldap.simple_bind(dn, pw).await {
         Ok(r) if r.rc == 0 => Ok(true),
         Ok(r) if r.rc == INVALID_CREDENTIALS => Ok(false),
-        Ok(r) => Err(Failure::Fatal(format!("bind as {} failed: {}", dn, r))),
-        Err(e) => Err(Failure::of(&format!("bind as {dn} failed"), e)),
+        Ok(r) => Err(bind_refusal(r.rc, format!("bind as {} failed: {}", dn, r))),
+        Err(e) => Err(match Failure::of(&format!("bind as {dn} failed"), e) {
+            Failure::Backend(message) => Failure::User(message),
+            other => other,
+        }),
     }
 }
 
@@ -460,6 +489,11 @@ pub(crate) mod tests {
                 dn: "uid=dave,ou=people,dc=example,dc=com",
                 bind_pw: None,
                 attrs: vec![("uid", vec!["dave"]), ("userPassword", vec!["{clear}dave-pw"]), ("memberOf", vec!["cn=vpn,ou=groups,dc=example,dc=com"])],
+            },
+            MockEntry {
+                dn: "uid=slow,ou=people,dc=example,dc=com",
+                bind_pw: None,
+                attrs: vec![("uid", vec!["slow"]), ("userPassword", vec!["{argon2}$argon2id$v=19$m=262144,t=2,p=1$c29tZXNhbHQ$eP4eyR+zqlZX1y5xCFTkw9m5GYx0L5YWwvCFvtlbLow"])],
             },
             MockEntry { dn: "uid=twin,ou=a,dc=example,dc=com", bind_pw: Some("x"), attrs: vec![("uid", vec!["twin"])] },
             MockEntry { dn: "uid=twin,ou=b,dc=example,dc=com", bind_pw: Some("x"), attrs: vec![("uid", vec!["twin"])] },
@@ -962,6 +996,57 @@ pub(crate) mod tests {
         assert_eq!(log.binds, vec![SERVICE_DN.to_string()], "the certificate is the proof");
     }
 
+    async fn run_flagged(settings: LdapSettings, creds: &Credentials) -> (Outcome, bool) {
+        let (outcome, _, unavailable) = LdapHandler::new(settings).unwrap().authenticate_account(creds, creds.user.as_deref()).await;
+        (outcome, unavailable)
+    }
+
+    #[tokio::test]
+    async fn test_directory_failures_are_unavailable() {
+        // Every URL down.
+        let urls = vec![refused_url().await, refused_url().await];
+        assert_eq!(run_flagged(settings(urls, PasswordCheck::Bind), &pap("alice", "secret")).await, (Outcome::Reject, true));
+        // The service account is refused: unavailable, and the second URL is not tried.
+        let (first, _) = mock_server().await;
+        let (second, second_log) = mock_server().await;
+        let wrong = LdapSettings { bind_password: "nope".to_string(), ..settings(vec![first, second], PasswordCheck::Bind) };
+        assert_eq!(run_flagged(wrong, &pap("alice", "secret")).await, (Outcome::Reject, true));
+        assert_eq!(second_log.lock().unwrap().connections, 0);
+        // A search of the groups answered with an error.
+        let (url, _) = mock_server_with(MockOptions { failing_member_search: true, ..MockOptions::default() }).await;
+        let groups = LdapGroups {
+            required: Vec::new(),
+            source: GroupSource::Search { base_dn: "ou=groups,dc=example,dc=com".to_string(), filter: "(member={dn})".to_string() },
+            reply: vec![(STAFF.to_string(), vec![("Filter-Id".to_string(), "staff".to_string())])],
+        };
+        let grouped = with_groups(url, PasswordCheck::Bind, groups);
+        assert_eq!(run_flagged(grouped, &pap("alice", "secret")).await, (Outcome::Reject, true));
+    }
+
+    #[test]
+    fn test_bind_refusal_classes() {
+        assert!(matches!(bind_refusal(51, String::new()), Failure::Backend(_)));
+        assert!(matches!(bind_refusal(52, String::new()), Failure::Backend(_)));
+        assert!(matches!(bind_refusal(81, String::new()), Failure::Backend(_)));
+        assert!(matches!(bind_refusal(53, String::new()), Failure::User(_)), "a disabled account");
+        assert!(matches!(bind_refusal(1, String::new()), Failure::User(_)));
+    }
+
+    #[tokio::test]
+    async fn test_answers_about_the_user_are_not_unavailable() {
+        let (url, _) = mock_server().await;
+        assert_eq!(run_flagged(settings(vec![url.clone()], PasswordCheck::Bind), &pap("alice", "wrong")).await, (Outcome::Reject, false));
+        assert_eq!(run_flagged(settings(vec![url.clone()], PasswordCheck::Bind), &pap("stranger", "x")).await, (Outcome::Ignore, false));
+        assert_eq!(run_flagged(settings(vec![url], PasswordCheck::Bind), &pap("alice", "secret")).await, (Outcome::Accept, false));
+        // A stored password that is not compared within the limit says nothing of the user.
+        let (url, _) = mock_server().await;
+        let slow = LdapSettings { timeout: Duration::from_millis(300), ..settings(vec![url], PasswordCheck::Attribute("userPassword".to_string())) };
+        assert_eq!(run_flagged(slow, &pap("slow", "password")).await, (Outcome::Reject, true));
+        // The server refuses the bind of this user with something other than invalidCredentials.
+        let (url, _) = mock_server_with(MockOptions { failing_user_binds: 1, ..MockOptions::default() }).await;
+        assert_eq!(run_flagged(settings(vec![url], PasswordCheck::Bind), &pap("alice", "secret")).await, (Outcome::Reject, false));
+    }
+
     #[tokio::test]
     async fn test_failures_are_on_record() {
         let logged = |settings: LdapSettings, credentials: Credentials| async move {
@@ -1069,7 +1154,7 @@ pub(crate) mod tests {
     async fn test_search_uses_the_account_name() {
         let (url, log) = mock_server().await;
         let handler = LdapHandler::new(settings(vec![url], PasswordCheck::Bind)).unwrap();
-        let (outcome, _) = handler.authenticate_account(&pap("Alice@Corp", "secret"), Some("alice")).await;
+        let (outcome, _, _) = handler.authenticate_account(&pap("Alice@Corp", "secret"), Some("alice")).await;
         assert_eq!(outcome, Outcome::Accept);
         assert_eq!(log.lock().unwrap().filters, vec![LdapFilter::Equality("uid".to_string(), "alice".to_string())]);
     }

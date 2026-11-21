@@ -1443,6 +1443,12 @@ impl DbFailure {
         Self { message, kind: DbFailureKind::Mistake }
     }
 
+    /// Checking a stored password did not finish in time: the backend is not at fault, but no
+    /// answer about the user is right, so it is reported as unavailable.
+    pub fn verification_timed_out(after: Duration) -> Self {
+        Self { message: format!("verifying the password timed out after {} ms", after.as_millis()), kind: DbFailureKind::Unavailable }
+    }
+
     /// For a call that took too long.
     pub fn timed_out(after: Duration) -> Self {
         Self { message: format!("timed out after {} ms", after.as_millis()), kind: DbFailureKind::Unavailable }

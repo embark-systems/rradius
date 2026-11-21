@@ -49,7 +49,7 @@ authentication protocol="radius" client="wlc" source=10.30.0.10 user="Staff1@cor
 | `handler` | 意思 | 常見原因 |
 | --- | --- | --- |
 | `sql` | `sql` 處理器拒絕 | 密碼錯誤；密碼欄是 `NULL` 或空的；查到多筆；密碼的格式不能用於這種登入方式（CHAP 要明文，MS-CHAPv2 要明文或 `{nthash}`） |
-| `ldap` | `ldap` 處理器拒絕 | 密碼錯誤、不在 `required_groups`；目錄連不上或服務帳號登入失敗時，記錄另有 `auth ldap handler:` 開頭的訊息 |
+| `ldap` | `ldap` 處理器拒絕 | 密碼錯誤、不在 `required_groups`；目錄連不上或服務帳號登入失敗時，記錄另有 `auth ldap handler:` 開頭的訊息，而且那樣的登入不是被拒絕，是不回應（`rradius_radius_discarded_total{reason="database"}` 增加） |
 | `lua`、`script` | 腳本拒絕 | 腳本的邏輯，或腳本出錯（記錄有 `Lua script error`，附檔案和行號） |
 | `none` | 所有處理器都略過 | 帳號不存在（`sql` 查不到、`ldap` 找不到）。先看 `account` 是不是你預期的名稱 |
 | `no_password_check` | `all_accept` 串接裡沒有人比對過密碼 | 帳號不在 `sql`、`ldap` 裡，只有後面的腳本說可以 |
