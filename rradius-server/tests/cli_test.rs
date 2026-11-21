@@ -289,15 +289,15 @@ fn test_file_slower_than_the_limit() {
     let dir = dir_with_migrations(&[(
         "1_big.sql",
         "CREATE TABLE big (id INTEGER);
-         INSERT INTO big SELECT max(x) FROM (WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 60000000) SELECT x FROM n);",
+         INSERT INTO big SELECT max(x) FROM (WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 20000000) SELECT x FROM n);",
     )]);
     let script = "sql_query('SELECT id FROM big LIMIT 1') return #sql_query('SELECT id FROM _migrations') == 1 and 'accept' or 'reject'";
-    let (config, auth_port) = write_config_with(dir.path(), script, None, "migrations_dir = \"migrations\"\nmigrations_wait_ms = 3000\n");
+    let (config, auth_port) = write_config_with(dir.path(), script, None, "migrations_dir = \"migrations\"\nmigrations_wait_ms = 1000\n");
     let (code, stderr) = run_within(Duration::from_secs(60), &config);
     assert_eq!(code, Some(1), "unexpected stderr: {stderr}");
     assert!(stderr.contains("migrations_wait_ms"), "unexpected stderr: {stderr}");
 
-    let text = std::fs::read_to_string(&config).unwrap().replace("migrations_wait_ms = 3000", "migrations_wait_ms = 120000");
+    let text = std::fs::read_to_string(&config).unwrap().replace("migrations_wait_ms = 1000", "migrations_wait_ms = 120000");
     std::fs::write(&config, text).unwrap();
     let server = Server { child: Server::spawn(PROGRAM, dir.path(), &config), dir, config, auth_port };
     assert_eq!(server.access_request(), radius::ACCESS_ACCEPT, "after raising the limit: {}", server.stderr());
