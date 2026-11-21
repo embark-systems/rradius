@@ -223,6 +223,9 @@ pub fn verify_pap(stored: &str, given: &[u8]) -> bool {
     if looks_like_unprefixed_hash(stored) {
         return false;
     }
+    if cost_over_limit(stored).is_some() {
+        return false;
+    }
     let (scheme, value) = split_scheme(stored);
     match scheme.as_deref() {
         None | Some("clear") => constant_time_eq(value.as_bytes(), given),
@@ -254,6 +257,113 @@ pub fn verify_pap(stored: &str, given: &[u8]) -> bool {
         Some("argon2") => Argon2::default().verify_password(given, value).is_ok(),
         Some(_) => false,
     }
+}
+
+/// The most a stored hash may ask of one check. A stored value carries its own cost, and
+/// whoever can write it could otherwise set one that holds every slot for a long time or
+/// takes all the memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HashLimits {
+    pub pbkdf2_iterations: u32,
+    pub crypt_rounds: u32,
+    pub bcrypt_cost: u32,
+    pub argon2_memory_kib: u32,
+    pub argon2_iterations: u32,
+    pub argon2_lanes: u32,
+}
+
+impl HashLimits {
+    const DEFAULT: Self = Self { pbkdf2_iterations: 5_000_000, crypt_rounds: 1_000_000, bcrypt_cost: 15, argon2_memory_kib: 262_144, argon2_iterations: 10, argon2_lanes: 16 };
+}
+
+impl Default for HashLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+static LIMITS: std::sync::RwLock<HashLimits> = std::sync::RwLock::new(HashLimits::DEFAULT);
+
+/// Sets the limits for every check from now on.
+pub fn configure_limits(limits: HashLimits) {
+    if let Ok(mut current) = LIMITS.write() {
+        *current = limits;
+    }
+}
+
+/// The limits in force.
+pub fn limits() -> HashLimits {
+    LIMITS.read().map_or_else(|_| HashLimits::default(), |limits| *limits)
+}
+
+/// The name of the first cost parameter in `stored` that is above its limit, as
+/// `[auth.password_limits]` names it. A value whose cost cannot be read is not over a limit:
+/// the check itself refuses it.
+pub fn cost_over_limit(stored: &str) -> Option<&'static str> {
+    cost_over(&limits(), stored)
+}
+
+fn cost_over(limits: &HashLimits, stored: &str) -> Option<&'static str> {
+    let (scheme, value) = split_scheme(stored);
+    match scheme.as_deref()? {
+        "crypt" => {
+            if let Some(rest) = value.strip_prefix("$5$").or_else(|| value.strip_prefix("$6$")) {
+                let rounds = rest.strip_prefix("rounds=")?.split('$').next()?;
+                return (rounds.parse::<u64>().ok()? > u64::from(limits.crypt_rounds)).then_some("crypt_rounds");
+            }
+            if let Some(rest) = value.strip_prefix("$sha1$") {
+                let rounds = rest.split('$').next()?;
+                return (rounds.parse::<u64>().ok()? > u64::from(limits.crypt_rounds)).then_some("crypt_rounds");
+            }
+            if let Some(rest) = value.strip_prefix('_') {
+                return (bsdi_rounds(rest.get(..4)?)? > u64::from(limits.crypt_rounds)).then_some("crypt_rounds");
+            }
+            let rest = value.strip_prefix("$2a$").or_else(|| value.strip_prefix("$2b$")).or_else(|| value.strip_prefix("$2y$"))?;
+            let cost = rest.split('$').next()?;
+            (cost.parse::<u32>().ok()? > limits.bcrypt_cost).then_some("bcrypt_cost")
+        }
+        "pbkdf2" | "pbkdf2-sha1" | "pbkdf2-sha256" | "pbkdf2-sha512" => {
+            let iterations = value.split('$').next()?.parse::<u32>().ok()?;
+            (iterations > limits.pbkdf2_iterations).then_some("pbkdf2_iterations")
+        }
+        "x-pbkdf2" => {
+            let iterations = decode_base64_any_padding(value.split(':').nth(1)?)?;
+            let iterations = <[u8; 4]>::try_from(iterations.as_slice()).map(u32::from_be_bytes).ok()?;
+            (iterations > limits.pbkdf2_iterations).then_some("pbkdf2_iterations")
+        }
+        "argon2" => {
+            let hash = argon2::PasswordHash::new(value).ok()?;
+            let params = argon2::Params::try_from(&hash).ok()?;
+            if params.m_cost() > limits.argon2_memory_kib {
+                Some("argon2_memory_kib")
+            } else if params.t_cost() > limits.argon2_iterations {
+                Some("argon2_iterations")
+            } else if params.p_cost() > limits.argon2_lanes {
+                Some("argon2_lanes")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The rounds of an extended DES hash, which `_` and four characters of `./0-9A-Za-z` give,
+/// the first the least significant.
+fn bsdi_rounds(encoded: &str) -> Option<u64> {
+    let mut rounds = 0u64;
+    for (index, c) in encoded.bytes().enumerate() {
+        let digit = match c {
+            b'.' => 0,
+            b'/' => 1,
+            b'0'..=b'9' => u64::from(c - b'0') + 2,
+            b'A'..=b'Z' => u64::from(c - b'A') + 12,
+            b'a'..=b'z' => u64::from(c - b'a') + 38,
+            _ => return None,
+        };
+        rounds |= digit << (6 * index);
+    }
+    Some(rounds)
 }
 
 /// The schemes that are slow on purpose: they are verified away from the request threads.
@@ -417,6 +527,98 @@ mod tests {
             assert!(verify_pap(stored, b"password"), "{stored} should accept 'password'");
             assert!(!verify_pap(stored, b"Password"), "{stored} should reject 'Password'");
             assert!(!verify_pap(stored, b"wrong"), "{stored} should reject 'wrong'");
+        }
+    }
+
+    /// Every slow format has its cost read before any hashing: a value far above the limits
+    /// is refused at once, and one at its limit is left to the check.
+    /// Spec Stored Hash Cost Is Capped, Scenarios: A PBKDF2 value with a huge iteration count, crypt rounds and bcrypt cost, argon2 memory.
+    #[test]
+    fn test_cost_over_the_limits_is_refused_before_hashing() {
+        let limits = HashLimits::default();
+        let started = std::time::Instant::now();
+        for stored in [
+            "{PBKDF2-SHA512}4294967295$MDEyMzQ1Njc4OWFiY2RlZg$iiBcqBMfZQd6taylmx35ciLJSlmD/fhYsIhplxnAvOkqbRoX4w8ohoLTVMoHNbWw97zkObuTFAFFLnjJVF3d5A",
+            "{pbkdf2-sha1}4294967295$MDEyMzQ1Njc4OWFiY2RlZg$DYW.LTZG5wxyiF/qvsh40/./hXk",
+            "{X-PBKDF2}HMACSHA2+256://///w:c2FsdHNhbHQ:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "{crypt}$6$rounds=999999999$salt$hash",
+            "{crypt}$5$rounds=999999999$salt$hash",
+            "{crypt}$2b$31$abcdefghijklmnopqrstuuabcdefghijklmnopqrstuvwxyz01234",
+            "{crypt}$2a$31$abcdefghijklmnopqrstuuabcdefghijklmnopqrstuvwxyz01234",
+            "{crypt}$2y$31$abcdefghijklmnopqrstuuabcdefghijklmnopqrstuvwxyz01234",
+            "{argon2}$argon2id$v=19$m=4194304,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc",
+            "{argon2}$argon2id$v=19$m=65536,t=4000000,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc",
+            "{argon2}$argon2id$v=19$m=65536,t=2,p=200$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc",
+        ] {
+            assert!(cost_over(&limits, stored).is_some(), "{stored}");
+            assert!(!verify_pap(stored, b"password"), "{stored}");
+        }
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "refused without hashing: {:?}", started.elapsed());
+        let names = |stored| cost_over(&limits, stored);
+        assert_eq!(names("{PBKDF2-SHA512}4294967295$a$b"), Some("pbkdf2_iterations"));
+        assert_eq!(names("{crypt}$6$rounds=999999999$salt$hash"), Some("crypt_rounds"));
+        assert_eq!(names("{crypt}$2b$31$x"), Some("bcrypt_cost"));
+        assert_eq!(names("{argon2}$argon2id$v=19$m=4194304,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc"), Some("argon2_memory_kib"));
+        assert_eq!(names("{argon2}$argon2id$v=19$m=65536,t=4000000,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc"), Some("argon2_iterations"));
+        assert_eq!(names("{argon2}$argon2id$v=19$m=65536,t=2,p=200$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc"), Some("argon2_lanes"));
+    }
+
+    /// The other `{crypt}` forms that carry a cost: `$sha1$` and the extended DES form.
+    #[test]
+    #[allow(deprecated)]
+    fn test_sha1_crypt_and_extended_des_costs_are_limited() -> Result<(), String> {
+        let limits = HashLimits { crypt_rounds: 5000, ..HashLimits::default() };
+        let sha1 = |rounds| pwhash::sha1_crypt::hash_with(pwhash::HashSetup { salt: Some("saltsalt"), rounds: Some(rounds) }, "password").map_err(|e| e.to_string());
+        assert_eq!(cost_over(&limits, &format!("{{crypt}}{}", sha1(5000)?)), None);
+        assert_eq!(cost_over(&limits, &format!("{{crypt}}{}", sha1(5001)?)), Some("crypt_rounds"));
+        assert_eq!(cost_over(&limits, "{crypt}$sha1$4294967295$saltsalt$x"), Some("crypt_rounds"));
+        assert!(!verify_pap("{crypt}$sha1$4294967295$saltsalt$x", b"password"), "refused without hashing");
+        let des = |rounds| pwhash::bsdi_crypt::hash_with(pwhash::HashSetup { salt: Some("salt"), rounds: Some(rounds) }, "password").map_err(|e| e.to_string());
+        for rounds in [1, 5000, 5001, 65_536] {
+            let hash = format!("{{crypt}}{}", des(rounds)?);
+            let expected = (rounds > 5000).then_some("crypt_rounds");
+            assert_eq!(cost_over(&limits, &hash), expected, "{rounds}: {hash}");
+        }
+        // The largest count, written out, not computed: `zzzz` is 2^24 - 1.
+        assert_eq!(cost_over(&limits, "{crypt}_zzzzsaltxxxxxxxxxxx"), Some("crypt_rounds"));
+        assert!(!verify_pap("{crypt}_zzzzsaltxxxxxxxxxxx", b"password"), "refused without hashing");
+        Ok(())
+    }
+
+    /// Spec Stored Hash Cost Is Capped, Scenario: A value at its limit still verifies.
+    #[test]
+    fn test_cost_at_the_limit_is_verified() {
+        let limits = HashLimits { pbkdf2_iterations: 1000, crypt_rounds: 5000, bcrypt_cost: 10, argon2_memory_kib: 65536, argon2_iterations: 2, argon2_lanes: 1 };
+        // The published vector has 1000 iterations: exactly the limit.
+        let pbkdf2 = "{pbkdf2-sha1}1000$MDEyMzQ1Njc4OWFiY2RlZg$DYW.LTZG5wxyiF/qvsh40/./hXk";
+        assert_eq!(cost_over(&limits, pbkdf2), None);
+        assert_eq!(cost_over(&HashLimits { pbkdf2_iterations: 999, ..limits }, pbkdf2), Some("pbkdf2_iterations"));
+        let argon2 = "{argon2}$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc";
+        assert_eq!(cost_over(&limits, argon2), None);
+        assert!(verify_pap(argon2, b"password"), "within the defaults");
+        assert_eq!(cost_over(&HashLimits { argon2_memory_kib: 65535, ..limits }, argon2), Some("argon2_memory_kib"));
+        // A real SHA-256 hash with exactly the iterations of the limit still verifies.
+        let mut derived = [0u8; 32];
+        pbkdf2::pbkdf2_hmac::<Sha256>(b"password", b"0123456789abcdef", 1000, &mut derived);
+        let encode = |bytes: &[u8]| STANDARD_NO_PAD.encode(bytes).replace('+', ".");
+        let sha256 = format!("{{PBKDF2-SHA256}}1000${}${}", encode(b"0123456789abcdef"), encode(&derived));
+        assert_eq!(cost_over(&limits, &sha256), None);
+        assert!(verify_pap(&sha256, b"password") && !verify_pap(&sha256, b"Password"));
+        // `$6$` without `rounds=` takes the library's default, which no limit applies to; a bcrypt cost at the limit.
+        assert_eq!(cost_over(&limits, "{crypt}$6$salt$hash"), None);
+        assert_eq!(cost_over(&limits, "{crypt}$2b$10$x"), None);
+        assert_eq!(cost_over(&limits, "{crypt}$2b$11$x"), Some("bcrypt_cost"));
+        assert_eq!(cost_over(&limits, "{crypt}$6$rounds=5000$salt$hash"), None);
+        assert_eq!(cost_over(&limits, "{crypt}$6$rounds=5001$salt$hash"), Some("crypt_rounds"));
+    }
+
+    /// A value whose cost cannot be read is left to the check, which refuses it; fixed-cost
+    /// formats have no limit.
+    #[test]
+    fn test_unreadable_or_fixed_cost_is_not_over() {
+        let limits = HashLimits::default();
+        for stored in ["{PBKDF2}x", "{PBKDF2-SHA256}notanumber$a$b", "{X-PBKDF2}x", "{crypt}abJnggxhB/yWI", "{crypt}$1$saltsalt$qjXMvbEw8oaL.CzflDtaK/", "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=", "{SSHA512}x", "{nthash}8846F7EAEE8FB117AD06BDD830B7586C", "{argon2}not-a-phc-string", "{clear}password", "password"] {
+            assert_eq!(cost_over(&limits, stored), None, "{stored}");
         }
     }
 

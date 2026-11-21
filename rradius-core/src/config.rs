@@ -354,6 +354,8 @@ pub struct AuthSettings {
     pub chains: BTreeMap<String, ChainSettings>,
     /// `[auth.lockout]`; without it failed logins are not counted.
     pub lockout: Option<LockoutSettings>,
+    /// `[auth.password_limits]`; without it the built-in limits hold.
+    pub password_limits: crate::passwords::HashLimits,
 }
 
 /// `[auth.lockout]`: how many failed logins a key may have, and for how long it is locked.
@@ -853,6 +855,39 @@ struct RawAuth {
     #[serde(default)]
     chains: BTreeMap<String, RawChain>,
     lockout: Option<RawLockout>,
+    password_limits: Option<RawPasswordLimits>,
+}
+
+/// `[auth.password_limits]`: the most a stored hash may ask of one check.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawPasswordLimits {
+    pbkdf2_iterations: Option<u32>,
+    crypt_rounds: Option<u32>,
+    bcrypt_cost: Option<u32>,
+    argon2_memory_kib: Option<u32>,
+    argon2_iterations: Option<u32>,
+    argon2_lanes: Option<u32>,
+}
+
+fn password_limits(raw: Option<RawPasswordLimits>) -> Result<crate::passwords::HashLimits, String> {
+    let defaults = crate::passwords::HashLimits::default();
+    let Some(raw) = raw else { return Ok(defaults) };
+    let pick = |name: &str, value: Option<u32>, default: u32| -> Result<u32, String> {
+        match value {
+            Some(0) => Err(format!("auth.password_limits.{name} must be greater than 0")),
+            Some(value) => Ok(value),
+            None => Ok(default),
+        }
+    };
+    Ok(crate::passwords::HashLimits {
+        pbkdf2_iterations: pick("pbkdf2_iterations", raw.pbkdf2_iterations, defaults.pbkdf2_iterations)?,
+        crypt_rounds: pick("crypt_rounds", raw.crypt_rounds, defaults.crypt_rounds)?,
+        bcrypt_cost: pick("bcrypt_cost", raw.bcrypt_cost, defaults.bcrypt_cost)?,
+        argon2_memory_kib: pick("argon2_memory_kib", raw.argon2_memory_kib, defaults.argon2_memory_kib)?,
+        argon2_iterations: pick("argon2_iterations", raw.argon2_iterations, defaults.argon2_iterations)?,
+        argon2_lanes: pick("argon2_lanes", raw.argon2_lanes, defaults.argon2_lanes)?,
+    })
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -2167,7 +2202,8 @@ fn auth_settings(raw: RawAuth, base: &Path) -> Result<AuthSettings, String> {
         chains.insert(name, ChainSettings { policy: chain.policy, handlers, username });
     }
     let lockout = raw.lockout.map(lockout_settings).transpose()?;
-    Ok(AuthSettings { default, chains, lockout })
+    let password_limits = password_limits(raw.password_limits)?;
+    Ok(AuthSettings { default, chains, lockout, password_limits })
 }
 
 fn script_http_settings(raw: RawScriptHttp, base: &Path) -> Result<ScriptHttpSettings, String> {
@@ -3950,6 +3986,28 @@ mod tests {
             let error = lockout(body).err().ok_or_else(|| format!("loaded: {body}"))?;
             assert!(error.contains(expected), "{body}: {error}");
         }
+        Ok(())
+    }
+
+    /// `[auth.password_limits]`: the defaults without the section or a key, each key, and what is refused.
+    #[test]
+    fn test_auth_password_limits_settings() -> Result<(), String> {
+        use crate::passwords::HashLimits;
+        let limits = |section: &str| -> Result<HashLimits, String> {
+            let (_dir, result) = load_str(&base(&format!("\n[auth]\n{SQL_HANDLER}{section}{RADIUS_CLIENT}")));
+            Ok(result.map_err(|e| e.to_string())?.auth.ok_or("no [auth]")?.password_limits)
+        };
+        assert_eq!(limits("")?, HashLimits::default());
+        assert_eq!(limits("[auth.password_limits]\n")?, HashLimits::default());
+        let every = limits("[auth.password_limits]\npbkdf2_iterations = 1\ncrypt_rounds = 2\nbcrypt_cost = 3\nargon2_memory_kib = 4\nargon2_iterations = 5\nargon2_lanes = 6\n")?;
+        assert_eq!(every, HashLimits { pbkdf2_iterations: 1, crypt_rounds: 2, bcrypt_cost: 3, argon2_memory_kib: 4, argon2_iterations: 5, argon2_lanes: 6 });
+        assert_eq!(limits("[auth.password_limits]\nbcrypt_cost = 12\n")?, HashLimits { bcrypt_cost: 12, ..HashLimits::default() });
+        for key in ["pbkdf2_iterations", "crypt_rounds", "bcrypt_cost", "argon2_memory_kib", "argon2_iterations", "argon2_lanes"] {
+            let error = limits(&format!("[auth.password_limits]\n{key} = 0\n")).err().ok_or_else(|| format!("loaded {key} = 0"))?;
+            assert!(error.contains(&format!("auth.password_limits.{key} must be greater than 0")), "{error}");
+        }
+        let error = limits("[auth.password_limits]\ncolour = \"red\"\n").err().ok_or("loaded an unknown key")?;
+        assert!(error.contains("colour"), "{error}");
         Ok(())
     }
 

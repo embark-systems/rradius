@@ -76,6 +76,7 @@ authentication protocol="radius" client="wlc" source=10.30.0.10 user="Staff1@cor
 
 找出慢的那一段：
 
+- **密碼雜湊成本超過上限：** 記錄有 `asks for more than [auth.password_limits].…` 的 WARN，指名帳號與參數：那個帳號儲存的雜湊成本高於上限，登入被當成密碼錯誤拒絕。確認雜湊是正當的就調高對應的上限（[第 9 章](09-migrate-users.md)、`docs/usage.md` 的〈儲存雜湊的成本上限〉）。
 - **密碼雜湊：** bcrypt 和 argon2 刻意很慢，同時驗證的數量不超過 CPU 核心數，其餘排隊。尖峰時每秒幾百次登入就會排隊。登入量大時改用 `sha512-crypt`（[第 11 章](11-operations.md#用-user-指令)）。
 - **寫入：** 每次登入都寫資料庫的腳本（配額、IP 配發、兩步驟驗證）要經過叢集，比只讀的慢。叢集剛失去多數節點時，寫入要等 `[lua] query_timeout_ms` 才失敗；沒有 leader 超過 5 秒後立刻失敗。這些登入都不回應，不是拒絕。
 - **調高 `max_auth_inflight` 通常沒有用。** NAS 等幾秒就放棄了，排更長的隊只是讓更多請求白做。先解決變慢的原因。

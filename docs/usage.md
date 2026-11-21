@@ -2107,7 +2107,7 @@ return response.status == 200 and 'accept' or 'reject'
 | `{X-PBKDF2}` | `<演算法>:<次數>:<鹽>:<雜湊>`，演算法是 `HMACSHA1` 或 `HMACSHA2+224`、`+256`、`+384`、`+512`，次數是 4 octets 大端數的 Base64，鹽和雜湊是 Base64（有沒有 padding 都可以），雜湊長度等於演算法的輸出長度。和 PBKDF2 一樣在處理請求的執行緒之外驗證，**只用於遷移** |
 | `{NS-MTA-MD5}` | 舊郵件伺服器的格式：32 個十六進位字元的 MD5(鹽、0x59、密碼、0xF7、鹽)，後面接 32 個字元的鹽，**只用於遷移** |
 
-這些遷移用的格式是為了從舊系統搬帳號時不必重設密碼，`{MD5}`、`{NS-MTA-MD5}`、沒有鹽的 SHA-2 和以 SHA-1 推導的 PBKDF2 特別弱，新帳號請用下面建議的格式。PBKDF2 的次數由雜湊本身決定，會在處理請求的執行緒之外驗證，太高時認證會變慢。格式錯誤的值一律不符。
+這些遷移用的格式是為了從舊系統搬帳號時不必重設密碼，`{MD5}`、`{NS-MTA-MD5}`、沒有鹽的 SHA-2 和以 SHA-1 推導的 PBKDF2 特別弱，新帳號請用下面建議的格式。PBKDF2 的次數由雜湊本身決定，會在處理請求的執行緒之外驗證，並受下面〈儲存雜湊的成本上限〉限制。格式錯誤的值一律不符。
 
 **沒有前綴、卻以 `$2a$`、`$2b$`、`$2y$`、`$1$`、`$5$`、`$6$` 或 `$argon2` 開頭的值，不當明文：** 這幾乎一定是匯入時漏了前綴的雜湊，當明文比對的話，拿到雜湊的人把雜湊字串當密碼送出就能登入。這種值對 PAP、CHAP、MS-CHAP 與 MS-CHAPv2 一律不符，每個使用者每個行程記一次 WARN（指名使用者，不含儲存值），例如 `the stored password looks like a hash with no scheme prefix and is refused; add {crypt} or {argon2} before it, or {clear} if it is the password itself`。補法有三種：bcrypt、SHA-crypt 等 crypt 雜湊補 `{crypt}`，argon2 補 `{argon2}`，真的是以這些字元開頭的明文密碼補 `{clear}`。沒有設定開關；`{clear}` 就是明確的放行。
 
@@ -2115,7 +2115,7 @@ CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固�
 
 `{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradius-server user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
 
-`{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時視為拒絕。`{argon2}` 的成本由雜湊本身的參數決定，設得太高時認證會變慢，也會用掉更多記憶體。
+`{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時視為拒絕。`{argon2}` 的成本由雜湊本身的參數決定，所以有上限，見下面〈儲存雜湊的成本上限〉。
 
 ### 哪些格式偏弱，怎麼逐步淘汰
 
@@ -2124,6 +2124,23 @@ CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固�
 - **偏弱、只應該用來遷移：** `{MD5}`、`{SMD5}`、`{SHA}`、`{SSHA}`、`{SHA224}`、`{SHA256}`、`{SHA384}`、`{SHA512}` 與它們加鹽的版本、`{NS-MTA-MD5}`：都是只算一次的雜湊，攻擊者拿到資料庫之後可以很快地猜。以 SHA-1 推導的 `{PBKDF2}` 與 `{PBKDF2-SHA1}`有迭代，但演算法老。`{crypt}` 裡的 DES 與 `$1$`（MD5-crypt）也是老格式。
 - **弱，但協定需要，不能淘汰：** `{nthash}`（沒有鹽的 MD4）與明文、`{clear}`。CHAP 需要明文，MS-CHAP、MS-CHAPv2、PEAP 需要明文或 `{nthash}`（5.1 節）。這些帳號要靠資料庫的存取控制保護，也不要讓不需要的帳號用它們。
 - **新帳號用：** `{crypt}` 的 bcrypt、`$5$`、`$6$`，或 `{argon2}`（見上面）。
+
+**儲存雜湊的成本上限（`[auth.password_limits]`）：** 慢雜湊的成本寫在儲存的值裡，能寫入自己密碼值的人（例如目錄允許使用者改 `userPassword`）可以設一個極大的成本，再用與 CPU 數一樣多的登入占住所有慢雜湊的名額，讓別人的登入排隊逾時；`{argon2}` 的記憶體參數還可能讓行程用掉過多記憶體。所以伺服器驗證前先讀成本參數，**超過上限就不計算，直接當密碼錯誤拒絕**。沒寫這一節也有預設上限，所有鍵都是選用的正整數（0 是載入錯誤），SIGHUP 重新載入時生效：
+
+| 鍵 | 預設 | 限制什麼 |
+| --- | --- | --- |
+| `pbkdf2_iterations` | 5000000 | `{PBKDF2}`、`{PBKDF2-SHA1}`、`{PBKDF2-SHA256}`、`{PBKDF2-SHA512}`、`{X-PBKDF2}` 的迭代次數 |
+| `crypt_rounds` | 1000000 | `{crypt}` 的 `$5$`、`$6$`、`$sha1$` 的 `rounds`，以及擴充 DES（`_` 開頭）的 rounds |
+| `bcrypt_cost` | 15 | `{crypt}` 的 bcrypt（`$2a$`、`$2b$`、`$2y$`）的 cost，每加 1 工作量加倍 |
+| `argon2_memory_kib` | 262144 | `{argon2}` 的記憶體（KiB，預設 256 MiB） |
+| `argon2_iterations` | 10 | `{argon2}` 的迭代次數 |
+| `argon2_lanes` | 16 | `{argon2}` 的平行度 |
+
+- **超過上限是一般的密碼錯誤：** 計入 `rradius_password_checks_total` 的 `failed` 與 `[auth.lockout]`，不是「後端不能用」。每個帳號每個行程記一次 WARN，指名帳號、格式與超過的參數（例如 `[auth.password_limits].pbkdf2_iterations`），不含儲存值與密碼。DES、`$1$`、`{SHA}`、`{SSHA}` 等成本固定的格式不受限制。
+- **升級時要注意：** 成本高於預設上限的既有雜湊升級後會被拒絕；看到這個 WARN，確認那個雜湊是正當的，就調高對應的鍵。
+- **實測（Apple M4 Max、release 建置、單次、無競爭）：** 剛好在預設上限的值，PBKDF2-SHA1／256／512 約 0.29／0.37／0.81 秒，`$5$`／`$6$` 約 0.18／0.15 秒，bcrypt cost 15 約 1.3 秒，argon2（256 MiB、t=10、p=16）約 0.94 秒，行程峰值記憶體約 266 MiB。較慢的 CPU 會慢數倍。
+- **argon2 的記憶體上限要乘上 CPU 數：** 同時驗證的數量等於 CPU 數，最壞情況用掉約 `argon2_memory_kib` × CPU 數的記憶體（64 核、預設值約 16 GiB）。記憶體少的機器把 `argon2_memory_kib` 調低，同時確認你的 argon2 雜湊沒有超過它。
+- **預設值取得比常見建議高：** 常見建議是 PBKDF2 約 60 萬到 130 萬次、bcrypt cost 10 到 13，一般部署不受影響。
 
 **用統計看還在用什麼：** `rradius_password_checks_total{scheme="...",result="ok|failed"}` 記每一次用儲存的密碼比對登入（PAP、CHAP、MS-CHAP、MS-CHAPv2），依儲存值的格式與結果加一。`scheme` 的值是固定的：`clear`、`none`（沒有前綴的明文）、`crypt`、`md5`、`smd5`、`sha`、`ssha`、`sha224`、`ssha224`、`sha256`、`ssha256`、`sha384`、`ssha384`、`sha512`、`ssha512`、`pbkdf2-sha1`（`{PBKDF2}` 也算在這裡）、`pbkdf2-sha256`、`pbkdf2-sha512`、`x-pbkdf2`、`ns-mta-md5`、`nthash`、`argon2`、`unknown`（不認得的前綴），每個格式兩個結果的組合從啟動就有，沒發生過的是 0。資料庫裡寫什麼前綴都不會變成標籤。格式是 `unknown` 或結果一直是 `failed` 的，多半是匯入的值有問題，見上面沒有前綴的雜湊。LDAP 的 `bind` 模式、`netlogon`、Lua 處理器與憑證登入不比對儲存的密碼，不計。空值、沒有前綴的雜湊與逾時也不計。
 
