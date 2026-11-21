@@ -553,6 +553,10 @@ pub(crate) async fn verify_secret(stored: &str, user: &str, secret: &Secret) -> 
         warn_unprefixed_hash(user);
         return None;
     }
+    // A digest stored without its prefix is still compared as plaintext; the operator is told.
+    if passwords::looks_like_unprefixed_digest(stored) {
+        warn_unprefixed_digest(user);
+    }
     // What `rradius_password_checks_total` counts: each comparison with the stored value.
     let format = passwords::scheme_label(stored);
     // A hash that asks for more than the limits allow is refused unread, like a wrong password.
@@ -605,6 +609,18 @@ fn warn_unprefixed_hash(user: &str) {
         return;
     }
     tracing::warn!(user, "the stored password looks like a hash with no scheme prefix and is refused; add {{crypt}} or {{argon2}} before it, or {{clear}} if it is the password itself");
+}
+
+/// Says once per process for each user that the stored password looks like a digest with no
+/// `{scheme}` prefix, which is compared as plaintext. Never logs the stored value. Bounded like
+/// `warn_unprefixed_hash`.
+fn warn_unprefixed_digest(user: &str) {
+    static WARNED: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+    let Ok(mut warned) = WARNED.lock() else { return };
+    if !first_warning(warned.get_or_insert_with(Default::default), user, UNPREFIXED_WARNINGS_MAX) {
+        return;
+    }
+    tracing::warn!(user, "the stored password looks like a digest with no scheme prefix and is compared as plaintext; add its prefix ({{nthash}}, {{MD5}}, {{SHA}}, {{SHA256}}, ...), or {{clear}} if it is the password itself");
 }
 
 /// Says once per process for each user that the stored password asks for more than
@@ -1462,6 +1478,34 @@ mod tests {
             assert!(verify_secret(&stored, "clear-bob", &Secret::pap(hash.as_bytes().to_vec())).await.is_some());
             assert!(verify_secret(&stored, "clear-bob", &Secret::Chap { id: 7, response: chap_for(hash), challenge: challenge.to_vec() }).await.is_some());
             assert!(verify_secret("hunter2", "plain-carol", &Secret::pap(b"hunter2".to_vec())).await.is_some());
+        })
+        .await;
+        assert!(!log.contains("WARN"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn test_unprefixed_digest_is_compared_as_plaintext_and_logged_once() {
+        let digest = "8846f7eaee8fb117ad06bdd830b7586c";
+        let log = crate::test_support::radius::logged_during(async {
+            // Decided as plaintext, as before: the digest itself is the password.
+            assert!(verify_secret(digest, "digest-alice", &Secret::pap(digest.as_bytes().to_vec())).await.is_some());
+            assert!(verify_secret(digest, "digest-alice", &Secret::pap(b"password".to_vec())).await.is_none());
+        })
+        .await;
+        let warnings: Vec<&str> = log.lines().filter(|line| line.contains("WARN")).collect();
+        assert_eq!(warnings.len(), 1, "once per user: {log}");
+        assert!(warnings[0].contains("digest-alice") && warnings[0].contains("digest") && !warnings[0].contains(digest), "{log}");
+        // A Base64 digest warns on its own user.
+        let log = crate::test_support::radius::logged_during(async {
+            assert!(verify_secret("W6ph5Mm5Pz8GgiULbPgzG37mj9g=", "digest-bob", &Secret::pap(b"x".to_vec())).await.is_none());
+        })
+        .await;
+        assert_eq!(log.lines().filter(|line| line.contains("WARN") && line.contains("digest-bob")).count(), 1, "{log}");
+        // A prefix says what it is; ordinary plaintext says nothing.
+        let log = crate::test_support::radius::logged_during(async {
+            assert!(verify_secret(&format!("{{clear}}{digest}"), "digest-carol", &Secret::pap(digest.as_bytes().to_vec())).await.is_some());
+            assert!(verify_secret(&format!("{{nthash}}{digest}"), "digest-dave", &Secret::pap(b"x".to_vec())).await.is_none());
+            assert!(verify_secret("hunter2", "digest-erin", &Secret::pap(b"hunter2".to_vec())).await.is_some());
         })
         .await;
         assert!(!log.contains("WARN"), "{log}");

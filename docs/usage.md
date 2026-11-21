@@ -2113,6 +2113,8 @@ return response.status == 200 and 'accept' or 'reject'
 
 **沒有前綴、卻以 `$2a$`、`$2b$`、`$2y$`、`$1$`、`$5$`、`$6$` 或 `$argon2` 開頭的值，不當明文：** 這幾乎一定是匯入時漏了前綴的雜湊，當明文比對的話，拿到雜湊的人把雜湊字串當密碼送出就能登入。這種值對 PAP、CHAP、MS-CHAP 與 MS-CHAPv2 一律不符，每個使用者每個行程記一次 WARN（指名使用者，不含儲存值），例如 `the stored password looks like a hash with no scheme prefix and is refused; add {crypt} or {argon2} before it, or {clear} if it is the password itself`。補法有三種：bcrypt、SHA-crypt 等 crypt 雜湊補 `{crypt}`，argon2 補 `{argon2}`，真的是以這些字元開頭的明文密碼補 `{clear}`。沒有設定開關；`{clear}` 就是明確的放行。
 
+**沒有前綴、卻長得像摘要的值，照舊當明文，但會警告：** 全是十六進位字元且長度為 32、40、56、64、96 或 128（NT hash、MD5、SHA-1、SHA-2 的十六進位），或帶填充的標準 Base64 且解碼後是 16、20、28、32、48 或 64 個位元組（例如 `W6ph5Mm5Pz8GgiULbPgzG37mj9g=`）。拿到資料庫的人把這串字當密碼送出就能登入，所以每個使用者每個行程記一次 WARN（指名使用者，不含儲存值）：`the stored password looks like a digest with no scheme prefix and is compared as plaintext; add its prefix ({nthash}, {MD5}, {SHA}, {SHA256}, ...), or {clear} if it is the password itself`。補上該格式的前綴（`{nthash}`、`{MD5}`、`{SHA}`、`{SHA256}` 等）；真的是這樣的明文密碼（例如設備用的 32 個十六進位字元的隨機密碼）補 `{clear}`，就不再警告。只警告、不拒絕，因為這樣的明文密碼確實可能存在。沒有前綴的加鹽摘要（例如沒有前綴的 SSHA）與其他長度的值認不出來；要找這類值，看 `rradius_password_checks_total{scheme="none"}` 的 `ok` 是否多得不合理。
+
 CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固定時間比較。儲存值是空字串或 `{clear}` 後面沒有內容時，一律視為沒有密碼，任何密碼都不符。
 
 `{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradius-server user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
