@@ -143,7 +143,7 @@ rradius-server user passwd --config rradius.toml mail1    # 問兩次新密碼
 
 - **`scheme` 選哪個：** 只用 PAP 就用預設的 `bcrypt`（登入量很大時改 `sha512-crypt`）；要用 PEAP、MS-CHAPv2 選 `nthash`；要用 CHAP 只能 `clear`。見[第 11 章](11-operations.md#用-user-指令)。
 - **rradius 不會在登入時自動把舊雜湊換成新的，** 也沒有讓使用者自己改密碼的介面。要由管理者、或你的入口網站呼叫 `user passwd`（密碼從標準輸入給）。
-- **看還剩多少：** `user show <帳號>` 會印出這個帳號的 `origin`。rradius 沒有查詢整張資料表的指令；要統計總數，可以在計費腳本裡偶爾用 `sql_query` 算一次、用 `log()` 寫進記錄（本章沒有附這樣的腳本）。
+- **看還剩多少：** 統計 `rradius_password_checks_total{scheme="...",result="ok"}` 依儲存的格式分開記有人用它登入成功的次數，所以看 `ssha`、`md5` 這些舊格式還有沒有成功登入；從沒登入過的帳號統計看不到，要盤點資料庫裡全部帳號的格式，用 [usage.md 第 5 節](../usage.md#5-密碼格式)的查詢（在 SQLite 跑過）。`user show <帳號>` 會印出這個帳號的 `origin`。rradius 沒有查詢整張資料表的指令；要統計總數，可以在計費腳本裡偶爾用 `sql_query` 算一次、用 `log()` 寫進記錄（本章沒有附這樣的腳本）。
 - **訂一個期限。** 期限到了還沒改密碼的帳號，用 migration 檔把密碼設成 `NULL`（密碼欄是 `NULL` 的帳號一律登不進來），請他們找管理者重設。
 
 ## 帳號留在原本的資料庫

@@ -552,16 +552,28 @@ pub(crate) async fn verify_secret(stored: &str, user: &str, secret: &Secret) -> 
         warn_unprefixed_hash(user);
         return None;
     }
+    // What `rradius_password_checks_total` counts: each comparison with the stored value.
+    let format = passwords::scheme_label(stored);
     let verified = match secret {
-        Secret::Pap(password) => passwords::verify_pap_blocking(stored, password).await,
-        Secret::Chap { id, response, challenge } => passwords::verify_chap(stored, *id, response, challenge),
+        Secret::Pap(password) => {
+            let verified = passwords::verify_pap_blocking(stored, password).await;
+            passwords::record_check(format, verified);
+            verified
+        }
+        Secret::Chap { id, response, challenge } => {
+            let verified = passwords::verify_chap(stored, *id, response, challenge);
+            passwords::record_check(format, verified);
+            verified
+        }
         Secret::MsChapV1 { challenge, nt_response, .. } => {
-            let proof = mschap::verify_v1(stored, challenge, nt_response)?;
-            return Some(mschapv1_success(&proof));
+            let proof = mschap::verify_v1(stored, challenge, nt_response);
+            passwords::record_check(format, proof.is_some());
+            return Some(mschapv1_success(&proof?));
         }
         Secret::MsChapV2 { ident, peer_challenge, response, challenge } => {
-            let proof = mschap::verify(stored, user, peer_challenge, challenge, response)?;
-            return Some(mschapv2_success(*ident, &proof));
+            let proof = mschap::verify(stored, user, peer_challenge, challenge, response);
+            passwords::record_check(format, proof.is_some());
+            return Some(mschapv2_success(*ident, &proof?));
         }
         Secret::Certificate | Secret::None => false,
     };
@@ -1238,6 +1250,56 @@ mod tests {
         ] {
             assert!(verify_secret("{clear}", "alice", &secret).await.is_none(), "{secret:?}");
         }
+    }
+
+    /// Each comparison with a stored value is counted by the format of the value and the result;
+    /// what is no comparison is not. The counters are shared by every test of the process, so the
+    /// formats few tests use (`ssha384`, `unknown`) are counted exactly, the others at least.
+    #[tokio::test]
+    async fn test_password_checks_are_counted_by_format() {
+        use crate::passwords::checks_counted;
+        // A salted SHA-384 of "secret": Base64 of the digest of the password and the salt, then the salt.
+        let stored = {
+            use base64::Engine;
+            use sha2::{Digest, Sha384};
+            let mut hasher = Sha384::new();
+            hasher.update(b"secret");
+            hasher.update(b"salty");
+            let mut value = hasher.finalize().to_vec();
+            value.extend_from_slice(b"salty");
+            format!("{{SSHA384}}{}", base64::engine::general_purpose::STANDARD.encode(value))
+        };
+        let before = (checks_counted("ssha384", true), checks_counted("ssha384", false));
+        assert!(verify_secret(&stored, "alice", &Secret::pap(b"secret".to_vec())).await.is_some());
+        assert!(verify_secret(&stored, "alice", &Secret::pap(b"wrong".to_vec())).await.is_none());
+        assert!(verify_secret(&stored, "alice", &Secret::pap(b"wrong".to_vec())).await.is_none());
+        assert_eq!((checks_counted("ssha384", true) - before.0, checks_counted("ssha384", false) - before.1), (1, 2));
+
+        // No comparison: nothing after the prefix, and a login by certificate.
+        let before = (checks_counted("ssha384", true), checks_counted("ssha384", false));
+        assert!(verify_secret("{SSHA384}", "alice", &Secret::pap(b"secret".to_vec())).await.is_none());
+        assert!(verify_secret(&stored, "alice", &Secret::Certificate).await.is_none());
+        assert_eq!((checks_counted("ssha384", true), checks_counted("ssha384", false)), before);
+
+        // A prefix that is not a format is `unknown`, whatever it says.
+        let before = checks_counted("unknown", false);
+        assert!(verify_secret("{weird}abc", "alice", &Secret::pap(b"abc".to_vec())).await.is_none());
+        assert_eq!(checks_counted("unknown", false) - before, 1);
+
+        // CHAP against a plain password, MS-CHAPv2 and MS-CHAPv1 against an NT hash.
+        let (peer, challenge) = ([1u8; 16], [2u8; 16]);
+        let (none_before, clear_before, nthash_before) = (checks_counted("none", true), checks_counted("clear", false), checks_counted("nthash", true));
+        let chap = |password: &str| Md5::digest([&[7u8][..], password.as_bytes(), &challenge].concat()).to_vec();
+        assert!(verify_secret("hunter2", "bob", &Secret::Chap { id: 7, response: chap("hunter2"), challenge: challenge.to_vec() }).await.is_some());
+        assert!(verify_secret("{clear}hunter2", "bob", &Secret::Chap { id: 7, response: chap("wrong"), challenge: challenge.to_vec() }).await.is_none());
+        let nthash = format!("{{nthash}}{}", crate::mschap::nt_password_hash("hunter2").iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+        let v2 = Secret::MsChapV2 { ident: 1, peer_challenge: peer, response: crate::mschap::response_for("hunter2", "bob", &peer, &challenge), challenge };
+        assert!(verify_secret(&nthash, "bob", &v2).await.is_some());
+        let v1 = Secret::MsChapV1 { ident: 1, challenge: [3u8; 8], nt_response: crate::mschap::challenge_response(&[3u8; 8], &crate::mschap::nt_password_hash("hunter2")).unwrap_or([0u8; 24]) };
+        assert!(verify_secret(&nthash, "bob", &v1).await.is_some());
+        assert!(checks_counted("none", true) > none_before);
+        assert!(checks_counted("clear", false) > clear_before);
+        assert!(checks_counted("nthash", true) >= nthash_before + 2);
     }
 
     #[test]
