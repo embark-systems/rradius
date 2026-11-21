@@ -198,6 +198,22 @@ lock_seconds = 300
 - **沒設驗證鏈、直接用 `[lua].script` 驗證的登入不受保護。**
 - 看有沒有人被鎖：`rradius_auth_lockouts_total`、`rradius_auth_lockout_rejected_total`，和記錄裡的 `auth lockout:` 行（含客戶端、帳號、裝置，不含密碼）。完整說明見 `docs/usage.md` 第 3.8 節。
 
+### 關掉 MS-CHAPv1
+
+MS-CHAPv1（PPTP VPN 和舊撥接設備）的回應只靠 DES，擷取到的人可以幾乎即時還原 NT hash，成功時回的 MPPE 金鑰也由 NT hash 導出。預設仍然驗證它，沒有舊設備要用的部署可以關掉：
+
+```toml
+[auth]
+allow_mschapv1 = false
+```
+
+關掉之後，RADIUS 的 MS-CHAPv1 登入回 Access-Reject（帶 `MS-CHAP-Error`），TACACS+ 的 MSCHAP 回 FAIL，驗證記錄的 handler 是 `mschapv1_refused`；PAP、CHAP、MS-CHAPv2、EAP 不受影響。它不查資料庫、不計入上面的 `[auth.lockout]` 失敗次數，所以舊設備一直重試不會把帳號鎖住。每次拒絕在記錄裡有一行 `MS-CHAPv1 refused`（客戶端、協定、帳號，不含回應）。
+
+- **關之前先確認沒有設備在用：** 仍送 MS-CHAPv1 的設備關掉後全部登入失敗。`rradius_password_checks_total` 只按儲存格式分，看不出協定，不能拿它判斷；改看驗證記錄，或先在測試環境關掉，看記錄裡有沒有 `MS-CHAPv1 refused` 的行，確認 PPTP 閘道等舊設備都已改用 MS-CHAPv2 或 EAP。
+- **SIGHUP 重新載入就生效。**
+- **沒設驗證鏈、直接用 `[lua].script` 處理的 `MS-CHAP-Response` 不在這個開關範圍。**
+- **預設改成 `false` 留到下一個有破壞性變更的版本。** 完整說明見 `docs/usage.md` 第 5.2 節。
+
 ## 監控
 
 `[metrics]` 開啟後，`GET /metrics` 是 Prometheus 格式。要被通知、或要送 SNMP trap，用[第 21 章](21-monitoring.md)的告警規則。建議先看這幾個：

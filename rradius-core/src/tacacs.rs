@@ -2054,6 +2054,36 @@ pub(crate) mod tests {
         data
     }
 
+    /// With `allow_mschapv1 = false` an MS-CHAP START that passes by default is answered FAIL, and
+    /// CHAP and MS-CHAPv2 are still decided by the chain.
+    #[tokio::test]
+    async fn test_mschap_refused_when_turned_off() -> Result<(), Box<dyn std::error::Error>> {
+        // Its own table: the tests that share `tacacs_chap_users` rewrite it.
+        let db = crate::test_support::test_db();
+        db.execute("CREATE TABLE IF NOT EXISTS tacacs_mschap_switch (username TEXT, password TEXT)").await?;
+        db.execute("DELETE FROM tacacs_mschap_switch").await?;
+        db.execute("INSERT INTO tacacs_mschap_switch VALUES ('alice', 'secret')").await?;
+        let chains = |allowed: bool| {
+            let handler = Handler::Sql { source: crate::auth_chain::SqlSource::Cluster(db.clone()), user_query: "SELECT password FROM tacacs_mschap_switch WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: std::time::Duration::from_secs(5) };
+            Arc::new(AuthChains::new(Some(AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![handler])), Vec::new()).with_mschapv1(allowed))
+        };
+        let challenge = [0x11; 16];
+        let mschap = typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &challenge[..8], "secret", 1));
+        let others = [
+            typed_start_body(AUTHEN_TYPE_CHAP, 1, b"alice", &chap_data(7, &challenge, b"secret")),
+            typed_start_body(AUTHEN_TYPE_MSCHAPV2, 1, b"alice", &mschapv2_data(9, &challenge, "secret")),
+        ];
+        for (allowed, expected) in [(true, AUTHEN_STATUS_PASS), (false, AUTHEN_STATUS_FAIL)] {
+            let mut connection = AsciiConnection::with_enable(script_engine("return 'reject'").await, Some(chains(allowed)), EnableMode::Login).await;
+            assert_eq!(connection.ask(ASCII_SESSION, 1, &mschap).await.1, expected, "allow_mschapv1 = {allowed}");
+        }
+        for body in &others {
+            let mut connection = AsciiConnection::with_enable(script_engine("return 'reject'").await, Some(chains(false)), EnableMode::Login).await;
+            assert_eq!(connection.ask(ASCII_SESSION, 1, body).await.1, AUTHEN_STATUS_PASS);
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_chap_and_mschapv2_through_a_chain() -> Result<(), Box<dyn std::error::Error>> {
         let chains = plain_password_chain().await?;

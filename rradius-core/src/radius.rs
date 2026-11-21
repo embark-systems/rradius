@@ -3944,6 +3944,25 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// With `allow_mschapv1 = false` the same request that is accepted by default is refused, with the
+    /// MS-CHAP-Error of any refused MS-CHAPv1 login and no keys; PAP and MS-CHAPv2 still work.
+    #[tokio::test]
+    async fn test_mschapv1_refused_when_turned_off() -> Result<(), String> {
+        let server = chain_server().await;
+        let accepted = reply_to(&server, &mschapv1_request("User", "clientPass", 1, 8, 50)).await?;
+        assert_eq!(accepted.code, ACCESS_ACCEPT, "allowed by default");
+        let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![chain_sql_handler().await]);
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'reject'").map_err(|e| e.to_string())?);
+        let server = RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine, share_dictionary())
+            .with_auth_chains(Arc::new(AuthChains::new(Some(chain), Vec::new()).with_mschapv1(false)));
+        let reply = reply_to(&server, &mschapv1_request("User", "clientPass", 1, 8, 50)).await?;
+        assert_eq!(reply.code, ACCESS_REJECT);
+        let error = microsoft_attribute(&reply, 2).ok_or("no MS-CHAP-Error")?;
+        assert_eq!((error[0], &error[1..]), (5, b"E=691 R=0".as_slice()));
+        assert!(microsoft_attribute(&reply, 12).is_none(), "no keys for a refusal");
+        Ok(())
+    }
+
     /// Anything but a challenge of 8 octets, a response of 50, and the NT bit is no credentials at all, so
     /// not an MS-CHAP request to refuse with an MS-CHAP-Error.
     #[tokio::test]

@@ -356,6 +356,8 @@ pub struct AuthSettings {
     pub lockout: Option<LockoutSettings>,
     /// `[auth.password_limits]`; without it the built-in limits hold.
     pub password_limits: crate::passwords::HashLimits,
+    /// `[auth] allow_mschapv1`; with `false` the chains refuse MS-CHAPv1 logins unread.
+    pub allow_mschapv1: bool,
 }
 
 /// `[auth.lockout]`: how many failed logins a key may have, and for how long it is locked.
@@ -858,6 +860,7 @@ struct RawAuth {
     chains: BTreeMap<String, RawChain>,
     lockout: Option<RawLockout>,
     password_limits: Option<RawPasswordLimits>,
+    allow_mschapv1: Option<bool>,
 }
 
 /// `[auth.password_limits]`: the most a stored hash may ask of one check.
@@ -2210,7 +2213,7 @@ fn auth_settings(raw: RawAuth, base: &Path) -> Result<AuthSettings, String> {
     }
     let lockout = raw.lockout.map(lockout_settings).transpose()?;
     let password_limits = password_limits(raw.password_limits)?;
-    Ok(AuthSettings { default, chains, lockout, password_limits })
+    Ok(AuthSettings { default, chains, lockout, password_limits, allow_mschapv1: raw.allow_mschapv1.unwrap_or(true) })
 }
 
 fn script_http_settings(raw: RawScriptHttp, base: &Path) -> Result<ScriptHttpSettings, String> {
@@ -3999,6 +4002,21 @@ mod tests {
             let error = lockout(body).err().ok_or_else(|| format!("loaded: {body}"))?;
             assert!(error.contains(expected), "{body}: {error}");
         }
+        Ok(())
+    }
+
+    /// `[auth] allow_mschapv1`: true without the key, either value, and a non-boolean is refused.
+    #[test]
+    fn test_auth_allow_mschapv1_setting() -> Result<(), String> {
+        let allowed = |line: &str| -> Result<bool, String> {
+            let (_dir, result) = load_str(&base(&format!("\n[auth]\n{line}\n{SQL_HANDLER}{RADIUS_CLIENT}")));
+            Ok(result.map_err(|e| e.to_string())?.auth.ok_or("no [auth]")?.allow_mschapv1)
+        };
+        assert!(allowed("")?, "the default allows it");
+        assert!(allowed("allow_mschapv1 = true")?);
+        assert!(!allowed("allow_mschapv1 = false")?);
+        let error = allowed("allow_mschapv1 = \"no\"").err().ok_or("loaded a string")?;
+        assert!(error.contains("allow_mschapv1"), "{error}");
         Ok(())
     }
 
