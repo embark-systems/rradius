@@ -236,6 +236,10 @@ fn refused_start(body: &[u8], enable: EnableMode, chained: bool, client: &Client
         tracing::info!(client = client.name.as_str(), user = user().as_str(), authen_type = body[2], "TACACS+ authentication type not supported here: asking the client to restart with another");
         return Some(authen_reply(AUTHEN_STATUS_RESTART, 0, b""));
     }
+    if body[2] == AUTHEN_TYPE_PAP && data_field(&attributes).len() > MAX_PASSWORD_LEN {
+        tracing::info!(client = client.name.as_str(), user = user().as_str(), authen_type = body[2], length = data_field(&attributes).len(), "TACACS+ authentication refused: the password is longer than {MAX_PASSWORD_LEN} octets");
+        return Some(authen_reply(AUTHEN_STATUS_FAIL, 0, b""));
+    }
     if challenge_response && challenge_secret(body[2], data_field(&attributes)).is_none() {
         tracing::info!(client = client.name.as_str(), user = user().as_str(), authen_type = body[2], data_len = data_field(&attributes).len(), "TACACS+ authentication refused: CHAP needs a challenge of at least 8 octets, MS-CHAP one of 8 and a response with the NT flag, MS-CHAPv2 one of 16");
         return Some(authen_reply(AUTHEN_STATUS_FAIL, 0, b""));
@@ -249,6 +253,11 @@ fn data_field(attributes: &[(String, AttrValue)]) -> &[u8] {
         _ => &[],
     }
 }
+
+/// The longest password, and code, accepted: as for a RADIUS `User-Password` and a TTLS inner password.
+const MAX_PASSWORD_LEN: usize = 128;
+/// The longest user name in a CONTINUE: what the user field of a START can hold.
+const MAX_USERNAME_LEN: usize = 255;
 
 /// CHAP response size (RFC 8907 section 5.4.2.3).
 const CHAP_RESPONSE_LEN: usize = 16;
@@ -469,6 +478,8 @@ enum AuthenStep {
     NoReply,
     /// An ASCII login has what it needs.
     Finished { attributes: Vec<(String, AttrValue)>, credentials: Credentials },
+    /// A user name, password or code longer than allowed: refused with FAIL, and the session is over.
+    TooLong { what: &'static str, user: Option<Vec<u8>>, length: usize },
     /// The code an ASCII login was asked for after its password.
     Code { code_for: CodeFor, code: zeroize::Zeroizing<Vec<u8>> },
 }
@@ -511,6 +522,18 @@ impl AsciiLogins {
         if flags & CONTINUE_FLAG_ABORT != 0 {
             self.0.remove(&packet.session_id);
             return AuthenStep::NoReply;
+        }
+        let (what, limit) = if login.code_for.is_some() {
+            ("code", MAX_PASSWORD_LEN)
+        } else if login.user.is_none() {
+            ("username", MAX_USERNAME_LEN)
+        } else {
+            ("password", MAX_PASSWORD_LEN)
+        };
+        if user_msg.len() > limit {
+            let user = login.user.clone();
+            self.0.remove(&packet.session_id);
+            return AuthenStep::TooLong { what, user, length: user_msg.len() };
         }
         login.next_seq = login.next_seq.wrapping_add(2);
         if login.code_for.is_some() {
@@ -1097,6 +1120,10 @@ impl TacacsServer {
                 AuthenStep::Reply(reply) => (reply, false),
                 AuthenStep::Undecodable(reply) => (reply, true),
                 AuthenStep::NoReply => continue,
+                AuthenStep::TooLong { what, user, length } => {
+                    tracing::info!(client = client.name.as_str(), user = user.map(|user| String::from_utf8_lossy(&user).into_owned()).unwrap_or_default().as_str(), authen_type = AUTHEN_TYPE_ASCII, length, "TACACS+ authentication refused: the {what} is too long");
+                    (authen_reply(AUTHEN_STATUS_FAIL, 0, b""), false)
+                }
                 // An ASCII login is asked for its code, whichever way the client gives it otherwise.
                 AuthenStep::Finished { attributes, credentials } => match Self::decide_login(credentials, attributes, engine, chain, client, source, mfa.map(|(_, factor)| Factor { mode: crate::clients::SecondFactorMode::Challenge, factor, can_ask: true })).await {
                     Login::Reply(reply) => (reply, false),
@@ -1809,6 +1836,87 @@ pub(crate) mod tests {
         let mut connection = AsciiConnection::with(engine, Some(chains)).await;
         assert_eq!(connection.login(b"alice", &[b"secret"]).await, AUTHEN_STATUS_FAIL, "locked on a new connection, with the right password");
         assert_eq!((lockout.lockouts.get(), lockout.rejected.get()), (1, 1));
+    }
+
+    /// Spec TACACS+ Password And Username Length Limits: a PAP password of 129 octets is refused, one
+    /// of 128 is decided as usual, and nothing of it reaches the log.
+    #[tokio::test]
+    async fn test_pap_password_length_limit() {
+        let engine = script_engine("return #get_attr('data') == 128 and 'accept' or 'reject'").await;
+        let mut connection = AsciiConnection::with(engine, None).await;
+        let (seq, status, ..) = connection.ask(0x0a5c_1200, 1, &start_body(b"alice", &[b'p'; 128])).await;
+        assert_eq!((seq, status), (2, AUTHEN_STATUS_PASS));
+        let log = crate::test_support::radius::logged_during(async {
+            let (seq, status, ..) = connection.ask(0x0a5c_1201, 1, &start_body(b"alice", &[b'q'; 200])).await;
+            assert_eq!((seq, status), (2, AUTHEN_STATUS_FAIL));
+        })
+        .await;
+        assert!(log.contains("length=200") && log.contains("alice") && !log.contains("qqqq"), "{log}");
+    }
+
+    /// An ASCII login: a password of 4096 octets is refused and ends the session, a user name of
+    /// 256 is refused and one of 255 is not, and so is a code of 129 octets.
+    #[tokio::test]
+    async fn test_ascii_length_limits() -> Result<(), String> {
+        let mut connection = AsciiConnection::open().await;
+        let (seq, ..) = connection.ask(ASCII_SESSION, 1, &ascii_start_body(b"")).await;
+        let (seq, status, ..) = connection.ask(ASCII_SESSION, seq + 1, &continue_body(&[b'u'; 255], 0)).await;
+        assert_eq!((seq, status), (4, AUTHEN_STATUS_GETPASS), "255 octets are a name");
+        let log = crate::test_support::radius::logged_during(async {
+            let (seq, status, ..) = connection.ask(ASCII_SESSION, seq + 1, &continue_body(&vec![b'x'; 4096], 0)).await;
+            assert_eq!((seq, status), (6, AUTHEN_STATUS_FAIL));
+        })
+        .await;
+        assert!(log.contains("length=4096") && log.contains("too long") && !log.contains("xxxx"), "{log}");
+        let (_, status, ..) = connection.ask(ASCII_SESSION, 7, &continue_body(b"secret", 0)).await;
+        assert_eq!(status, AUTHEN_STATUS_ERROR, "the session is over");
+
+        let (seq, ..) = connection.ask(ASCII_SESSION + 1, 1, &ascii_start_body(b"")).await;
+        let (seq, status, ..) = connection.ask(ASCII_SESSION + 1, seq + 1, &continue_body(&[b'u'; 256], 0)).await;
+        assert_eq!((seq, status), (4, AUTHEN_STATUS_FAIL));
+
+        let mut connection = AsciiConnection::with_factor(crate::clients::SecondFactorMode::Challenge).await?;
+        let (seq, ..) = connection.ask(ASCII_SESSION, 1, &ascii_start_body(b"tf-long")).await;
+        let (seq, status, ..) = connection.ask(ASCII_SESSION, seq + 1, &continue_body(b"secret", 0)).await;
+        assert_eq!((seq, status), (4, AUTHEN_STATUS_GETDATA));
+        let (seq, status, ..) = connection.ask(ASCII_SESSION, seq + 1, &continue_body(&[b'1'; 129], 0)).await;
+        assert_eq!((seq, status), (6, AUTHEN_STATUS_FAIL));
+        Ok(())
+    }
+
+    /// Exactly 128 octets are a password, in an ASCII login and as the code of a second factor.
+    #[tokio::test]
+    async fn test_ascii_password_of_the_longest_length() {
+        let engine = script_engine("return #get_attr('data') == 128 and 'accept' or 'reject'").await;
+        let mut connection = AsciiConnection::with(engine, None).await;
+        assert_eq!(connection.login(b"alice", &[&[b'p'; 128]]).await, AUTHEN_STATUS_PASS);
+        assert_eq!(connection.login(b"alice", &[&[b'p'; 127]]).await, AUTHEN_STATUS_FAIL);
+    }
+
+    /// Passwords that are too long are no password guesses: they do not lock the key.
+    #[tokio::test]
+    async fn test_too_long_passwords_do_not_lock() {
+        let db = crate::test_support::test_db();
+        db.execute("CREATE TABLE IF NOT EXISTS tacacs_long_users (username TEXT, password TEXT)").await.unwrap();
+        db.execute("INSERT INTO tacacs_long_users VALUES ('alice', 'secret')").await.unwrap();
+        let handler = Handler::Sql {
+            source: crate::auth_chain::SqlSource::Cluster(db),
+            user_query: "SELECT password FROM tacacs_long_users WHERE username = ?".to_string(),
+            reply_query: None,
+            certificate_query: None, default_user: None,
+            timeout: std::time::Duration::from_secs(5),
+        };
+        let lockout = Arc::new(crate::auth_lockout::Lockout::default());
+        lockout.configure(Some(crate::config::LockoutSettings { max_failures: 3, window: std::time::Duration::from_secs(300), lock: std::time::Duration::from_secs(300), max_entries: 100, account_max_failures: None, max_in_flight: 15 }));
+        let chains = Arc::new(AuthChains::new(Some(AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![handler])), Vec::new()).with_lockout(lockout.clone()));
+        let mut connection = AsciiConnection::with(script_engine("return 'reject'").await, Some(chains)).await;
+        for n in 0..10u32 {
+            let (_, status, ..) = connection.ask(0x0a5c_1300 + n, 1, &start_body(b"alice", &[b'z'; 129])).await;
+            assert_eq!(status, AUTHEN_STATUS_FAIL);
+        }
+        assert_eq!((lockout.lockouts.get(), lockout.rejected.get()), (0, 0));
+        let (_, status, ..) = connection.ask(0x0a5c_1400, 1, &start_body(b"alice", b"secret")).await;
+        assert_eq!(status, AUTHEN_STATUS_PASS);
     }
 
     #[tokio::test]

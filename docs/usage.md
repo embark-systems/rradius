@@ -1965,6 +1965,7 @@ set_attr('WiMAX-Release', '2.0')
 - 共同欄位：`user`、`port`、`rem_addr`。
 - 認證：另有 `data`（PAP 和 ASCII 是密碼；CHAP、MS-CHAPv2 是 PPP id、challenge 和回應，見下方）與 `authen_type`（數字，1 為 ASCII、2 為 PAP、3 為 CHAP、6 為 MS-CHAPv2）。
 - **ASCII 互動式登入**（RFC 8907）：START 沒帶帳號時伺服器回 GETUSER，再回不顯示輸入的 GETPASS，帳號密碼都取得後才執行認證串接或腳本，和 PAP 一樣由 `user` 與 `data` 取得。空帳號最多問三次；每條連線最多 8 個未完成的登入，60 秒內要完成。
+- **長度上限：** TACACS+ 的密碼（PAP 的 `data`、ASCII 登入的密碼，以及第二因素的驗證碼）最多 128 個位元組，ASCII 登入的帳號最多 255 個位元組，和 RADIUS 的 `User-Password` 與 TTLS 內層密碼一致。超過的回 FAIL，不進認證串接或腳本，所以不計入 `[auth.lockout]`，並記一行 INFO（client、帳號、長度，不含內容）；ASCII 登入階段隨之結束。上限固定，沒有設定。超過 128 個位元組的長通關句無法透過 TACACS+ 登入。
 - **升級注意：** 以前 ASCII LOGIN 的 START 會直接交給腳本，現在會先詢問帳號密碼。腳本要改從 `data` 取得密碼。
 - 認證的 START 另有 `priv_lvl`（0–15）與 `authen_service`（數字，1 為一般登入、2 為 enable）。
 - **enable 請求**（設備的 `enable` 指令，`authen_service` 是 2）由 `[tacacs] enable` 決定：
