@@ -433,6 +433,29 @@ mod tests {
         Ok(())
     }
 
+    /// A reload applies `[auth] allow_mschapv1`: an MS-CHAPv1 login is refused after it turns it off.
+    #[tokio::test]
+    async fn test_mschapv1_switch_follows_a_reload() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        std::fs::write(dir.path().join("chain.lua"), "return 'reject'").map_err(|e| e.to_string())?;
+        let chain = "[auth]\n[[auth.handlers]]\ntype = \"lua\"\nscript = \"chain.lua\"\n";
+        let (serving, server) = serving(dir.path(), "return 'reject'", &format!("{}{chain}", config_text(CLIENT)));
+        // MS-CHAP-Challenge (11) and MS-CHAP-Response (1) of vendor 311, as the request of RFC 2548 carries them.
+        let vsa = |kind: u8, data: &[u8]| (26u8, [&[0, 0, 1, 55, kind, 2 + data.len() as u8][..], data].concat());
+        let mut response = vec![5u8, 1];
+        response.extend_from_slice(&[0; 48]);
+        let login = RadiusPacket::create_access_request(9, [4; 16], vec![(1, b"reload-mschapv1".to_vec()), vsa(11, &[7; 8]), vsa(1, &response)], b"s");
+        let source = std::net::IpAddr::from([127, 0, 0, 1]);
+        let refusals = |log: &str| log.lines().filter(|line| line.contains("MS-CHAPv1 refused") && line.contains("reload-mschapv1")).count();
+        let log = crate::test_support::radius::logged_during(async { server.handle_auth(&login, source).await }).await;
+        assert_eq!(refusals(&log), 0, "allowed by default: {log}");
+        write_config(dir.path(), &format!("{}{}", config_text(CLIENT), chain.replace("[auth]\n", "[auth]\nallow_mschapv1 = false\n")));
+        serving.try_reload().map_err(|e| e.to_string())?;
+        let log = crate::test_support::radius::logged_during(async { server.handle_auth(&login, source).await }).await;
+        assert_eq!(refusals(&log), 1, "refused after the reload: {log}");
+        Ok(())
+    }
+
     /// A reload that fails does not change the limits or forget the counts of the running server.
     #[tokio::test]
     async fn test_failed_reload_keeps_the_lockout() -> Result<(), String> {

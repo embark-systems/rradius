@@ -43,6 +43,7 @@ required_groups = ["CN=vpn-users,OU=Groups,DC=corp,DC=example,DC=com"]
 - **`required_groups`：** 不在群組裡的人和密碼錯誤一樣被拒絕。預設看使用者的 `memberOf`；目錄沒有 `memberOf` 時改用 `group_base_dn` 和 `group_filter` 搜尋群組，見 [usage 3.5 節](../usage.md#35-ldap-處理器)。
 - **`ldaps://` 或 StartTLS。** `ldap://` 會自動用 StartTLS 升級；目錄憑證不是系統信任的 CA 簽的，設 `ca_file`。明文 LDAP 要另外設 `allow_plaintext = true`，不建議。
 - **`password_check = "bind"` 只支援 PAP。** VPN 閘道要用 PAP 送密碼（RADIUS 會加密 `User-Password`）。要支援 CHAP、MS-CHAPv2 或 PEAP，改用 `password_check = "attribute"` 讀密碼屬性，前提是目錄存的是明文或 NT hash。
+- **舊的 MS-CHAPv1 設備，** 驗證鏈預設還會驗證它（`attribute` 模式，密碼要是明文或 NT hash），但它很弱；VPN 閘道都已改用 PAP 或 MS-CHAPv2 時，用 `[auth] allow_mschapv1 = false` 關掉，見[第 11 章](11-operations.md)。
 
 ```toml
 [[auth.chains.vpn.handlers.group_reply]]

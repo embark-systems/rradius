@@ -86,6 +86,10 @@ zh-TW = "同一個帳號不分來源的失敗總數，達到就對所有來源�
 en = "Logins of one key that may be waiting for a decision at once; one more is rejected. The account-wide limit scales with account_max_failures. Default 5 times max_failures."
 zh-TW = "同一個鍵同時最多有幾個登入在等待判定，多的直接拒絕。帳號總上限依 account_max_failures 按比例放大。預設是 max_failures 的 5 倍。"
 
+[fields."auth.allow_mschapv1"]
+en = "Whether the chains verify MS-CHAPv1 logins. Default true. With false they are refused before any handler runs and are not counted by auth.lockout; PAP, CHAP, MS-CHAPv2 and EAP are not affected."
+zh-TW = "驗證鏈要不要驗證 MS-CHAPv1 登入。預設 true。設成 false 時，MS-CHAPv1 在任何處理器之前就被拒絕，也不計入 auth.lockout；PAP、CHAP、MS-CHAPv2 與 EAP 不受影響。"
+
 [fields."auth.password_limits"]
 en = "The most a stored hash may ask of one password check. A hash above a limit is refused without being computed, like a wrong password. Every key has a default, so the limits hold without this section."
 zh-TW = "儲存的雜湊在一次密碼比對裡最多可以要求多少成本。超過上限的雜湊不計算，直接當作密碼錯誤拒絕。每個鍵都有預設值，沒寫這一節上限照樣生效。"

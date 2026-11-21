@@ -85,6 +85,7 @@ printf '%s' 91f881a968b893e4092eca12a52293ef | xxd -r -p | base64
 | EAP-TTLS 內層 PAP（Wi-Fi） | 全部格式都可以 |
 | CHAP（PPPoE 常用） | **只能明文** |
 | MS-CHAPv2、PEAP（Wi-Fi 最常見的帳號密碼方式） | **只能明文或 `{nthash}`** |
+| MS-CHAPv1（PPTP 與舊撥接設備，預設可用，可用 `[auth] allow_mschapv1 = false` 關掉，見[第 11 章](11-operations.md)） | **只能明文或 `{nthash}`** |
 
 所以：
 

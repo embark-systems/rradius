@@ -136,6 +136,8 @@ pub struct AuthChain {
     username: Option<UsernameSettings>,
     /// The failure counts of `[auth.lockout]`, when the chains have them.
     lockout: Option<Arc<crate::auth_lockout::Lockout>>,
+    /// `[auth] allow_mschapv1`; `false` refuses MS-CHAPv1 logins before any handler runs.
+    allow_mschapv1: bool,
 }
 
 /// The longest origin kept in a failure key.
@@ -153,7 +155,7 @@ fn origin_of(request: &LuaRequest) -> String {
 
 impl AuthChain {
     pub fn new(policy: AuthPolicy, handlers: Vec<Handler>) -> Self {
-        Self { policy, handlers, username: None, lockout: None }
+        Self { policy, handlers, username: None, lockout: None, allow_mschapv1: true }
     }
 
     /// Whether a handler compares passwords, so that a secret a script cannot check, such as a
@@ -210,6 +212,11 @@ impl AuthChain {
     /// Runs the handlers according to the policy. `request` is what Lua
     /// handlers see (phase `authentication`).
     pub async fn authenticate(&self, credentials: &Credentials, request: &LuaRequest) -> AuthResult {
+        // Before the failure counts: a refused protocol is no guess, and no handler is asked.
+        if !self.allow_mschapv1 && matches!(credentials.secret, Secret::MsChapV1 { .. }) {
+            tracing::info!("MS-CHAPv1 refused: client {}, protocol {}, user {:?}; [auth] allow_mschapv1 is false", request.client, request.protocol, credentials.user.as_deref().unwrap_or(""));
+            return AuthResult { decision: Outcome::Reject, attributes: Vec::new(), handler: "mschapv1_refused", account: None, verified: false, unavailable: false };
+        }
         // A login by certificate proves a name and guesses nothing, so it is neither limited nor counted.
         let lockout = self.lockout.as_ref().filter(|_| credentials.secret != Secret::Certificate && credentials.user.is_some());
         let Some(lockout) = lockout else {
@@ -361,6 +368,14 @@ impl AuthChains {
         self
     }
 
+    /// Whether every chain verifies MS-CHAPv1 logins (`[auth] allow_mschapv1`).
+    pub fn with_mschapv1(mut self, allowed: bool) -> Self {
+        for chain in self.default.iter_mut().chain(self.named.values_mut()) {
+            chain.allow_mschapv1 = allowed;
+        }
+        self
+    }
+
     pub fn new(default: Option<AuthChain>, named: impl IntoIterator<Item = (String, AuthChain)>) -> Self {
         Self { default, named: named.into_iter().collect() }
     }
@@ -376,7 +391,7 @@ impl AuthChains {
             let chain = AuthChain::from_settings(chain, db, vms, lua).map_err(|e| format!("auth.chains.{}: {}", name, e))?;
             named.insert(name.clone(), chain);
         }
-        Ok(Self { default, named })
+        Ok(Self { default, named }.with_mschapv1(settings.allow_mschapv1))
     }
 
     /// What `from_settings` would find wrong, without a database or building anything that
@@ -1261,6 +1276,70 @@ mod tests {
         Ok(())
     }
 
+    /// MS-CHAPv1 credentials for `password`, with a fixed challenge.
+    fn mschapv1(user: &str, password: &str) -> Credentials {
+        let nt_response = crate::mschap::challenge_response(&[3u8; 8], &crate::mschap::nt_password_hash(password)).unwrap_or([0u8; 24]);
+        Credentials { user: Some(user.to_string()), secret: Secret::MsChapV1 { ident: 1, challenge: [3u8; 8], nt_response } }
+    }
+
+    /// `allow_mschapv1`: allowed by default; refused when off, before any handler and without
+    /// counting a failure; PAP and the log are as the spec says.
+    #[tokio::test]
+    async fn test_mschapv1_can_be_turned_off() -> Result<(), String> {
+        let (mut chain, lockout) = lockout_chain("lock_mschapv1", 2, Duration::from_secs(5)).await?;
+        let mut here = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
+        here.client = "nas7".to_string();
+        let allowed = chain.authenticate(&mschapv1("alice", "secret"), &here).await;
+        assert!(allowed.accepted() && allowed.handler == "sql", "allowed by default: {allowed:?}");
+        chain.allow_mschapv1 = false;
+        let log = crate::test_support::radius::logged_during(async {
+            for _ in 0..5 {
+                let refused = chain.authenticate(&mschapv1("alice", "secret"), &here).await;
+                assert!(!refused.accepted() && refused.handler == "mschapv1_refused" && !refused.unavailable && refused.attributes.is_empty(), "{refused:?}");
+            }
+        })
+        .await;
+        let lines: Vec<&str> = log.lines().filter(|line| line.contains("MS-CHAPv1 refused") && line.contains("nas7")).collect();
+        assert_eq!(lines.len(), 5, "{log}");
+        let line = lines.first().ok_or("no line")?;
+        assert!(line.contains("INFO") && line.contains("nas7") && line.contains("radius") && line.contains("alice"), "{line}");
+        let response: String = crate::mschap::challenge_response(&[3u8; 8], &crate::mschap::nt_password_hash("secret")).unwrap_or([0u8; 24]).iter().map(|byte| format!("{byte:02x}")).collect();
+        assert!(!log.to_lowercase().contains(&response) && !log.contains("0303030303030303"), "{log}");
+        assert_eq!((lockout.lockouts.get(), lockout.rejected.get()), (0, 0), "five refusals are no failures");
+        // The right PAP password still passes, and a wrong one is the only thing that counts.
+        let pap_right = chain.authenticate(&pap("alice", "secret"), &here).await;
+        assert!(pap_right.accepted() && pap_right.handler == "sql", "{pap_right:?}");
+        // Wrong passwords still count: two of them lock the key (max_failures is 2).
+        for _ in 0..2 {
+            chain.authenticate(&pap("alice", "wrong"), &here).await;
+        }
+        assert_eq!(lockout.lockouts.get(), 1, "wrong passwords are the failures that count");
+        // No handler is asked: a chain whose table does not exist is decided by `sql` while allowed, and by the refusal when not.
+        let db = test_db();
+        let missing = Handler::Sql { source: SqlSource::Cluster(db), user_query: "SELECT password FROM no_such_mschapv1_table WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: Duration::from_secs(5) };
+        let mut broken = AuthChain::new(AuthPolicy::FirstMatch, vec![missing]);
+        let asked = broken.authenticate(&mschapv1("alice", "secret"), &here).await;
+        assert_eq!(asked.handler, "sql", "the handler is reached while it is allowed: {asked:?}");
+        broken.allow_mschapv1 = false;
+        let refused = broken.authenticate(&mschapv1("alice", "secret"), &here).await;
+        assert!(!refused.unavailable && refused.handler == "mschapv1_refused", "{refused:?}");
+        Ok(())
+    }
+
+    /// With MS-CHAPv1 off, CHAP and MS-CHAPv2 are still decided by the handlers.
+    #[tokio::test]
+    async fn test_mschapv1_off_leaves_the_others() -> Result<(), String> {
+        let (mut chain, _lockout) = lockout_chain("lock_mschapv1_others", 2, Duration::from_secs(5)).await?;
+        chain.allow_mschapv1 = false;
+        let here = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
+        let (peer, challenge) = ([1u8; 16], [4u8; 16]);
+        let chap = Credentials { user: Some("alice".to_string()), secret: Secret::Chap { id: 9, response: Md5::digest([&[9u8][..], b"secret", &challenge].concat()).to_vec(), challenge: challenge.to_vec() } };
+        let v2 = Credentials { user: Some("alice".to_string()), secret: Secret::MsChapV2 { ident: 1, peer_challenge: peer, response: crate::mschap::response_for("secret", "alice", &peer, &challenge), challenge } };
+        assert!(chain.authenticate(&v2, &here).await.accepted(), "MS-CHAPv2");
+        assert!(chain.authenticate(&chap, &here).await.accepted(), "CHAP");
+        Ok(())
+    }
+
     /// Without `[auth.lockout]` nothing is counted.
     #[tokio::test]
     async fn test_no_lockout_without_the_section() -> Result<(), String> {
@@ -1978,7 +2057,7 @@ mod tests {
             handlers: vec![AuthHandlerSettings::Ldap(settings(vec![url], PasswordCheck::Bind))],
             username: None,
         };
-        let auth = AuthSettings { default: None, chains: [("vpn".to_string(), vpn)].into_iter().collect(), lockout: None, password_limits: Default::default() };
+        let auth = AuthSettings { default: None, chains: [("vpn".to_string(), vpn)].into_iter().collect(), lockout: None, password_limits: Default::default(), allow_mschapv1: true };
         let chains = AuthChains::from_settings(&auth, &test_db(), &crate::test_support::test_vms(), &LuaLimits::default()).unwrap();
         // A RADIUS NAS and a TACACS+ router both select `vpn`.
         for name in ["radius-nas", "tacacs-router"] {
