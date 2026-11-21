@@ -4,9 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The jobs that need Docker or take long (ldap, external-db, fuzz, docker) run only here,
+  # The jobs that need Docker or take long (ldap, external-db, docker) run only here,
   # once a week on main, and when started by hand; a push or a pull request runs test and
-  # bench. After a change to LDAP, [databases], the fuzz targets or the Docker files, start
+  # bench. After a change to LDAP, [databases] or the Docker files, start
   # CI by hand on the branch before merging.
   schedule:
     - cron: '7 4 * * 1'
@@ -21,8 +21,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Fixed, as what runs here runs in CI: raise it by hand, with the `cargo-fuzz` version below.
-  FUZZ_NIGHTLY: nightly-2026-11-05
 
 jobs:
   test:
@@ -91,29 +89,6 @@ jobs:
       - run: cargo build --locked -p rradius-bench
       - run: cargo clippy --locked -p rradius-bench --all-targets
       - run: cargo test --locked -p rradius-bench
-
-  fuzz:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    # Replays the seeds only, so that a pull request fails for what it changed. The
-    # random search runs on its own schedule, in fuzz.yml.
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: rradius-server/fuzz
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: ${{ env.FUZZ_NIGHTLY }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: rradius-server/fuzz
-      - run: cargo install cargo-fuzz --version 0.13.2 --locked
-      - run: |
-          for target in radius_packet tacacs_packet eap_packet dictionary attribute_text; do
-            cargo +"$FUZZ_NIGHTLY" fuzz run "$target" "seeds/$target" -- -runs=0
-          done
 
   docker:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

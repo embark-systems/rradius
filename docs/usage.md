@@ -2233,7 +2233,7 @@ auth = "vpn"
 
 互通測試只用 `pamtester` 測到 PAM 這一層，沒有測過 `sshd`、`sudo` 或 `login`。
 
-**模糊測試：** `rradius-server/fuzz/` 用 `cargo-fuzz` 測 RADIUS 封包、TACACS+ 封包、EAP 封包、字典和位址屬性文字。CI 的 `fuzz` 項目只回放 `seeds/` 的種子，`.github/workflows/fuzz.yml` 每週對每個目標各跑 300 秒。需要 nightly 工具鏈，要在本機跑時：
+**模糊測試：** `rradius-server/fuzz/` 用 `cargo-fuzz` 測 RADIUS 封包、TACACS+ 封包、EAP 封包、字典和位址屬性文字。`.github/workflows/fuzz.yml` 每週以 `seeds/` 的種子當起點，對每個目標各跑 300 秒。需要 nightly 工具鏈，要在本機跑時：
 
 ```bash
 rustup toolchain install nightly-2026-11-05 --profile minimal
