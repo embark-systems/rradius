@@ -555,6 +555,12 @@ pub(crate) async fn verify_secret(stored: &str, user: &str, secret: &Secret) -> 
     }
     // What `rradius_password_checks_total` counts: each comparison with the stored value.
     let format = passwords::scheme_label(stored);
+    // A hash that asks for more than the limits allow is refused unread, like a wrong password.
+    if let Some(parameter) = passwords::cost_over_limit(stored) {
+        warn_cost_over_limit(user, format, parameter);
+        passwords::record_check(format, false);
+        return None;
+    }
     let verified = match secret {
         Secret::Pap(password) => {
             let verified = passwords::verify_pap_blocking(stored, password).await;
@@ -599,6 +605,18 @@ fn warn_unprefixed_hash(user: &str) {
         return;
     }
     tracing::warn!(user, "the stored password looks like a hash with no scheme prefix and is refused; add {{crypt}} or {{argon2}} before it, or {{clear}} if it is the password itself");
+}
+
+/// Says once per process for each user that the stored password asks for more than
+/// `[auth.password_limits]` allows. Never logs the stored value. Bounded like
+/// `warn_unprefixed_hash`.
+fn warn_cost_over_limit(user: &str, format: &str, parameter: &str) {
+    static WARNED: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+    let Ok(mut warned) = WARNED.lock() else { return };
+    if !first_warning(warned.get_or_insert_with(Default::default), user, UNPREFIXED_WARNINGS_MAX) {
+        return;
+    }
+    tracing::warn!(user, format, parameter, "the stored password asks for more than [auth.password_limits].{parameter} allows and is refused; raise the limit if the hash is meant to be used");
 }
 
 /// What a verified MS-CHAPv1 response adds to the accept (RFC 2548 section 2.4): the keys for MPPE,
@@ -1367,6 +1385,39 @@ mod tests {
         assert_eq!(warned.len(), UNPREFIXED_WARNINGS_MAX);
     }
 
+    /// A stored hash above the limits is a failed login: refused, counted as `failed` and by the
+    /// lockout, never unavailable, and logged once for the account without the stored value.
+    /// Spec Stored Hash Cost Is Capped, Scenario: Over the limit is a failed login, logged once.
+    #[tokio::test]
+    async fn test_cost_over_the_limit_is_a_failed_login() -> Result<(), String> {
+        let stored = "{PBKDF2-SHA512}4294967295$MDEyMzQ1Njc4OWFiY2RlZg$iiBcqBMfZQd6taylmx35ciLJSlmD/fhYsIhplxnAvOkqbRoX4w8ohoLTVMoHNbWw97zkObuTFAFFLnjJVF3d5A";
+        let db = test_db();
+        db.execute("CREATE TABLE over_limit_users (username TEXT, password TEXT)").await?;
+        db.execute(&format!("INSERT INTO over_limit_users VALUES ('over-alice', '{stored}')")).await?;
+        let lockout = Arc::new(crate::auth_lockout::Lockout::default());
+        lockout.configure(Some(lockout_settings(2)));
+        let sql = Handler::Sql { source: SqlSource::Cluster(db), user_query: "SELECT password FROM over_limit_users WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: Duration::from_secs(5) };
+        let mut chain = AuthChain::new(AuthPolicy::FirstMatch, vec![sql]);
+        chain.lockout = Some(lockout.clone());
+        let here = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
+        let failed_before = passwords::checks_counted("pbkdf2-sha512", false);
+        let log = crate::test_support::radius::logged_during(async {
+            for _ in 0..2 {
+                let result = chain.authenticate(&pap("over-alice", "password"), &here).await;
+                assert!(!result.accepted() && !result.unavailable && result.handler == "sql", "{result:?}");
+            }
+            let third = chain.authenticate(&pap("over-alice", "password"), &here).await;
+            assert_eq!(third.handler, "lockout", "the two refusals counted");
+        })
+        .await;
+        assert_eq!(passwords::checks_counted("pbkdf2-sha512", false) - failed_before, 2);
+        assert_eq!(lockout.lockouts.get(), 1);
+        let warnings: Vec<&str> = log.lines().filter(|line| line.contains("WARN")).collect();
+        assert_eq!(warnings.len(), 1, "{log}");
+        assert!(warnings[0].contains("over-alice") && warnings[0].contains("pbkdf2_iterations") && !warnings[0].contains("MDEyMzQ1") && !warnings[0].contains("4294967295"), "{log}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_unprefixed_hash_is_refused_and_logged_once() {
         let hash = "$2y$04$i9AYrtz6ptiaUcesbfLap.sLiLXOvohQ9gYya7aS8q4sz5.UJ0FGW";
@@ -1869,7 +1920,7 @@ mod tests {
             handlers: vec![AuthHandlerSettings::Ldap(settings(vec![url], PasswordCheck::Bind))],
             username: None,
         };
-        let auth = AuthSettings { default: None, chains: [("vpn".to_string(), vpn)].into_iter().collect(), lockout: None };
+        let auth = AuthSettings { default: None, chains: [("vpn".to_string(), vpn)].into_iter().collect(), lockout: None, password_limits: Default::default() };
         let chains = AuthChains::from_settings(&auth, &test_db(), &crate::test_support::test_vms(), &LuaLimits::default()).unwrap();
         // A RADIUS NAS and a TACACS+ router both select `vpn`.
         for name in ["radius-nas", "tacacs-router"] {

@@ -435,7 +435,7 @@ fn reference(property: &Value) -> Option<String> {
 }
 
 /// Settings whose names look like a secret but hold none: SQL, a switch, an attribute name.
-pub const NOT_SECRET: &[&str] = &["passwd", "verifies_password", "password_attribute", "password_check"];
+pub const NOT_SECRET: &[&str] = &["passwd", "verifies_password", "password_attribute", "password_check", "password_limits"];
 
 /// The paths of `schema` whose names look like a secret but that `table` does not mark.
 #[doc(hidden)]

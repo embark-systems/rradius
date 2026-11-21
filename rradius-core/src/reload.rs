@@ -82,6 +82,12 @@ pub fn warn_about_radsec_networks(config: &ServerConfig) {
     warn_about_network_clients(&radius.clients);
 }
 
+/// The limits on what a stored hash may ask for: those of `[auth.password_limits]`, and the
+/// built-in ones without `[auth]`.
+fn password_limits_of(config: &ServerConfig) -> crate::passwords::HashLimits {
+    config.auth.as_ref().map_or_else(Default::default, |auth| auth.password_limits)
+}
+
 /// One line for each client of `clients` that is a network with no `tls_name`; a client that may
 /// send CoA gets one sentence more, for what a certificate of the network can then do.
 fn warn_about_network_clients(clients: &crate::clients::ClientTable) {
@@ -133,6 +139,8 @@ pub fn build(config: &ServerConfig, shared: &Shared) -> Result<Generation, Strin
     // The failure counts are kept by the process, so a reload changes the limits and not the counts.
     // Only now: a reload that fails leaves the running server's limits as they were.
     shared.metrics.auth_lockout.configure(config.auth.as_ref().and_then(|auth| auth.lockout));
+    // The limits on what a stored hash may ask for hold even without [auth]: the built-in ones.
+    crate::passwords::configure_limits(password_limits_of(config));
     Ok(Generation {
         radius: config.radius.as_ref().map(|radius| RadiusState::new(radius.clients.clone(), engine.clone(), chains.clone())
                 .with_radsec_network_names(config.extension::<RadsecClients>().is_some_and(|radsec| radsec.network_clients_need_tls_name))
@@ -405,6 +413,23 @@ mod tests {
         serving.try_reload().map_err(|e| e.to_string())?;
         assert_eq!(code(server.handle_auth(&login(6, "aa-bb-cc-dd-ee-01"), source).await), ACCESS_ACCEPT);
         assert!(!serving.shared.metrics.render().contains("rradius_auth_lockout"));
+        Ok(())
+    }
+
+    /// `[auth.password_limits]` is what a reload applies, the built-in limits without it, and a
+    /// configuration that does not load never gets as far as applying anything. The limits are
+    /// process-wide, so the test looks at what would be applied.
+    #[tokio::test]
+    async fn test_password_limits_follow_a_reload() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        std::fs::write(dir.path().join("chain.lua"), "return 'reject'").map_err(|e| e.to_string())?;
+        let chain = "[auth]\n[[auth.handlers]]\ntype = \"lua\"\nscript = \"chain.lua\"\n";
+        let text = |section: &str| format!("{}{chain}{section}", config_text(CLIENT));
+        let load = |section: &str| config::load(&write_config(dir.path(), &text(section)));
+        let limits = |section: &str| -> Result<crate::passwords::HashLimits, String> { Ok(password_limits_of(&load(section).map_err(|e| e.to_string())?)) };
+        assert_eq!(limits("[auth.password_limits]\npbkdf2_iterations = 7000000\n")?.pbkdf2_iterations, 7_000_000);
+        assert_eq!(limits("")?, crate::passwords::HashLimits::default());
+        assert!(load("[auth.password_limits]\npbkdf2_iterations = 0\n").is_err());
         Ok(())
     }
 

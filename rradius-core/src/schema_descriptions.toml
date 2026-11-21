@@ -82,6 +82,34 @@ zh-TW = "每個節點最多記住幾個鍵。滿了先丟過期的，再丟最�
 en = "Failures of one account from any device that lock it for every device; must be greater than max_failures. Not set: no account-wide limit. A guesser can use it to lock out the account."
 zh-TW = "同一個帳號不分來源的失敗總數，達到就對所有來源鎖定；必須大於 max_failures。不設定就沒有帳號總上限。猜密碼的人可以用它把帳號鎖住。"
 
+[fields."auth.password_limits"]
+en = "The most a stored hash may ask of one password check. A hash above a limit is refused without being computed, like a wrong password. Every key has a default, so the limits hold without this section."
+zh-TW = "儲存的雜湊在一次密碼比對裡最多可以要求多少成本。超過上限的雜湊不計算，直接當作密碼錯誤拒絕。每個鍵都有預設值，沒寫這一節上限照樣生效。"
+
+[fields."auth.password_limits.pbkdf2_iterations"]
+en = "Most iterations of a PBKDF2 or X-PBKDF2 hash. Default 5000000."
+zh-TW = "PBKDF2、X-PBKDF2 雜湊的迭代次數上限。預設 5000000。"
+
+[fields."auth.password_limits.crypt_rounds"]
+en = "Most rounds of a $5$ or $6$ crypt hash. Default 1000000."
+zh-TW = "$5$、$6$ crypt 雜湊的 rounds 上限。預設 1000000。"
+
+[fields."auth.password_limits.bcrypt_cost"]
+en = "Highest cost of a bcrypt hash; each step doubles the work. Default 15."
+zh-TW = "bcrypt 雜湊的 cost 上限；每加 1 工作量加倍。預設 15。"
+
+[fields."auth.password_limits.argon2_memory_kib"]
+en = "Most memory, in KiB, of an argon2 hash. As many checks run at once as there are CPUs, so the worst case is about that many times this value. Default 262144 (256 MiB)."
+zh-TW = "argon2 雜湊的記憶體上限（KiB）。同時進行的比對數等於 CPU 數，最壞情況約是此值乘以 CPU 數。預設 262144（256 MiB）。"
+
+[fields."auth.password_limits.argon2_iterations"]
+en = "Most iterations of an argon2 hash. Default 10."
+zh-TW = "argon2 雜湊的迭代次數上限。預設 10。"
+
+[fields."auth.password_limits.argon2_lanes"]
+en = "Most lanes (parallelism) of an argon2 hash. Default 16."
+zh-TW = "argon2 雜湊的平行度上限。預設 16。"
+
 [fields."auth.policy"]
 en = "How the handlers decide: first_match takes the first that answers, all_accept needs every handler to accept."
 zh-TW = "處理器怎麼決定：first_match 採用第一個有答案的，all_accept 要每個處理器都接受。"
