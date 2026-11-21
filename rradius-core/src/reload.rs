@@ -79,8 +79,15 @@ pub fn warn_about_radsec_networks(config: &ServerConfig) {
     if config.extension::<RadsecClients>().is_none_or(|radsec| radsec.network_clients_need_tls_name) {
         return;
     }
-    for (network, client) in radius.clients.network_clients().filter(|(_, client)| client.tls_name.is_none()) {
-        tracing::warn!("RadSec client '{}' is the network {network} with no tls_name: any certificate of radius.tls.client_ca_file is taken from anywhere in it; set tls_name, or network_clients_need_tls_name = true in [radius.tls]", client.name);
+    warn_about_network_clients(&radius.clients);
+}
+
+/// One line for each client of `clients` that is a network with no `tls_name`; a client that may
+/// send CoA gets one sentence more, for what a certificate of the network can then do.
+fn warn_about_network_clients(clients: &crate::clients::ClientTable) {
+    for (network, client) in clients.network_clients().filter(|(_, client)| client.tls_name.is_none()) {
+        let coa = if client.coa_sender { "; as coa_sender, it lets any host of the network holding such a certificate send CoA requests as this client" } else { "" };
+        tracing::warn!("RadSec client '{}' is the network {network} with no tls_name: any certificate of radius.tls.client_ca_file is taken from anywhere in it{coa}; set tls_name, or network_clients_need_tls_name = true in [radius.tls]", client.name);
     }
 }
 
@@ -325,6 +332,28 @@ mod tests {
 
     fn code(response: Option<Vec<u8>>) -> u8 {
         RadiusPacket::parse(&response.expect("no response")).unwrap().code
+    }
+
+    /// A network client with no `tls_name` is warned about, and one that sends CoA is told what
+    /// that lets any host of the network do; one with a `tls_name` or one address is not.
+    #[tokio::test]
+    async fn test_network_clients_are_warned_about_and_coa_senders_more() -> Result<(), String> {
+        use crate::clients::{ClientOptions, ClientTable};
+        let mut clients = ClientTable::default();
+        let add = |clients: &mut ClientTable, address: &str, name: &str, options: ClientOptions| clients.add(address, Some(name.to_string()), b"Not-A-Real-Secret-0123".to_vec(), options).map_err(|e| e.to_string());
+        add(&mut clients, "10.0.0.0/8", "plain-net", ClientOptions::default())?;
+        add(&mut clients, "172.16.0.0/12", "coa-net", ClientOptions { coa_sender: true, ..ClientOptions::default() })?;
+        add(&mut clients, "192.168.0.0/16", "named-net", ClientOptions { coa_sender: true, tls_name: Some("nas.example.test".to_string()), ..ClientOptions::default() })?;
+        add(&mut clients, "127.0.0.1", "one-host", ClientOptions { coa_sender: true, ..ClientOptions::default() })?;
+        let log = crate::test_support::radius::logged_during(async { warn_about_network_clients(&clients) }).await;
+        let lines: Vec<&str> = log.lines().filter(|line| line.contains("no tls_name")).collect();
+        assert_eq!(lines.len(), 2, "{log}");
+        let plain = lines.iter().find(|line| line.contains("'plain-net'")).ok_or("no line for plain-net")?;
+        let coa = lines.iter().find(|line| line.contains("'coa-net'")).ok_or("no line for coa-net")?;
+        assert!(plain.contains("10.0.0.0/8") && !plain.contains("CoA"), "{plain}");
+        assert!(coa.contains("172.16.0.0/12") && coa.contains("send CoA requests as this client"), "{coa}");
+        assert!(!log.contains("named-net") && !log.contains("one-host") && !log.contains("Not-A-Real-Secret"), "{log}");
+        Ok(())
     }
 
     #[tokio::test]
