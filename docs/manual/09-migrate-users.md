@@ -181,6 +181,7 @@ reply_query = "SELECT attribute, value FROM radreply WHERE username = ?"
 - **改 `[databases]` 要重啟，** SIGHUP 不會套用。
 - **佔位符寫 `?`。** 送到 PostgreSQL 時會改成 `$1`。PostgreSQL 的 `$$` 字串和 jsonb 的 `?` 運算子不能用。
 - **舊系統存明文時，** 例如 `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password'`，可以直接用：沒有前綴的值當成明文。有兩種情況例外：明文本身以 `{` 開頭時會被誤認成格式，這時在 SQL 裡加前綴：`SELECT '{clear}' || value FROM ...`（MySQL 用 `CONCAT('{clear}', value)`）；沒有前綴卻以 `$2a$`、`$2b$`、`$2y$`、`$1$`、`$5$`、`$6$` 或 `$argon2` 開頭的值，會被當成漏了前綴的雜湊，不當明文：登入失敗，並對每個使用者記一次 WARN（`the stored password looks like a hash with no scheme prefix and is refused; ...`，後面接補前綴的建議，不含儲存值）。處理方式有三種：crypt 雜湊補 `{crypt}`、argon2 補 `{argon2}`、真的是這樣開頭的明文密碼補 `{clear}`。見 [usage.md 第 5 節](../usage.md#5-密碼格式)。
+- **沒有前綴卻長得像摘要的值，**例如 32 個十六進位字元的 NT hash 或 MD5、40 個的 SHA-1，或 Base64 的 SHA-1（`W6ph5Mm5Pz8GgiULbPgzG37mj9g=`），仍當明文比對，所以拿到資料庫的人把它當密碼送出就能登入。伺服器對每個使用者記一次 WARN（`the stored password looks like a digest with no scheme prefix and is compared as plaintext; ...`，不含儲存值）：補上格式的前綴（`{nthash}`、`{MD5}`、`{SHA}`、`{SHA256}`），真的是明文密碼就補 `{clear}`。沒有前綴的加鹽摘要認不出來，匯入後用 `rradius_password_checks_total{scheme="none"}` 檢查。
 
 **沒有測過的：** 範例只由情境測試確認設定通過 `check`、伺服器能啟動。查詢真的 MySQL 和 PostgreSQL（登入、回覆屬性、TLS、資料庫停止時的行為）由另外的 Docker 測試（`rradius-server/tests/external_db_test.rs`）驗證，用的是測試自己的資料表，不是任何一套特定舊系統的資料表。
 

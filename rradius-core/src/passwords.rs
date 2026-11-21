@@ -40,6 +40,21 @@ pub(crate) fn looks_like_unprefixed_hash(stored: &str) -> bool {
     split_scheme(stored).0.is_none() && MARKERS.iter().any(|marker| stored.starts_with(marker))
 }
 
+/// Whether `stored` has no `{scheme}` prefix and looks like a digest: only hexadecimal digits,
+/// 32, 40, 56, 64, 96 or 128 of them, or standard Base64 with its padding that decodes to 16,
+/// 20, 28, 32, 48 or 64 octets. It is still compared as plaintext, since a password of this
+/// shape is possible; the caller only says so. Salted digests and other lengths are not seen.
+pub(crate) fn looks_like_unprefixed_digest(stored: &str) -> bool {
+    if split_scheme(stored).0.is_some() {
+        return false;
+    }
+    if matches!(stored.len(), 32 | 40 | 56 | 64 | 96 | 128) && stored.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return true;
+    }
+    // Base64 of 16, 20, 28, 32, 48 and 64 octets is 24, 28, 40, 44, 64 and 88 characters.
+    matches!(stored.len(), 24 | 28 | 40 | 44 | 64 | 88) && STANDARD.decode(stored).is_ok_and(|octets| matches!(octets.len(), 16 | 20 | 28 | 32 | 48 | 64))
+}
+
 /// The formats `rradius_password_checks_total` tells apart, as its `scheme` label has them:
 /// a fixed set, so that nothing the data holds becomes a label.
 pub const SCHEME_LABELS: [&str; 23] = [
@@ -433,6 +448,27 @@ mod tests {
     impl Drop for Running {
         fn drop(&mut self) {
             RUNNING.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_looks_like_unprefixed_digest() {
+        let hex = |length: usize| "8846f7eaee8fb117ad06bdd830b7586c".chars().cycle().take(length).collect::<String>();
+        for stored in [hex(32), hex(40), hex(56), hex(64), hex(96), hex(128), hex(32).to_ascii_uppercase(), "W6ph5Mm5Pz8GgiULbPgzG37mj9g=".to_string(), "XrY7u+Ae7tCTyyK7j1rNww==".to_string()] {
+            assert!(looks_like_unprefixed_digest(&stored), "{stored}");
+        }
+        for stored in [hex(33), hex(31), "hunter2".to_string(), "8846f7eaee8fb117ad06bdd830b7586g".to_string(), "{clear}8846f7eaee8fb117ad06bdd830b7586c".to_string(), "{nthash}8846f7eaee8fb117ad06bdd830b7586c".to_string(), "W6ph5Mm5Pz8GgiULbPgzG37mj9g".to_string(), String::new()] {
+            assert!(!looks_like_unprefixed_digest(&stored), "{stored}");
+        }
+    }
+
+    /// Base64 of every digest size warns; one octet more or less does not.
+    #[test]
+    fn test_looks_like_unprefixed_digest_base64_sizes() {
+        for octets in [16usize, 20, 28, 32, 48, 64] {
+            let encoded = |length: usize| STANDARD.encode(vec![7u8; length]);
+            assert!(looks_like_unprefixed_digest(&encoded(octets)), "{octets}");
+            assert!(!looks_like_unprefixed_digest(&encoded(octets + 1)), "{} octets", octets + 1);
         }
     }
 
