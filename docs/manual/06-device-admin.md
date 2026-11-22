@@ -85,8 +85,8 @@ core = [
 ]
 access = [
   'permit service=shell cmd\* {priv-lvl=1}',
-  'deny cmd=show cmd-arg=(running-config|startup-config)',
-  'permit service=shell cmd=(show|ping|traceroute|exit|terminal)',
+  'permit service=shell cmd=show cmd-arg=(version|interfaces|clock)',
+  'permit service=shell cmd=(ping|traceroute|exit)',
 ]
 
 [[tacacs.clients]]
@@ -103,6 +103,8 @@ authorize_group = "access"
 ```
 
 - 依序比對，第一條成立的規則決定；`deny` 放在較寬的 `permit` 之前。沒有任何一條成立時拒絕。
+- **範例是白名單：** 只放行列出的指令，其餘都落到「沒有任何一條成立」而被拒絕，所以 `show running-config`、設備上的縮寫 `show run` 和 `configure terminal` 都會被拒絕。不要反過來用 `deny` 列出要擋的指令再放行 `show`：規則只比對設備送來的指令與參數，縮寫和沒列出的子命令（`show tech-support`）不會被 `deny` 擋到，卻符合 `permit cmd=show`。
+- **參數不是逐一比對：** 一條規則的每個樣式只要符合請求的某一個 AV pair 就成立，所以上例的 `cmd-arg=interfaces` 也會放行 `show interfaces` 之後再加別的參數。要設備上真正唯讀，靠設備上這個權限等級（`priv-lvl`）本身能做什麼，授權規則是第二道。
 - `cmd\*` 是設備要求開 shell 時送的 `cmd*`，`{priv-lvl=15}` 回給設備當權限等級。
 - **一定要用單引號，** 雙引號字串不接受 `\*`。
 - 設了 `authorize_group` 的設備不會執行腳本的授權部分，認證和計費照舊，所以 `tacacs.lua` 的計費記錄仍然有效。

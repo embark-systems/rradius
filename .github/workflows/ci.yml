@@ -7,7 +7,8 @@ on:
   # The jobs that need Docker or take long (ldap, external-db, docker) run only here,
   # once a week on main, and when started by hand; a push or a pull request runs test and
   # bench. After a change to LDAP, [databases] or the Docker files, start
-  # CI by hand on the branch before merging.
+  # CI by hand on the branch before merging; after a change to the fuzz targets, start Fuzz
+  # (fuzz.yml) by hand on the branch, since nothing else builds them before the weekly run.
   schedule:
     - cron: '7 4 * * 1'
   workflow_dispatch:

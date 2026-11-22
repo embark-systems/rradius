@@ -540,8 +540,8 @@ group15 = [
 ]
 readonly = [
   'permit service=shell cmd\* {priv-lvl=1}',
-  'deny cmd=show cmd-arg=running-config',
-  'permit service=shell cmd=(show|ping|traceroute|exit)',
+  'permit service=shell cmd=show cmd-arg=(version|interfaces|clock)',
+  'permit service=shell cmd=(ping|traceroute|exit)',
 ]
 
 [[tacacs.clients]]
@@ -557,6 +557,7 @@ authorize_group = "group15"
 - **樣式是正規表示式，整串比對** 請求中的一個 AV pair，包括中間的 `=` 或 `*`。所以 `cmd=show` 不會符合 `cmd=showx`，`cmd\*` 符合設備開 shell（EXEC 授權）時送的 `cmd*`。比對以位元組進行，`.` 符合任何位元組。`user`、`port`、`rem_addr` 不參與比對。
 - **一條規則的每個樣式都至少符合一個 AV pair 時成立。** 沒有樣式的規則什麼都符合。
 - **第一條成立的規則決定：** `permit` 回 PASS_ADD，`deny` 回 FAIL。全部都不成立時回 FAIL，空的群組（`[]`）所有授權都 FAIL。要排除特定指令，把 `deny` 放在較寬的 `permit` 之前。
+- **要限制設備能下哪些指令，寫白名單，不要靠 `deny` 清單。** 規則只比對設備送來的指令與參數：設備上的縮寫（`show run`）和沒列出的子命令（`show tech-support`）不會被 `deny cmd=show cmd-arg=running-config` 擋到，卻符合 `permit cmd=show`。上例的 `readonly` 只放行列出的指令，其餘落到「全都不成立」而被拒絕。另外，一條規則的每個樣式只要符合請求的某一個 AV pair 就成立，`cmd-arg=interfaces` 也會放行 `show interfaces` 後面再加的參數；真正的唯讀要靠設備上該權限等級（`priv-lvl`）本身能做什麼，授權規則是第二道。
 - **設了 `authorize_group` 的設備不執行腳本授權。** 認證和計費照舊。同一群組的設備，每個使用者得到的授權都一樣；要依使用者或角色決定時，那些設備不要設 `authorize_group`，改用腳本（4.6 節）。
 - **限制：** 沒有「值含空白但不送引號」的寫法，也沒有跳脫字元；只回 PASS_ADD，沒有 PASS_REPL 和 `server_msg`。
 - **檢查：** 啟動、SIGHUP 和 `check` 時，規則開頭不是 `permit`/`deny`、正規表示式寫錯、`{}` 不成對或 `}` 後還有內容、`{}` 裡的雙引號不成對、AV pair 沒有 `=`/`*` 或名稱為空、超過 255 octets 或超過 255 個、群組名稱為空、`authorize_group` 指向不存在的群組、在 `[[radius.clients]]` 設 `authorize_group`，都會失敗，訊息指出 `tacacs.authorize_groups.<名稱>` 和第幾條規則。
@@ -2148,7 +2149,7 @@ CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固�
 - **argon2 的記憶體上限要乘上 CPU 數：** 同時驗證的數量等於 CPU 數，最壞情況用掉約 `argon2_memory_kib` × CPU 數的記憶體（64 核、預設值約 16 GiB）。記憶體少的機器把 `argon2_memory_kib` 調低，同時確認你的 argon2 雜湊沒有超過它。
 - **預設值取得比常見建議高：** 常見建議是 PBKDF2 約 60 萬到 130 萬次、bcrypt cost 10 到 13，一般部署不受影響。
 
-**用統計看還在用什麼：** `rradius_password_checks_total{scheme="...",result="ok|failed"}` 記每一次用儲存的密碼比對登入（PAP、CHAP、MS-CHAP、MS-CHAPv2），依儲存值的格式與結果加一。`scheme` 的值是固定的：`clear`、`none`（沒有前綴的明文）、`crypt`、`md5`、`smd5`、`sha`、`ssha`、`sha224`、`ssha224`、`sha256`、`ssha256`、`sha384`、`ssha384`、`sha512`、`ssha512`、`pbkdf2-sha1`（`{PBKDF2}` 也算在這裡）、`pbkdf2-sha256`、`pbkdf2-sha512`、`x-pbkdf2`、`ns-mta-md5`、`nthash`、`argon2`、`unknown`（不認得的前綴），每個格式兩個結果的組合從啟動就有，沒發生過的是 0。資料庫裡寫什麼前綴都不會變成標籤。格式是 `unknown` 或結果一直是 `failed` 的，多半是匯入的值有問題，見上面沒有前綴的雜湊。LDAP 的 `bind` 模式、`netlogon`、Lua 處理器與憑證登入不比對儲存的密碼，不計。空值、沒有前綴的雜湊與逾時也不計。
+**用統計看還在用什麼：** `rradius_password_checks_total{scheme="...",result="ok|failed"}` 記每一次用儲存的密碼比對登入（PAP、CHAP、MS-CHAP、MS-CHAPv2），依儲存值的格式與結果加一。`scheme` 的值是固定的：`clear`、`none`（沒有前綴的明文）、`crypt`、`md5`、`smd5`、`sha`、`ssha`、`sha224`、`ssha224`、`sha256`、`ssha256`、`sha384`、`ssha384`、`sha512`、`ssha512`、`pbkdf2-sha1`（`{PBKDF2}` 也算在這裡）、`pbkdf2-sha256`、`pbkdf2-sha512`、`x-pbkdf2`、`ns-mta-md5`、`nthash`、`argon2`、`unknown`（不認得的前綴），每個格式兩個結果的組合從啟動就有，沒發生過的是 0。資料庫裡寫什麼前綴都不會變成標籤。`failed` 不只是密碼打錯：CHAP 只能比對明文（`{clear}` 或沒有前綴），MS-CHAP 只能比對明文或 `{nthash}`，對 `{crypt}`、`{ssha}` 這類單向雜湊一律失敗；成本參數超過上限（見下）也算。所以一個格式的 `failed` 增加，先分清楚是哪個協定的登入、是不是密碼錯誤，不要直接當成資料有問題。格式是 `unknown`，又一直是 `failed` 的，才多半是匯入的值有問題，見上面沒有前綴的雜湊。LDAP 的 `bind` 模式、`netlogon`、Lua 處理器與憑證登入不比對儲存的密碼，不計。空值、沒有前綴的雜湊與逾時也不計。
 
 這個統計只看到有人登入的帳號，從沒登入過的舊帳號不會出現。要盤點資料庫裡全部帳號的格式，用查詢（`users` 與 `password` 換成你的資料表與欄位）：
 
@@ -2258,7 +2259,7 @@ auth = "vpn"
 
 互通測試只用 `pamtester` 測到 PAM 這一層，沒有測過 `sshd`、`sudo` 或 `login`。
 
-**模糊測試：** `rradius-server/fuzz/` 用 `cargo-fuzz` 測 RADIUS 封包、TACACS+ 封包、EAP 封包、字典和位址屬性文字。`.github/workflows/fuzz.yml` 每週以 `seeds/` 的種子當起點，對每個目標各跑 300 秒。需要 nightly 工具鏈，要在本機跑時：
+**模糊測試：** `rradius-server/fuzz/` 用 `cargo-fuzz` 測 RADIUS 封包、TACACS+ 封包、EAP 封包、字典和位址屬性文字。`.github/workflows/fuzz.yml` 每週以 `seeds/` 的種子當起點，對每個目標各跑 300 秒。每週才會編譯與執行這些目標，所以改了 fuzz 目標之後，合併前先到分支上手動啟動 Fuzz 工作流程。需要 nightly 工具鏈，要在本機跑時：
 
 ```bash
 rustup toolchain install nightly-2026-11-05 --profile minimal

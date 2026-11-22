@@ -200,6 +200,30 @@ mod tests {
         Ok(())
     }
 
+    /// The `readonly` group of the manual and usage.md: only what it lists, and a `deny` list
+    /// would not have been the same, since a device's abbreviation is not the command it names.
+    #[test]
+    fn test_the_documented_readonly_group_is_a_whitelist() -> Result<(), String> {
+        let whitelist = group(&[r"permit service=shell cmd\* {priv-lvl=1}", "permit service=shell cmd=show cmd-arg=(version|interfaces|clock)", "permit service=shell cmd=(ping|traceroute|exit)"])?;
+        let permitted = |rules: &AuthorizationRules, args: &[&str]| decide(rules, args).is_some();
+        for (args, expected) in [
+            (vec!["service=shell", "cmd*"], true),
+            (vec!["service=shell", "cmd=show", "cmd-arg=version"], true),
+            (vec!["service=shell", "cmd=ping"], true),
+            (vec!["service=shell", "cmd=show", "cmd-arg=running-config"], false),
+            (vec!["service=shell", "cmd=show", "cmd-arg=run"], false),
+            (vec!["service=shell", "cmd=show", "cmd-arg=tech-support"], false),
+            (vec!["service=shell", "cmd=configure", "cmd-arg=terminal"], false),
+            // The parameters are not each matched: one that holds is enough.
+            (vec!["service=shell", "cmd=show", "cmd-arg=interfaces", "cmd-arg=status"], true),
+        ] {
+            assert_eq!(permitted(&whitelist, &args), expected, "{args:?}");
+        }
+        let blacklist = group(&[r"permit service=shell cmd\* {priv-lvl=1}", "deny cmd=show cmd-arg=running-config", "permit service=shell cmd=(show|ping|traceroute|exit)"])?;
+        assert!(permitted(&blacklist, &["service=shell", "cmd=show", "cmd-arg=run"]), "what a deny list lets through");
+        Ok(())
+    }
+
     #[test]
     fn test_rejected_rules() -> Result<(), String> {
         let cases = [
