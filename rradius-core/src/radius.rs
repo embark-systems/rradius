@@ -131,12 +131,13 @@ impl RadiusPacket {
     /// has no Message-Authenticator attribute.
     pub fn verify_message_authenticator(&self, shared_secret: &[u8]) -> Option<bool> {
         let received = self.attribute(MESSAGE_AUTHENTICATOR)?.to_vec();
-        let expected = self.message_authenticator(shared_secret);
+        // An HMAC with no key is not made, which does not happen: then it does not verify.
+        let Some(expected) = self.message_authenticator(shared_secret) else { return Some(false) };
         Some(crate::passwords::constant_time_eq(&received, &expected))
     }
 
     /// HMAC-MD5 over the packet with the Message-Authenticator value zeroed.
-    fn message_authenticator(&self, shared_secret: &[u8]) -> [u8; 16] {
+    fn message_authenticator(&self, shared_secret: &[u8]) -> Option<[u8; 16]> {
         let mut zeroed = RadiusPacket {
             code: self.code,
             identifier: self.identifier,
@@ -148,12 +149,10 @@ impl RadiusPacket {
                 *value = vec![0u8; 16];
             }
         }
-        // The only allowed expect in production code: HMAC accepts keys of any
-        // length, so this cannot fail (hmac's own `KeyInit::new` does the same).
-        #[allow(clippy::expect_used)]
-        let mut mac = Hmac::<Md5>::new_from_slice(shared_secret).expect("HMAC accepts keys of any length");
+        // HMAC accepts keys of any length, so this does not fail.
+        let mut mac = Hmac::<Md5>::new_from_slice(shared_secret).ok()?;
         mac.update(&zeroed.encode());
-        mac.finalize().into_bytes().into()
+        Some(mac.finalize().into_bytes().into())
     }
 
     /// Inserts a Message-Authenticator as the first attribute, computed over this
@@ -162,7 +161,8 @@ impl RadiusPacket {
         // First: it then covers everything after it, leaving nothing an attacker can
         // choose in front of it (the BlastRADIUS mitigation).
         self.attributes.insert(0, (MESSAGE_AUTHENTICATOR, vec![0u8; 16]));
-        self.attributes[0].1 = self.message_authenticator(shared_secret).to_vec();
+        // Never none; if it were, the zeros stay, which the receiver does not accept.
+        self.attributes[0].1 = self.message_authenticator(shared_secret).unwrap_or_default().to_vec();
     }
 
     /// Verifies an Accounting-Request authenticator (RFC 2866 section 3):
