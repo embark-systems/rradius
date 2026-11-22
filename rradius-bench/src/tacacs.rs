@@ -1,4 +1,4 @@
-//! TACACS+ (RFC 8907) for the load: the packets the four `tacacs-*` kinds send, how a reply is
+//! TACACS+ (RFC 8907) for the load: the packets the five `tacacs-*` kinds send, how a reply is
 //! judged, and one TCP connection that carries one request at a time.
 use crate::packet::Step;
 use crate::radsec::Received;
@@ -13,7 +13,7 @@ pub const MAX_BODY: usize = 64 * 1024;
 const MAJOR_VERSION: u8 = 0xc;
 /// Minor version 0, for ASCII logins, authorization and accounting.
 const VERSION_DEFAULT: u8 = 0xc0;
-/// Minor version 1, which PAP authentication uses (RFC 8907 section 5.4.2).
+/// Minor version 1, which PAP and CHAP authentication use (RFC 8907 section 5.4.2).
 const VERSION_ONE: u8 = 0xc1;
 const UNENCRYPTED_FLAG: u8 = 0x01;
 
@@ -24,6 +24,7 @@ const TYPE_ACCT: u8 = 0x03;
 const ACTION_LOGIN: u8 = 0x01;
 const AUTHEN_TYPE_ASCII: u8 = 0x01;
 const AUTHEN_TYPE_PAP: u8 = 0x02;
+const AUTHEN_TYPE_CHAP: u8 = 0x03;
 const SERVICE_LOGIN: u8 = 0x01;
 const METHOD_TACACSPLUS: u8 = 0x06;
 const ACCT_FLAG_START: u8 = 0x02;
@@ -99,7 +100,7 @@ pub fn crypt(data: &mut [u8], secret: &[u8], session: u32, version: u8, seq: u8)
 }
 
 fn version_of(step: Step) -> u8 {
-    if step == Step::TacacsPap { VERSION_ONE } else { VERSION_DEFAULT }
+    if matches!(step, Step::TacacsPap | Step::TacacsChap) { VERSION_ONE } else { VERSION_DEFAULT }
 }
 
 fn type_of(step: Step) -> u8 {
@@ -145,6 +146,26 @@ fn short_count(args: &[Vec<u8>]) -> Result<u8, String> {
     u8::try_from(args.len()).map_err(|_| "too many arguments".to_string())
 }
 
+/// The `data` of a CHAP START (RFC 8907 section 5.4.2.3): the PPP id, a 16-octet challenge and
+/// MD5(id, password, challenge). The challenge and the id come from `session`, which differs for
+/// every request, so the packet is the same on every run and differs between requests.
+fn chap_data(session: u32, password: &[u8]) -> Vec<u8> {
+    let mut hasher = Md5::new();
+    hasher.update(b"rradius-bench-chap");
+    hasher.update(session.to_be_bytes());
+    let challenge: [u8; 16] = hasher.finalize().into();
+    let id = session.to_be_bytes()[3];
+    let mut response = Md5::new();
+    response.update([id]);
+    response.update(password);
+    response.update(challenge);
+    let response: [u8; 16] = response.finalize().into();
+    let mut data = vec![id];
+    data.extend_from_slice(&challenge);
+    data.extend_from_slice(&response);
+    data
+}
+
 /// The first packet of a request: sequence number 1.
 pub fn start(step: Step, session: u32, request: &Request<'_>, secret: &[u8]) -> Result<Vec<u8>, String> {
     let user = request.user.as_bytes();
@@ -155,6 +176,14 @@ pub fn start(step: Step, session: u32, request: &Request<'_>, secret: &[u8]) -> 
             body.extend_from_slice(user);
             body.extend_from_slice(PORT);
             body.extend_from_slice(password);
+            body
+        }
+        Step::TacacsChap => {
+            let data = chap_data(session, request.password.as_bytes());
+            let mut body = vec![ACTION_LOGIN, 1, AUTHEN_TYPE_CHAP, SERVICE_LOGIN, short(user, "the name")?, short(PORT, "the port")?, 0, short(&data, "the CHAP data")?];
+            body.extend_from_slice(user);
+            body.extend_from_slice(PORT);
+            body.extend_from_slice(&data);
             body
         }
         Step::TacacsAscii => {
@@ -235,8 +264,8 @@ pub fn judge(reply: &[u8], expect: Expect, secret: &[u8]) -> Result<Verdict, Str
         return Err("lengths: the fields of the reply do not add up to its length, so the shared secret may be wrong".to_string());
     };
     let verdict = match (expect.step, status) {
-        (Step::TacacsPap | Step::TacacsAscii, AUTHEN_PASS) => Verdict::Accept,
-        (Step::TacacsPap | Step::TacacsAscii, AUTHEN_FAIL) => Verdict::Reject,
+        (Step::TacacsPap | Step::TacacsChap | Step::TacacsAscii, AUTHEN_PASS) => Verdict::Accept,
+        (Step::TacacsPap | Step::TacacsChap | Step::TacacsAscii, AUTHEN_FAIL) => Verdict::Reject,
         (Step::TacacsAscii, AUTHEN_GETUSER) if expect.stage == 0 => Verdict::GetUser,
         (Step::TacacsAscii, AUTHEN_GETPASS) if expect.stage == 1 => Verdict::GetPass,
         (Step::TacacsAuthor, AUTHOR_PASS_ADD | AUTHOR_PASS_REPL) => Verdict::Accept,
@@ -495,6 +524,21 @@ mod tests {
         let body = reveal(&pap)?;
         assert_eq!(&body[..8], &[ACTION_LOGIN, 1, AUTHEN_TYPE_PAP, SERVICE_LOGIN, 5, 13, 0, 2]);
         assert_eq!(&body[8..], [b"alice".as_slice(), PORT, b"pw"].concat().as_slice());
+
+        let chap = start(Step::TacacsChap, 7, &request, SECRET)?;
+        assert_eq!(&chap[..4], &[VERSION_ONE, TYPE_AUTHEN, 1, 0]);
+        let body = reveal(&chap)?;
+        assert_eq!(&body[..8], &[ACTION_LOGIN, 1, AUTHEN_TYPE_CHAP, SERVICE_LOGIN, 5, 13, 0, 33]);
+        let data = &body[8 + 5 + PORT.len()..];
+        assert_eq!(data.len(), 33);
+        let mut proof = Md5::new();
+        proof.update(&data[..1]);
+        proof.update(b"pw");
+        proof.update(&data[1..17]);
+        let proof: [u8; 16] = proof.finalize().into();
+        assert_eq!(&data[17..], &proof);
+        let other = reveal(&start(Step::TacacsChap, 8, &request, SECRET)?)?;
+        assert_ne!(&other[8 + 5 + PORT.len() + 1..][..16], &data[1..17], "two requests share a challenge");
 
         let ascii = reveal(&start(Step::TacacsAscii, 7, &request, SECRET)?)?;
         assert_eq!(&ascii[..8], &[ACTION_LOGIN, 1, AUTHEN_TYPE_ASCII, SERVICE_LOGIN, 0, 13, 0, 0]);

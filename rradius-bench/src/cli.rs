@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_every_kind_parses() {
-        for name in ["pap", "chap", "chap-authenticator", "mschapv2", "acct-start", "acct-alive", "acct-stop", "acct-on", "acct-off", "status-auth", "status-acct", "session", "eap-tls", "peap", "ttls", "aka-prime", "tacacs-pap", "tacacs-ascii", "tacacs-author", "tacacs-acct"] {
+        for name in ["pap", "chap", "chap-authenticator", "mschapv2", "acct-start", "acct-alive", "acct-stop", "acct-on", "acct-off", "status-auth", "status-acct", "session", "eap-tls", "peap", "ttls", "aka-prime", "tacacs-pap", "tacacs-chap", "tacacs-ascii", "tacacs-author", "tacacs-acct"] {
             assert_eq!(Kind::parse(name).unwrap().name(), name);
         }
     }
