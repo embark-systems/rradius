@@ -74,6 +74,7 @@ pub enum Step {
     AkaPrime,
     /// TACACS+ (RFC 8907), see `crate::tacacs`: not RADIUS, so not in `ALL`.
     TacacsPap,
+    TacacsChap,
     TacacsAscii,
     TacacsAuthor,
     TacacsAcct,
@@ -98,7 +99,7 @@ impl Step {
         Step::AkaPrime,
     ];
 
-    pub const TACACS: [Step; 4] = [Step::TacacsPap, Step::TacacsAscii, Step::TacacsAuthor, Step::TacacsAcct];
+    pub const TACACS: [Step; 5] = [Step::TacacsPap, Step::TacacsChap, Step::TacacsAscii, Step::TacacsAuthor, Step::TacacsAcct];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -118,6 +119,7 @@ impl Step {
             Step::Ttls => "ttls",
             Step::AkaPrime => "aka-prime",
             Step::TacacsPap => "tacacs-pap",
+            Step::TacacsChap => "tacacs-chap",
             Step::TacacsAscii => "tacacs-ascii",
             Step::TacacsAuthor => "tacacs-author",
             Step::TacacsAcct => "tacacs-acct",

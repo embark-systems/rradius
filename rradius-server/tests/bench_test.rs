@@ -434,7 +434,7 @@ fn test_tacacs_loads_per_request() -> Result<(), String> {
 #[test]
 fn test_tacacs_wrong_password_rejected() -> Result<(), String> {
     let server = start_tacacs("return 'reject'", true)?;
-    for kind in ["tacacs-pap", "tacacs-ascii"] {
+    for kind in ["tacacs-pap", "tacacs-chap", "tacacs-ascii"] {
         let load = format!("{kind},concurrency=2");
         let right = bench_tacacs(&server, &["--load", &load, "--requests", "4", "--user", "alice", "--password", PASSWORD])?;
         if right.code != 0 || step(&right.json(), 0, 0)["responses"]["accept"] != 4 {
@@ -446,6 +446,20 @@ fn test_tacacs_wrong_password_rejected() -> Result<(), String> {
         if wrong.code != 1 || counts["responses"]["reject"] != 4 || counts["responses"]["accept"] != 0 || counts["invalid"] != 0 {
             return Err(format!("{kind} wrong password: exit {}: {} / {}", wrong.code, wrong.stdout, wrong.stderr));
         }
+    }
+    Ok(())
+}
+
+/// CHAP needs the chain to hold the password, so `tacacs-chap` is not in `check_tacacs_loads`:
+/// without a chain the server answers ERROR.
+#[test]
+fn test_tacacs_chap_through_a_chain() -> Result<(), String> {
+    let server = start_tacacs("return 'reject'", true)?;
+    let right = bench_tacacs(&server, &["--load", "tacacs-chap,concurrency=4", "--requests", "40", "--user", "alice", "--password", PASSWORD])?;
+    let json = right.json();
+    let counts = step(&json, 0, 0);
+    if right.code != 0 || counts["responses"]["accept"] != 40 || counts["responses"]["reject"] != 0 || counts["invalid"] != 0 {
+        return Err(format!("right password: exit {}: {} / {}", right.code, right.stdout, right.stderr));
     }
     Ok(())
 }
