@@ -110,8 +110,8 @@ notices() {
     local program=$1 target=$2 dest=$3 triple listing dir file
     triple=$(triple_of "$target")
     listing="$work/crates-$program-$target.json"
-    (cd "$work/src" && cargo about generate --frozen --fail -c about.toml -m "$program/Cargo.toml" --features tui --target "$triple" -o "$dest" about.hbs) || fail "cannot list the licenses of $program for $target (is every license deny.toml allows also in about.toml?)"
-    (cd "$work/src" && cargo about generate --frozen -c about.toml -m "$program/Cargo.toml" --features tui --target "$triple" --format json -o "$listing") || fail "cannot list the crates of $program for $target"
+    (cd "$work/src" && cargo about generate --frozen --fail -c about.toml -m "$program/Cargo.toml" --target "$triple" -o "$dest" about.hbs) || fail "cannot list the licenses of $program for $target (is every license deny.toml allows also in about.toml?)"
+    (cd "$work/src" && cargo about generate --frozen -c about.toml -m "$program/Cargo.toml" --target "$triple" --format json -o "$listing") || fail "cannot list the crates of $program for $target"
     printf '## NOTICE files\n\nThe NOTICE files of the crates above that carry one. The other crates carry none.\n\n' >>"$dest"
     # A crate appears once for each license it is listed under.
     grep -o '"manifest_path":"[^"]*"' "$listing" | sed 's/^"manifest_path":"//; s/"$//' | sort -u | while read -r manifest; do
@@ -136,7 +136,7 @@ build() {
             # Under the repository's dist/, which git ignores, wherever the archives go. The SQLite
             # flag is the one .cargo/config.toml sets, given here too because the configuration
             # does not override a value already in the environment.
-            (cd "$work/src/rradius-server" && LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG CARGO_TARGET_DIR="$root/dist/.target/$target" cargo build --release --locked -p "$program" --features tui)
+            (cd "$work/src/rradius-server" && LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG CARGO_TARGET_DIR="$root/dist/.target/$target" cargo build --release --locked -p "$program")
             cp "$root/dist/.target/$target/release/$program" "$dest"
             ;;
         linux-x86_64 | linux-aarch64)

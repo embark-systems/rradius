@@ -13,10 +13,6 @@ path = "src/main.rs"
 [dependencies]
 rradius-core = { path = "../rradius-core" }
 
-[features]
-# `status --tui`, the full-screen view; see rradius-core.
-tui = ["rradius-core/tui"]
-
 [dev-dependencies]
 # The test helpers both programs share.
 rradius-core = { path = "../rradius-core", features = ["test-support"] }

@@ -38,7 +38,7 @@ export LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG
 %ifarch aarch64
 export JEMALLOC_SYS_WITH_LG_PAGE=16
 %endif
-cargo build --release --locked -p rradius-server --features tui
+cargo build --release --locked -p rradius-server
 
 %install
 install -D -m 0755 target/release/rradius-server %{buildroot}%{_bindir}/rradius-server
