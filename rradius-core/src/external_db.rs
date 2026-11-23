@@ -174,7 +174,6 @@ impl std::fmt::Debug for ExternalDatabases {
     }
 }
 
-/// Whether `host` is this machine, so that a connection to it without TLS stays on it.
 /// A warning for each database with `tls = "off"` whose host is not this machine: its password
 /// and data cross the network in the clear. Said at startup and by the configuration check.
 pub fn warn_about_plain(settings: &BTreeMap<String, DatabaseSettings>) {
@@ -183,6 +182,7 @@ pub fn warn_about_plain(settings: &BTreeMap<String, DatabaseSettings>) {
     }
 }
 
+/// Whether `host` is this machine, so that a connection to it without TLS stays on it.
 fn is_loopback(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
