@@ -950,10 +950,22 @@ impl TacacsServer {
     /// Listens on the port without TLS and serves it, unless the extension that serves TACACS+
     /// over TLS has `tls_only`: then there is nothing to do here, and it logs where it listens.
     pub async fn run(&self) -> io::Result<()> {
+        let listener = self.bind().await?;
+        self.serve_bound(listener).await
+    }
+
+    /// Takes the port without TLS, which is what makes a server that cannot listen known before it
+    /// serves: `None` when the extension that serves TACACS+ over TLS has `tls_only`.
+    pub async fn bind(&self) -> io::Result<Option<TcpListener>> {
         if self.tls_served.is_some_and(|served| served.tls_only) {
-            return Ok(());
+            return Ok(None);
         }
-        let listener = TcpListener::bind(self.addr).await?;
+        TcpListener::bind(self.addr).await.map(Some)
+    }
+
+    /// Serves on what `bind` took, until the server is stopped.
+    pub async fn serve_bound(&self, listener: Option<TcpListener>) -> io::Result<()> {
+        let Some(listener) = listener else { return Ok(()) };
         tracing::info!("TACACS+ Server listening on {}:{}", self.addr.ip(), self.addr.port());
         self.serve(listener).await
     }

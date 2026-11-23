@@ -593,7 +593,7 @@ secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 | `tacacs.port` | 整數 | `49` | | 重啟 | TACACS+ 埠（TCP）。 |
 | `tacacs.max_connections` | 整數 | `1024` | | 重啟 | 同時開啟的連線數，超過的立刻關閉。 |
 | `tacacs.max_connections_per_source` | 整數 | `64` | | 重啟 | 同一個來源位址同時開啟的連線數，超過的立刻關閉。 |
-| `tacacs.max_body_len` | 整數 | `65536` | | 重啟 | 封包內容上限，位元組；超過就關閉連線。 |
+| `tacacs.max_body_len` | 整數 | `65536` | | 重啟 | 封包內容上限，位元組；超過就關閉連線。必須大於 0。 |
 | `tacacs.idle_timeout_ms` | 整數 | `300000` | | 重啟 | 這段時間內沒收到完整封包就關閉連線，毫秒。 |
 | `tacacs.enable` | 字串 | `deny` | | 可 | enable 怎麼驗證：`deny` 一律拒絕、不詢問密碼；`login` 當作一次登入，由驗證鏈或腳本決定。 |
 | `tacacs.authorize_groups` | 表 | `{}` | | 可 | 授權群組：名稱對應到一串 `permit`／`deny` 規則，用來授權指令和服務。見下一節。 |

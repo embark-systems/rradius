@@ -1315,6 +1315,55 @@ fn test_check_names_a_duplicate_client_name() -> Result<(), String> {
     Ok(())
 }
 
+/// spec Plain LDAP Warning: the check says it too.
+#[test]
+fn test_check_warns_about_plain_ldap() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    let handler = "[auth]\n[[auth.handlers]]\ntype = \"ldap\"\nurls = [\"ldap://dir.example.test\"]\nallow_plaintext = true\nbind_dn = \"cn=r,dc=example,dc=test\"\nbind_password = \"Not-A-Real-Password-0123\"\nbase_dn = \"dc=example,dc=test\"\nfilter = \"(uid={user})\"\n";
+    std::fs::write(&config, format!("{text}{handler}")).map_err(|e| e.to_string())?;
+    let (code, stdout, stderr) = check_command(PROGRAM, &config);
+    assert_eq!(code, Some(0), "{stdout} {stderr}");
+    let all = format!("{stdout}{stderr}");
+    assert!(all.contains("ldap://dir.example.test") && all.contains("without encryption") && !all.contains("Not-A-Real-Password"), "{all}");
+    Ok(())
+}
+
+/// spec Listener Bind Failure: a TACACS+ port that is taken stops the start, as the RADIUS port does.
+#[test]
+fn test_tacacs_port_in_use_stops_the_start() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = taken.local_addr().map_err(|e| e.to_string())?.port();
+    let mut text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    text.push_str(&format!("[tacacs]\nbind = \"127.0.0.1\"\nport = {port}\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n"));
+    std::fs::write(&config, text).map_err(|e| e.to_string())?;
+    let (code, stderr) = run_within(Duration::from_secs(60), &config);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("TACACS+ server error"), "{stderr}");
+    Ok(())
+}
+
+/// spec Listener Bind Failure: a metrics port that is taken is logged, and the server serves.
+#[test]
+fn test_metrics_port_in_use_does_not_stop_the_server() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, auth_port) = write_config(dir.path(), "return 'accept'", None);
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = taken.local_addr().map_err(|e| e.to_string())?.port();
+    let mut text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    text.push_str(&format!("[metrics]\nbind = \"127.0.0.1\"\nport = {port}\n"));
+    std::fs::write(&config, text).map_err(|e| e.to_string())?;
+    let child = Server::spawn(PROGRAM, dir.path(), &config);
+    let server = Server { child, dir, config, auth_port };
+    assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
+    let stderr = server.wait_for_log("cannot listen");
+    assert!(stderr.contains("metrics: cannot listen"), "{stderr}");
+    Ok(())
+}
+
 /// spec Configuration Includes: a mistake found after the files are read together names the
 /// included file that holds the entry.
 #[test]

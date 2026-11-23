@@ -549,6 +549,30 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             .with_metrics(metrics.clone());
         tacacs_running = Some(Arc::new(tacacs_server));
     }
+    // As for the RADIUS sockets: a port that cannot be taken stops the start, and the nodes of the
+    // cluster are told. The metrics port is not worth that: logins go on without it.
+    let tacacs_listener = match &tacacs_running {
+        Some(tacacs_server) => match tacacs_server.bind().await {
+            Ok(listener) => listener,
+            Err(e) => {
+                let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
+                logging::flush();
+                eprintln!("TACACS+ server error: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+    let metrics_listener = match config.metrics {
+        Some(addr) => match metrics::bind(addr).await {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                tracing::error!("metrics: cannot listen on {addr}: {e}; no metrics are served, and `status` cannot read them");
+                None
+            }
+        },
+        None => None,
+    };
 
     // Once both servers are made and before either serves, as for the RADIUS sockets: an
     // extension's server that cannot listen, such as the CoA relay, stops the start. A
@@ -568,16 +592,16 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(tacacs_server) = tacacs_running.clone() {
         tokio::spawn(async move {
-            if let Err(e) = tacacs_server.run().await {
+            if let Err(e) = tacacs_server.serve_bound(tacacs_listener).await {
                 tracing::error!("TACACS+ server error: {}", e);
             }
         });
     }
 
-    if let Some(addr) = config.metrics {
+    if let Some(listener) = metrics_listener {
         let metrics = metrics.clone();
         tokio::spawn(async move {
-            if let Err(e) = metrics::serve(addr, metrics).await {
+            if let Err(e) = metrics::serve_bound(listener, metrics).await {
                 tracing::error!("metrics server error: {}", e);
             }
         });

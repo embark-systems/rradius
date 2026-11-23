@@ -251,7 +251,7 @@ $ echo $?
 
 ### 埠已經被佔用
 
-RADIUS 的埠被別的程式用了，伺服器結束，結束碼 1：
+RADIUS 或 TACACS+ 的埠被別的程式用了，伺服器結束，結束碼 1（RADIUS 印 `RADIUS server error: …`，TACACS+ 印 `TACACS+ server error: …`）：
 
 ```text
 … INFO rradius_core::cli: cluster node 1 started
@@ -267,7 +267,7 @@ cannot start cluster node 1: Config: Cannot bind Raft listen address '127.0.0.1:
 
 處置：找出是誰佔了這個埠（Linux 用 `ss -lunp`、`ss -ltnp`，macOS 用 `lsof -i :<埠>`）。最常見的是舊的 rradius 還沒停完，或同一台機器上跑了兩份設定。
 
-> **警告：** 指標埠被佔用時，伺服器**不會**結束。實測日誌只多一行 `ERROR rradius_core::cli: metrics server error: Address already in use (os error 48)`，RADIUS 照常服務，但這個伺服器沒有開出 `/metrics`、`/livez`、`/readyz`。啟動後一定要確認日誌有 `Metrics listening on …`。
+> **警告：** 指標埠被佔用時，伺服器**不會**結束。日誌只多一行 `ERROR … metrics: cannot listen on <位址>: Address already in use (os error 48); no metrics are served, and `status` cannot read them`，RADIUS 照常服務，但這個伺服器沒有開出 `/metrics`、`/livez`、`/readyz`。啟動後一定要確認日誌有 `Metrics listening on …`。
 
 ### 上一次還沒停完
 
@@ -734,7 +734,7 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `… not supported by this program (… needs rradius-enterprise)` | 企業版才有的設定 | 拿掉，或換用企業版 |
 | `RADIUS server error: cannot listen on …: Address already in use`（結束碼 1） | RADIUS 埠被佔用 | 停掉佔用的程式 |
 | `Cannot bind Raft listen address '…'`（結束碼 2） | 叢集埠被佔用 | 停掉佔用的程式 |
-| `metrics server error: Address already in use`（伺服器繼續跑） | 指標埠被佔用 | 停掉佔用的程式後重啟 rradius |
+| `metrics: cannot listen on …: Address already in use`（伺服器繼續跑） | 指標埠被佔用 | 停掉佔用的程式後重啟 rradius |
 | `LockFile data/logs is locked and in use by another process` | 舊的行程還沒停完 | 等它結束再啟動 |
 | `cluster was not ready: no usable leader within …, and stop_without_leader_ms is set`（結束碼 1） | 啟動時叢集沒有過半數 | 先讓其他節點起來 |
 

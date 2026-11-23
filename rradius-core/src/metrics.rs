@@ -599,8 +599,18 @@ impl Metrics {
 
 /// Serves `GET /metrics` on `addr` until the process ends.
 pub async fn serve(addr: SocketAddr, metrics: Arc<Metrics>) -> io::Result<()> {
+    serve_bound(bind(addr).await?, metrics).await
+}
+
+/// Takes the port, so that a server that cannot listen is known before it serves.
+pub async fn bind(addr: SocketAddr) -> io::Result<TcpListener> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("Metrics listening on {addr}");
+    Ok(listener)
+}
+
+/// Serves `GET /metrics` on what `bind` took, until the process ends.
+pub async fn serve_bound(listener: TcpListener, metrics: Arc<Metrics>) -> io::Result<()> {
     serve_listener(listener, metrics, READ_TIMEOUT).await
 }
 

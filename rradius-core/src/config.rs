@@ -1466,6 +1466,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
 /// it includes after it, for what prints the settings as TOML.
 pub(crate) fn load_with_text(path: &Path, extensions: &crate::extension::Extensions) -> Result<(ServerConfig, String), ConfigError> {
     let text = fs::read_to_string(path).map_err(|e| ConfigError(format!("{}: cannot read configuration: {}", path.display(), e)))?;
+    warn_if_writable(path, "configuration file");
     let (text, parts) = with_includes(path, text)?;
     let config = load_text(path, &text, extensions).map_err(|error| name_sources(locate(error, path, &parts), path, &parts, &text))?;
     Ok((config, text))
@@ -1598,7 +1599,7 @@ fn load_text(path: &Path, text: &str, extensions: &crate::extension::Extensions)
                 Some(value) => crate::tacacs::EnableMode::parse(value).ok_or_else(|| fail(format!("tacacs.enable must be \"deny\" or \"login\", not \"{value}\"")))?,
             },
             addr: SocketAddr::new(t.bind, t.port),
-            max_body_len: t.max_body_len,
+            max_body_len: above_zero("tacacs.max_body_len", t.max_body_len).map_err(fail)?,
             clients: client_table("tacacs", t.clients, base, chains, None, Some(&authorize_groups(t.authorize_groups).map_err(fail)?), &[]).map_err(fail)?,
             max_connections: above_zero("tacacs.max_connections", t.max_connections).map_err(fail)?,
             max_connections_per_source: above_zero("tacacs.max_connections_per_source", t.max_connections_per_source).map_err(fail)?,
@@ -2099,7 +2100,7 @@ fn with_includes(path: &Path, text: String) -> Result<(String, Vec<Part>), Confi
             };
             return Err(fail(&file, format!("line {}: {why}", at + 1)));
         }
-        warn_if_writable(&file);
+        warn_if_writable(&file, "included configuration file");
         let first_line = combined.matches('\n').count() + 1;
         combined.push_str(&part);
         if !combined.ends_with('\n') {
@@ -2113,22 +2114,23 @@ fn with_includes(path: &Path, text: String) -> Result<(String, Vec<Part>), Confi
     Ok((combined, parts))
 }
 
-/// Logs a warning when `file`, or the directory it is in, can be written by its group or by others:
-/// an included file can change who may log in. Only where there are such permissions to look at.
+/// Logs a warning when `file`, which `what` says, or the directory it is in, can be written by its
+/// group or by others: the configuration, and the files it includes, can change who may log in.
+/// Only where there are such permissions to look at.
 #[cfg(unix)]
-fn warn_if_writable(file: &Path) {
+fn warn_if_writable(file: &Path, what: &str) {
     use std::os::unix::fs::PermissionsExt;
     let writable = |path: &Path| fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o022 != 0);
     let directory = file.parent().filter(|directory| !directory.as_os_str().is_empty());
     if writable(file) {
-        tracing::warn!("included configuration file {} can be written by its group or by others, which lets them change who may log in", file.display());
+        tracing::warn!("{what} {} can be written by its group or by others, which lets them change who may log in", file.display());
     } else if directory.is_some_and(writable) {
-        tracing::warn!("the directory of included configuration file {} can be written by its group or by others, which lets them change who may log in", file.display());
+        tracing::warn!("the directory of {what} {} can be written by its group or by others, which lets them change who may log in", file.display());
     }
 }
 
 #[cfg(not(unix))]
-fn warn_if_writable(_file: &Path) {}
+fn warn_if_writable(_file: &Path, _what: &str) {}
 
 /// The first number that follows the word `line ` in `message`, and where it begins and ends.
 fn line_in(message: &str) -> Option<(usize, usize, usize)> {
@@ -5285,6 +5287,45 @@ mod tests {
         assert!(directory.contains("the directory of included configuration file"), "{directory}");
         assert_eq!(warned(0o644, 0o755)?, "", "not writable by others");
         Ok(())
+    }
+
+    /// spec Configuration File Permission Warning: the file itself, and its directory, as for the files it includes.
+    #[cfg(unix)]
+    #[test]
+    fn test_writable_configuration_file_is_warned_about() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let warned = |file_mode: u32, directory_mode: u32| -> Result<String, String> {
+            let dir = tempdir().map_err(|e| e.to_string())?;
+            let path = dir.path().join("rradius.toml");
+            fs::write(&path, base(RADIUS_CLIENT)).map_err(|e| e.to_string())?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(file_mode)).map_err(|e| e.to_string())?;
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(directory_mode)).map_err(|e| e.to_string())?;
+            let log = crate::test_support::radius::CapturedLog::default();
+            let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
+            let result = tracing::subscriber::with_default(subscriber, || load(&path));
+            // The directory has to be readable for the check to be the only difference.
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+            result.map_err(|e| e.to_string())?;
+            let text = log.0.lock().map_err(|e| e.to_string())?.clone();
+            String::from_utf8(text).map_err(|e| e.to_string())
+        };
+        let file = warned(0o666, 0o755)?;
+        assert!(file.contains("configuration file ") && file.contains("rradius.toml") && file.contains("can be written") && !file.contains("included"), "{file}");
+        let group = warned(0o664, 0o755)?;
+        assert!(group.contains("can be written by its group or by others"), "{group}");
+        let directory = warned(0o644, 0o777)?;
+        assert!(directory.contains("the directory of configuration file"), "{directory}");
+        assert_eq!(warned(0o644, 0o755)?, "", "readable is not writable");
+        assert_eq!(warned(0o600, 0o700)?, "");
+        Ok(())
+    }
+
+    #[test]
+    fn test_tacacs_body_length_limit_must_be_positive() {
+        let with = |value: usize| load_str(&base(&format!("\n[tacacs]\nbind = \"127.0.0.1\"\nport = 4949\nmax_body_len = {value}\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n"))).1;
+        let error = with(0).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(error.contains("tacacs.max_body_len must be greater than 0"), "{error}");
+        assert!(with(1).is_ok());
     }
 
     /// The file order the rules promise: files in the order of their names, so the client of the
