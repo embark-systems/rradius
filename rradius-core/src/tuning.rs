@@ -350,7 +350,7 @@ pub fn advise(platform: Platform, readings: &Readings, needs: &Needs) -> Report 
             current: Ok(needs.pin_threads.to_string()),
             suggested: None,
             ok: true,
-            why: "on a machine that runs only rradius, pin_threads = true can raise throughput; see the usage document".to_string(),
+            why: "on a machine that runs only rradius, pin_threads = true can raise throughput; see the performance chapter of the manual, the section on worker threads and pin_threads".to_string(),
             now: None,
             persist: None,
         });
@@ -472,7 +472,7 @@ pub fn run(args: &[String], extensions: &Extensions) -> i32 {
             match crate::config::load(Path::new(&path)) {
                 Ok(config) => Inputs::of(&config, extensions),
                 Err(e) => {
-                    println!("{path}: {e}; the default settings are used");
+                    println!("{e}; the default settings are used");
                     Inputs::defaults()
                 }
             }

@@ -81,6 +81,27 @@ fn fill(server: &Server) -> Result<(), String> {
     account(server, 2, "carol", "s-4", [10, 0, 0, 7], 4500)
 }
 
+/// spec Session Command Results: a node that refuses `[cluster] secret_api` is a mistake in the
+/// configuration, said at once with the node's address; the cluster's own client would retry
+/// for the whole 30 seconds.
+#[test]
+fn test_a_wrong_api_secret_is_refused_at_once() -> Result<(), String> {
+    let server = server()?;
+    let text = std::fs::read_to_string(&server.config).map_err(|e| e.to_string())?;
+    let wrong = text.replace("secret_api = \"test-api-secret-01234\"", "secret_api = \"another-api-secret-0123\"");
+    assert_ne!(wrong, text, "the secret is in the configuration");
+    let path = server.config.with_file_name("wrong-secret.toml");
+    std::fs::write(&path, wrong).map_err(|e| e.to_string())?;
+    let started = std::time::Instant::now();
+    let (code, stdout, stderr) = session(&path, &["list"])?;
+    assert_eq!((code, stdout.as_str()), (Some(2), ""), "{stderr}");
+    assert!(stderr.contains("refused the api secret"), "{stderr}");
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    // The right secret still works.
+    assert_eq!(session(&server.config, &["list"])?.0, Some(1));
+    Ok(())
+}
+
 /// spec Session Commands and Session Command Results: the text and JSON output, the rows of a
 /// user, and what is printed when there is none.
 #[test]

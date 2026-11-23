@@ -257,6 +257,25 @@ pub(crate) async fn current_members(api: &Api, configured: &[ClusterNode]) -> Re
     Ok((configured_members(configured), None, Source::Configuration))
 }
 
+/// The message of the first node of `nodes` that refuses `secret_api`, when one does. Asks every
+/// node at once, each for up to `PING_WAIT`, and stops at the first that settles it: a 401 is a
+/// refusal, an answer that the secret was taken says it is not one, so a node that is down or
+/// drops packets delays nothing while another answers. A node that does not answer, or answers
+/// anything else, settles nothing: the command goes on, and ends its own way, as it did before.
+pub(crate) async fn refused_secret(secret_api: &str, nodes: &[ClusterNode]) -> Option<String> {
+    use futures::StreamExt;
+    let api = Api::new(secret_api.to_string()).ok()?;
+    let mut answers: futures::stream::FuturesUnordered<_> = nodes.iter().map(|node| api.metrics_within(&node.api, PING_WAIT)).collect();
+    while let Some(answer) = answers.next().await {
+        match answer {
+            Err(Failure::Secret(message)) => return Some(message),
+            Ok(_) => return None,
+            Err(Failure::Unusable(_) | Failure::Silent(_)) => {}
+        }
+    }
+    None
+}
+
 /// Refuses to start a node whose `node_id` another, running node of the cluster already has.
 /// Joining under a member's id rewrites that member's addresses to this node's, so the cluster
 /// would take the running node for another host. Asks the other configured nodes, each for up
@@ -544,6 +563,88 @@ mod tests {
 
     fn args(text: &str) -> Vec<String> {
         text.split_whitespace().map(str::to_string).collect()
+    }
+
+    /// Answers each connection with `reply` (a whole HTTP response) and counts them.
+    async fn serve(reply: String) -> Result<String, std::io::Error> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?.to_string();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0u8; 1024];
+                let _ = stream.read(&mut buffer).await;
+                let _ = stream.write_all(reply.as_bytes()).await;
+            }
+        });
+        Ok(address)
+    }
+
+    fn accepted() -> String {
+        format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{METRICS}", METRICS.len())
+    }
+
+    fn unauthorized() -> String {
+        "HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string()
+    }
+
+    fn node_at(id: u64, api: String) -> ClusterNode {
+        ClusterNode { id, raft: format!("127.0.0.1:{}", 9000 + id), api }
+    }
+
+    #[tokio::test]
+    async fn test_refused_secret_is_named_with_the_node() -> Result<(), std::io::Error> {
+        let refusing = serve(unauthorized()).await?;
+        let answer = refused_secret("wrong", &[node_at(1, refusing.clone())]).await;
+        assert_eq!(answer, Some(secret_refused(&refusing)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_refused_secret_ignores_what_it_cannot_tell() -> Result<(), std::io::Error> {
+        let fine = serve(accepted()).await?;
+        // A port nothing listens on: bound, then dropped.
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            listener.local_addr()?.to_string()
+        };
+        assert_eq!(refused_secret("right", &[node_at(1, fine), node_at(2, closed)]).await, None);
+        assert_eq!(refused_secret("right", &[]).await, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_a_refusal_is_found_past_a_node_that_is_down() -> Result<(), std::io::Error> {
+        let refusing = serve(unauthorized()).await?;
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            listener.local_addr()?.to_string()
+        };
+        let answer = refused_secret("wrong", &[node_at(1, closed), node_at(2, refusing.clone())]).await;
+        assert_eq!(answer, Some(secret_refused(&refusing)));
+        Ok(())
+    }
+
+    /// A node that never answers does not hold up the others: the probe ends with the first
+    /// answer that settles it, well before `PING_WAIT`.
+    #[tokio::test]
+    async fn test_a_silent_node_does_not_delay_an_answer() -> Result<(), std::io::Error> {
+        let fine = serve(accepted()).await?;
+        let silent = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?.to_string();
+            tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Ok((stream, _)) = listener.accept().await {
+                    held.push(stream);
+                }
+            });
+            address
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(refused_secret("right", &[node_at(1, silent), node_at(2, fine)]).await, None);
+        assert!(started.elapsed() < PING_WAIT, "{:?}", started.elapsed());
+        Ok(())
     }
 
     fn configured(ids: &[u64]) -> Vec<ClusterNode> {

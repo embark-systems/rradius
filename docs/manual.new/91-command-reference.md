@@ -481,7 +481,8 @@ $ echo $?
 | 多一個參數 | `unexpected argument 'b'`，後接用法 | 2 |
 | `--config` 後面沒有值 | `--config needs a value`，後接用法 | 2 |
 | `[accounts]` 沒有這個動作 | `accounts.add is not set in rradius.toml` | 2 |
-| 伺服器沒在跑，或 API 密碼不對 | 等 30 秒後 `the cluster did not answer within 30 s`；等待時標準錯誤會有 `Error looking up DB metrics` | 3 |
+| 伺服器沒在跑 | 等 30 秒後 `the cluster did not answer within 30 s`；等待時標準錯誤會有 `Error looking up DB metrics` | 3 |
+| API 密碼不對 | 立刻 `127.0.0.1:8200 refused the api secret: [cluster] secret_api differs from the cluster's` | 2 |
 
 「兩次密碼不同」只在終端機上會發生，沒有實測，依程式碼寫出。
 
@@ -582,7 +583,7 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 | 送出後 30 秒內沒有回應 | `the removal of node <id> may have been made, …; check with cluster members` | 3 |
 
 - `--force` 只用在 `remove`，讓上面「只剩一個或兩個 voter」的情況照樣移除。`members --force` 是用法錯誤。
-- API 密碼不對：`… refused the api secret: [cluster] secret_api differs from the cluster's`，結束碼 2。叢集都沒有回應：`the cluster did not answer within 30 s`，結束碼 3。
+- API 密碼不對：`… refused the api secret: [cluster] secret_api differs from the cluster's`，結束碼 2，立刻出現（`user`、`session`、`query`、`client`、`dpsk`、`aka` 與 `cluster`、`status --cluster` 都一樣）。叢集都沒有回應：`the cluster did not answer within 30 s`，結束碼 3。
 
 > **未實機驗證：** 表中「成功」「只剩一個或兩個 voter」「最後一個 voter」「送出後沒有回應」這幾列需要多節點叢集，只對照了 `cluster_commands.rs` 與它的測試；其他各列在單節點上實測過。
 
@@ -884,7 +885,7 @@ $ while read k; do grep -qF "\`$k\`" 91-command-reference.md || echo "missing: $
 **解法：** 判斷輸出，或改用 `--json` 檢查是不是 `[]`。
 
 **症狀：** `user`、`session`、`cluster` 停 30 秒後印出 `the cluster did not answer within 30 s`，結束碼 3。
-**原因：** 伺服器沒在跑、`[[cluster.nodes]]` 的 API 位址不對，或 API 密碼與叢集不一致。`cluster` 與 `status --cluster` 遇到密碼不一致會直接說 `refused the api secret`；`user` 與 `session` 只會等到逾時。
+**原因：** 伺服器沒在跑、`[[cluster.nodes]]` 的 API 位址不對，或 API 密碼與叢集不一致。遇到密碼不一致時，命令會直接說 `refused the api secret`，結束碼 2，不會等到逾時；只有連不上或沒有回答才會等 30 秒。
 **解法：** 確認伺服器在執行，命令用的設定檔與伺服器相同。
 
 **症狀：** `rradius-bench` 的結果都是 `timeouts`，伺服器日誌有 `discarded 1 Access-Requests lacking a Message-Authenticator`。

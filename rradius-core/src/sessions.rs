@@ -79,6 +79,11 @@ fn statement(config: &ServerConfig, config_path: &str, action: Action, name: Opt
 
 /// Runs `sql` through the cluster, giving it 30 seconds.
 pub(crate) async fn query(config: &ServerConfig, sql: &str, params: Vec<hiqlite::Param>) -> Result<Vec<Row>, SessionError> {
+    // A refused secret is a mistake in the configuration, which the cluster's own client would
+    // retry until the time is up.
+    if let Some(message) = crate::cluster_commands::refused_secret(&config.cluster.secret_api, &config.cluster.nodes).await {
+        return Err(mistake(message));
+    }
     match tokio::time::timeout(CLUSTER_WAIT, query_rows(&config.cluster, sql, params)).await {
         Ok(Ok(rows)) => Ok(rows),
         Ok(Err(e)) if crate::lua_engine::cluster_unavailable(&e) => Err(SessionError { status: STATUS_UNREACHABLE, message: format!("cannot reach the cluster: {e}") }),
