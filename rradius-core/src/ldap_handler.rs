@@ -3,8 +3,8 @@
 //! attribute.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use deadpool::managed::{self, Object, Pool, PoolError, RecycleError};
 use ldap3::{Ldap, LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
@@ -182,7 +182,12 @@ impl managed::Manager for LdapManager {
 pub struct LdapHandler {
     settings: LdapSettings,
     pools: Vec<(String, Pool<LdapManager>)>,
+    /// When each URL, in the order of `pools`, last could not be reached; unset after it answered.
+    unreachable: Vec<Mutex<Option<Instant>>>,
 }
+
+/// How long a URL that could not be reached is tried after the others.
+const UNREACHABLE_FOR: Duration = Duration::from_secs(30);
 
 impl LdapHandler {
     /// Builds the TLS configuration from the system roots plus `ca_file` and
@@ -228,7 +233,8 @@ impl LdapHandler {
                 .map_err(|e| format!("cannot create LDAP connection pool for {}: {}", url, e))?;
             pools.push((url.clone(), pool));
         }
-        Ok(LdapHandler { settings, pools })
+        let unreachable = pools.iter().map(|_| Mutex::new(None)).collect();
+        Ok(LdapHandler { settings, pools, unreachable })
     }
 
     /// Authenticates under the name in `creds`.
@@ -250,8 +256,12 @@ impl LdapHandler {
             tracing::warn!("auth ldap handler: ignoring a certificate login: this handler has no certificate_filter");
             return (Outcome::Ignore, Vec::new(), false);
         }
-        for (url, pool) in &self.pools {
-            match self.attempt(pool, account, &creds.secret).await {
+        for index in self.order(Instant::now()) {
+            let (url, pool) = &self.pools[index];
+            let result = self.attempt(pool, account, &creds.secret).await;
+            // A server that answered, even with a refusal, is reachable.
+            self.mark_unreachable(index, matches!(result, Err(Failure::Unreachable(_))));
+            match result {
                 Ok(Checked::Decided((outcome, attributes))) => return (outcome, attributes, false),
                 Ok(Checked::Stored { stored, reply, allowed }) => return self.verify_stored(&stored, user, &creds.secret, reply, allowed).await,
                 Err(Failure::Backend(e)) => {
@@ -267,6 +277,26 @@ impl LdapHandler {
         }
         tracing::error!("auth ldap handler: no server reachable; rejecting");
         (Outcome::Reject, Vec::new(), true)
+    }
+
+    /// The indexes of `pools` in the order to try them: as listed, except that a URL that could not
+    /// be reached less than `UNREACHABLE_FOR` before `now` comes after the others.
+    fn order(&self, now: Instant) -> Vec<usize> {
+        let recently = |index: &usize| {
+            let at = self.unreachable[*index].lock().unwrap_or_else(PoisonError::into_inner);
+            at.is_some_and(|at| now.saturating_duration_since(at) < UNREACHABLE_FOR)
+        };
+        let (later, first): (Vec<usize>, Vec<usize>) = (0..self.pools.len()).partition(recently);
+        first.into_iter().chain(later).collect()
+    }
+
+    /// Notes that the URL at `index` could not be reached just now, or that it answered.
+    fn mark_unreachable(&self, index: usize, unreachable: bool) {
+        self.set_unreachable_at(index, unreachable.then(Instant::now));
+    }
+
+    fn set_unreachable_at(&self, index: usize, at: Option<Instant>) {
+        *self.unreachable[index].lock().unwrap_or_else(PoisonError::into_inner) = at;
     }
 
     /// Takes a connection and runs the search and password check, all within
@@ -1194,6 +1224,83 @@ pub(crate) mod tests {
         let (outcome, attrs) = run(s, &pap("alice", "wrong")).await;
         assert_eq!(outcome, Outcome::Reject);
         assert!(attrs.is_empty());
+    }
+
+    /// spec LDAP Handler: a URL that could not be reached is tried after the others for 30 seconds, and
+    /// then again; one that answered, even with an error, stays where it was listed.
+    #[tokio::test]
+    async fn test_unreachable_url_is_tried_last() -> Result<(), String> {
+        let (working, _) = mock_server().await;
+        let handler = LdapHandler::new(settings(vec![refused_url().await, working], PasswordCheck::Bind))?;
+        let now = Instant::now();
+        assert_eq!(handler.order(now), vec![0, 1]);
+        handler.mark_unreachable(0, true);
+        assert_eq!(handler.order(Instant::now()), vec![1, 0], "set aside");
+        assert_eq!(handler.order(Instant::now() + UNREACHABLE_FOR + Duration::from_secs(1)), vec![0, 1], "tried again after the time");
+        handler.mark_unreachable(1, true);
+        assert_eq!(handler.order(Instant::now()), vec![0, 1], "all set aside: as listed");
+        handler.mark_unreachable(0, false);
+        assert_eq!(handler.order(Instant::now()), vec![0, 1]);
+        handler.mark_unreachable(1, false);
+        // The request does it: the first URL refuses, so the next request goes to the second first.
+        assert_eq!(handler.authenticate(&pap("alice", "secret")).await.0, Outcome::Accept);
+        assert_eq!(handler.order(Instant::now()), vec![1, 0]);
+        Ok(())
+    }
+
+    /// A URL set aside long enough ago is asked again by the next request, and set aside again when it
+    /// still does not answer; with every URL set aside the request still tries them all.
+    #[tokio::test]
+    async fn test_set_aside_urls_are_tried_again() -> Result<(), String> {
+        let (working, log) = mock_server().await;
+        let handler = LdapHandler::new(settings(vec![refused_url().await, working], PasswordCheck::Bind))?;
+        let long_ago = Instant::now().checked_sub(UNREACHABLE_FOR + Duration::from_secs(1)).ok_or("the clock is too young")?;
+        handler.set_unreachable_at(0, Some(long_ago));
+        assert_eq!(handler.order(Instant::now()), vec![0, 1]);
+        assert_eq!(handler.authenticate(&pap("alice", "secret")).await.0, Outcome::Accept);
+        assert_eq!(handler.order(Instant::now()), vec![1, 0], "asked again, refused again, set aside again");
+        let before = log.lock().map_err(|e| e.to_string())?.filters.len();
+        handler.mark_unreachable(0, true);
+        handler.mark_unreachable(1, true);
+        assert_eq!(handler.authenticate(&pap("alice", "secret")).await.0, Outcome::Accept, "all set aside, the working one still answers");
+        assert_eq!(log.lock().map_err(|e| e.to_string())?.filters.len(), before + 1);
+
+        let dead = LdapHandler::new(settings(vec![refused_url().await, refused_url().await], PasswordCheck::Bind))?;
+        let (outcome, _, unavailable) = dead.authenticate_account(&pap("alice", "secret"), Some("alice")).await;
+        assert_eq!((outcome, unavailable), (Outcome::Reject, true));
+        let (outcome, _, unavailable) = dead.authenticate_account(&pap("alice", "secret"), Some("alice")).await;
+        assert_eq!((outcome, unavailable), (Outcome::Reject, true), "set aside is not given up on");
+        Ok(())
+    }
+
+    /// The second request does not wait for a URL that did not answer the first.
+    #[tokio::test]
+    async fn test_silent_url_is_not_waited_for_again() -> Result<(), String> {
+        let (working, log) = mock_server().await;
+        let mut s = settings(vec![silent_url().await, working], PasswordCheck::Bind);
+        s.timeout = Duration::from_millis(1500);
+        let handler = LdapHandler::new(s)?;
+        let started = Instant::now();
+        assert_eq!(handler.authenticate(&pap("alice", "secret")).await.0, Outcome::Accept);
+        assert!(started.elapsed() >= Duration::from_millis(1400), "the first request waited for the silent URL: {:?}", started.elapsed());
+        let started = Instant::now();
+        assert_eq!(handler.authenticate(&pap("alice", "secret")).await.0, Outcome::Accept);
+        assert!(started.elapsed() < Duration::from_millis(1000), "the second request waited again: {:?}", started.elapsed());
+        let decided = log.lock().map_err(|e| e.to_string())?.filters.len();
+        assert_eq!(decided, 2, "the second URL decided both");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_server_that_answers_with_an_error_is_not_set_aside() -> Result<(), String> {
+        let (first, _) = mock_server().await;
+        let (second, _) = mock_server().await;
+        let mut s = settings(vec![first, second], PasswordCheck::Bind);
+        s.bind_password = "nope".to_string();
+        let handler = LdapHandler::new(s)?;
+        assert_eq!(handler.authenticate(&pap("alice", "secret")).await.0, Outcome::Reject);
+        assert_eq!(handler.order(Instant::now()), vec![0, 1]);
+        Ok(())
     }
 
     #[tokio::test]
