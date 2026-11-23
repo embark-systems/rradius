@@ -174,7 +174,7 @@ patches:
 
 ### 升級
 
-換映像版本後 `kubectl apply -k`，一樣一次換一個。第 7 章說的「最後才停 leader」，StatefulSet 不會幫你挑順序（從 `rradius-2` 換到 `rradius-0`）；leader 被換掉時，約 7 到 8 秒內寫入會逾時（核心版；企業版載入同一份修改前仍約 15 秒，見[第 7 章](07-ha-cluster.md#跨機房)），計費進暫存。
+換映像版本後 `kubectl apply -k`，一樣一次換一個。第 7 章說的「最後才停 leader」，StatefulSet 不會幫你挑順序（從 `rradius-2` 換到 `rradius-0`）；leader 被換掉時，約 7 到 8 秒內寫入會逾時（核心版與企業版都是，見[第 7 章](07-ha-cluster.md#跨機房)），計費進暫存。
 
 ### 節點的維護
 
