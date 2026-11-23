@@ -483,7 +483,7 @@ rradius_acct_spool_bytes 0
 
 停掉一個節點（SIGTERM）再啟動，它用自己 `data_dir` 裡的資料回來，從 leader 補上停機期間的寫入，追上之後才服務。這是升級、改 `[cluster]` 設定、換主機硬體時的標準做法。
 
-> **注意：** 實測時，叢集剛恢復過半數、還在選舉的那幾秒裡啟動節點 2，它在 9 秒後結束，結束碼 1，最後一行是 `not ready to apply migrations: cannot read applied migrations: CheckIsLeaderError: has to forward request to: None, None (the limit is migrations_wait_ms; raise it if a migration file takes longer)`。再啟動一次就正常了。用 systemd 的 `Restart=on-failure` 或容器的重啟政策，這種情況會自己恢復。
+> **注意：** 叢集剛恢復過半數、還在選舉的那幾秒裡啟動節點，節點讀「叢集已套用哪些 migration」會得到 `has to forward request to: None`。現在它每 200 ms 重讀一次，等到 leader 回答，上限是 `migrations_wait_ms`；超過才以結束碼 1 結束，最後一行是 `not ready to apply migrations: cannot read applied migrations: …`，帶最後一次的錯誤。舊版沒有重讀，這個情況會在幾秒後直接結束，要靠 systemd 的 `Restart=on-failure` 或容器的重啟政策再啟動一次。這段重試由單元測試涵蓋，選舉空窗本身沒有在實機上重現過。
 
 ### 強制結束之後
 
