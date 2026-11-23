@@ -272,3 +272,58 @@ async fn test_auth_chain_sql_and_site_rule() {
     let blocked = udp_exchange(&access(21, "02-00-00-00-00-99"), "127.0.0.1:18320", WAIT).await.expect("no reply");
     assert_eq!(RadiusPacket::parse(&blocked).unwrap().code, radius::ACCESS_REJECT);
 }
+
+#[tokio::test]
+async fn test_wrong_length_user_password_is_rejected_without_counting_a_failure() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let body = format!(
+        "dictionary = \"{dictionary}\"\n[lua]\nscript = \"{script}\"\n\
+         [cluster]\ndata_dir = \"data\"\nsecret_raft = \"test-raft-secret-0123\"\nsecret_api = \"test-api-secret-01234\"\nlisten = \"127.0.0.1\"\n\
+         [[cluster.nodes]]\nid = 1\nraft = \"127.0.0.1:{raft}\"\napi = \"127.0.0.1:{api}\"\n\
+         [auth]\npolicy = \"all_accept\"\n\
+         [[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE username = ?\"\n\
+         [auth.lockout]\nmax_failures = 2\nlock_seconds = 60\n\
+         [radius]\nbind = \"127.0.0.1\"\nauth_port = 18340\nacct_port = 18350\n\
+         [[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"{SECRET}\"\n",
+        dictionary = root.join("../share/dictionary").display(),
+        script = root.join("tests/fixtures/auth.lua").display(),
+        raft = free_port(),
+        api = free_port(),
+    );
+    let path = dir.path().join("rradius.toml");
+    std::fs::write(&path, body)?;
+    let config = config::load(&path)?;
+    let db = Db::start(&config.cluster).await?;
+    db.wait_healthy(Duration::from_secs(60)).await?;
+    db.execute("CREATE TABLE users (username TEXT, password TEXT)").await?;
+    db.execute("INSERT INTO users VALUES ('nemo', '{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=')").await?;
+    let vms = Arc::new(LuaVms::new(256 << 20)?);
+    let settings = config.auth.as_ref().ok_or("no [auth]")?;
+    let chains = Arc::new(AuthChains::from_settings(settings, &db, &vms, &LuaLimits::from_settings(&config.lua))?);
+    let script = std::fs::read_to_string(&config.lua.script)?;
+    let engine = Arc::new(LuaAuthEngine::new(vms, db, script)?);
+    let radius = config.radius.as_ref().ok_or("no [radius]")?;
+    let server = Arc::new(RadiusServer::new(radius.auth_addr, radius.acct_addr, radius.clients.clone(), engine, load_dictionary(&config)).with_auth_chains(chains));
+    tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+
+    let authenticator = [0x42u8; 16];
+    let mut block = [0u8; 16];
+    block[..8].copy_from_slice(b"password");
+    let mut hasher = Md5::new();
+    hasher.update(SECRET.as_bytes());
+    hasher.update(authenticator);
+    let cipher: Vec<u8> = block.iter().zip(hasher.finalize()).map(|(p, k)| p ^ k).collect();
+    let send = |id: u8, password: Vec<u8>| RadiusPacket::create_access_request(id, authenticator, vec![(1, b"nemo".to_vec()), (2, password), (31, b"02-00-00-00-00-01".to_vec())], SECRET.as_bytes());
+
+    // More wrong-length requests than max_failures: each is rejected, none locks the account.
+    for id in 0..5u8 {
+        let reply = udp_exchange(&send(id, vec![9; 240]), "127.0.0.1:18340", WAIT).await.ok_or("no reply to the long password")?;
+        assert_eq!(RadiusPacket::parse(&reply)?.code, radius::ACCESS_REJECT, "request {id}");
+    }
+    let reply = udp_exchange(&send(10, cipher), "127.0.0.1:18340", WAIT).await.ok_or("no reply to the right password")?;
+    assert_eq!(RadiusPacket::parse(&reply)?.code, radius::ACCESS_ACCEPT, "the account must not be locked");
+    Ok(())
+}
