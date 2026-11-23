@@ -865,13 +865,16 @@ impl Db {
     /// replica can lag behind.
     async fn applied_migrations(&self, wait: Duration) -> Result<Vec<hiqlite::AppliedMigration>, MigrationError> {
         let sql = "SELECT id, name, ts, hash FROM _migrations ORDER BY id";
-        let read = self.client.query_consistent_map::<hiqlite::AppliedMigration, _>(sql, vec![]);
-        match tokio::time::timeout(wait, read).await {
-            Ok(Ok(applied)) => Ok(applied),
+        // An election in progress is no answer to wait for in one go: the read goes again until the
+        // limit. A refusal of any other kind is final.
+        let retryable = |e: &hiqlite::Error| cluster_unavailable(e) && !e.to_string().contains("no such table");
+        let read = retry_until(wait, MIGRATION_READ_RETRY, retryable, || self.client.query_consistent_map::<hiqlite::AppliedMigration, _>(sql, vec![])).await;
+        match read {
+            Ok(applied) => Ok(applied),
             // hiqlite creates the table with the first migration.
-            Ok(Err(e)) if e.to_string().contains("no such table") => Ok(Vec::new()),
-            Ok(Err(e)) => Err(MigrationError::Cluster(format!("cannot read applied migrations: {e}"))),
-            Err(_) => Err(MigrationError::Cluster(format!("cannot read applied migrations: no answer within {wait:?}"))),
+            Err(RetryEnd::Failed(e)) if e.to_string().contains("no such table") => Ok(Vec::new()),
+            Err(RetryEnd::Failed(e)) => Err(MigrationError::Cluster(format!("cannot read applied migrations: {e}"))),
+            Err(RetryEnd::NoAnswer) => Err(MigrationError::Cluster(format!("cannot read applied migrations: no answer within {wait:?}"))),
         }
     }
 
@@ -1521,6 +1524,41 @@ impl DbFailures {
     fn ended_by_mistake(&self, error: &mlua::Error) -> bool {
         let error = error.to_string();
         self.mistakes.lock().iter().any(|message| error.contains(message.as_str()))
+    }
+}
+
+/// How long `applied_migrations` waits before it reads again after the cluster could not take the read.
+const MIGRATION_READ_RETRY: Duration = Duration::from_millis(200);
+
+/// Why `retry_until` gave up.
+#[derive(Debug, PartialEq)]
+enum RetryEnd<E> {
+    /// An error `retryable` refused, or the last one the operation gave when the time ran out.
+    Failed(E),
+    /// The time ran out and the operation never gave an error: it did not answer.
+    NoAnswer,
+}
+
+/// Runs `operation` until it succeeds, giving it what is left of `limit` each time. An error that
+/// `retryable` accepts is followed by another run after `interval`; any other error ends it.
+async fn retry_until<T, E, Fut>(limit: Duration, interval: Duration, retryable: impl Fn(&E) -> bool, mut operation: impl FnMut() -> Fut) -> Result<T, RetryEnd<E>>
+where
+    Fut: Future<Output = Result<T, E>>,
+{
+    let deadline = tokio::time::Instant::now() + limit;
+    let mut last: Option<E> = None;
+    loop {
+        match tokio::time::timeout_at(deadline, operation()).await {
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(e)) if !retryable(&e) => return Err(RetryEnd::Failed(e)),
+            Ok(Err(e)) => last = Some(e),
+            Err(_) => return Err(last.map_or(RetryEnd::NoAnswer, RetryEnd::Failed)),
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(last.map_or(RetryEnd::NoAnswer, RetryEnd::Failed));
+        }
+        tokio::time::sleep(interval.min(deadline - now)).await;
     }
 }
 
@@ -3728,6 +3766,53 @@ pub(crate) mod tests {
     const WAIT: Duration = Duration::from_secs(10);
     const USERS: &str = "CREATE TABLE users (id INTEGER);";
     const REPLY: &str = "CREATE TABLE user_reply (id INTEGER);";
+
+    #[tokio::test]
+    async fn test_retry_until_waits_out_a_temporary_error() {
+        let calls = AtomicUsize::new(0);
+        let result = retry_until(Duration::from_secs(5), Duration::from_millis(1), |e: &String| e == "no leader", || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move { if n < 3 { Err("no leader".to_string()) } else { Ok(n) } }
+        })
+        .await;
+        assert_eq!(result, Ok(3));
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn test_retry_until_gives_the_last_error_at_the_limit() {
+        let calls = AtomicUsize::new(0);
+        let started = Instant::now();
+        let result: Result<(), _> = retry_until(Duration::from_millis(150), Duration::from_millis(20), |_: &String| true, || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move { Err(format!("no leader #{n}")) }
+        })
+        .await;
+        let n = calls.load(Ordering::SeqCst);
+        assert!(n >= 2, "it tried again: {n}");
+        assert_eq!(result, Err(RetryEnd::Failed(format!("no leader #{}", n - 1))));
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    async fn test_retry_until_does_not_repeat_another_error() {
+        let calls = AtomicUsize::new(0);
+        let started = Instant::now();
+        let result: Result<(), _> = retry_until(Duration::from_secs(30), Duration::from_millis(1), |e: &String| e == "no leader", || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err("syntax error".to_string()) }
+        })
+        .await;
+        assert_eq!(result, Err(RetryEnd::Failed("syntax error".to_string())));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn test_retry_until_reports_no_answer() {
+        let result: Result<(), RetryEnd<String>> = retry_until(Duration::from_millis(50), Duration::from_millis(1), |_: &String| true, || std::future::pending()).await;
+        assert_eq!(result, Err(RetryEnd::NoAnswer));
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_migrate_dir_applies_then_skips() {
