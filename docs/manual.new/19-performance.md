@@ -135,7 +135,7 @@ These suggestions are unmeasured starting points: apply them, then confirm with 
 
 > **未實機驗證：** 本章只在 macOS 實際跑過 `tuning`。Linux 與 FreeBSD 的檢查項目，依據的是 `rradius-core/src/tuning.rs`，沒有在那兩個平台上執行過。
 
-> **注意：** `tuning` 說 `pin_threads` 的那一行寫著 `see the usage document`，那是指舊的文件。`pin_threads` 的說明在本章的[工作執行緒與 pin_threads](#工作執行緒與-pin_threads)。
+> **注意：** `tuning` 說 `pin_threads` 的那一行指向本章的[工作執行緒與 pin_threads](#工作執行緒與-pin_threads)。
 
 ## 接收 socket 與接收緩衝區
 

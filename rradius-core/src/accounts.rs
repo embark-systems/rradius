@@ -126,6 +126,12 @@ pub struct Statement {
 
 /// Sends `statement` through the cluster, prints the result and returns the exit status.
 pub async fn finish(cluster: &config::ClusterSettings, statement: Statement) -> i32 {
+    // A refused secret is a mistake in the configuration, which the cluster's own client would
+    // retry until the time is up.
+    if let Some(message) = crate::cluster_commands::refused_secret(&cluster.secret_api, &cluster.nodes).await {
+        eprintln!("{message}");
+        return STATUS_MISTAKE;
+    }
     let sent = tokio::time::timeout(CLUSTER_WAIT, send(cluster, &statement.sql, statement.params, statement.show, &statement.done)).await.ok();
     let (status, stdout, stderr) = report(sent, &statement.none);
     if !stdout.is_empty() {

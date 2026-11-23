@@ -71,8 +71,11 @@ fn test_no_configuration_file() -> Result<(), String> {
     }
     let (code, stdout, stderr) = tuning(&[])?;
     assert_eq!(code, Some(0), "{stderr}");
-    assert!(stdout.starts_with(&format!("{default}: ")) && stdout.lines().next().is_some_and(|line| line.ends_with("; the default settings are used")), "{stdout}");
+    let first = stdout.lines().next().ok_or("no output")?;
+    assert!(first.starts_with(&format!("{default}: ")) && first.ends_with("; the default settings are used"), "{stdout}");
+    assert_eq!(first.matches(default).count(), 1, "the path is named once: {first}");
     assert!(stdout.contains(&format!("rradius tuning advice for {}", platform())), "{stdout}");
+    assert!(!stdout.contains("see the usage document"), "{stdout}");
     Ok(())
 }
 
