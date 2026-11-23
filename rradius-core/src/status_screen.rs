@@ -113,7 +113,7 @@ pub(crate) async fn run(mut rx: tokio::sync::mpsc::UnboundedReceiver<Data>) -> i
             return 2;
         }
     };
-    let _restore = Restore;
+    let restore = Restore;
     let (keys_tx, mut keys) = tokio::sync::mpsc::unbounded_channel();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader = {
@@ -139,7 +139,7 @@ pub(crate) async fn run(mut rx: tokio::sync::mpsc::UnboundedReceiver<Data>) -> i
     let mut screen = Screen::new(Data::Node(Err("waiting for the first two samples".to_string())));
     let status = loop {
         if let Err(e) = terminal.draw(|frame| draw(frame, &screen)) {
-            drop(_restore);
+            drop(restore);
             eprintln!("status --tui could not draw: {e}");
             break 2;
         }
@@ -334,6 +334,12 @@ mod tests {
         screen.on_key(key(KeyCode::Tab));
         assert_eq!(screen.panel(), 0);
         Ok(())
+    }
+
+    /// Dropping the guard where there is no terminal to restore is harmless.
+    #[test]
+    fn the_guard_can_be_dropped_without_a_terminal() {
+        drop(Restore);
     }
 
     #[test]
