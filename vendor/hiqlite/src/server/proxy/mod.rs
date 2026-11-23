@@ -1,0 +1,98 @@
+use crate::network::tcp_socket::{ConfiguredStreamAcceptor, create_listening_socket};
+use crate::server::proxy::state::AppStateProxy;
+use crate::{Client, Error};
+use axum::Router;
+use axum::routing::get;
+use config::Config;
+use std::net::SocketAddr;
+use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tracing::info;
+
+pub mod config;
+mod handlers;
+mod notify;
+mod state;
+mod stream;
+
+pub async fn start_proxy(config: Config) -> Result<(), Error> {
+    if config.tls_config.is_some() {
+        // Can only fail if there is already a crypto provider instaleld, which we then can ignore.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    let tls_client_config = config.tls_config.as_ref().map(|c| c.client_config());
+
+    let client = Client::remote(
+        config.nodes,
+        tls_client_config.is_some(),
+        config
+            .tls_config
+            .as_ref()
+            .map(|c| c.danger_tls_no_verify())
+            .unwrap_or(false),
+        config.secret_api.clone(),
+        false,
+        config.rate_limit_cache,
+        config.rate_limit_db,
+    )
+    .await?;
+
+    let tx_notify = notify::spawn_listener(client.clone());
+
+    let state = Arc::new(AppStateProxy {
+        client,
+        secret_api: config.secret_api,
+        tx_notify,
+        active_streams_permits: Arc::new(Semaphore::new(config.max_stream_connections)),
+    });
+
+    let router = Router::new()
+        .nest(
+            "/cluster",
+            Router::new().route("/metrics/{raft_type}", get(handlers::metrics)),
+        )
+        .route("/listen", get(handlers::listen))
+        .route("/stream", get(handlers::stream))
+        .route("/ping", get(handlers::ping))
+        .route("/version", get(handlers::get_version))
+        .with_state(state.clone());
+
+    let addr_str = format!("{}:{}", config.listen_addr, config.listen_port);
+    info!("listening on {}", addr_str);
+    let addr = SocketAddr::from_str(&addr_str)
+        .map_err(|err| Error::Config(format!("Invalid SocketAddr: {err:?}").into()))?;
+
+    let listener = create_listening_socket(addr).await.map_err(|err| {
+        Error::Config(format!("Cannot bind listen address '{addr_str}': {err:?}").into())
+    })?;
+    let std_listener = listener
+        .into_std()
+        .expect("Converting a fresh, idle TCP listener to std should not fail");
+
+    if let Some(config) = &config.tls_config {
+        let tls_config = config.server_config(&addr_str).await;
+
+        axum_server::from_tcp(std_listener)
+            // errors when the socket is blocking
+            .expect("properly configured TCP listener")
+            .acceptor(
+                axum_server::tls_rustls::RustlsAcceptor::new(tls_config)
+                    .acceptor(ConfiguredStreamAcceptor),
+            )
+            .serve(router.into_make_service())
+            .await
+            .unwrap();
+    } else {
+        axum_server::from_tcp(std_listener)
+            // errors when the socket is blocking
+            .expect("properly configured TCP listener")
+            .acceptor(ConfiguredStreamAcceptor)
+            .serve(router.into_make_service())
+            .await
+            .unwrap();
+    };
+
+    Ok(())
+}

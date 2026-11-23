@@ -1,0 +1,805 @@
+use crate::Error;
+use bincode_next::{Decode, Encode};
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
+use tracing::error;
+
+#[derive(Debug)]
+pub enum Row<'a> {
+    Borrowed(&'a rusqlite::Row<'a>),
+    Owned(RowOwned),
+}
+
+impl Row<'_> {
+    pub fn get<T>(&mut self, idx: &str) -> T
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
+    {
+        match self {
+            Row::Borrowed(b) => {
+                let res = b.get(idx);
+                if res.is_err() {
+                    error!("Cannot convert column index '{idx}' to requested type");
+                }
+                res.unwrap()
+            }
+            Row::Owned(o) => o.try_get(idx).unwrap_or_else(|err| {
+                panic!("Cannot convert column index '{idx}' to requested type: {err:?}")
+            }),
+        }
+    }
+
+    pub fn try_get<T>(&mut self, idx: &str) -> Result<T, Error>
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
+    {
+        match self {
+            Self::Borrowed(r) => r.get(idx).map_err(Error::from),
+            Self::Owned(o) => o.try_get(idx),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
+pub struct RowOwned {
+    pub(crate) columns: Vec<ColumnOwned>,
+}
+
+impl RowOwned {
+    #[inline(always)]
+    pub(crate) fn from_row_column(row: &rusqlite::Row, columns: &[ColumnInfo]) -> Self {
+        let mut cols = Vec::with_capacity(columns.len());
+
+        for (i, info) in columns.iter().enumerate() {
+            let value = match info.typ {
+                ColumnType::Expr => {
+                    // returned expressions can be any type we don't know in advance
+                    // The chain below covers every SQLite storage class, so the final Null is
+                    // only reachable for a genuine SQL NULL.
+                    if let Ok(text) = row.get::<_, String>(i) {
+                        ValueOwned::Text(text)
+                    } else if let Ok(i) = row.get::<_, i64>(i) {
+                        ValueOwned::Integer(i)
+                    } else if let Ok(r) = row.get::<_, f64>(i) {
+                        ValueOwned::Real(r)
+                    } else if let Ok(b) = row.get::<_, Vec<u8>>(i) {
+                        ValueOwned::Blob(b)
+                    } else {
+                        ValueOwned::Null
+                    }
+                }
+                // ColumnType::Expr => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
+                // Typed columns: a genuine SQL NULL maps to Null; a stored value that cannot be
+                // converted is a type mismatch and must fail loudly instead of silently
+                // becoming Null.
+                ColumnType::Integer => match row.get::<_, Option<i64>>(i) {
+                    Ok(Some(v)) => ValueOwned::Integer(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Integer but the stored value \
+                         cannot be converted to i64: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Real => match row.get::<_, Option<f64>>(i) {
+                    Ok(Some(v)) => ValueOwned::Real(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Real but the stored value \
+                         cannot be converted to f64: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Text => match row.get::<_, Option<String>>(i) {
+                    Ok(Some(v)) => ValueOwned::Text(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Text but the stored value \
+                         cannot be converted to String: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Blob => match row.get::<_, Option<Vec<u8>>>(i) {
+                    Ok(Some(v)) => ValueOwned::Blob(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Blob but the stored value \
+                         cannot be converted to Vec<u8>: {err:?}",
+                        info.name
+                    ),
+                },
+            };
+
+            cols.push(ColumnOwned {
+                name: info.name.clone(),
+                value,
+            })
+        }
+
+        Self { columns: cols }
+    }
+}
+
+impl RowOwned {
+    /// # Panics
+    /// If the type cannot be converted correctly
+    pub fn get<T: TryFrom<ValueOwned, Error = crate::Error>>(&mut self, idx: &str) -> T {
+        self.try_get(idx).unwrap()
+    }
+
+    /// TODO decide which version to use - this is with remove -> benchmark them!
+    pub fn try_get<T: TryFrom<ValueOwned, Error = crate::Error>>(
+        &mut self,
+        idx: &str,
+    ) -> Result<T, Error> {
+        for i in 0..self.columns.len() {
+            if self.columns[i].name == idx {
+                // swap_remove is fine because we don't allow access by raw integer index
+                return T::try_from(self.columns.swap_remove(i).value);
+            }
+        }
+
+        Err(Error::QueryParams(
+            format!("column '{idx}' not found").into(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnInfo {
+    pub name: String,
+    pub typ: ColumnType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ColumnType {
+    Expr,
+    Integer,
+    Real,
+    Text,
+    Blob,
+}
+
+impl ColumnType {
+    #[inline(always)]
+    fn from_decl_type(typ: Option<&str>) -> Self {
+        // we will always match as few character as possible for improved speed
+        if let Some(t) = typ {
+            // We will check "correct" types first for better speed with correct definitions.
+            // SQLITE will convert int, integer, text, blob, real to UPPERCASE on creation.
+            if t.starts_with("INT") || t.starts_with("int") {
+                return Self::Integer;
+            }
+
+            match t {
+                "TEXT" | "text" => Self::Text,
+                "BLOB" | "blob" => Self::Blob,
+                "REAL" | "real" => Self::Real,
+                _ => {
+                    // When the proper types don't exist, try check type-affinity.
+                    // Type affinity matches will NOT be converted to uppercase automatically!
+
+                    if t.is_empty() {
+                        return Self::Blob;
+                    }
+
+                    let ty = t.to_uppercase();
+
+                    // 3.1. Determination Of Column Affinity from SQLite docs:
+                    // https://www.sqlite.org/datatype3.html
+
+                    // .starts_with("INT") already checked
+                    // INT
+                    // INTEGER
+                    // INT2
+                    // INT8
+                    //
+                    // TINYINT
+                    // SMALLINT
+                    // MEDIUMINT
+                    // BIGINT
+                    // UNSIGNED BIG INT
+                    if ty.contains("INT") {
+                        Self::Integer
+
+                    // "TEXT already checked
+                    // TEXT
+                    //
+                    // CHARACTER(20)
+                    // VARCHAR(255)
+                    // VARYING CHARACTER(255)
+                    // NCHAR(55)
+                    // NATIVE CHARACTER(70)
+                    // NVARCHAR(100)
+                    // CLOB
+                    } else if ty.contains("CHAR") || ty.contains("CLOB") {
+                        Self::Text
+
+                    // .starts_with("RE") already checked
+                    // REAL
+                    //
+                    // DOUBLE
+                    // DOUBLE PRECISION
+                    // FLOAT
+                    } else if ty.contains("FLOA") || ty.contains("DOUB") {
+                        Self::Real
+
+                    // Anything SQLite cannot match properly should be an INTEGER / NUMERIC.
+                    } else {
+                        Self::Integer
+                    }
+                }
+            }
+        } else {
+            Self::Expr
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
+pub struct ColumnOwned {
+    // TODO find a way to include all the column names only once at the very top level and
+    // somehow get a reference of them into a `From<_>` impl, probably with a new Trait.
+    pub(crate) name: String,
+    pub(crate) value: ValueOwned,
+}
+
+impl ColumnOwned {
+    #[inline(always)]
+    pub(crate) fn mapping_cols_from_stmt<'a>(
+        columns: impl ExactSizeIterator<Item = rusqlite::Column<'a>>,
+        params_len: usize,
+    ) -> Result<Vec<ColumnInfo>, Error> {
+        let mut cols = Vec::with_capacity(params_len);
+        for col in columns {
+            cols.push(ColumnInfo {
+                name: col.name().to_string(),
+                typ: ColumnType::from_decl_type(col.decl_type()),
+            });
+        }
+        Ok(cols)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
+pub enum ValueOwned {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+impl ValueOwned {
+    #[inline]
+    fn try_as_str(&self) -> Result<&str, Error> {
+        match self {
+            ValueOwned::Text(s) => Ok(s.as_str()),
+            _ => Err(Error::Sqlite("Cannot convert ValueOwned to &str".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for i64 {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Integer(i) => Ok(i),
+            _ => Err(Error::Sqlite("Cannot convert into i64".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<i64> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => i64::try_from(v).map(Some),
+        }
+    }
+}
+
+#[cfg(any(feature = "cast_ints", feature = "cast_ints_unchecked"))]
+mod cast_ints {
+    impl TryFrom<super::ValueOwned> for u64 {
+        type Error = crate::Error;
+
+        #[inline]
+        fn try_from(value: super::ValueOwned) -> Result<Self, Self::Error> {
+            let i = i64::try_from(value)?;
+            if i < 0 { Ok(0) } else { Ok(i as u64) }
+        }
+    }
+
+    impl TryFrom<super::ValueOwned> for Option<u64> {
+        type Error = crate::Error;
+
+        #[inline]
+        fn try_from(value: super::ValueOwned) -> Result<Option<u64>, Self::Error> {
+            let i: Option<i64> = value.try_into()?;
+            Ok(i.map(|i| i as u64))
+        }
+    }
+
+    macro_rules! downcast_int(
+        ($t:ty) => (
+            impl TryFrom<super::ValueOwned> for $t {
+                type Error = crate::Error;
+
+                #[inline]
+                fn try_from(value: super::ValueOwned) -> Result<Self, Self::Error> {
+                    let i = i64::try_from(value)?;
+
+                    #[cfg(feature = "cast_ints_unchecked")]
+                    return Ok(i as $t);
+
+                    #[cfg(feature = "cast_ints")]
+                    if i < 0 {
+                        Ok(::core::cmp::max(<$t>::MIN as i64, i) as $t)
+                    } else {
+                        Ok(::core::cmp::min(<$t>::MAX as i64, i) as $t)
+                    }
+                }
+            }
+        )
+    );
+
+    downcast_int!(i32);
+    downcast_int!(i16);
+    downcast_int!(i8);
+
+    downcast_int!(u32);
+    downcast_int!(u16);
+    downcast_int!(u8);
+
+    macro_rules! downcast_int_opt(
+        ($t:ty) => (
+            impl TryFrom<super::ValueOwned> for Option<$t> {
+                type Error = crate::Error;
+
+                #[inline]
+                fn try_from(value: super::ValueOwned) -> Result<Option<$t>, Self::Error> {
+                    let i: Option<i64> = value.try_into()?;
+                    Ok(i.map(|i| i as $t))
+                }
+            }
+        )
+    );
+
+    downcast_int_opt!(i32);
+    downcast_int_opt!(i16);
+    downcast_int_opt!(i8);
+
+    downcast_int_opt!(u32);
+    downcast_int_opt!(u16);
+    downcast_int_opt!(u8);
+}
+
+impl TryFrom<ValueOwned> for f64 {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Real(r) => Ok(r),
+            _ => Err(Error::Sqlite("Cannot convert into f64".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<f64> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => f64::try_from(v).map(Some),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for bool {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Integer(i) => Ok(i == 1),
+            ValueOwned::Real(i) => Ok(i == 1.0),
+            ValueOwned::Text(s) => Ok(s.as_str() == "true"),
+            _ => Err(Error::Sqlite("Cannot convert into bool".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<bool> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => v.try_into().map(Some),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for String {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Text(s) => Ok(s),
+            _ => Err(Error::Sqlite("Cannot convert into String".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<String> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => String::try_from(v).map(Some),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Vec<u8> {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Blob(b) => Ok(b),
+            _ => Err(Error::Sqlite("Cannot convert into Vec<u8>".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<Vec<u8>> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => Vec::try_from(v).map(Some),
+        }
+    }
+}
+
+impl<const N: usize> TryFrom<ValueOwned> for [u8; N] {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Blob(b) => Ok(b
+                .try_into()
+                .map_err(|_| Error::Sqlite("Cannot convert into [u8]: incorrect length".into()))?),
+            _ => Err(Error::Sqlite("Cannot convert into [u8]".into())),
+        }
+    }
+}
+
+impl<const N: usize> TryFrom<ValueOwned> for Option<[u8; N]> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => <[u8; N]>::try_from(v).map(Some),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for NaiveDate {
+    type Error = crate::Error;
+
+    /// "YYYY-MM-DD" => ISO 8601 calendar date without timezone.
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let s = value.try_as_str()?;
+        match Self::parse_from_str(s, "%F") {
+            Ok(slf) => Ok(slf),
+            Err(err) => Err(Error::Sqlite(err.to_string().into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for NaiveTime {
+    type Error = crate::Error;
+
+    /// "HH:MM"/"HH:MM:SS"/"HH:MM:SS.SSS" => ISO 8601 time without timezone.
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let s = value.try_as_str()?;
+        let fmt = match s.len() {
+            5 => "%H:%M",
+            8 => "%T",
+            _ => "%T%.f",
+        };
+
+        match Self::parse_from_str(s, fmt) {
+            Ok(slf) => Ok(slf),
+            Err(err) => Err(Error::Sqlite(err.to_string().into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for NaiveDateTime {
+    type Error = crate::Error;
+
+    /// "YYYY-MM-DD HH:MM:SS"/"YYYY-MM-DD HH:MM:SS.SSS" => ISO 8601 combined date
+    /// and time without timezone. ("YYYY-MM-DDTHH:MM:SS"/"YYYY-MM-DDTHH:MM:SS.SSS"
+    /// also supported)
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let s = value.try_as_str()?;
+        let fmt = if s.len() >= 11 && s.as_bytes()[10] == b'T' {
+            "%FT%T%.f"
+        } else {
+            "%F %T%.f"
+        };
+
+        match Self::parse_from_str(s, fmt) {
+            Ok(slf) => Ok(slf),
+            Err(err) => Err(Error::Sqlite(err.to_string().into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for DateTime<Utc> {
+    type Error = crate::Error;
+
+    /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Utc>`.
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        {
+            // Try to parse value as rfc3339 first.
+            let s = value.try_as_str()?;
+
+            let fmt = if s.len() >= 11 && s.as_bytes()[10] == b'T' {
+                "%FT%T%.f%#z"
+            } else {
+                "%F %T%.f%#z"
+            };
+
+            if let Ok(dt) = DateTime::parse_from_str(s, fmt) {
+                return Ok(dt.with_timezone(&Utc));
+            }
+        }
+
+        // Couldn't parse as rfc3339 - fall back to NaiveDateTime.
+        NaiveDateTime::try_from(value).map(|dt| Utc.from_utc_datetime(&dt))
+    }
+}
+
+impl TryFrom<ValueOwned> for DateTime<Local> {
+    type Error = crate::Error;
+
+    /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Local>`.
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let utc_dt = DateTime::<Utc>::try_from(value)?;
+        Ok(utc_dt.with_timezone(&Local))
+    }
+}
+
+impl TryFrom<ValueOwned> for DateTime<FixedOffset> {
+    type Error = crate::Error;
+
+    /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Local>`.
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let s = value.try_as_str()?;
+        Self::parse_from_rfc3339(s)
+            .or_else(|_| Self::parse_from_str(s, "%F %T%.f%:z"))
+            .map_err(|err| Error::Sqlite(err.to_string().into()))
+    }
+}
+
+impl TryFrom<ValueOwned> for serde_json::Value {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let slf = match value {
+            ValueOwned::Null => serde_json::Value::Null,
+            ValueOwned::Integer(i) => serde_json::Value::from(i),
+            ValueOwned::Real(r) => serde_json::Value::from(r),
+            ValueOwned::Text(s) => serde_json::from_str(s.as_str())
+                .map_err(|err| Error::Sqlite(err.to_string().into()))?,
+            ValueOwned::Blob(b) => {
+                serde_json::from_slice(&b).map_err(|err| Error::Sqlite(err.to_string().into()))?
+            }
+        };
+        Ok(slf)
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<url::Url> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Text(s) => {
+                if s.is_empty() {
+                    return Ok(None);
+                }
+                match url::Url::parse(&s) {
+                    Ok(url) => Ok(Some(url)),
+                    Err(_) => Err(Error::Sqlite(
+                        "Cannot parse URL from given input: {s}".into(),
+                    )),
+                }
+            }
+            _ => Err(Error::Sqlite(
+                "Cannot only parse URL from TEXT column".into(),
+            )),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for url::Url {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Text(s) => match url::Url::parse(&s) {
+                Ok(url) => Ok(url),
+                Err(_) => Err(Error::Sqlite(
+                    "Cannot parse URL from given input: {s}".into(),
+                )),
+            },
+            _ => Err(Error::Sqlite(
+                "Cannot only parse URL from TEXT column".into(),
+            )),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<uuid::Uuid> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Blob(b) => {
+                if b.is_empty() {
+                    return Ok(None);
+                }
+                let bytes = <[u8; 16]>::try_from(b.as_slice()).map_err(|_| {
+                    Error::Sqlite("Invalid data in BLOB to be able to convert to UUID".into())
+                })?;
+                Ok(Some(uuid::Uuid::from_u128(u128::from_be_bytes(bytes))))
+            }
+            _ => Err(Error::Sqlite(
+                "Cannot only parse UUID from BLOB column".into(),
+            )),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for uuid::Uuid {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Blob(b) => {
+                let bytes = <[u8; 16]>::try_from(b.as_slice()).map_err(|_| {
+                    Error::Sqlite("Invalid data in BLOB to be able to convert to UUID".into())
+                })?;
+                Ok(uuid::Uuid::from_u128(u128::from_be_bytes(bytes)))
+            }
+            _ => Err(Error::Sqlite(
+                "Cannot only parse UUID from BLOB column".into(),
+            )),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "macros"))]
+mod try_from_row_tests {
+    use super::*;
+    use crate::macros::TryFromRow;
+
+    #[derive(Debug, PartialEq, TryFromRow)]
+    struct Inner {
+        a: String,
+    }
+
+    #[derive(Debug, PartialEq, TryFromRow)]
+    struct Outer {
+        name: String,
+        #[column(from_i32)]
+        count: i32,
+        #[column(parse)]
+        big: u64,
+        #[column(skip)]
+        skipped: i64,
+        #[column(flatten)]
+        inner: Inner,
+    }
+
+    fn make_row(cols: &[(&str, ValueOwned)]) -> Row<'static> {
+        let columns = cols
+            .iter()
+            .map(|(name, value)| ColumnOwned {
+                name: (*name).to_string(),
+                value: value.clone(),
+            })
+            .collect();
+        Row::Owned(RowOwned { columns })
+    }
+
+    // Pin the target type so `TryFrom` resolves unambiguously (both `Inner` and `Outer`
+    // implement it).
+    fn try_outer(row: &mut Row<'_>) -> Result<Outer, Error> {
+        std::convert::TryFrom::try_from(row)
+    }
+
+    #[test]
+    fn try_from_row_maps_all_attribute_kinds() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(42)),
+            ("big", ValueOwned::Text(u64::MAX.to_string().into())),
+            ("skipped", ValueOwned::Integer(999)),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let outer = try_outer(&mut row).unwrap();
+        assert_eq!(outer.name, "hi");
+        assert_eq!(outer.count, 42);
+        assert_eq!(outer.big, u64::MAX);
+        // `skip` is never read from the row, so it must stay at its default.
+        assert_eq!(outer.skipped, 0);
+        assert_eq!(outer.inner.a, "inner");
+    }
+
+    #[test]
+    fn try_from_row_i32_overflow_is_an_error_not_a_panic() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(i64::MAX)),
+            ("big", ValueOwned::Text("1".into())),
+            ("skipped", ValueOwned::Null),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let err = try_outer(&mut row).unwrap_err();
+        assert!(
+            matches!(err, Error::Sqlite(_)),
+            "expected Sqlite error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn try_from_row_parse_failure_is_an_error() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(1)),
+            ("big", ValueOwned::Text("not-a-number".into())),
+            ("skipped", ValueOwned::Null),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let err = try_outer(&mut row).unwrap_err();
+        assert!(
+            matches!(err, Error::Sqlite(_)),
+            "expected Sqlite error: {err:?}"
+        );
+    }
+}

@@ -5,3 +5,4 @@
 !rradius-*/Cargo.toml
 !rradius-*/src
 !share
+!vendor

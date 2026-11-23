@@ -1,0 +1,165 @@
+use crate::{Error, NodeId};
+use bincode_next::{Decode, Encode};
+use constant_time_eq::constant_time_eq_32;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+const SALT_LEN: usize = 24;
+
+struct Salt(Vec<u8>);
+
+impl Salt {
+    pub fn new() -> Result<Self, Error> {
+        let mut buf = [0u8; SALT_LEN];
+        getrandom::fill(&mut buf).map_err(|_| Error::Error("getrandom Error".into()))?;
+        Ok(Self(buf.to_vec()))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct Challenge(Vec<u8>);
+
+impl Challenge {
+    pub fn new() -> Result<Self, Error> {
+        let salt = Salt::new()?;
+        Ok(Self(salt.0))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct ChallengeResponse {
+    pub(crate) node_id: NodeId,
+    challenge: Vec<u8>,
+    response: Vec<u8>,
+}
+
+impl ChallengeResponse {
+    pub fn new(node_id: NodeId, challenge: &Challenge, secret: &[u8]) -> Result<Self, Error> {
+        let response = Sha256::new()
+            .chain_update(&challenge.0)
+            .chain_update(secret)
+            .finalize()
+            .to_vec();
+        let challenge_new = Salt::new()?.0;
+
+        Ok(Self {
+            node_id,
+            challenge: challenge_new,
+            response,
+        })
+    }
+
+    pub fn verify(&self, challenge: &Challenge, secret: &[u8]) -> Result<ResponseFinal, Error> {
+        let verify = Sha256::new()
+            .chain_update(&challenge.0)
+            .chain_update(secret)
+            .finalize()
+            .to_vec();
+
+        if !cmp_constant_time(&self.response, &verify) {
+            return Err(Error::BadRequest("Invalid ChallengeResponse".into()));
+        }
+
+        let response_new = Sha256::new()
+            .chain_update(&self.challenge)
+            .chain_update(secret)
+            .finalize()
+            .to_vec();
+
+        Ok(ResponseFinal(response_new))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct ResponseFinal(Vec<u8>);
+
+impl ResponseFinal {
+    pub fn verify(
+        &self,
+        challenge_response: &ChallengeResponse,
+        secret: &[u8],
+    ) -> Result<(), Error> {
+        let verify = Sha256::new()
+            .chain_update(&challenge_response.challenge)
+            .chain_update(secret)
+            .finalize()
+            .to_vec();
+
+        if cmp_constant_time(&self.0, &verify) {
+            Ok(())
+        } else {
+            Err(Error::BadRequest("Invalid ChallengeResponse".into()))
+        }
+    }
+}
+
+#[inline(always)]
+fn cmp_constant_time<T: AsRef<[u8]>>(a: T, b: T) -> bool {
+    let a = a.as_ref();
+    let b = b.as_ref();
+
+    // One side of every comparison is network-supplied, so a malformed length must not panic:
+    // return `false` instead. Lengths are not secret here (both sides are SHA-256 hashes).
+    if a.len() != 32 || b.len() != 32 {
+        return false;
+    }
+
+    constant_time_eq_32(
+        <&[u8; 32]>::try_from(a).expect("Length checked to be 32 above"),
+        <&[u8; 32]>::try_from(b).expect("Length checked to be 32 above"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::network::challenge_response::{Challenge, ChallengeResponse, ResponseFinal};
+
+    #[test]
+    fn test_challenge_response() {
+        let secret = b"SuperMegaSecure1337";
+        let secret_bad = b"SuperMegaSecure";
+
+        let challenge = Challenge::new().unwrap();
+
+        let challenge_response = ChallengeResponse::new(1, &challenge, secret.as_ref()).unwrap();
+
+        assert!(
+            challenge_response
+                .verify(&challenge, secret_bad.as_ref())
+                .is_err()
+        );
+        let response = challenge_response
+            .verify(&challenge, secret.as_ref())
+            .unwrap();
+
+        assert!(
+            response
+                .verify(&challenge_response, secret_bad.as_ref())
+                .is_err()
+        );
+        assert!(
+            response
+                .verify(&challenge_response, secret.as_ref())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_malformed_lengths_do_not_panic() {
+        let secret = b"SuperMegaSecure1337";
+        let challenge = Challenge::new().unwrap();
+
+        // A peer sending a non-32-byte response field must yield `Err`, not a panic.
+        let bad_response = ChallengeResponse {
+            node_id: 1,
+            challenge: challenge.0.clone(),
+            response: vec![0u8; 16],
+        };
+        assert!(bad_response.verify(&challenge, secret).is_err());
+
+        // Same for a non-32-byte ResponseFinal payload.
+        let challenge_response = ChallengeResponse::new(1, &challenge, secret).unwrap();
+        let bad_final = ResponseFinal(vec![0u8; 8]);
+        assert!(bad_final.verify(&challenge_response, secret).is_err());
+    }
+}

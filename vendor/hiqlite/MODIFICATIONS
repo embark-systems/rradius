@@ -1,0 +1,15 @@
+This directory is hiqlite 0.16.0 (https://github.com/sebadob/hiqlite, Apache-2.0), taken from
+crates.io, with these changes, made for rradius:
+
+1. src/client/stream.rs: RECONNECT_SLOW_INTERVAL is 1 second, not 5. After a leader is lost,
+   the client's reconnect loop is what finds the new leader; with 5 seconds, the first write
+   after a three-node election (about 6 to 7 seconds) waited until about 15 seconds.
+2. tests/ and benches/ are removed, and Cargo.toml has no [[test]], [[bench]] or
+   [dev-dependencies] entries: they are not built or run here.
+3. Cargo.toml.orig, Cargo.lock, .cargo-ok and .cargo_vcs_info.json are not copied.
+
+Everything else is as published. To move to a newer hiqlite, take its source the same way and
+make change 1 again, unless it is no longer needed.
+
+The build prints one rustc warning ("unreachable call" in src/error.rs): it is in the published
+code, which cargo only hides for registry crates.
