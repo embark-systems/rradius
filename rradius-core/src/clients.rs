@@ -176,8 +176,18 @@ impl ClientTable {
             }
         }
         let name = name.unwrap_or_else(|| address.to_string());
+        self.check_name_unused(&name)?;
         self.entries.push((net, Client { name, secret, auth, require_message_authenticator, limit_proxy_state, coa_port, eap_methods, tls_name, max_radsec_connections, radsec_subject: None, authorize_group, coa_sender, mfa }));
         Ok(())
+    }
+
+    /// A name is one client's: metrics, logs, the spool and CoA find a client by it. Compared
+    /// exactly, in the whole table, whether the name was written or came from the address.
+    fn check_name_unused(&self, name: &str) -> Result<(), ClientTableError> {
+        match self.names().any(|existing| existing == name) {
+            true => Err(ClientTableError(format!("duplicate client name '{name}'"))),
+            false => Ok(()),
+        }
     }
 
     /// Adds a client known by the name in its RadSec certificate, from any address.
@@ -188,6 +198,7 @@ impl ClientTable {
             return Err(ClientTableError(format!("tls_name '{tls_name}' is used by two clients without an address")));
         }
         let name = name.unwrap_or_else(|| tls_name.clone());
+        self.check_name_unused(&name)?;
         self.without_address.push(Client { name, secret, auth, require_message_authenticator, limit_proxy_state, coa_port, eap_methods, tls_name: Some(tls_name), max_radsec_connections, radsec_subject: None, authorize_group, coa_sender, mfa });
         Ok(())
     }
@@ -342,6 +353,30 @@ mod tests {
     fn test_duplicate_network_rejected() {
         let err = ClientTable::new(vec![entry("10.0.0.5", None, "a"), entry("10.0.0.5/32", None, "b")]).unwrap_err();
         assert!(err.to_string().contains("10.0.0.5/32"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_duplicate_name_rejected() {
+        let err = ClientTable::new(vec![entry("10.0.0.5", Some("core"), "a"), entry("10.0.0.6", Some("core"), "b")]).unwrap_err();
+        assert!(err.to_string().contains("duplicate client name 'core'"), "unexpected error: {err}");
+        // A name that is another client's address, written or defaulted, is the same name.
+        let err = ClientTable::new(vec![entry("10.0.0.5", None, "a"), entry("10.0.0.6", Some("10.0.0.5"), "b")]).unwrap_err();
+        assert!(err.to_string().contains("duplicate client name '10.0.0.5'"), "unexpected error: {err}");
+        // Names are compared exactly: another case is another name.
+        assert!(ClientTable::new(vec![entry("10.0.0.5", Some("core"), "a"), entry("10.0.0.6", Some("Core"), "b")]).is_ok());
+    }
+
+    #[test]
+    fn test_duplicate_name_without_address_rejected() -> Result<(), ClientTableError> {
+        let options = |tls_name: &str| ClientOptions { tls_name: Some(tls_name.to_string()), ..ClientOptions::default() };
+        let mut table = ClientTable::new(vec![entry("10.0.0.5", Some("edge"), "a")])?;
+        let err = table.add_without_address(Some("edge".to_string()), b"b".to_vec(), options("edge.example")).unwrap_err();
+        assert!(err.to_string().contains("duplicate client name 'edge'"), "unexpected error: {err}");
+        table.add_without_address(Some("edge2".to_string()), b"b".to_vec(), options("edge2.example"))?;
+        // Unnamed, the name is the tls_name.
+        let err = table.add_without_address(None, b"c".to_vec(), options("edge2")).and_then(|()| table.add_without_address(Some("edge2".to_string()), b"d".to_vec(), options("other.example"))).unwrap_err();
+        assert!(err.to_string().contains("duplicate client name 'edge2'"), "unexpected error: {err}");
+        Ok(())
     }
 
     #[test]

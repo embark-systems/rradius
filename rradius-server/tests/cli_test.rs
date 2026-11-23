@@ -1266,6 +1266,21 @@ fn test_check_names_a_bad_eap_setting() {
     assert!(stderr.contains("radius.eap.methods"), "{stderr}");
 }
 
+/// Two clients of one list with one name: `check` fails with exit status 2 and names it.
+#[test]
+fn test_check_names_a_duplicate_client_name() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    let extra = "\n[[radius.clients]]\naddress = \"10.9.9.1\"\nname = \"twin\"\nsecret = \"a\"\n[[radius.clients]]\naddress = \"10.9.9.2\"\nname = \"twin\"\nsecret = \"b\"\n";
+    std::fs::write(&config, format!("{text}{extra}")).map_err(|e| e.to_string())?;
+    let (code, stdout, stderr) = check_command(PROGRAM, &config);
+    assert_eq!(code, Some(2), "{stdout} {stderr}");
+    assert!(stderr.contains("duplicate client name 'twin'"), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    Ok(())
+}
+
 #[test]
 fn test_check_finds_problems() {
     let edit = |config: &Path, change: &dyn Fn(String) -> String| {

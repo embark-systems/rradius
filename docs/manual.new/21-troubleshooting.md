@@ -724,6 +724,7 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `cannot read secret_file '…': …` | 祕密檔不存在或讀不到 | 確認路徑與權限 |
 | `unknown auth chain 'X' (no [auth.chains.X])` | 用戶端的 `auth` 指到不存在的鏈 | 新增 `[auth.chains.X]` 或改名 |
 | `duplicate client network '…'` | 兩個用戶端位址相同 | 合併或刪掉一個 |
+| `duplicate client name '…'` | 同一張清單裡兩個用戶端同名（沒寫名稱時以位址為名） | 改掉其中一個的 `name`（[第 05 章](05-radius-clients.md)） |
 | `cluster.secret_raft must be at least 16 characters` | 叢集密碼太短 | `openssl rand -hex 32` |
 | `key_file '…' does not fit cert_file '…'` | 私鑰與憑證不是一對 | 換成成對的檔案 |
 | `radius.eap.client_ca_file is required` | 用 `tls` 卻沒有 CA | 加 `client_ca_file` |
