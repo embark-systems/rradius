@@ -97,6 +97,7 @@ snapshot 是複寫用的，不是備份。核心沒有備份功能，資料保�
 另外兩個跟時間有關的規則：
 
 - 沒有 leader 超過 5 秒後，新的寫入立刻失敗，不再等待。寫入失敗的計費，有計費 spool 時會寫進 spool（[第 13 章](13-accounting.md)）。
+- 例外是失去多數後的第一次寫入：它在 5 秒之前就交給叢集，會等到叢集的 30 秒逾時才失敗，不受 `query_timeout_ms` 限制。失敗的訊息是 `the cluster took the write and said nothing of it within 30 s; it may have been committed`（這時寫入可能已經生效，不要當成一定沒寫進去）；叢集只剩 leader 自己時，是 `local client write timed out`，登入沒有回應。實測：三節點停掉兩個，剩下節點的第一次寫入 30 秒後失敗，第二次起 12 毫秒內失敗，讀取一直立即成功。這是以認證寫入量的；計費寫入與寫入重疊的情形沒有量。
 - leader 本身如果超過 5 秒沒有收到過半數節點的確認，也算沒有 leader。被隔開的舊 leader 不會以為自己還能寫。
 
 什麼時候該設 `stop_without_leader_ms`？當 NAS 設了多台 RADIUS 伺服器時，設了它，被隔開的節點會停止回應，NAS 就會改問其他還在叢集裡的節點，`/readyz` 也會讓負載平衡器把它移出去。Kubernetes 的範例設定就設了 10000。只有一台伺服器可問的 NAS，不設比較好：至少只讀的登入還能通過。
@@ -258,7 +259,7 @@ port = 27041
 
 幾個跟叢集有關的選擇：
 
-- `query_timeout_ms = 2000`：叢集失去多數節點時，腳本的寫入最多等這麼久就失敗，計費才會寫進 spool 並回應 NAS。它要比 NAS 的重送間隔短。ha-cluster 情境用的也是這個值。
+- `query_timeout_ms = 2000`：一個請求等資料庫的總時間。叢集失去多數節點後，已交給叢集的第一次寫入仍然要等 30 秒才失敗（見上面的規則），這個值不縮短它；它限制的是腳本的讀取與還沒交出的寫入。ha-cluster 情境用的也是這個值。
 - `migrations_wait_ms = 120000`：三個節點一起重開時，先起來的節點要等其他節點，給它長一點的時間。
 - `[radius.accounting_spool]`：寫不進資料庫時，計費先寫在本機磁碟，之後重送（[第 13 章](13-accounting.md)）。每個節點要用自己的目錄。
 - `[accounts]`、`[sessions]`：讓本章可以用 `user add` 與 `session list` 確認複寫（[第 07 章](07-users-and-chains.md)、[第 13 章](13-accounting.md)）。
@@ -441,7 +442,7 @@ stop_without_leader_ms = 10000
 | 69 秒 | 63 | 503 `no leader` | 沒有回應 | 沒有回應 | 回應（寫進 spool） | ERROR |
 
 - 節點 1 大約 6 秒後才發現沒有 leader。
-- 前幾秒的計費沒有回應：腳本的寫入在等 leader，等到 `query_timeout_ms` 就失敗。NAS 會重送。
+- 前幾秒的計費沒有回應：腳本的寫入在等 leader。失去多數後的第一次寫入會等到叢集的 30 秒逾時（不是 `query_timeout_ms`），NAS 會重送。
 - 沒有 leader 超過 5 秒後，寫入立刻失敗，計費寫進 spool 並回應 NAS。
 - 沒有 leader 超過 10 秒（`stop_without_leader_ms`）後，登入與 Status-Server 都不回應，算進 `rradius_radius_discarded_total{reason="no_leader"}`；TACACS+ 認證回 ERROR（`rradius-bench` 印出 `status: 0x07`）。`/livez` 一直是 200：行程還活著，只是不就緒。
 
@@ -696,7 +697,7 @@ total          3/3    0.0     0.0     0.0          0
 | `cluster.listen` | 各自的 WireGuard 位址 `10.99.0.N` | Raft 與 API 埠只聽 WireGuard 介面 |
 | `cluster.nodes` | `10.99.0.1` 到 `10.99.0.3`，埠 8100、8200 | 每台主機用同樣的埠 |
 | `cluster.migrations_wait_ms` | `120000` | 三台一起重開時，等其他節點的時間 |
-| `lua.query_timeout_ms` | `2000` | 失去多數時寫入早點失敗，計費寫進 spool |
+| `lua.query_timeout_ms` | `2000` | 請求等資料庫的總時間；失去多數後的第一次寫入仍要等 30 秒，之後立即失敗並寫進 spool |
 | `radius.bind` | `0.0.0.0` | NAS 從實體網路連進來 |
 | `radius.clients` | `10.80.0.0/16`，共用密碼三台相同 | 每台 NAS 把三個節點都設成 RADIUS 伺服器 |
 | `radius.status_server` | `true` | NAS 與負載平衡器用 Status-Server 判斷節點活著 |
