@@ -202,11 +202,11 @@ fn code_block<'a>(markdown: &'a str, lang: &str, first_line: &str) -> &'a str {
     &markdown[start..start + markdown[start..].find("```").unwrap()]
 }
 
-/// The purge of chapter 11, as the manual prints it: once an hour, by one request, only rows
+/// The purge of chapter 18, as the manual prints it: once an hour, by one request, only rows
 /// that are old enough.
 #[tokio::test]
 async fn test_manual_purge_snippet() {
-    let manual = include_str!("../../../docs/manual/11-operations.md");
+    let manual = include_str!("../../../docs/manual/18-operations.md");
     let tables = ["users", "user_reply", "accounting", "user_reply_user", "accounting_user", "housekeeping"];
     apply(&renamed(QUICK_START_SCHEMA, "hk", &tables)).await;
     apply(&renamed(code_block(manual, "sql", "-- 3_housekeeping.sql"), "hk", &tables)).await;
@@ -239,7 +239,7 @@ fn reply_text(attributes: &[(String, AttrValue)], name: &str) -> Option<String> 
     })
 }
 
-/// A member API for chapter 18 on a local port: what it was asked, and how it answers. The
+/// A member API for chapter 15 (external-api) on a local port: what it was asked, and how it answers. The
 /// script's URL is pointed at it.
 async fn member_api(answer: impl Into<String>) -> Result<(String, std::sync::Arc<std::sync::Mutex<Vec<String>>>), String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -294,7 +294,7 @@ async fn run_with_http(script: &str, address: &str, attributes: Vec<(&str, AttrV
     Ok((decision.outcome, decision.response_attributes))
 }
 
-/// Chapter 18: the API decides; its plan goes to the NAS only when it looks like a name, and
+/// Chapter 15 (external-api): the API decides; its plan goes to the NAS only when it looks like a name, and
 /// the user's name and password reach it encoded.
 #[tokio::test]
 async fn test_member_api_script() -> Result<(), String> {
@@ -329,7 +329,7 @@ async fn test_member_api_script() -> Result<(), String> {
     Ok(())
 }
 
-// ---- The address pool of chapter 14 ----
+// ---- The address pool of chapter 14 (ip-pool) ----
 
 const POOL_TABLES: [&str; 7] = ["subscribers", "ip_pool", "housekeeping", "ip_pool_user", "ip_pool_state", "ip_pool_expiry", "ip_pool_last_user"];
 
@@ -554,7 +554,7 @@ async fn test_ip_pool_takes_back_what_is_not_used() -> Result<(), String> {
     Ok(())
 }
 
-// ---- The usage control of chapter 15 ----
+// ---- The usage control of chapter 14 (usage-control) ----
 
 const USAGE_TABLES: [&str; 7] = ["plans", "subscribers", "session_slots", "accounting", "housekeeping", "session_slots_expiry", "accounting_user"];
 
@@ -743,7 +743,7 @@ async fn test_usage_control_follows_the_session() -> Result<(), String> {
     Ok(())
 }
 
-// ---- The line identity of chapter 16 ----
+// ---- The line identity of chapter 14 (line-identity) ----
 
 const LINE_TABLES: [&str; 2] = ["plans", "lines"];
 
@@ -876,7 +876,7 @@ async fn test_line_identity_mac_race() -> Result<(), String> {
     Ok(())
 }
 
-// ---- The static addresses and prefixes of chapter 17 ----
+// ---- The static addresses and prefixes of chapter 14 (static-ip) ----
 
 const STATIC_TABLES: [&str; 5] = ["subscribers", "static_assignments", "static_assignments_ipv4", "static_assignments_wan_v6", "static_assignments_pd_v6"];
 
@@ -1020,7 +1020,7 @@ async fn test_static_ip_one_owner_for_a_value() -> Result<(), String> {
     Ok(())
 }
 
-// ---- The rate attributes of chapter 18 ----
+// ---- The rate attributes of chapter 14 (rate-limit) ----
 
 const RATE_TABLES: [&str; 3] = ["plans", "subscribers", "nas_styles"];
 
@@ -1118,7 +1118,7 @@ async fn test_rate_limit_wispr_upper_bound() -> Result<(), String> {
     Ok(())
 }
 
-// ---- The IPv6 prefix pool of chapter 19 ----
+// ---- The IPv6 prefix pool of chapter 14 (prefix-pool) ----
 
 const PREFIX_TABLES: [&str; 10] = ["subscribers", "prefix_pools", "prefix_leases", "housekeeping", "prefix_leases_user", "prefix_leases_prefix", "prefix_leases_expiry", "prefix_leases_nas", "prefix_leases_pool_state", "prefix_leases_released"];
 
@@ -1748,7 +1748,7 @@ async fn test_dual_stack_fixed_and_dynamic_lines() -> Result<(), String> {
     Ok(())
 }
 
-/// Unknown, disabled and locked lines are refused as in chapter 16, and a refusal reserves nothing.
+/// Unknown, disabled and locked lines are refused as in chapter 14 (line-identity), and a refusal reserves nothing.
 #[tokio::test]
 async fn test_dual_stack_refusals() -> Result<(), String> {
     let dual = Dual::new("dsb").await;

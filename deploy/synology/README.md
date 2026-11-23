@@ -1,7 +1,7 @@
 # Synology example
 
-One `rradius-server` node as a Container Manager project on a Synology NAS. Chapter 20 of the
-manual, [docs/manual/20-synology.md](../../docs/manual/20-synology.md), explains the steps.
+One `rradius-server` node as a Container Manager project on a Synology NAS. The
+manual, [docs/manual/02-install.md](../../docs/manual/02-install.md#synology-nas) (the Synology NAS section), explains the steps.
 
 | File | What it is |
 | --- | --- |

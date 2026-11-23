@@ -1,6 +1,6 @@
 # 遠端存取：VPN 閘道用公司目錄（LDAP／AD）的帳號登入，只有 vpn 群組的人能連，
 # 依群組給不同的存取規則；跳板機另外要求密碼加 TOTP 驗證碼。
-# 說明：docs/manual/05-remote-access.md
+# 說明：docs/manual/15-access-recipes.md〈遠端存取：remote-access〉
 
 dictionary = "../../../../share/dictionary"
 

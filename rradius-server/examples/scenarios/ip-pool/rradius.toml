@@ -1,5 +1,5 @@
 # 位址池：單機，認證時從資料表的池分配 IP 位址，計費確認與釋放。
-# 說明：docs/manual/14-ip-pool.md
+# 說明：docs/manual/14-isp-recipes.md〈IPv4 位址池：ip-pool〉
 #
 #   cd rradius-server
 #   cargo run --release -- server --config examples/scenarios/ip-pool/rradius.toml
@@ -53,7 +53,7 @@ list = "SELECT username, nas, session_id, ip, updated FROM ip_pool WHERE state =
 show = "SELECT username, nas, session_id, ip, updated FROM ip_pool WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY ip"
 
 # 監控：每個池、每個狀態的位址數，成為指標 rradius_query_pool_usage{pool,state}（free 是空閒、
-# reserved 是預留、active 是在用）。每個節點每 30 秒對自己的副本查一次；說明見手冊第 14 章「監控」。
+# reserved 是預留、active 是在用）。每個節點每 30 秒對自己的副本查一次；說明見手冊第 14 章〈IPv4 位址池〉的「監控與告警」。
 # 這個查詢走 ip_pool_state 索引，不掃整個表。
 [queries.pool_usage]
 sql = "SELECT pool, state, count(*) AS addresses FROM ip_pool GROUP BY pool, state"

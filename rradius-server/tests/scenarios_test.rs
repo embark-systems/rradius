@@ -1,4 +1,4 @@
-//! The scenarios of the user manual (docs/manual), each started as the manual starts it, from
+//! The scenarios of the user manual (docs/manual, mostly chapters 14 and 15), each started as the manual starts it, from
 //! the files in examples/scenarios, so that what the manual tells people to copy works.
 //!
 //! The configuration is copied into a temporary directory with its file paths made absolute,
@@ -50,7 +50,7 @@ fn migrations_with(name: &str, extra: &[(&str, &str)]) -> (tempfile::TempDir, St
     (dir, format!("migrations_dir = \"{}\"", ours.display()))
 }
 
-/// Chapter 2: the users of the demo migration, PAP and CHAP, the reply attributes, and accounting.
+/// Chapter 3 (quick-start): the users of the demo migration, PAP and CHAP, the reply attributes, and accounting.
 #[test]
 fn test_quick_start() {
     let mut server = Server::start(SCENARIOS, "quick-start", "rradius.toml", |text| text);
@@ -94,7 +94,7 @@ fn framed_ip(answer: &RadiusPacket) -> Option<String> {
     Some(std::net::Ipv4Addr::from(octets).to_string())
 }
 
-/// Chapter 14: the pool gives each user an address from the user's pool, the same one again, a
+/// Chapter 14 (ip-pool): the pool gives each user an address from the user's pool, the same one again, a
 /// Stop gives it back to the pool, and an empty pool refuses with a reason.
 #[test]
 fn test_ip_pool() -> TestResult {
@@ -157,7 +157,7 @@ fn test_ip_pool() -> TestResult {
     Ok(())
 }
 
-/// Chapter 15: the plan's session limit holds, a Stop makes room, and the traffic of the period
+/// Chapter 14 (usage-control): the plan's session limit holds, a Stop makes room, and the traffic of the period
 /// decides between the plan's `Filter-Id`, the slow one and a refusal.
 #[test]
 fn test_usage_control() -> TestResult {
@@ -212,7 +212,7 @@ fn test_usage_control() -> TestResult {
     Ok(())
 }
 
-/// Chapter 2: `[sessions]` of the scenario shows the session a Start opened and not the one a
+/// Chapter 3 (quick-start): `[sessions]` of the scenario shows the session a Start opened and not the one a
 /// Stop closed, in text and as JSON.
 #[test]
 fn test_quick_start_sessions() -> TestResult {
@@ -235,7 +235,7 @@ fn test_quick_start_sessions() -> TestResult {
     Ok(())
 }
 
-/// Chapter 3: the certificates from make-certs.sh load, and the chain gives each group its
+/// Chapter 11 (enterprise-wifi): the certificates from make-certs.sh load, and the chain gives each group its
 /// VLAN. EAP itself is covered by the interop tests with eapol_test; here the chain is asked
 /// with PAP, which takes the same queries.
 #[test]
@@ -263,7 +263,7 @@ fn test_enterprise_wifi() {
     assert_eq!(server.pap("laptop-002.corp.example.com", "device-password").code, ACCESS_REJECT, "devices log in with certificates only");
 }
 
-/// Chapter 4: a known device by its MAC address, written as switches write it.
+/// Chapter 15 (wired-mab): a known device by its MAC address, written as switches write it.
 #[test]
 fn test_wired_mab() {
     let mut server = Server::start(SCENARIOS, "wired-mab", "rradius.toml", |text| text.replacen("address = \"10.40.0.0/24\"", "address = \"127.0.0.1\"", 1));
@@ -300,7 +300,7 @@ fn test_server_start_takes_another_port_when_one_is_taken() -> TestResult {
     Ok(())
 }
 
-/// Chapter 16: a line is known by the circuit-id and remote-id the BNG relays from DHCP Option 82
+/// Chapter 14 (line-identity): a line is known by the circuit-id and remote-id the BNG relays from DHCP Option 82
 /// (RFC 4679 attributes in vendor 3561), and answered with the plan's pool and profile.
 #[test]
 fn test_line_identity() -> TestResult {
@@ -342,7 +342,7 @@ fn test_line_identity() -> TestResult {
     Ok(())
 }
 
-/// Chapter 17: a user with fixed data gets exactly that, as the attributes of RFC 2865, 3162 and
+/// Chapter 14 (static-ip): a user with fixed data gets exactly that, as the attributes of RFC 2865, 3162 and
 /// 4818 carry it; a user without gets the pool's name; a value the attribute cannot hold is refused.
 #[test]
 fn test_static_ip() -> TestResult {
@@ -419,7 +419,7 @@ fn vendor_attribute(answer: &RadiusPacket, vendor: u32, sub_type: u8) -> Option<
     None
 }
 
-/// Chapter 18: the same plan, as the BNG's own attributes: the style comes from the RADIUS client
+/// Chapter 14 (rate-limit): the same plan, as the BNG's own attributes: the style comes from the RADIUS client
 /// that asked, here by moving each client's address to 127.0.0.1 in turn.
 #[test]
 fn test_rate_limit() -> TestResult {
@@ -470,7 +470,7 @@ fn test_rate_limit() -> TestResult {
     Ok(())
 }
 
-/// Chapter 19: a login gets a delegated prefix of the pool, the accounting Start names it as the
+/// Chapter 14 (prefix-pool): a login gets a delegated prefix of the pool, the accounting Start names it as the
 /// NAS writes it (so the text in the table is the one the server decodes), `session list` shows
 /// it, and the Stop releases it (kept for her: she gets it again). A pool that is empty refuses, with the reason in the log.
 #[test]
@@ -526,7 +526,7 @@ fn test_prefix_pool() -> TestResult {
     Ok(())
 }
 
-/// Chapter 22: a line with fixed data gets exactly that; one without gets an address and a delegated
+/// Chapter 14 (dual-stack-lines): a line with fixed data gets exactly that; one without gets an address and a delegated
 /// prefix of its plan's pools, a Start with both confirms both (the gauges of the example's queries
 /// follow), and the Stop gives the address back and keeps the prefix for the line.
 #[test]
@@ -609,7 +609,7 @@ fn test_queries_run_at_once() -> TestResult {
     Ok(())
 }
 
-/// Chapters 14 and 15, monitoring: the queries of the pool and usage-control examples become
+/// Chapter 14, monitoring: the queries of the pool and usage-control examples become
 /// gauges that follow the tables, and the same definitions run as `query` commands.
 #[test]
 fn test_pool_and_slot_metrics() -> TestResult {
@@ -642,7 +642,7 @@ fn test_pool_and_slot_metrics() -> TestResult {
     Ok(())
 }
 
-/// Chapter 6: PAP login against the bcrypt hashes, authorization by role, and accounting.
+/// Chapter 12 (device-admin): PAP login against the bcrypt hashes, authorization by role, and accounting.
 #[test]
 fn test_device_admin() {
     use rradius_core::tacacs::{ACCT_STATUS_SUCCESS, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_PASS, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, TYPE_ACCT, TYPE_AUTHEN, TYPE_AUTHOR};
@@ -713,7 +713,7 @@ fn totp(secret: &str) -> String {
     format!("{:06}", number % 1_000_000)
 }
 
-/// Chapter 5: the jump host's two steps. The VPN chain needs a directory, which the LDAP
+/// Chapter 15 (remote-access): the jump host's two steps. The VPN chain needs a directory, which the LDAP
 /// tests cover; here its settings only have to pass check and start.
 #[test]
 fn test_remote_access() {
@@ -733,7 +733,7 @@ fn test_remote_access() {
     assert_eq!(replayed.code, ACCESS_REJECT, "a challenge answers once");
 }
 
-/// Chapter 8: three nodes on this host, with the node list each of them has. A user logs in
+/// Chapter 16 (ha-cluster): three nodes on this host, with the node list each of them has. A user logs in
 /// at each node, and a session started at one node is stopped at another.
 #[test]
 fn test_ha_cluster() {
@@ -760,7 +760,7 @@ fn test_ha_cluster() {
     assert_eq!(stop.map(|answer| answer.code), Some(ACCOUNTING_RESPONSE), "{}", servers[2].stderr());
 }
 
-/// Chapter 17: accounts brought over with the hashes their old systems kept, each logging in
+/// Chapter 7 (migrate-users): accounts brought over with the hashes their old systems kept, each logging in
 /// with the password it always had; a password changed here is stored the new way.
 #[test]
 fn test_migrate_users() -> TestResult {
@@ -783,7 +783,7 @@ fn test_migrate_users() -> TestResult {
     Ok(())
 }
 
-/// Chapter 9, accounts left in the old system's PostgreSQL: the example passes `check` and
+/// Chapter 9 (external databases), accounts left in the old system's PostgreSQL: the example passes `check` and
 /// serves, though the database it names is not there; only the logins that need it fail.
 #[test]
 fn test_migrate_users_external_database() -> TestResult {
@@ -793,7 +793,7 @@ fn test_migrate_users_external_database() -> TestResult {
     Ok(())
 }
 
-/// A member system for chapter 18: answers each `POST /v1/radius/login` that carries the API
+/// A member system for chapter 15 (external-api): answers each `POST /v1/radius/login` that carries the API
 /// key with 200 and a plan for dave's password, 401 for another, and nothing at all for `slow`.
 fn member_api() -> Result<u16, Box<dyn std::error::Error>> {
     use std::io::{Read, Write};
@@ -838,7 +838,7 @@ fn member_api() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-/// Chapter 18: the accounts are in another system, asked over HTTP at each login. The script is
+/// Chapter 15 (external-api): the accounts are in another system, asked over HTTP at each login. The script is
 /// the scenario's own, with the API's address changed to a stand-in on this host.
 #[test]
 fn test_external_api() -> TestResult {
@@ -874,7 +874,7 @@ fn test_external_api() -> TestResult {
     Ok(())
 }
 
-/// Chapter 15: a laptop logs in with its certificate, with a full handshake each time, since
+/// Chapter 11 (wifi-certs): a laptop logs in with its certificate, with a full handshake each time, since
 /// this program resumes no session; the laptop on the revocation list is refused; a device
 /// disabled in the table is refused.
 #[test]
@@ -913,7 +913,7 @@ fn resident_kib(pid: u32) -> u64 {
 
 /// The "Steady load" scenario of Heap Allocation Alignment: a minute of logins, and the
 /// resident memory stops growing. Each login runs a script (the MAC authentication of
-/// chapter 4), as the growth on macOS came from the Lua VMs' memory. It takes a minute and wants a quiet machine, so it only runs when
+/// chapter 15, wired-mab), as the growth on macOS came from the Lua VMs' memory. It takes a minute and wants a quiet machine, so it only runs when
 /// asked: `cargo test --release --test scenarios_test -- --ignored`.
 #[test]
 #[ignore]

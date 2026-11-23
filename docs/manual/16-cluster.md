@@ -26,6 +26,7 @@
 - [多台主機：ha-cluster 情境](#多台主機ha-cluster-情境)
 - [用 Docker Compose 部署](#用-docker-compose-部署)
 - [在 Kubernetes 上部署](#在-kubernetes-上部署)
+- [跨機房](#跨機房)
 - [叢集的指標](#叢集的指標)
 - [常見錯誤](#常見錯誤)
 - [相關章節](#相關章節)
@@ -61,6 +62,22 @@ rradius 的帳號、回覆屬性、計費這些資料，放在每個節點內嵌
 兩個節點的叢集比一個節點更脆弱：任何一個停掉，寫入就停了。所以 `cluster remove` 在只剩一或兩個 voter 時，要加 `--force` 才肯移除（見[移除節點](#移除節點)）。
 
 leader 停掉時，剩下的節點會自己選出新的 leader，不需要人介入。
+
+### 停一台與停兩台
+
+三個節點的叢集停掉節點時，認證與計費的影響（沒有 leader 時各種請求的細節見下面的〈沒有 leader 時〉）：
+
+| 狀況 | 認證 | 計費 |
+| --- | --- | --- |
+| 三台都在 | 正常 | 正常 |
+| 停一台 | 正常，NAS 改問其他台。停的剛好是 leader 時，選舉那段時間要寫入的登入沒有回應（時間見[跨機房](#跨機房)） | 正常。停的是 leader 時，選舉那段時間寫入逾時，有計費 spool 就先寫進 spool，之後重放，可能重複一次 |
+| 停兩台，剩一台 | 只讀資料的登入（`sql`、`ldap`）讀本機副本，照常回應；要寫入的（驗證碼、IP 配發）不回應，讓 NAS 重送或改問別台。設了 `stop_without_leader_ms` 時，超過那段時間連只讀的登入都不回應 | 寫不進資料庫；有計費 spool 時先寫在本機並回覆，叢集恢復後重放 |
+
+因為計費可能被重放、也可能因為逾時重送而記兩次，計費腳本要能重複執行（例如以 `Acct-Session-Id` 為鍵、用 `INSERT OR IGNORE`），見[第 13 章](13-accounting.md)。
+
+**資料庫不能用時不回應，而不是拒絕。** 登入因為叢集資料庫逾時或找不到 leader 而無法決定時，RADIUS 不回覆、TACACS+ 回 ERROR，NAS 與設備就會改問其他節點，使用者也不會看到「密碼錯」。這種請求算進 `rradius_radius_discarded_total{reason="database"}`，日誌寫 `not answered: the cluster database could not be used`。只有確定帳號不存在或密碼錯、而且腳本的資料庫呼叫都成功時才回拒絕。
+
+**被隔開的節點讀的是舊資料。** 它跟多數節點斷開時，在另一側停用的帳號、刪掉的 NAS、撤掉的金鑰，在它這裡都還有效，直到網路恢復。不能接受的話設 `stop_without_leader_ms`。
 
 ### 節點追上進度之後才開始服務
 
@@ -144,6 +161,28 @@ snapshot 是複寫用的，不是備份。核心沒有備份功能，資料保�
 每個節點的設定裡，`nodes` 列出包含自己在內的所有節點。各節點的設定除了 `node_id`、`listen` 這類本機的值，其餘最好完全相同；用 `config diff` 檢查的方法見[檢查各節點的設定](#檢查各節點的設定)。
 
 設了 `nodes` 而且超過一個節點時，`[shutdown]` 的 `ready_delay_ms` 預設變成 5000（單節點是 0），讓 NAS 與負載平衡器有時間改問別的節點。`[shutdown]` 的說明在[第 04 章](04-configuration.md)，關機的順序見[第 18 章](18-operations.md)。
+
+### 哪些東西是每個節點自己的
+
+資料表會自動複寫，但下面這些不會。規劃多個節點時逐項確認：
+
+| 東西 | 每個節點 | 要注意 |
+| --- | --- | --- |
+| 設定檔、腳本、字典、`migrations_dir` | 各自一份 | 內容要相同。改了之後每台都要更新，並各自 reload 或重啟（用 `config diff` 檢查） |
+| `secret_raft_file`、`secret_api_file`、NAS 的共用密碼檔 | 各自一份 | 內容要相同 |
+| 憑證、私鑰、撤銷清單 | 各自一份 | 更新時每台都要換，並各自送 SIGHUP |
+| 計費 spool | 只重放自己的檔案 | 放在持久的磁碟。節點壞掉時，它還沒重放的就遺失了。`rradius_acct_spool_bytes` 大於 0 代表有還沒寫進資料庫的計費，可以用來告警 |
+| 進行中的 EAP 對話 | 只在收到它的節點 | 同一次登入要留在同一個節點（[第 11 章](11-eap.md)） |
+| 叢集狀態 | 各自看自己的 | 見[叢集的指標](#叢集的指標) |
+| 指標與 `[log.trace]` 的計時 | 各自的 | 叢集的總和由監控系統加總；要追蹤的使用者，每一台都要設 |
+
+### 調整
+
+- **`read_connections`：** 登入大多是讀取，連線不夠時請求要排隊；記憶體很緊時可以調低，每條連線有自己的快取。
+- **`snapshot_every`：** 調低的話，異常結束（斷電、SIGKILL）後重新啟動比較快，但寫入多時 snapshot 太頻繁會拖慢服務。
+- **多節點不會提高寫入上限。** 每筆寫入都要經過同一個 leader、等過半數的節點確認，分開的主機之間還要多等節點之間的往返（見[跨機房](#跨機房)）。登入（讀取）則是每個節點各自處理，節點越多，總量越高。
+
+三項的預設與範圍見上表，改了都要重新啟動，量測的方法見[第 19 章](19-performance.md)。
 
 ## 在一台機器上起三個節點
 
@@ -525,6 +564,22 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 
 > **警告：** 不要同時清空多數節點的 `data_dir`。資料只存在叢集的節點上，過半數的副本都沒了，資料就沒了。
 
+### 換掉壞掉的主機
+
+主機壞了、資料救不回來時，用新主機頂替，做法跟上面一樣，只是設定要對得上：
+
+1. 新主機用**同一個 `node_id`** 與同樣的位址（`[[cluster.nodes]]` 裡它的 `raft`、`api`）；設定檔、密碼檔與 `migrations_dir` 跟其他節點相同。增減過節點的話，`[[cluster.nodes]]` 要列出目前的所有成員（先用 `cluster members` 看）。
+2. `data_dir` 是空的。舊主機的資料還在但不能信任時，整個刪掉再啟動。
+3. 啟動。它從其他節點取得整份資料，日誌出現 `cluster node N has caught up with the cluster` 之後才開始回應。
+4. 確認：`rradius_cluster_applied_index` 跟其他節點接近、`rradius_cluster_leader` 是 1；用一個它停機期間新增的帳號在它上面登入一次。
+
+- **其他節點要有過半數在線上。** 新節點要從它們取得資料。
+- **壞掉的是 leader 也一樣。** 剩下的節點自己選出新 leader，選舉那段時間要寫入的登入沒有回應，計費寫進 spool，之後補送（秒數見[跨機房](#跨機房)）。
+- **leader 做過 snapshot、丟掉舊記錄也沒關係，** 新節點直接收到 snapshot。
+- **管理指令會等久一點。** leader 剛停止的那段時間，`user` 這類指令會先連到舊 leader，等連線逾時才改連新的，可能要十幾秒才完成，上限是 30 秒。
+- **同一個 id 不會被 `node id N is in use` 擋下：** 舊位址沒有回應時，檢查照常通過（見[id 被用掉時](#id-被用掉時)）。
+- **測過的範圍：** 2026-11-13 用 `compose.cluster.yaml` 的三節點，在一台主機的 Docker 上，強制停止並刪掉容器與資料 volume 來模擬主機壞掉。換掉 follower 約 2 秒追上；設 `snapshot_every = 50`、寫入約 200 筆讓 leader 做過 snapshot 後換掉 leader，約 5 秒追上，三台的 applied index 相同，期間新增的帳號在每台都能登入。沒有在多台實體主機或經過 WireGuard 的環境測過。
+
 ### 整個叢集一起重開
 
 三個節點一起停、一起啟動，跟第一次啟動一樣：每個節點等到湊滿過半數、追上進度才服務，最多等 `migrations_wait_ms`。所以 `migrations_wait_ms` 要比你預期「最後一個節點起來」所需的時間長。
@@ -570,6 +625,13 @@ node 4  voter            raft 127.0.0.1:27004  api 127.0.0.1:27014  (not in this
 `(not in this configuration)` 表示 `node1.toml` 的清單裡沒有節點 4。這不影響運作：節點 1 到 3 不必為了節點 4 重開，重開時也照常回來。用 `node4.toml` 看就沒有這個標記。之後找時間把節點 4 加進其他節點的設定，讓各節點的清單一致，`cluster members` 才不會一直提醒你。
 
 > **注意：** 節點的總數通常保持奇數。從 3 個加到 4 個，過半數從 2 變 3，可以同時停掉的節點還是只有 1 個。
+
+新節點加入時的幾個細節：
+
+- **空資料加入的節點，要列出現在的 leader。** 它只向自己設定裡列的節點申請加入，其他節點只會叫它去找 leader；leader 不在它的清單裡就加不進去。設定有 `migrations_dir` 時，它等到 `migrations_wait_ms` 後以結束碼 1 結束，訊息是 `node N did not join within …`，被行程管理程式重啟後又重來。所以列出全部現有成員最保險。2026-11-13 實測：leader 換成節點 4 之後，設定只列 1 到 3 的空資料節點 1 加不進去；補上節點 4 後 8 秒就加入。
+- **帶著資料重新啟動的節點不受影響。** 它從自己的資料知道成員，設定沒列 leader 也能回到叢集（同一次實測約 14 秒）。
+- **密碼不同的節點加不進去，** 新節點的日誌寫出原因：`secret_raft` 不同是 `Invalid ChallengeResponse`，`secret_api` 不同是 `Invalid API Secret`；叢集的成員不變（2026-11-18 實測）。
+- **新節點的 `migrations_dir` 比別台多一個檔案時，** 2026-11-18 只看了加入與其他節點重啟，兩者都照常，日誌沒有提到差異；各節點的 `migrations_dir` 要保持相同，這個組合沒有深入驗證。
 
 ### id 被用掉時
 
@@ -630,6 +692,24 @@ node 3  not in the cluster (listed in this configuration)
 被移除的節點要再加回來，就照[加入節點](#加入節點)的條件：清空它的 `data_dir` 再啟動。上面的節點 3 清空 `data3` 後啟動，2 秒內就以 voter 身分回到叢集。
 
 `cluster remove` 的結束碼：0 成功；1 是沒有這個成員，或叢集拒絕移除；2 是參數、設定錯誤，或檢查沒通過；3 是 30 秒內沒有回應。結束碼 3 時，移除可能已經做了，訊息會叫你用 `cluster members` 確認，不要直接重跑。
+
+### 為什麼一定要先停機
+
+2026-11-13 的實測，在一台主機的 Docker 上，三到四個節點：
+
+- **被移除但還在執行的節點會用舊資料回答。** 它不再收到新的寫入，移除後新增的帳號在它上面登入會被拒絕，停用的帳號還能登入。NAS 還把它列為 RADIUS 伺服器時，就會得到錯的答案。
+- **帶著舊資料重新啟動會卡住，** 登入沒有回應。
+- **清空資料、設定還列著自己時重新啟動，會自動加回叢集。** 所以淘汰的主機要把服務關掉（例如 `systemctl disable --now rradius`），不只是刪資料。
+- **管理指令可能卡住。** 設定裡排第一的節點如果「已移除但還在執行」，`user` 這類指令會等到 30 秒逾時；先停機就不會發生。
+
+### 其他注意事項
+
+- **維持奇數個節點（3 或 5）。** 3 個可以壞 1 個，5 個可以壞 2 個；4 個跟 3 個一樣只能壞 1 個。
+- **要移除的是 leader 也一樣，** 先停掉它：剩下的節點選出新 leader（選舉那段時間的寫入會逾時，見[跨機房](#跨機房)），再移除。
+- **停機的主機排在設定第一位時，** `cluster members` 與 `cluster remove` 要先等它逾時，才換下一台。程式裡每台最多等 2 秒（`PING_WAIT`）；2026-11-18 的實測曾量到多等約 5 秒，是改這個值之前的版本。把停機的節點從設定刪掉，或移到後面，就不會。
+- **失去多數時，`members` 看到的 leader 可能是過期的。** 三台只剩原來的 leader 時，它仍回報自己是 leader（結束碼 0），但它沒有多數，寫入不會成功；剩下的是 follower 時，`members` 約 30 秒後以結束碼 3 結束。要判斷能不能寫，看 `rradius-server status` 的 `Has a leader`，或直接試一次寫入（2026-11-18 實測）。
+- **只停一台不必移除。** 升級、重開機、換硬體後用同一個 `node_id` 回來，見[重開節點與重建資料](#重開節點與重建資料)；移除是給不會再回來的節點。
+- **測過的範圍：** 2026-11-13、2026-11-18，一台主機的 Docker，三到五個節點：移除 leader 約 5 秒完成，期間對剩下三台各每 0.05 秒登入一次，約 1,480 次都成功，最長空檔 0.1 秒（登入讀本機副本，不需要 leader）；加第 4 台 1 到 3 秒成為 voter、約 4 秒開始回應登入；寫入中加入與移除，394 次寫入沒有失敗。沒有在多台實體主機或經過 WireGuard 的環境測過，也沒有測真實 NAS 在選舉期間的行為。
 
 ## 檢查各節點的設定
 
@@ -723,6 +803,10 @@ configuration ok
 - 三台主機的 `raft.secret`、`api.secret`、`nas.secret` 要相同，換成自己用 `openssl rand -hex 32` 產生的值，權限 0600。
 - `migrations/2_demo_users.sql` 是示範帳號，正式環境要刪掉。
 - NAS 把三個節點都設成伺服器。設了 `stop_without_leader_ms` 的話，被隔開的節點會停止回應，NAS 就會換問別台。
+- RADIUS 走節點的實體位址，不是 WireGuard 位址；請求也要從 `radius.clients` 的網段送出，否則不會有回應。管理用的主機不在那個網段時，暫時加一個只有它位址的 `[[radius.clients]]`，reload 後測，測完再移除。
+- 用 EAP 的話，一次登入要在同一個節點完成：NAS 設成主備，或讓負載平衡器依來源固定節點（[第 11 章](11-eap.md)）。
+- 一台先起來、其他的還沒起來時，它會等到湊滿過半數（最多 `migrations_wait_ms`），那是等待，不是故障；日誌出現 `RADIUS Server listening` 才能服務。
+- 每個節點都要設自動重啟（systemd `Restart=on-failure`、Docker `restart: unless-stopped`），因為伺服器在某些情況下會主動以結束碼 1 結束，讓行程管理程式重開它（見[強制結束之後](#強制結束之後)）。
 
 ## 用 Docker Compose 部署
 
@@ -784,6 +868,25 @@ $ docker compose -f compose.cluster.yaml exec node1 rradius-server cluster membe
 | `networkpolicy.yaml` | 預設不套用：RADIUS 埠對外開放，叢集埠只給其他節點，指標埠只給 `monitoring` namespace |
 | `hostnetwork-patch.yaml` | 預設不套用：沒有保留來源位址的負載平衡器時，讓 pod 用節點的網路 |
 
+### 建置並載入 image
+
+`statefulset.yaml` 用 `rradius-server:latest`，`imagePullPolicy: IfNotPresent`。在原始碼根目錄建置：
+
+```console
+$ docker build -t rradius-server:latest .
+```
+
+- **Docker Desktop、OrbStack 內建的 Kubernetes：** 直接用本機的 image，不必再做什麼。
+- **kind：** `kind load docker-image rradius-server:latest`，把 image 載入 kind 的節點。
+- **正式環境：** 推送到自己的 registry，再打開 `kustomization.yaml` 裡註解掉的 `images`，改成那個名稱與版本：
+
+  ```yaml
+  images:
+    - name: rradius-server
+      newName: registry.example.com/rradius-server
+      newTag: "1.0"
+  ```
+
 ### 先建 Secret
 
 ```console
@@ -793,7 +896,18 @@ $ kubectl create secret generic rradius-secrets \
     --from-literal=radius="<你的 NAS 共用密碼>"
 ```
 
-Secret 掛在 `/run/secrets/rradius`，設定用 `secret_raft_file = "/run/secrets/rradius/raft"` 這類路徑讀它。三個 pod 用同一個 Secret，叢集密碼自然相同。
+Secret 掛在 `/run/secrets/rradius`，設定用 `secret_raft_file = "/run/secrets/rradius/raft"` 這類路徑讀它。三個 pod 用同一個 Secret，叢集密碼自然相同。`radius` 換成你的 NAS 實際設定的共用密碼。範例目錄不放真的密碼，`secret.example.yaml` 只是格式說明。
+
+### 套用與等待
+
+先把 `config/rradius-0.toml` 到 `rradius-2.toml` 的 `[[radius.clients]] address` 從文件用的 `192.0.2.0/24` 改成 NAS 實際的網段（三份要一樣；理由見[改 NAS 的位址](#改-nas-的位址)），然後：
+
+```console
+$ kubectl apply -k deploy/kubernetes
+$ kubectl rollout status statefulset/rradius
+```
+
+三個 pod 同時啟動，選出 leader 後才開始服務；`rollout status` 等到三個都就緒才結束。接著用[在 pod 裡下指令](#在-pod-裡下指令)的做法加帳號。
 
 ### 這份範例為什麼這樣設計
 
@@ -813,6 +927,66 @@ Secret 掛在 `/run/secrets/rradius`，設定用 `secret_raft_file = "/run/secre
 
 `config/rradius-*.toml` 的 `[[radius.clients]]` 是文件用的網段 `192.0.2.0/24`，要改成你的 NAS 實際的位址。不要寫太大的網段：網段如果也涵蓋 Kubernetes 節點的位址，被負載平衡器改過來源位址的封包也會被接受，所有 NAS 都會被當成同一個用戶端。
 
+### 驗證來源位址沒有被改寫
+
+封包經過 Kubernetes 的 Service 時，來源位址常被改成節點或閘道的位址，結果有兩種：
+
+- 改寫後的位址不在任何 client 的網段裡：rradius 不認得它，**不回應**，計入 `rradius_radius_discarded_total{reason="unknown_client"}`，日誌（有速率限制）寫 `RADIUS packet from unknown client <位址> discarded`。
+- 改寫後的位址剛好落在某個 client 的網段裡，例如 client 寫了 `10.0.0.0/8` 這種寬網段：請求照樣被接受，**看起來一切正常**，但所有 NAS 都被當成同一個 client。這種情況計數不會增加，只能從認證紀錄看出來。
+
+所以套用後一定要驗證：從一台 NAS 送一筆請求，看認證紀錄（`log.auth` 預設開）的 `source=` 是不是那台 NAS 的位址。請求可能送到任何一個 pod，三個都要看：
+
+```console
+$ kubectl logs rradius-0 | grep rradius_auth | tail -3
+… INFO rradius_auth: authentication protocol="radius" client="192.0.2.0/24" source=192.0.2.10 user="alice" …
+```
+
+`source=` 是節點、閘道或 pod 網段的位址，就是被改寫了。沒有任何紀錄時，看 `unknown_client` 有沒有增加：
+
+```console
+$ kubectl port-forward pod/rradius-0 9812:9812 &
+$ curl -s localhost:9812/metrics | grep 'reason="unknown_client"'
+```
+
+- 雲端的負載平衡器大多支援 `externalTrafficPolicy: Local`，但有些 UDP 負載平衡器本身會改寫來源位址，要看雲端的文件。
+- OrbStack 內建的 Kubernetes 從 Mac 送到 LoadBalancer 的封包，`source=` 是 pod 網段的閘道，所以在 OrbStack 上驗證不了來源位址會不會保留。只是在本機試用時，可以暫時把 client 改成那個位址。
+
+> **未實機驗證：** 上面兩種負載平衡器的行為依來源 `deploy/kubernetes/` 的註解與 Kubernetes 的一般行為寫成，本書沒有在實際的叢集上量過。
+
+### 沒有合適的負載平衡器時：hostNetwork
+
+`hostnetwork-patch.yaml` 讓 pod 直接用節點的網路，NAS 的封包到節點的位址，來源位址不會被改寫。在 `kustomization.yaml` 打開 `patches`：
+
+```yaml
+patches:
+  - path: hostnetwork-patch.yaml
+```
+
+- patch 設了 `podAntiAffinity`，一個節點只能放一個 rradius pod，所以至少要三個 Kubernetes 節點。
+- NAS 設定的是三個節點的位址，主備或輪流都可以。
+- pod 搬到別的節點時位址會變，NAS 那邊要跟著改，所以適合固定的節點，例如用 `nodeSelector` 指定。
+- **指標埠與叢集埠會開在節點的每個位址上，包括對外的位址。** 範例的 `[metrics] bind = "0.0.0.0"`，這時 9812 沒有認證也沒有 TLS 地對外開放；叢集的 8100、8200 也一樣。NetworkPolicy 管不到用 hostNetwork 的 pod，`networkpolicy.yaml` 擋不住。要用節點的防火牆只讓內部網路連 9812、8100、8200，或把 `[metrics] bind` 改成節點的內部位址（三個節點的位址不同，設定檔就不再只差 `node_id`）。
+
+### TACACS+
+
+設定加 `[tacacs]` 時，`statefulset.yaml` 加 TCP 的容器埠，再打開 `services.yaml` 裡註解掉的 `tacacs` 那段。TCP 經過 `externalTrafficPolicy: Local` 一樣保留來源位址，驗證方法同上。
+
+> **注意：** 容器用 uid 10001 執行、拿掉所有 capability，能不能綁 49 這種低埠，取決於容器執行環境對低埠的設定，本書沒有驗證。穩當的做法是 `[tacacs]` 的 `port` 設成 1024 以上（例如 `49490`），Service 的 `port` 仍是 49，`targetPort` 指向那個埠。
+
+### 探針與延遲
+
+指標埠（`[metrics] bind = "0.0.0.0"`，因為 kubelet 從節點連 pod 的位址探測）有兩個路徑，細節見[第 17 章](17-monitoring.md)：
+
+| 路徑 | 200 | 503 | 範例的用途 |
+| --- | --- | --- | --- |
+| `/livez` | 行程在回應 | 不會 | `startupProbe`、`livenessProbe` |
+| `/readyz` | 會回應認證 | 正在停止（收到 SIGTERM）；設了 `stop_without_leader_ms` 且沒有 leader 超過這段時間；或某個設了 `required_for_ready` 的外部資料庫連不上（內容 `database <名稱> unreachable`，[第 09 章](09-external-databases.md)） | `readinessProbe` |
+
+- **未就緒的 pod 會從 `rradius` Service 移出，** NAS 的請求改送其他 pod。範例設 `stop_without_leader_ms = 10000`：三台剩一台時，剩下那台約 10 秒後停止回應、變成未就緒；`/livez` 仍是 200，容器不會被重啟。
+- **刪除或更新 pod 時，** kubelet 送 SIGTERM，`/readyz` 立刻變 503，pod 照常回應 5 秒（三節點的預設 `ready_delay_ms`），`readinessProbe` 每 5 秒一次、失敗 1 次就移出，所以 Service 先不再送請求過來，之後 pod 才停止接收、等處理中的請求做完再結束。整個過程約 15 秒，在 `terminationGracePeriodSeconds: 30` 之內。
+- **沒設 `stop_without_leader_ms` 時，除了停止中以外 `/readyz` 一直是 200：** 節點沒有 leader 也照常用本機副本回應只讀的登入，把它移出 Service 反而讓所有登入都失敗。
+- **`startupProbe` 最多等 5 分鐘**（每 5 秒、最多 60 次）：指標埠在節點追上叢集後才開，這要先有 leader。沒有 `startupProbe` 的話，`livenessProbe` 會在選出 leader 前把容器重啟。
+
 ### 在 pod 裡下指令
 
 ```console
@@ -826,6 +1000,94 @@ $ kubectl exec rradius-0 -- rradius-server status --cluster --config /etc/rradiu
 本書驗證過的部分：在工作目錄複製一份，`kubectl kustomize` 能產生 ConfigMap、2 個 Service、PodDisruptionBudget 與 StatefulSet；三份 `rradius-*.toml` 把字典與密碼路徑換成本機路徑後，`check` 都通過。
 
 > **未實機驗證：** 實際套用到 Kubernetes 叢集、pod 啟動、刪掉 leader pod 的過程，以及 `hostnetwork-patch.yaml`、`networkpolicy.yaml` 的效果。上面的 `kubectl exec` 指令沒有實際跑過。
+
+## 跨機房
+
+三個節點分在不同機房、節點之間隔著幾毫秒到幾十毫秒時，叢集會怎樣？本節的數字是在一台主機上模擬出來的，**用來判斷「值不值得往這個方向設計」，不是對真實廣域網路的承諾。** 沒有標日期的量測，是從舊版手冊搬來的，沒有重新量測；標了日期的是那天量的。原始數字與量測腳本不在這個 repo 裡。
+
+### 量測條件
+
+- **環境：** Apple M4 Max（14 核）的一台主機，OrbStack 上的 Docker，三個節點各一個容器；image 是核心的 `rradius-server` 加上 `iproute2`。節點設定是 `docker/config/auth.lua` 與 `sql` 處理器（登入讀本機副本，每個計費封包一次 `INSERT`）。
+- **延遲怎麼加：** 在每個節點對另外兩個節點的 egress 用 `tc netem` 加單向延遲（來回時間 RTT 的一半），RADIUS 用戶端到節點的路徑不加。RTT 用節點之間的 `ping` 校正，下表一律用實測值。
+- **模擬的限制：** 只有固定的延遲，沒有抖動、沒有封包遺失、兩個方向相同；節點在同一台主機上，CPU 與記憶體不是瓶頸。
+- **負載：** `rradius-bench`，固定並行 64，暖機 2 秒、量測 10 秒，每個 RTT 點 3 次。讀取負載是 `pap` 登入（讀本機副本）；寫入負載是 `acct-start`（每個封包一次 `INSERT INTO accounting`，要經過 Raft）。用戶端打的是當時的 leader。
+
+### 穩態：讀不受影響，寫入大約和 RTT 成反比
+
+| 節點間 RTT（實測） | 登入（讀）吞吐 | 登入 p50／p99 | 計費 Start（寫）吞吐 | 寫入 p50／p99 |
+| --- | --- | --- | --- | --- |
+| 0.2 ms | 86,100／s | 0.7／1.4 ms | 42,700／s | 1.3／3.3 ms |
+| 5.1 ms | 85,800／s | 0.7／1.5 ms | 3,940／s | 14.6／25.6 ms |
+| 19.2 ms | 85,200／s | 0.7／1.5 ms | 826／s | 78／119 ms |
+| 50.5 ms | 85,300／s | 0.7／1.6 ms | 318／s | 198／309 ms |
+
+- **讀取不隨 RTT 改變：** 讀本機副本，不經過網路。
+- **寫入吞吐在固定並行下大約和 RTT 成反比：** 吞吐乘以 RTT，在 5、19、50 ms 分別約 20,000、15,900、16,100；一次寫入的延遲約是 RTT 的 2.9、4.1、3.9 倍。也就是並行 64 時，寫入上限大約是 `64 ÷ (4 × RTT)`。要更高要加並行，沒有測。
+- 這些寫入吞吐是對 leader 量的，對 follower 送寫入（要先轉給 leader）的吞吐沒有量。
+
+### 殺掉 leader
+
+用 `docker kill`（SIGKILL）殺掉 leader，用戶端每 50 ms 對一個存活的節點送一個會寫入的計費 Start。選舉時間是殺掉到存活節點之一的 `rradius_cluster_is_leader` 變成 1；寫入不可用時間是殺掉到第一個之後送出的寫入得到回應。
+
+下表是**修補重連間隔之前**的量測，每點 5 次：
+
+| 節點間 RTT（實測） | 選舉時間 | 寫入不可用時間 |
+| --- | --- | --- |
+| 0.15 ms | 5.7–6.9 秒 | 6.7–15.2 秒（5 次中 4 次 15 秒左右） |
+| 5.2 ms | 5.0–6.4 秒 | 10.1–15.2 秒 |
+| 20.0 ms | 6.0–6.9 秒 | 7.2–17.6 秒 |
+| 50.1 ms | 6.4–6.8 秒 | 7.4–17.8 秒 |
+
+- **選舉時間約 5 到 7 秒，量到的範圍內看不出和 RTT 有關。**
+- **寫入恢復比選舉晚一點。** 原因：叢集資料庫的用戶端（hiqlite 0.16）把「現在的 leader 是誰」快取起來，只在重連的迴圈裡更新；原版的重連在前 5 次每 1 秒、之後每 5 秒，選舉在第 5 秒之後才完成時，要再多等一次 5 秒。現在 rradius 載入一份改過的 hiqlite（`vendor/hiqlite`），把 5 秒改成 1 秒（`RECONNECT_SLOW_INTERVAL`，改動記在該目錄的 `MODIFICATIONS`），所以每秒重連一次；這段時間節點每秒記一行 `Could not connect Client API WebSocket to node1`（舊 leader）。這個間隔是 hiqlite 內部的常數，沒有設定可以調。
+- **2026-11-23 量（三節點，同一台主機的 Docker，RTT 0，停掉 leader）：** 選舉 6.3 到 6.7 秒，第一次寫入成功在 7.2 到 7.5 秒，即選舉後約 0.5 到 1 秒；同樣條件下改前的版本是 15.1 到 15.5 秒（3 次）。所以**單機實測的寫入中斷是約 7 到 8 秒**（選舉約 6 到 7 秒，加上用戶端重連）。每種只量 3 次，只在 RTT 約 0 的單機 Docker 上量過；廣域網路與選舉更久的情形沒有量。
+- **規劃跨機房時，寫入中斷可以抓 20 秒左右當餘裕。** 這個數字來自上表改前的 15 到 18 秒，沒有在改後的版本與廣域網路上量過，是保守的估計，不是預期值。
+- 登入（讀）不受影響，仍讀本機副本。
+
+### 分區
+
+用 `netem` 把節點之間的封包全丟（兩個方向），RADIUS 用戶端路徑不受影響。每種情形做 1 次，分區後約 5、12、22、32 秒取樣，每次對每個節點各送一個 `pap` 和一個計費 Start（逾時 2 秒）。RTT 0.2 與 20 ms 結果相同，除非另外註明。
+
+| 情形 | 被隔開的節點 | 多數方 | 恢復（網路接回後） |
+| --- | --- | --- | --- |
+| 隔開一個 follower | 登入照常回應（讀舊副本）；計費不回應；約 10 秒內 `rradius_cluster_leader` 變 0，`seconds_without_leader` 一路增加；`applied_index` 停住 | 計費只有 leader 回應（0.2 ms 時兩台都回應；20 ms 時另一台 4 次取樣都沒有回應）；登入正常 | 追上 24.8 秒（0.2 ms）、29.3 秒（20 ms） |
+| 隔開 leader | 登入照常回應；計費不回應；`rradius_cluster_is_leader` 仍是 1，但 `rradius_cluster_leader` 約 10 秒後變 0；`applied_index` 停住 | 選出新 leader（0.2 ms 時第 12 秒、20 ms 時第 22 秒的取樣已可見）；**32 秒取樣時計費仍然沒有回應**（包括新 leader）；登入正常 | 追上 1.3 秒（0.2 ms）、1.6 秒（20 ms）；舊 leader 退為 follower |
+
+- 被隔開的節點副本停在分區當時，照常回應登入。不能接受的話設 `stop_without_leader_ms`（這次沒有設，也沒有測設了之後的行為）。
+- 多數方的計費寫入在 leader 換人後要很久才恢復，這次觀察到分區後 32 秒仍沒有恢復。可能和上面殺掉 leader 是同一個原因，但分區時舊 leader 還活著，沒有驗證。
+
+**隔開 follower 後的恢復時間，隨隔開多久而變長（2026-11-20 補量，RTT 0，每種長度 1 次，三節點在一台 Docker 主機）：** 隔開 4、12、30、60 秒，接回後到「這個節點知道 leader、追上資料、經它寫入有回應」分別是 4.9、15.2、25.5、49.8 秒，要追的資料只有 3 到 12 筆，不是同步慢。查到的原因是 leader 到它的那條 Raft 連線（8100 埠）卡在 Linux 的重傳倒數：沒有回應的連線每次重傳間隔加倍，接回後要等下一次重傳才送得出去，離現在多遠就和隔開了多久差不多；新連線約 1 秒就建好，卡住的是舊連線。把節點的 `net.ipv4.tcp_retries2` 從預設 15 降到 5 之後，隔開 12、30、60 秒的恢復變成 5.1、7.6、5.1 秒。
+
+> **注意：** `tcp_retries2` 在容器裡是整個網路命名空間共用，影響所有 TCP 連線；Docker Compose 可以用 `sysctls:` 設，**Kubernetes 要叢集允許這個 sysctl，沒有試過。** 只量了一次，沒有量更短的值，也沒有量對 leader 被隔開的情形的影響。這是量測結果，不是建議值。
+
+### 滾動升級
+
+先量出該 RTT 的最高寫入吞吐，取一半，平均分給三個節點，每個節點各一支 `rradius-bench`（`acct-start`，固定速率，逾時 1 秒，不重送）；另外每個節點各有一個每 50 ms 一次的寫入探測。一次一台（先兩個 follower，最後 leader）`docker stop -t 30`、`docker start`，等日誌出現 `cluster node N has caught up with the cluster`。
+
+| 節點間 RTT（實測） | 負載（共） | 每台停止到追上 | 停止本身 | 逾時的請求 | 升級時其他節點的最長空檔 |
+| --- | --- | --- | --- | --- | --- |
+| 0.2 ms | 21,600／s | 15.9、17.6、21.3 秒（leader 最後） | 14.6 秒 | 每個節點 5,500–6,500 個，約 0.2–0.3% | 0.1–1.4 秒 |
+| 19.8 ms | 350／s | 17.1、17.1、21.5 秒（leader 最後） | 14.8 秒 | 每個節點 1,500–2,600 個，約 3.6–6.2% | 0.1–6.9 秒（停 leader 時 6.9） |
+
+- **一台一台升級，另外兩台一直有回應。** 逾時的請求大部分是送給正在停機那一台的（用戶端沒有改問別台）。
+- **升級一台約 16 到 21 秒**（停止約 15 秒，加上啟動追上），leader 那台最久；停 leader 時其他節點的寫入空檔最長。
+- 沒有測：新舊版本混在一起（這次是同一個 image 重啟）、資料量大時追上的時間。
+
+### 三種拓撲
+
+| | 跨三個機房的單一叢集 | 主叢集加冷備援 | 各機房獨立叢集 |
+| --- | --- | --- | --- |
+| 做法 | 三個節點分在三個機房，同一個叢集 | 一個機房跑叢集；另一個機房平時沒有節點，用企業版的 `[cluster.backup]`（[第 01 章](01-overview.md)）定期存副本，出事時把副本還原成新叢集 | 每個機房一個三節點叢集，互不相干 |
+| 登入（讀） | 不受影響（量到 0.7 ms） | 同主叢集 | 同單機房 |
+| 寫入（IP 配發、驗證碼、計費） | 每次約 3 到 4 個 RTT；並行 64 時 20 ms 約 830／s、50 ms 約 320／s | 同單機房 | 同單機房 |
+| 一個機房整個失聯 | 剩兩個機房有多數；選舉約 5 到 7 秒，寫入中斷要抓餘裕（見上） | 主機房失聯就要靠還原，會丟掉上一份副本之後的寫入；切換要人操作 | 其他機房不受影響；失聯機房的用戶要靠別處 |
+| 代價 | 寫入慢、升級期間的空檔變長；要自己確認真實網路比模擬的差多少 | 備援機房平時沒有熱資料；沒有量還原需要多久 | 帳號、設定、migration 要在每個叢集各做一次，一致性自己管 |
+
+**熱備援目前做不到。** 備援機房常駐一個只複製、不投票的節點（learner）需要讓新節點一直當 learner；現在新節點先當 learner、複製完就自動升成 voter，沒有設定可以讓它停在 learner。
+
+### 沒有測的部分
+
+抖動與封包遺失、兩個方向延遲不同、實體主機與經過 WireGuard 的環境、真實 NAS 在選舉期間的重送行為、對 follower 送寫入的吞吐、更高的並行、五個節點、設了 `stop_without_leader_ms` 的分區、計費 spool 在高延遲下的行為、分區超過 30 秒、備份還原花的時間。
 
 ## 叢集的指標
 
@@ -910,6 +1172,26 @@ $ kubectl exec rradius-0 -- rradius-server status --cluster --config /etc/rradiu
 **症狀：** 強制結束過的節點啟動時警告 `Node did not shut down gracefully - auto-rebuilding State Machine`。
 **原因：** 上次沒有正常關閉。
 **解法：** 不用處理，它會自己重建。之後用 SIGTERM 停，並給它足夠的時間。
+
+**症狀：** Kubernetes 上 pod 一直沒就緒，`startupProbe` 失敗。
+**原因：** 選不出 leader：其他 pod 沒起來、`raft`／`api` 密碼不同，或 `rradius-cluster` 沒有 `publishNotReadyAddresses`。
+**解法：** `kubectl logs` 看原因；密碼放在同一個 Secret。
+
+**症狀：** Kubernetes 上從 NAS 送請求沒有回應，`unknown_client` 增加。
+**原因：** 來源位址被負載平衡器改寫。
+**解法：** 見[驗證來源位址沒有被改寫](#驗證來源位址沒有被改寫)。
+
+**症狀：** 不同 NAS 的認證紀錄 `client=` 都相同，`source=` 是節點或閘道的位址。
+**原因：** 來源位址被改寫，又剛好落在某個 client 的網段裡，所有 NAS 被當成同一個。
+**解法：** 同上；把 `[[radius.clients]]` 縮成 NAS 實際的網段。
+
+**症狀：** 三個 pod 都就緒，但停掉一個之後所有請求暫時沒有回應。
+**原因：** 停的是 leader，剩下兩台還在選舉。
+**解法：** 幾秒內會恢復；持續的話看 `rradius_cluster_leader`。
+
+**症狀：** 新加的 migration 沒有套用（Kubernetes）。
+**原因：** `statefulset.yaml` 的 `items` 漏了那一行，檔案沒有出現在 `migrations/` 裡。
+**解法：** 見[第 18 章](18-operations.md)。
 
 ## 相關章節
 

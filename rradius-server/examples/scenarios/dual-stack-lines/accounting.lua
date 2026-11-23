@@ -1,5 +1,5 @@
 -- 計費：確認、延長、釋放 IPv4 位址與 IPv6 前綴。每個寫入都有條件，同一個封包處理兩次的結果和一次相同。
--- 這是手冊第 14 章與第 19 章兩個計費腳本合併成一個：
+-- 這是手冊第 14 章〈IPv4 位址池〉與〈IPv6 前綴池〉兩個計費腳本合併成一個：
 --
 --   Accounting-Start、Interim-Update：把用戶的位址與前綴確認成 active，到期時間設成從現在起 3 個 Interim 間隔
 --   Accounting-Stop：                  釋放位址（放回空閒，記下上一個用的人）與前綴（改成 released，留給他 HOLD_SECONDS 秒）

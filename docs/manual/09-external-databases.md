@@ -19,6 +19,7 @@
 - [具名查詢：把 SQL 變成指標](#具名查詢把-sql-變成指標)
 - [改了設定之後](#改了設定之後)
 - [常見錯誤](#常見錯誤)
+- [帳號在別的系統：HTTP API](#帳號在別的系統http-api)
 - [相關章節](#相關章節)
 
 ## 叢集資料庫與外部資料庫
@@ -182,6 +183,9 @@ reply_query = "SELECT attribute, value FROM radreply WHERE username = ?"
 - SQL 裡的值一律寫 `?`。送到 PostgreSQL 時，rradius 依序改寫成 `$1`、`$2`……；送到 MySQL 時原樣送出。`?1`、`:name` 這類寫法不接受。
 - 密碼欄的格式和叢集資料庫的帳號表相同（`{crypt}`、`{clear}` 等前綴，見第 07 章）。
 - 只要讀，所以給 rradius 一個唯讀帳號，能讀這兩個表就好。
+- 舊系統的明文密碼若需要補 `{clear}` 前綴，在 SQL 裡串接：PostgreSQL 用 `SELECT '{clear}' || value FROM radcheck WHERE username = ?`，MySQL 用 `SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?`（MySQL 的 `||` 預設是邏輯 OR）。什麼情況需要它，見[第 07 章](07-users-and-chains.md#沒有前綴的明文mysql-與-concat)。這兩句未在真實資料庫上重新執行。
+- 佔位符的限制：sql 處理器的 SQL 由 rradius 掃描 `?`，所以 PostgreSQL 的 `$$ … $$` 字串與 `$1` 寫法會被拒絕（`only plain ? placeholders are supported, found $$…`，`rradius-core/src/lua_engine.rs` 的 `sql_placeholders`），而 jsonb 的 `?` 運算子會被當成佔位符。要用它們，改寫 SQL（例如用 `jsonb_exists(…)` 函式）。
+- 舊系統的帳號表如果還要由舊系統維護，這裡只讀；計費寫回舊系統用腳本的 `db_execute`（見下一節）。
 - `database` 寫了 `[databases]` 裡沒有的名稱，`check` 就會出錯：`auth.handlers[0].database: there is no [databases.nosuch]`。
 
 實測（PostgreSQL 17 與 MySQL 8.4，表與 quick-start 的帳號相同）：`bob`（bcrypt）與 `alice`（明文）用正確密碼都是 `accept 1`，錯的密碼是 `reject 1`。
@@ -654,6 +658,44 @@ Queries
 **症狀：** `rradius_query_dropped_rows_total{reason="over_limit"}` 一直增加。
 **原因：** 結果的列數超過 `max_rows`，多的被丟掉。
 **解法：** 在 SQL 裡先彙總或加 `LIMIT`；真的需要時調大 `max_rows`（最多 10000）。
+
+## 帳號在別的系統：HTTP API
+
+帳號在會員系統（旅館、共同工作空間的訂房或帳務系統）裡、只有 HTTP API 可以問時，用 `lua` 處理器的 `http_request`，完整的設定與腳本見[第 15 章的 external-api](15-access-recipes.md#帳號在外部系統external-api)與[第 10 章](10-lua-policies.md)。這一節補上那兩章沒有寫的注意事項。
+
+**API 只會 JSON 時。** 腳本沒有 JSON 編碼或解碼的函式（`rradius-core/src/lua_engine.rs` 沒有提供），所以範例讓 API 用狀態碼和回應標頭回答，請求用表單編碼。你的 API 只會 JSON：
+
+- 請求自己組字串的話，值要自己跳脫引號和反斜線，容易出錯，不建議；較好的是請 API 那邊加一個接受表單編碼的端點。
+- 回應要從 JSON 取值，只能用 Lua 的字串比對（`response.body:match(…)`）。固定又簡單的格式還可以，結構複雜就不可靠。
+- 最穩當的是在會員系統前面放一個很薄的轉接服務，或替 RADIUS 開一個專用的端點，回應只用狀態碼與標頭。
+
+**來源位址與 DNS。**
+
+- **每個節點各自呼叫 API。** 叢集的每個節點都從自己的位址送請求，API 那邊的防火牆與速率限制要接受每個節點的位址。
+- **`allowed_hosts` 比對的是主機名稱，不檢查解析出來的位址。** DNS 被竄改時，請求可能被送到別的地方；HTTPS 的憑證驗證是這時的保護，所以不要用 `http://`（只在本機或隔離的網路）。`script_http.rs` 沒有對解析結果做位址檢查，只限制同時進行的查詢數。
+- **不跟隨轉址。** API 回 3xx 時，腳本拿到的就是 3xx，程式碼的 HTTP 用戶端設為不轉址（`redirect::Policy::none()`）。
+- **API 那邊要限制來源和速率。** rradius 會把任何人在登入頁輸入的帳號密碼轉給 API，所以猜密碼的流量也會過去。
+
+**計費要不要通知 API。** 範例的計費只寫進本機資料表。要在使用者上線、下線時通知會員系統，可以在計費腳本也呼叫 `http_request`，但：
+
+- 計費腳本回 `accept` 才會回覆 NAS。API 沒回應、腳本出錯時，NAS 會重送，腳本會再跑一次，所以 API 要能容忍同一筆通知收到兩次（冪等）。
+- 不要讓 API 的故障擋住計費。比較穩的做法是計費照常寫進資料表、回 `accept`，由另一個程式從資料表把資料送給會員系統。
+
+**快取通過的結果。** 每次登入都問一次 API，API 的速度就是登入的速度。想減輕負擔，可以在腳本裡把「通過」記進 rradius 的資料表幾分鐘（`sql_execute`），之後先查表。這是設計上的想法，範例與本書都沒有實作也沒有測過；記的內容不要包含明文密碼。
+
+**常見問題。**
+
+| 現象 | 原因與做法 |
+| --- | --- |
+| 日誌有 `attempt to call a nil value`，指向 `http_request` 那一行 | 設定沒有 `[lua.http]`，腳本裡就沒有 `http_request` |
+| 每次登入都被拒絕，日誌有 `… is not in lua.http.allowed_hosts` | 腳本裡的主機或埠和 `allowed_hosts` 不完全相同（只寫主機名稱時，只允許 HTTPS 443） |
+| 日誌的原因是逾時 | API 太慢或連不到；從節點上用 `curl` 試同一個網址。`timeout_ms` 要比 NAS 的重送時間短 |
+| 原因和憑證有關 | API 的憑證是內部 CA 簽的，設 `lua.http.ca_file`；伺服器憑證一律驗證，沒有關閉的選項 |
+| `rradius_script_http_requests_total{result="busy"}` 增加 | 同一台主機同時超過 `max_concurrent` 個請求在等：API 太慢，或上限太低 |
+| PAP 可以，Wi-Fi 不行 | Wi-Fi 用 PEAP 或 MS-CHAPv2 時，送來的不是明文密碼，API 無從比對；只有 EAP-TTLS 內層 PAP 可以，而且處理器要設 `verifies_password = true` |
+| 啟動失敗，說沒有可信任的根憑證 | 啟動時印 `lua.http: no trusted certificates; this system has none, so set lua.http.ca_file`：這台主機沒有系統的 CA 憑證（極簡的容器常見），安裝 `ca-certificates` 或設 `ca_file` |
+
+**沒有測過的：** 任何真實的會員系統或帳務系統，以及 HTTPS 的憑證驗證（情境測試用本機的假 API，沒有 TLS）。
 
 ## 相關章節
 

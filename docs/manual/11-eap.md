@@ -431,6 +431,49 @@ $ kill -HUP <伺服器的 PID>
 
 > **注意：** 一段對話用它開始時的設定走完。一段對話最多只能拖到 `session_timeout_ms` 的四倍，所以舊的 CRL 不會因為用戶端一直講話而一直有效。
 
+### 一次憑證登入要過幾關
+
+```
+握手：憑證是 client_ca_file 簽的嗎？過期了嗎？在 crl_file 裡嗎？
+  ▼
+名稱：EAP Identity 符合憑證上的名稱嗎？（match_identity）
+  ▼
+授權：certificate_query（或腳本）查得到這台設備嗎？
+  ▼
+Access-Accept
+```
+
+每一關都能擋下一台設備，生效速度不同：
+
+| 做法 | 多快生效 | 適合 |
+| --- | --- | --- |
+| 資料表停用（例如 `enabled = 0`，由 `certificate_query` 判斷） | 下一次登入，整個叢集 | 日常的停用；只擋 rradius 這裡 |
+| 撤銷清單（`crl_file`） | 新清單放上每個節點並送 SIGHUP 之後 | CA 會發 CRL，同一張憑證也用在別的系統時 |
+
+（這張比較表來自舊版手冊，未重新量測。）CA 只提供線上查詢（OCSP）時需要企業版（見本章開頭的企業版說明）。
+
+### 排程更新 CRL
+
+CRL 有 Next Update，rradius 過期後仍照用（見上），所以要自己定期換新：
+
+1. 用 cron 或 systemd timer 定期從 CA 下載 CRL，轉成 PEM（見[常見錯誤](#常見錯誤)的格式說明）。
+2. 先下載到暫存檔，確認它是 `-----BEGIN X509 CRL-----` 開頭、檔案不是空的，再用 `mv` 換到 `crl_file` 的位置。下載失敗時保留舊檔，不要放一個空檔上去。空檔或沒有 CRL 的檔案，`check` 與 reload 都會拒絕（`crl_file '…' holds no certificate revocation list`），reload 失敗時伺服器繼續用舊的設定。
+3. 送 SIGHUP，每個節點都要做。
+
+這個排程本身（下載來源、CA 的 CRL 發行點）未實機驗證。
+
+### 伺服器憑證用 ECDSA 還是 RSA
+
+登入量大時，伺服器憑證改用 **ECDSA P-256**：每次完整握手的 CPU 大約是 RSA 2048 的三分之一（來源：舊版 `docs/usage.md` 的量測，本章未重新量測；基準列見[第 19 章](19-performance.md)）。
+
+- **曲線用 P-256，不要用 P-384。** 有社群回報舊版 Android（7.0）只支援 P-256，P-384 的憑證鏈會失敗（非官方文件，未實機驗證）。CA 與中繼憑證也一樣。
+- **伺服器一次只用一張憑證。** 換成 ECDSA 之前，先用各種設備各連一次。
+- **用 OpenSSL 3 產生 EC 私鑰。** 舊版文件記載 macOS 內建的 LibreSSL 產生的 EC 私鑰 rradius 讀不了（`failed to parse private key`），本次未重新驗證。ECDSA 的產生指令是把 `-newkey rsa:2048` 換成 `-newkey ec -pkeyopt ec_paramgen_curve:prime256v1`。
+
+### 監控
+
+`rradius_eap_sessions_total{method="tls",result="reject"}` 突然增加，常是 CRL 少了一層 CA（見[常見錯誤](#常見錯誤)的 `UnknownRevocationStatus`），也可能是一批設備的憑證過期或被撤銷。
+
 ## 換發伺服器憑證
 
 伺服器憑證過期之後，會檢查伺服器憑證的用戶端都會拒絕這個伺服器（用戶端的行為，本章未實機驗證），所以要在到期前換掉。`openssl x509 -in certs/server.pem -noout -enddate` 可以看到期日。
@@ -724,7 +767,7 @@ EAP
 本章的測試都用 `rradius-bench` 同時扮演 NAS 與用戶端。接上真的設備時：
 
 1. **NAS：** 在 AP 控制器或交換器上把 RADIUS 伺服器指到 rradius 的認證埠（預設 1812），共用密碼與 `secret_file` 一樣；用戶端的 `address` 改回 NAS 真正的位址。計費照[第 13 章](13-accounting.md)設定。
-2. **用戶端：** 設定信任簽發伺服器憑證的 CA，並指定伺服器名稱（範例是 `radius.corp.example.com`）。EAP-TLS 另外安裝裝置憑證與私鑰。
+2. **用戶端：** 設定信任簽發伺服器憑證的 CA，並指定伺服器名稱（範例是 `radius.corp.example.com`）。EAP-TLS 另外安裝裝置憑證與私鑰。設備多時，用 MDM 或群組原則（GPO）把 CA 憑證、伺服器名稱與 Wi-Fi 設定一起推到裝置上，不要靠使用者手動按「信任」；沒有預先設定時，使用者會一直被問是否信任這張憑證，或乾脆選擇不驗證。這一步是各作業系統與管理系統的操作，本書沒有測過。
 3. **VLAN：** NAS 要支援依 `Tunnel-Private-Group-Id` 指派 VLAN，範例的回覆屬性才有作用。
 
 `enterprise-wifi` 情境的 `eapol/` 目錄附了兩份 `eapol_test` 設定（`tls.conf`、`peap.conf`），可以在一台 Linux 上模擬用戶端。`eapol_test` 是 wpa_supplicant 附的測試工具，不在 repo 裡。
@@ -786,6 +829,10 @@ EAP
 **症狀：** 用中繼 CA 簽的憑證一律握手失敗，用戶端收到 `UnknownCA`，但拿掉 `crl_file` 就能登入。
 **原因：** `crl_file` 只有根 CA 的 CRL。憑證鏈上每一層 CA 都要有 CRL。
 **解法：** 把每一層 CA 的 CRL 串進同一個 `crl_file`，再送 SIGHUP。
+
+**症狀：** 設了 `crl_file` 之後所有設備都被拒絕，日誌的原因寫 `invalid peer certificate: UnknownRevocationStatus`。
+**原因：** 憑證鏈上某一層 CA 沒有對應的 CRL（沒有放進 `crl_file`，或放了別的 CA 的）。程式沒有開啟「查不到撤銷狀態就放行」，所以查不到就拒絕（`rradius-core/src/common/tls.rs` 只呼叫 `with_crls`，沒有 `allow_unknown_revocation_status`）。用戶端收到的警示隨憑證鏈而不同，上一則實測的中繼 CA 例子是 `UnknownCA`；`UnknownRevocationStatus` 這句本身取自函式庫的錯誤型別，未另外實機重現。
+**解法：** 把根 CA 與每一層中繼 CA 的 CRL 串進同一個 `crl_file`，`check` 之後送 SIGHUP。
 
 **症狀：** 換了新的 CRL，撤銷的憑證還是能登入。
 **原因：** 還沒 reload。

@@ -1,5 +1,5 @@
 # IPv6 前綴池（DHCPv6-PD）：單機，認證時從池分配委派前綴，計費確認與釋放。
-# 說明：docs/manual/19-prefix-pool.md
+# 說明：docs/manual/14-isp-recipes.md〈IPv6 前綴池：prefix-pool〉
 #
 #   cd rradius-server
 #   cargo run --release -- server --config examples/scenarios/prefix-pool/rradius.toml
@@ -54,7 +54,7 @@ show = "SELECT username, nas, session_id, prefix, updated FROM prefix_leases WHE
 
 # 監控：每個池各狀態的前綴數（reserved、active、released）、池的容量、最舊的 released 的年齡，成為指標
 # rradius_query_prefix_leases{pool,state}、rradius_query_prefix_capacity{pool}、rradius_query_prefix_hold_age{pool}。
-# 使用率只算 reserved 與 active：released 是留給離線用戶的，要用時可以被搶；說明見手冊第 19 章「池很滿的時候」。
+# 使用率只算 reserved 與 active：released 是留給離線用戶的，要用時可以被搶；說明見手冊第 14 章〈IPv6 前綴池〉的「池很滿的時候」。
 [queries.prefix_leases]
 sql = "SELECT pool, state, count(*) AS prefixes FROM prefix_leases GROUP BY pool, state"
 help = "Prefixes of each pool by state: reserved, active, or released (kept for a user who went offline)."

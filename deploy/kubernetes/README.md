@@ -1,7 +1,7 @@
 # Kubernetes example
 
-Three `rradius-server` nodes in one cluster, as a StatefulSet. Chapter 13 of the manual,
-[docs/manual/13-kubernetes.md](../../docs/manual/13-kubernetes.md), explains how to apply it
+Three `rradius-server` nodes in one cluster, as a StatefulSet. The manual,
+[docs/manual/16-cluster.md](../../docs/manual/16-cluster.md#在-kubernetes-上部署), explains how to apply it
 and why it is built this way.
 
 | File | What it is |

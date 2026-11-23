@@ -1,8 +1,8 @@
 # Monitoring example
 
 Alerting rules for `rradius-server` for Prometheus, and a way to get the alerts to a monitoring
-system that takes SNMP traps. Chapter 21 of the manual,
-[docs/manual/21-monitoring.md](../../docs/manual/21-monitoring.md), explains what each alert
+system that takes SNMP traps. The manual,
+[docs/manual/17-monitoring.md](../../docs/manual/17-monitoring.md#告警規則與-alertmanager), explains what each alert
 means and what to do about it.
 
 | File | What it is |

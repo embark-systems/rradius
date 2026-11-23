@@ -16,6 +16,7 @@
 - [請求怎麼走](#請求怎麼走)
 - [設定檔、資料目錄與字典](#設定檔資料目錄與字典)
 - [指令一覽](#指令一覽)
+- [用外部工具測試](#用外部工具測試)
 - [核心與企業版](#核心與企業版)
 - [本書的讀法](#本書的讀法)
 - [常見錯誤](#常見錯誤)
@@ -63,7 +64,7 @@ rradius 的資料庫是 hiqlite：每個節點各有一份 SQLite 資料庫，�
 
 - **單機就是一個節點的叢集。** 設定裡一定有 `[cluster]` 這一節，就算只有一台也一樣。單機時不用管 leader、follower 這些事。
 - **寫入要經過 leader。** 叢集裡有一個節點是 leader，所有寫入都要它確認。叢集暫時選不出 leader 時，需要寫入的請求就等不到結果。
-- **資料表由 migration 建立。** `[cluster]` 的 `migrations_dir` 指向一個放 SQL 檔的目錄，伺服器啟動時依檔名編號依序套用，已經套用過的不會再跑。要改結構，就新增下一個編號的檔案，不要改舊檔。
+- **資料表由 migration 建立。** `[cluster]` 的 `migrations_dir` 指向一個放 SQL 檔的目錄，伺服器啟動時依檔名編號依序套用，已經套用過的不會再跑。要改結構，就新增下一個編號的檔案，不要改舊檔。單一檔案不能超過 2,000,000 位元組（一次寫入叢集的上限）：migration 放結構與少量初始資料，大量資料不要寫成 migration。超過時伺服器啟動失敗，訊息是 `migration file '3_big.sql' is 3000001 bytes, more than the 2000000 the cluster takes in one write: …`。`check` 不會發現這件事，要到啟動才知道。幾個檔案加起來超過 2,000,000 位元組沒有關係，伺服器會自己分批寫入。
 - **管理指令透過 API 埠寫入。** `user add` 這類指令不直接開資料庫檔，而是連到叢集的 API 埠，所以伺服器要先啟動，指令才有對象。
 
 除了內建的資料庫，你也可以讓 sql 處理器去查外部的 PostgreSQL 或 MySQL（第 09 章），或用 LDAP、Active Directory 驗證（第 08 章）。
@@ -165,6 +166,33 @@ without --config, the configuration is /etc/rradius/rradius.toml
 | `cluster` | 查看與移除叢集成員 | 第 16 章 |
 
 另外有一個獨立的壓測程式 `rradius-bench`，可以送 RADIUS 和 TACACS+ 請求。本書第 03 章拿它當登入測試工具，第 19 章用它做壓測。
+
+## 用外部工具測試
+
+本書的登入測試都用 `rradius-bench`（第 03 章）。要用別的用戶端工具時：
+
+- **RADIUS：** FreeRADIUS 附的 `radtest`、`radclient`（Debian、Ubuntu 在 `freeradius-utils` 套件，macOS 可用 Homebrew 的 `freeradius-server`）。
+- **802.1X：** wpa_supplicant 附的 `eapol_test`（第 11 章）。
+- **TACACS+：** Python 套件 `tacacs_plus` 附的 `tacacs_client`（第 12 章）。
+
+rradius 預設丟棄沒有 Message-Authenticator 的 Access-Request（`require_message_authenticator`，第 05 章），不送的用戶端工具會得到逾時，伺服器日誌是 `discarded … Access-Requests lacking a Message-Authenticator`。遇到這種情況改用 `radclient`，在輸入加上 `Message-Authenticator=0x00`，它會算出正確的值：
+
+```console
+$ echo 'User-Name=alice,User-Password=alice-password,Message-Authenticator=0x00' \
+    | radclient 127.0.0.1:1812 auth "$(cat localhost.secret)"
+```
+
+```console
+$ radtest alice alice-password 127.0.0.1 0 "$(cat localhost.secret)"
+$ radtest -t chap alice alice-password 127.0.0.1 0 "$(cat localhost.secret)"
+$ echo 'User-Name=alice,Acct-Session-Id=s1,Acct-Status-Type=Start' \
+    | radclient 127.0.0.1:1813 acct "$(cat localhost.secret)"
+$ echo 'Message-Authenticator=0x00' | radclient 127.0.0.1:1812 status "$(cat localhost.secret)"
+```
+
+最後一行是 Status-Server，`radius.status_server` 預設開啟（第 05 章）。
+
+> **未實機驗證：** 這一節的外部工具指令沒有在本版重跑；舊版手冊用 FreeRADIUS 3.2.10 的 `radclient` 測過（較舊的版本可能不會自動加 Message-Authenticator）。`Message-Authenticator` 被預設要求這一點，則對照了程式碼與第 05、21 章的實測。
 
 ## 核心與企業版
 

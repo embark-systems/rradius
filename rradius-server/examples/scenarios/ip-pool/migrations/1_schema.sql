@@ -31,6 +31,6 @@ CREATE INDEX ip_pool_state ON ip_pool (pool, state, n);
 CREATE INDEX ip_pool_last_user ON ip_pool (last_user, pool, state, released);
 CREATE INDEX ip_pool_expiry ON ip_pool (state, expires);
 
--- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual/11-operations.md）。
+-- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual/18-operations.md〈清除舊資料〉）。
 CREATE TABLE housekeeping (name TEXT PRIMARY KEY, last_run INTEGER NOT NULL);
 INSERT INTO housekeeping VALUES ('reap-ip-pool', 0);

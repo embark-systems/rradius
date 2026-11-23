@@ -88,6 +88,28 @@ secret_file = "switches.secret"
 
 > **警告：** MAC 位址不是祕密，任何能從設備標籤或線路上讀到它的人都能冒用。把這些設備放在只能到達它們需要的服務的 VLAN。
 
+**不認得的設備怎麼辦。** 範例腳本對不認得的位址回 reject，之後由交換器決定那個 port 的去向（放進訪客 VLAN、維持隔離，或不通電）。這是交換器的設定，不在 rradius，各家的指令不同。
+
+> **未實機驗證：** 交換器端「RADIUS 拒絕之後放進訪客或隔離 VLAN」的設定沒有在真的交換器上試過。
+
+想讓 rradius 直接把不認得的設備放進訪客 VLAN，改寫腳本，查不到時不回 reject，改回 accept 並設訪客 VLAN：
+
+```lua
+-- mac-auth.lua（改寫的部分）
+local GUEST_VLAN = '99'
+local rows = sql_query('SELECT vlan FROM mac_devices WHERE mac = ?', {mac})
+if #rows ~= 1 then
+  set_attr('Tunnel-Type:1', 'VLAN')
+  set_attr('Tunnel-Medium-Type:1', 'IEEE-802')
+  set_attr('Tunnel-Private-Group-Id:1', GUEST_VLAN)
+  return 'accept'
+end
+```
+
+已驗證：把範例改成這樣，表裡沒有的 `00-ff-ff-ff-ff-ff`（`User-Name` 與 `Calling-Station-Id` 相同）得到 accept，追蹤行的 `Tunnel-Private-Group-Id = 0x013939`（tag 1 加文字 `99`）；認得的印表機照舊是 VLAN 30。`User-Name` 與 `Calling-Station-Id` 不同的請求仍然是 reject。
+
+> **警告：** 這樣改之後，任何人把電腦插上網路線都能進訪客 VLAN。先確認訪客 VLAN 只到得了網際網路，到不了內部服務。
+
 同一台交換器同時有「用帳號密碼登入的使用者」與 MAB 設備時，它們是同一個用戶端，不能靠用戶端分開。做法是把 `mac-auth.lua` 當驗證鏈裡的 lua 處理器，放在驗密碼的處理器之後，用 `first_match`：
 
 ```toml
@@ -104,7 +126,7 @@ type = "lua"
 script = "mac-auth.lua"
 ```
 
-sql 處理器認得的帳號由它決定，密碼錯就是 reject，不會再往下；它不認得的名稱才交給 `mac-auth.lua` 比對位址。實測（`users` 表有 `alice`，`mac_devices` 用 wired-mab 的示範資料）：`alice` 密碼對是 accept、密碼錯是 reject（帶了印表機的 `Calling-Station-Id` 也一樣），印表機的位址是 accept 並回 VLAN 30。
+sql 處理器認得的帳號由它決定，密碼錯就是 reject，不會再往下；它不認得的名稱才交給 `mac-auth.lua` 比對位址。EAP 的 PEAP 或 TTLS 也走這條鏈時，要知道 lua 處理器回 accept 不算證明了密碼，必須有 sql 或 ldap 處理器真的比對過，所以 MAB 的規則不會讓 PEAP 不用密碼就通過（見[第 11 章〈通道裡發生什麼〉](11-eap.md#通道裡發生什麼)）。實測（`users` 表有 `alice`，`mac_devices` 用 wired-mab 的示範資料）：`alice` 密碼對是 accept、密碼錯是 reject（帶了印表機的 `Calling-Station-Id` 也一樣），印表機的位址是 accept 並回 VLAN 30。
 
 ### 怎麼測與注意事項
 
@@ -125,6 +147,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat switches.secret)" \
 | --- | --- |
 | 印表機，`User-Name` 與 `Calling-Station-Id` 都是 `00-11-22-AA-BB-CC` | accept，VLAN 30 |
 | 電話，`User-Name` 是 `00a0c9123456`、`Calling-Station-Id` 是 `00:a0:c9:12:34:56` | accept，VLAN 40（寫法不同，正規化後相同） |
+| `User-Name` 是 `00a0.c912.3456`（點分寫法），`Calling-Station-Id` 是 `00:a0:c9:12:34:56` | accept，VLAN 40 |
 | 用 `--load chap` 送印表機的位址 | accept |
 | `User-Name` 是印表機，`Calling-Station-Id` 是別的位址 | reject |
 | 沒有 `Calling-Station-Id` | reject |
@@ -140,7 +163,14 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat switches.secret)" \
 
 注意事項：
 
-- 新增設備就是在 `mac_devices` 加一列，腳本每次登入都查表，不用 reload。
+- 腳本每次登入都查表，所以表裡多一列設備不用 reload。目前要用新的 migration 檔加資料，例如 `3_add_cameras.sql`：
+
+  ```sql
+  -- migrations/3_add_cameras.sql
+  INSERT INTO mac_devices (mac, vlan, note) VALUES ('0011223344aa', '50', '大門監視器');
+  ```
+
+  放進 `migrations/` 後重新啟動伺服器，migration 才會套用（叢集要逐台重啟）。已驗證：加了這個檔、重啟之後，`User-Name` 與 `Calling-Station-Id` 是 `0011.2233.44aa`、`00:11:22:33:44:aa` 的請求得到 VLAN 50。設備多、變動頻繁時，一台台寫成 migration 很不方便，要另外找管理這張表的流程（例如外部系統匯入）。
 - 認證紀錄的 `chain="script" handler="script"` 表示這個決定是最上層腳本做的。
 
 ## 遠端存取：remote-access
@@ -233,7 +263,8 @@ auth = "mfa"
 
 各鍵的完整說明見[附錄 A](90-config-reference.md)；ldap 處理器的其他鍵（`ca_file`、逾時、連線數等）見[第 08 章](08-ldap-and-ad.md)。
 
-- `filter` 的後半段讓 AD 裡停用的帳號（`userAccountControl` 第 2 位元）找不到，等同不存在。
+- `filter` 的後半段讓 AD 裡停用的帳號（`userAccountControl` 第 2 位元）找不到，等同不存在。OpenLDAP 的寫法（`pwdAccountLockedTime`）見[第 08 章](08-ldap-and-ad.md)〈用目錄帳號登入〉，要先在自己的目錄上確認。
+- `required_groups` 預設看 `memberOf`，只算直接的成員。AD 要算巢狀群組，改用 `group_base_dn` 加 `group_filter = "(member:1.2.840.113556.1.4.1941:={dn})"`，見[第 08 章](08-ldap-and-ad.md)〈依群組決定能不能登入〉（這個寫法沒有在 AD 上測過）。
 - `password_check = "bind"` 要拿到明文密碼，所以 VPN 閘道要用 PAP 送密碼。
 - `group_reply` 的 `Filter-Id` 要對應 VPN 閘道上同名的規則（filter 或 group policy）。
 - 目錄伺服器的憑證不是系統信任的 CA 簽的時候，加 `ca_file`。
@@ -253,6 +284,8 @@ auth = "mfa"
 
 > **企業版：** 企業版內建 TOTP／HOTP 第二因素，不必自己寫這個腳本。
 
+換成自己的帳號時，驗證碼金鑰用 Base32、每人一把，產生之後以 QR code（`otpauth://totp/…`）給使用者掃描；示範金鑰換掉之後，QR code 與 `otpauth` 網址也要跟著重新產生。
+
 ### 怎麼測與注意事項
 
 **跳板機：已驗證。** 把實驗目錄裡 `jump-host` 的 `address` 改成 `"127.0.0.1"`，送第一步：
@@ -265,7 +298,21 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat jump-host.secret)" \
 …
 ```
 
-`challenge 1` 就是腳本回的 Access-Challenge；密碼錯時是 `reject 1`。`rradius-bench` 不會回答 challenge，所以第二步要用會處理 Access-Challenge 的用戶端，例如真的跳板機：輸入密碼之後，它會顯示 `Enter your code`，把驗證碼當成下一次的密碼、連同 `State` 送回來。本章用一個會處理 challenge 的測試用戶端驗證過第二步：正確的驗證碼得到 Access-Accept，同一個 `State` 再送一次得到 Access-Reject。伺服器的認證紀錄：
+`challenge 1` 就是腳本回的 Access-Challenge；密碼錯時是 `reject 1`。`rradius-bench` 不會回答 challenge，所以第二步要用會處理 Access-Challenge 的用戶端，例如 FreeRADIUS 的 `radclient`，或真的跳板機。用 `radclient` 時，驗證碼用 `oathtool` 算（和示範金鑰 `JBSWY3DPEHPK3PXP` 對應，SHA-1、6 位數、30 秒一步，與程式碼的 `totp_verify` 相同），連同第一步收到的 `State` 值送出：
+
+```console
+$ oathtool --totp -b JBSWY3DPEHPK3PXP
+$ echo 'User-Name=ops1,User-Password=<驗證碼>,State=<State 的值>,Message-Authenticator=0x00' \
+    | radclient 127.0.0.1:1812 auth "$(cat jump-host.secret)"
+```
+
+> **未實機驗證：** `oathtool` 與 `radclient` 的這兩行沒有在本版跑過；演算法的部分對照了 `rradius-core/src/totp.rs`。
+
+真的跳板機：輸入密碼之後，它會顯示 `Enter your code`，把驗證碼當成下一次的密碼、連同 `State` 送回來。SSH 跳板機用 pam_radius 時，`/etc/pam_radius.conf` 寫一行 rradius 的位址、共用密碼（`jump-host.secret` 的內容）與逾時，逾時建議 5 秒以上；用推播時要更長，見〈單檔範例〉。
+
+> **未實機驗證：** pam_radius 的設定沒有在真的跳板機上跑過，來自舊版手冊。
+
+本章用一個會處理 challenge 的測試用戶端驗證過第二步：正確的驗證碼得到 Access-Accept，同一個 `State` 再送一次得到 Access-Reject。伺服器的認證紀錄：
 
 ```text
 … rradius_auth: authentication protocol="radius" client="jump-host" source=127.0.0.1 user="ops1" account="ops1" chain="mfa" handler="lua" decision="challenge"
@@ -447,7 +494,7 @@ timeout_ms = 7000
 
 等待要花時間，要先想好三件事：
 
-- NAS 的 RADIUS 逾時要比 `WAIT_SECONDS` 長，否則使用者還在看手機，NAS 就放棄或重送了。
+- NAS 的 RADIUS 逾時要比 `WAIT_SECONDS` 長，否則使用者還在看手機，NAS 就放棄或重送了。例如 `WAIT_SECONDS` 是 30 秒，pam_radius 伺服器那一行的逾時設 35 秒；VPN 閘道則是它的 RADIUS 伺服器逾時。
 - 每個等待中的登入都佔著 `max_auth_inflight` 的一個名額，同時等待的人多時，要調高這個值。
 - `lua.max_execution_ms`（預設 `1000`）只算腳本自己執行的時間，不算等待 HTTP 回應的時間。
 

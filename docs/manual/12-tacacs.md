@@ -49,6 +49,8 @@ RADIUS 多半用在「讓使用者上網」：Wi-Fi、VPN、寬頻。TACACS+（R
 設備送出的授權與計費請求帶著一串 AV pair，例如 `service=shell`、`cmd=show`、`cmd-arg=version`。授權的回覆也是 AV pair，例如 `priv-lvl=15`。哪些 AV pair 有意義由設備決定；rradius 只負責收下、交給腳本或規則，再把結果送回去。
 
 > **注意：** TACACS+ 的加密只靠共用密碼，強度有限。管理網路以外的路段，用 VPN 或其他方式保護。
+>
+> RFC 8907 的混淆只用 MD5 加共用密碼，不能取代真正的加密。設備與 rradius 之間放在管理網路，共用密碼要夠長（少於 16 個位元組啟動時會有警告，第 20 章）、每台設備不同（用多個 `[[tacacs.clients]]`，各自的 `secret_file`）。
 
 > **企業版：** 企業版另外提供 TACACS+ over TLS（RFC 9887）。
 
@@ -292,6 +294,17 @@ $ rradius-bench run --server 127.0.0.1 --tacacs-port 4949 --secret "$(cat tacacs
 
 格式跟 RADIUS 的認證紀錄相同，只是 `protocol="tacacs"`。授權與計費不寫這種紀錄。
 
+`rradius-bench` 不印授權回覆的內容。要看回覆的 AV pair，或用 `rradius-bench` 沒有的送法，可以用 Python 套件 `tacacs_plus`（`pip install tacacs_plus`）附的 `tacacs_client`：
+
+```console
+$ K="$(cat tacacs.secret)"
+$ tacacs_client -H 127.0.0.1 -p 4949 -k $K -u noc1 authenticate          # 輸入 noc1-password
+$ tacacs_client -H 127.0.0.1 -p 4949 -k $K -u noc1 authorize -c service=shell cmd=
+$ tacacs_client -H 127.0.0.1 -p 4949 -k $K -u noc1 authorize -c service=shell cmd=show cmd-arg=running-config
+```
+
+> **未實機驗證：** `tacacs_client` 的指令沿用舊版手冊，本版沒有重跑；它的參數依版本可能不同，以 `tacacs_client --help` 為準。本章表格裡的授權結果是用能解開回覆的測試用戶端實測的（見〈用腳本授權〉）。
+
 ## 認證方式：ASCII、PAP、CHAP、MS-CHAP
 
 設備送出認證請求時會說明它用哪一種方式（`authen_type`）。rradius 對每一種的處理：
@@ -375,6 +388,12 @@ enable = "login"
 `enable` 可以 reload。送 `SIGHUP` 之後，`netadmin1` 用自己的密碼 enable 會得到 `PASS`，密碼錯則是 `FAIL`。其他值會讓 `check` 失敗：`tacacs.enable must be "deny" or "login", not "ask"`。
 
 `login` 用的是登入密碼，不是另一組 enable 密碼。驗證鏈與腳本看得到兩個數字屬性：`authen_service`（enable 時是 2）與 `priv_lvl`（要進入的等級），想要分開處理，可以在 lua 處理器或腳本裡看這兩個值。下一節的例子就是這樣做的。
+
+**設備端怎麼選：**
+
+- 不要把 enable 交給 rradius，除非你設了 `enable = "login"`。預設的 `deny` 回 `FAIL`，而設備收到 `FAIL` 不會改用本機的 enable 密碼。
+- 維持本機的 enable 密碼：設備上用 `aaa authentication enable default enable`。權限等級由登入時授權回覆的 `priv-lvl` 決定，管理員通常不需要 enable。
+- 要用 `login`：設備用 `aaa authentication enable default group RRADIUS enable`（Cisco IOS 的寫法，未實機驗證）。這時管理員用自己的登入密碼 enable，所以要在腳本或 lua 處理器裡限制，例如 `authen_service == 2` 時只讓 `netadmin` 角色通過。
 
 ## 不用驗證鏈：在腳本裡認證
 
@@ -554,6 +573,22 @@ permit|deny  樣式 樣式 …  {回覆的 AV pair …}
 - 群組可以 reload，跟用戶端清單一起換。實測改了規則、送 `SIGHUP` 之後，下一個授權請求就照新規則。
 - 一個群組可以沒有規則，那就是全部拒絕。
 
+**寫規則要小心的地方：**
+
+- **用白名單，不要用黑名單。** 規則只比對設備送來的 AV pair。沒有列出的子命令（例如 `show tech-support`）與設備上的縮寫（例如打 `show run` 而不是 `show running-config`），都不會被 `deny cmd=show cmd-arg=running-config` 擋到，卻符合 `permit cmd=show`。上面的 `noc` 群組只放行列出的指令，其餘落到「沒有任何一條成立」而被拒絕，比較安全。縮寫在設備上實際送出什麼，依設備而定（未實機驗證）。
+- **參數不是逐一比對。** 一條規則的每個樣式，只要符合請求裡**任何一個** AV pair 就成立，所以 `cmd-arg=interfaces` 會放行 `show interfaces` 之後再加別的參數。要設備真的唯讀，靠設備上那個權限等級本身能做什麼，授權規則只是第二道防線。
+- **設備開 shell 時可能送 `cmd*`。** AV pair 的分隔符號是 `=`（必要）或 `*`（可有可無），照設備送來的樣子比對。設備送 `cmd*`（值是空的）時，樣式要寫成 `cmd\*`，寫 `cmd=` 不會成立：
+
+  ```toml
+  [tacacs.authorize_groups]
+  core = [
+    'permit service=shell cmd\* {priv-lvl=15}',
+    'permit service=shell cmd=.*',
+  ]
+  ```
+
+- **規則一定用單引號。** `\*` 在 TOML 的雙引號字串裡是不合法的跳脫，設定檔讀不進來；單引號的字串不處理跳脫，反斜線原樣交給樣式。把上面的規則寫成雙引號，`check` 會失敗，訊息是 `rradius.toml: line 39: missing escaped value, expected …`（後面列出合法的跳脫字元，行號是你的檔案裡的行）。本節前面的規則用雙引號，是因為裡面只有 `\"` 這種 TOML 本來就懂的跳脫；要讓樣式看到反斜線，就改單引號。
+
 規則寫錯時，啟動、reload 與 `check` 都會失敗，並指出群組名稱與第幾條規則（從 1 開始數）。reload 失敗時，伺服器繼續用原來的設定：
 
 | 寫法 | 錯誤訊息 |
@@ -620,6 +655,7 @@ CREATE INDEX tacacs_log_user ON tacacs_log (username, logged);
 
 - 指令與參數是分開送的，腳本把它們組回一行，並去掉設備附上的 `<cr>`。
 - 主鍵是 `(device, task_id, event)`，加上 `INSERT OR IGNORE`：設備重送同一筆時，表裡只留一筆。計費腳本一定要能重複執行，理由見[第 13 章](13-accounting.md)。
+- **`tacacs_log` 會一直變大，rradius 不會自動清除。** 每個指令都是一列。要定期刪除舊的列，做法與計費表相同，見[第 18 章](18-operations.md)；保存多久依公司的稽核要求決定，刪除前先確認。
 
 實測送一筆 `show version` 的計費（AV pair：`task_id=42 start_time=1795000000 service=shell cmd=show cmd-arg=version cmd-arg=<cr>`），回覆是 `SUCCESS`，表裡多了這一列：
 
@@ -727,7 +763,28 @@ TACACS+ authorization for client <名稱> answered ERROR: the cluster database c
 - **計費：** 開 exec 與指令的計費，才會有登入、登出與每一個指令的紀錄。
 - **來源位址。** 設備送出 TACACS+ 用的來源介面，要跟 `[[tacacs.clients]]` 的 `address` 對得上。
 
-> **未實機驗證：** 本章沒有用真的路由器或交換器測試，以上是 TACACS+ 設備通常需要的設定項目。
+以 Cisco IOS 為例，下面是把上述項目串起來的一組設定，位址與 key 換成你自己的：
+
+```text
+aaa new-model
+tacacs server rradius-1
+ address ipv4 10.50.0.100
+ key <tacacs.secret 的內容>
+aaa group server tacacs+ RRADIUS
+ server name rradius-1
+!
+aaa authentication login default group RRADIUS local
+aaa authorization exec default group RRADIUS local
+aaa authorization commands 1 default group RRADIUS local
+aaa authorization commands 15 default group RRADIUS local
+aaa accounting exec default start-stop group RRADIUS
+aaa accounting commands 1 default stop-only group RRADIUS
+aaa accounting commands 15 default stop-only group RRADIUS
+```
+
+> **警告：** 一定要保留 `local` 當備援，並且在改設定之前先確認本機的緊急帳號能登入。rradius 停機或網路不通時，設備會改用本機帳號；沒有備援就會把自己鎖在設備外面。先只開認證（`aaa authentication login`），確認能登入，再開 exec 授權，最後才開指令授權（`aaa authorization commands`）：授權規則設錯時，連 `exit` 都可能被拒絕。多台 rradius 時，在 `aaa group server` 列多個 `server name`，設備會依序嘗試。
+
+> **未實機驗證：** 本章沒有用真的路由器或交換器測試，以上是 TACACS+ 設備通常需要的設定項目；這組 IOS 指令沿用舊版手冊，不同版本的指令可能不同，上線前請在實驗設備上確認。
 
 ## 監看 TACACS+
 
@@ -790,6 +847,10 @@ TACACS+
 **症狀：** `check` 印出 `tacacs.idle_timeout_ms must be greater than 0` 或 `tacacs.max_connections must be greater than 0`。
 **原因：** 這兩個值不能是 0。
 **解法：** 改成正數，或刪掉這一行用預設值。
+
+**症狀：** `check` 印出 `rradius.toml: line N: missing escaped value, expected …`，指到 `[tacacs.authorize_groups]` 的一條規則。
+**原因：** 規則用雙引號寫，裡面有 `cmd\*` 這種反斜線，TOML 的雙引號字串不接受。
+**解法：** 改用單引號（見〈用授權群組授權〉）。
 
 **症狀：** 授權一律 `FAIL`，腳本裡的 `log` 都沒有印出來。
 **原因：** 這個用戶端設了 `authorize_group`，授權交給規則，腳本不會跑；規則一條都不成立就是 `FAIL`。

@@ -1,6 +1,6 @@
 # 網路設備管理（TACACS+）：管理員登入路由器和交換器，依角色決定權限等級和能下的指令，
 # 每個指令都記下來。
-# 說明：docs/manual/06-device-admin.md
+# 說明：docs/manual/12-tacacs.md
 
 dictionary = "../../../../share/dictionary"
 

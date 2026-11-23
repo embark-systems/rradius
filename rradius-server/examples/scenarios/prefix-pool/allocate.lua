@@ -13,7 +13,7 @@
 --   搶輸了再找時，在往後的候選裡隨機挑，免得同時進來的人每一輪都搶同一個 n。
 --
 -- 找空的 n 是一次讀（走主鍵），不是一個一個去寫；寫入只有搶的那一次。池越滿，要走過的連續已佔用的 n 越長，
--- 所以只看一個窗口，窗口裡沒有就搶 released（見手冊第 19 章的量測）。
+-- 所以只看一個窗口，窗口裡沒有就搶 released（見手冊第 14 章〈IPv6 前綴池〉的量測）。
 -- INTERIM_SECONDS、HOLD_SECONDS 要和 accounting.lua 一致；回收的間隔（60 秒）也要和它的 REAP_SECONDS 一致。
 
 local RESERVE_SECONDS = 120    -- 預留多久：Accounting-Start 沒來就刪掉

@@ -385,7 +385,7 @@ pub fn tls_connect(certs: &Path, ca: &str, port: u16, server_name: &str, client:
 }
 
 /// Rewrites the configuration a running server was started from and has it read again with
-/// SIGHUP, as chapter 19 tells people to.
+/// SIGHUP, as the manual tells people to.
 pub fn reload(server: &Server, change: impl FnOnce(String) -> String) -> TestResult {
     let config = server.dir.path().join("rradius.toml");
     std::fs::write(&config, change(std::fs::read_to_string(&config)?))?;

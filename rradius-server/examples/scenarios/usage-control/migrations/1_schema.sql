@@ -56,6 +56,6 @@ CREATE TABLE accounting (
 -- 認證時加總一個用戶期間內的流量：靠這個索引只看他自己的列。
 CREATE INDEX accounting_user ON accounting (username, started);
 
--- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual/11-operations.md）。
+-- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual/18-operations.md〈清除舊資料〉）。
 CREATE TABLE housekeeping (name TEXT PRIMARY KEY, last_run INTEGER NOT NULL);
 INSERT INTO housekeeping VALUES ('reap-session-slots', 0);

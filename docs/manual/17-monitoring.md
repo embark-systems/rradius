@@ -351,6 +351,87 @@ $ promtool test rules rradius.rules.test.yml
 
 > **未實機驗證：** 撰寫本章的機器沒有 `promtool`，上面兩個指令沒有實際執行；Alertmanager 與 SNMP trap 的轉送也沒有實際跑過。
 
+### 三種接法
+
+rradius 輸出的是 Prometheus 指標，**沒有內建 SNMP**。依你的監控系統選一種：
+
+| 你的監控系統 | 做法 | 驗證過嗎 |
+| --- | --- | --- |
+| Prometheus 與 Alertmanager（或能收 Alertmanager webhook 的系統） | 載入 `rradius.rules.yml`，告警由 Alertmanager 發送 | 規則的語法與邏輯用 `promtool` 驗證（舊版章節的記載）；沒有接真實的通知管道 |
+| 只收 SNMP trap | Alertmanager 的 webhook 送給 `snmp_notifier`，由它發 SNMP trap（v2c 或 v3） | 舊版章節記載：本機以 Alertmanager、`snmp_notifier`、`snmptrapd` 三個容器實測，`snmptrapd` 收到帶告警名稱、節點、嚴重程度與摘要的 v2c trap；v3 與真實監控系統沒有測。本次沒有重跑，**未實機驗證** |
+| 能讀 HTTP 的監控系統（例如 Zabbix 的 HTTP agent 項目） | 直接讀 `GET /metrics`，挑要看的指標，自己設門檻；規則檔的門檻可當參考 | **未實機驗證** |
+| 只會用 SNMP 輪詢（`snmpwalk` 要看得到 rradius 的數字） | **不支援** | 見[為什麼沒有 SNMP 輪詢](#為什麼沒有-snmp-輪詢) |
+
+### 各告警怎麼處理
+
+下表依 `rradius.rules.yml` 的說明文字與 `for` 設定整理。「持續」是規則的 `for`，沒寫表示條件成立就響。
+
+| 告警 | 處理建議 |
+| --- | --- |
+| `RradiusDown` | 程序掛了，或 `[metrics]` 的位址從 Prometheus 連不到；看 systemd 或容器的狀態與日誌 |
+| `RradiusNoLeader` | 節點被隔開，或叢集失去多數。節點不能寫：計費進 spool，需要寫入的登入被拒絕；見[第 16 章](16-cluster.md#沒有-leader-時) |
+| `RradiusNotCaughtUp` | 本機副本落後叢集超過 5 分鐘：節點剛加入或剛重啟、資料多；沒有進展就看日誌 |
+| `RradiusOverload` | 進來的請求超過節點處理得了的量：找變慢的資料庫、目錄或腳本；搭配 `RradiusSlowLogins` 與[第 21 章](21-troubleshooting.md) |
+| `RradiusDiscardingForTheDatabase` | 資料庫不能回答，或沒有 leader 可寫；和 `RradiusNoLeader` 一起看 |
+| `RradiusManyRejects` | 目錄故障、設定錯誤，或有人在試密碼；看日誌的拒絕原因 |
+| `RradiusInvalidPackets` | 通常是某台設備的共用密碼設錯 |
+| `RradiusSlowLogins` | 資料庫、目錄或腳本變慢；1 秒只是起點，依設備的逾時調整 |
+| `RradiusAccountingSpoolBacklog` | spool 已存放計費超過 15 分鐘，資料庫或叢集有問題；恢復後會自己重放，見[第 13 章](13-accounting.md#計費-spool) |
+| `RradiusAccountingSpoolLoss` | 有紀錄在重放時被拒或發現損毀，沒有進資料庫；看 spool 目錄的 `rejected.log` |
+| `RradiusAccountingLogDropping` | 計費記錄檔有請求沒寫進去：磁碟太慢、滿了或不能寫（只在設了 `[radius.accounting_log]` 時有指標） |
+| `RradiusExternalDatabaseUnreachable` | 設了 `required_for_ready` 的外部資料庫連不上；這個節點的 `/readyz` 回 503，負載平衡器會把它移出。查資料庫與網路 |
+| `RradiusExternalDatabaseFailing` | 呼叫外部資料庫失敗（`reason="unavailable"`）：資料庫掛了、慢，或網路不通 |
+| `RradiusExternalDatabasePoolFull` | 連線池用滿超過 5 分鐘，呼叫在排隊：查詢變慢，或 `pool_size` 太小 |
+| `RradiusNamedQueryStale` | 具名查詢超過 2 分鐘沒有成功，依賴它的數字（例如位址池使用率）是舊的；看 `RradiusNamedQueryFailing` 與日誌 |
+| `RradiusNamedQueryFailing` | `reason` 標籤是 `timeout`、`error` 或 `shape`（結果的欄位不符合標籤與數值），見[第 09 章](09-external-databases.md#具名查詢把-sql-變成指標) |
+| `RradiusReloadFailed` | 節點照舊設定運作；日誌寫了原因，修好再重新載入 |
+| `RradiusLogLinesDropped` | 日誌的去處太慢，見[日誌行被丟棄的時候](#日誌行被丟棄的時候) |
+| `RradiusEapSessionsLost` | 同時進行的 802.1X 對話超過節點保留的量，有的被擠掉或被拒絕；見[第 21 章](21-troubleshooting.md#eap-卡住或失敗) |
+
+**門檻是起點，不是標準答案。** 規則依指標的意義與合成資料寫成，沒有在你的流量上校正過：上線後看幾週的實際數字，再調 `for` 的時間，以及 `RradiusManyRejects`、`RradiusSlowLogins` 這類比例與時間的門檻。
+
+### 把告警變成 SNMP trap
+
+`snmp_notifier`（獨立的開源專案，<https://github.com/maxwo/snmp_notifier>，rradius 不包含它）接 Alertmanager 的 webhook，對每組告警發一個 SNMP trap。以下步驟取自 `deploy/monitoring/README.md` 與舊版章節，`snmp_notifier` 的旗標與行為**未實機驗證**，以它自己的 `--help` 為準。
+
+1. 把 `alertmanager.yml` 的 `route` 與 `receivers` 放進你的 Alertmanager 設定。接收者把告警送到 `http://snmp-notifier:9464/alerts`，已解除時也送（`send_resolved: true`）。
+2. 啟動 `snmp_notifier`，指向接收 trap 的監控系統：
+
+   ```bash
+   snmp_notifier --snmp.destination=nms.example.net:162 --snmp.community=<共同體字串> \
+     --trap.default-oid=<你的企業編號>.1 \
+     --trap.description-template=/etc/snmp_notifier/description-template.tpl
+   ```
+
+3. 它預設的 trap OID（`1.3.6.1.4.1.98789.1`）不是你的，要換成自己企業編號下的子樹。告警上有 `oid` 標籤（或用 `--trap.oid-label` 指定標籤名）時，那筆告警改用該值當 trap OID；`rradius.rules.yml` 目前沒有設 `oid` 標籤，要為重要告警指定不同的 OID，得自己在規則的 `labels` 加。
+4. **v2c 的共同體字串是明文。** 要認證與加密就用 v3：`--snmp.version=V3` 加上 `--snmp.authentication-*`、`--snmp.private-*` 選項。
+
+收到的 trap 長這樣（`snmptrapd` 的輸出，內容經過整理，取自舊版章節）：
+
+```
+iso.3.6.1.6.3.1.1.4.1.0 = OID: iso.3.6.1.4.1.98789.1
+iso.3.6.1.4.1.98789.2.1 = STRING: "1.3.6.1.4.1.98789.1[alertname=RradiusDown,instance=a:9812]"
+iso.3.6.1.4.1.98789.2.2 = STRING: "critical"
+iso.3.6.1.4.1.98789.2.3 = STRING: "1/1 alerts are firing:
+  Status: critical
+  - Alert: RradiusDown
+    Summary: rradius on a:9812 cannot be scraped"
+```
+
+要讓監控系統看得懂，把 trap 的 OID 與三個欄位（名稱、嚴重程度、說明）設成它的 trap 規則。
+
+### 為什麼沒有 SNMP 輪詢
+
+內建 SNMP agent 要在 rradius 裡處理 SNMP 的編碼和（v3 的）認證與加密，是新的攻擊面，也沒有可用的相依（專案規則是不新增相依）。標準的 RADIUS 伺服器 MIB（RFC 4669、RFC 4671）也只有每個 client 的幾個計數，能回答的問題比 Prometheus 指標少很多。若真有只會 SNMP 輪詢的系統必須接上，日後可行的做法是讓 rradius 透過 AgentX（RFC 2741）接到主機上的 net-snmp，把指標掛在一棵 MIB 子樹下，認證與加密交給 `snmpd`。這件事還沒做，要有明確需求再評估。
+
+### 驗證過什麼
+
+以下是舊版章節的記載，本次沒有重跑：
+
+- **規則：** `promtool check rules` 通過；19 條規則用到的每個 `rradius_*` 指標名稱，都對照過執行中伺服器的 `/metrics` 或原始碼；`promtool test rules` 以 9 組合成的時間序列驗證該響與不該響的告警。
+- **通知：** `amtool check-config` 通過；Alertmanager 送 webhook 給 `snmp_notifier`、再發 v2c trap 到 `snmptrapd` 這條路，在本機容器實測過。
+- **沒有驗證：** 規則在真實流量下的門檻、SNMP v3 trap、真實的監控系統（Zabbix、傳統 NMS）當接收端、用 `snmpwalk` 讀 rradius（不支援）。
+
 ## 用 status 看即時狀態
 
 `status` 讀設定檔的 `[metrics]`，連到這個節點的指標埠，相隔一秒取兩次樣本，算出每秒的速率：
