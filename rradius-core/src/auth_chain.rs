@@ -1590,6 +1590,55 @@ mod tests {
         assert!(!log.contains("WARN"), "{log}");
     }
 
+    /// The same value is plaintext for every protocol, not only PAP, and a user who is no longer
+    /// warned about (already warned, or past the cap of `first_warning`) is still compared.
+    #[tokio::test]
+    async fn test_unprefixed_digest_is_plaintext_for_every_protocol() {
+        let (peer, challenge) = ([1u8; 16], [2u8; 16]);
+        for (user, digest) in [("digest-hex", "8846f7eaee8fb117ad06bdd830b7586c"), ("digest-b64", "W6ph5Mm5Pz8GgiULbPgzG37mj9g=")] {
+            let chap_for = |password: &str| Md5::digest([&[7u8][..], password.as_bytes(), &challenge].concat()).to_vec();
+            let secrets = |password: &str| {
+                vec![
+                    Secret::Chap { id: 7, response: chap_for(password), challenge: challenge.to_vec() },
+                    Secret::MsChapV1 { ident: 1, challenge: [3u8; 8], nt_response: crate::mschap::challenge_response(&[3u8; 8], &crate::mschap::nt_password_hash(password)).unwrap_or([0u8; 24]) },
+                    Secret::MsChapV2 { ident: 1, peer_challenge: peer, response: crate::mschap::response_for(password, user, &peer, &challenge), challenge },
+                ]
+            };
+            let log = crate::test_support::radius::logged_during(async {
+                for secret in secrets(digest) {
+                    assert!(verify_secret(digest, user, &secret).await.is_some(), "right password, {secret:?}");
+                }
+                for secret in secrets("password") {
+                    assert!(verify_secret(digest, user, &secret).await.is_none(), "wrong password, {secret:?}");
+                }
+            })
+            .await;
+            let warnings: Vec<&str> = log.lines().filter(|line| line.contains("WARN")).collect();
+            assert_eq!(warnings.len(), 1, "once per user, whatever the protocol: {log}");
+            assert!(warnings[0].contains(user) && !warnings[0].contains(digest), "{log}");
+            // Not warned about any more, and still compared the same way.
+            let log = crate::test_support::radius::logged_during(async {
+                for secret in secrets(digest) {
+                    assert!(verify_secret(digest, user, &secret).await.is_some(), "again, right password, {secret:?}");
+                }
+                for secret in secrets("password") {
+                    assert!(verify_secret(digest, user, &secret).await.is_none(), "again, wrong password, {secret:?}");
+                }
+            })
+            .await;
+            assert!(!log.contains("WARN"), "no second warning: {log}");
+        }
+        // With a prefix it says what it is: no warning for any protocol.
+        let log = crate::test_support::radius::logged_during(async {
+            let stored = "{clear}8846f7eaee8fb117ad06bdd830b7586c";
+            let response = Md5::digest([&[7u8][..], b"8846f7eaee8fb117ad06bdd830b7586c", &challenge].concat()).to_vec();
+            assert!(verify_secret(stored, "digest-clear", &Secret::Chap { id: 7, response, challenge: challenge.to_vec() }).await.is_some());
+            assert!(verify_secret("{nthash}8846f7eaee8fb117ad06bdd830b7586c", "digest-nthash", &Secret::pap(b"x".to_vec())).await.is_none());
+        })
+        .await;
+        assert!(!log.contains("WARN"), "{log}");
+    }
+
     #[tokio::test]
     async fn test_challenge_stops_the_chain() {
         setup_runs().await;
