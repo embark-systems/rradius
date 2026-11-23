@@ -430,7 +430,7 @@ p50、p99 是從這一秒內 histogram 各區間的增量內插出來的，單�
 
 ### 旗標與結束碼
 
-用法：`rradius-server status [--config <path>] [--watch] [--json] [--cluster]`。
+用法：`rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]`。
 
 | 旗標 | 作用 |
 | --- | --- |
@@ -438,6 +438,7 @@ p50、p99 是從這一秒內 histogram 各區間的增量內插出來的，單�
 | `--watch` | 每秒印一次，直到按 Ctrl+C（結束碼 0）。輸出到終端機時會先清畫面 |
 | `--json` | 改印 JSON，每次一個物件 |
 | `--cluster` | 看叢集的所有成員，見[看整個叢集](#看整個叢集) |
+| `--tui` | 全螢幕互動畫面，見[全螢幕畫面](#全螢幕畫面)；不能和 `--json`、`--watch` 並用 |
 
 | 結束碼 | 意思 |
 | --- | --- |
@@ -446,6 +447,20 @@ p50、p99 是從這一秒內 histogram 各區間的增量內插出來的，單�
 | 3 | 連不到指標埠；`--cluster` 時是一個成員都連不到 |
 
 加了 `--watch` 時連不上不會結束，而是每秒重試並印出錯誤。伺服器在兩次取樣之間重啟，計數器會變小，這時第一行下面會多一行 `counters reset since the previous sample: the server restarted`。
+
+### 全螢幕畫面
+
+`status --tui` 把上面各個區段畫在全螢幕裡，每秒更新，不必一直重新執行。它畫的就是 `status` 印出的那些區段，所以沒有自己的資料來源，企業版或之後新增的區段會自動多一頁。
+
+| 按鍵 | 作用 |
+| --- | --- |
+| 左、右方向鍵、Tab | 換區段（到頭會繞回） |
+| 上、下方向鍵 | 和 `--cluster` 一起用時選成員；下方顯示選到那一台的區段 |
+| `q`、Esc、Ctrl+C | 離開，終端機回到原來的畫面與游標 |
+
+和 `--cluster` 一起用時，上方有成員表（節點、角色、`/readyz`、每秒登入與計費、處理中的請求）。連不上的成員在表裡標 `unreachable` 並附原因，畫面繼續更新；選到它時，下方說明它沒有回答。
+
+`tui` 是編譯時的 Cargo feature，預設不編進，用 `cargo build --features tui` 或 `-p rradius-server --features tui`。沒編進的版本執行 `--tui`，會以結束碼 2 結束並指出缺少 `tui` feature；標準輸出不是終端機（導到檔案或管線）時也以 2 結束，且不寫任何東西。
 
 ### JSON 輸出
 

@@ -186,6 +186,29 @@ fn test_wrong_arguments() -> Result<(), String> {
     Ok(())
 }
 
+/// `--tui` does not go with `--json` or `--watch`, in any build.
+#[test]
+fn test_tui_with_other_outputs() -> Result<(), String> {
+    for args in [&["--tui", "--json"][..], &["--watch", "--tui"], &["--tui", "--tui"]] {
+        let (code, stdout, stderr) = status(args)?;
+        assert_eq!(code, Some(2), "{args:?}");
+        assert!(stdout.is_empty() && stderr.contains("usage: rradius-server status"), "{args:?}: {stdout} {stderr}");
+    }
+    Ok(())
+}
+
+/// With the output sent to a pipe, `--tui` writes nothing there and refuses: for lack of a terminal
+/// in a build with the feature, for lack of the feature in one without.
+#[test]
+fn test_tui_needs_a_terminal() -> Result<(), String> {
+    let (code, stdout, stderr) = status(&["--tui"])?;
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout:?}");
+    let expected = if cfg!(feature = "tui") { "needs a terminal" } else { "no `tui` feature" };
+    assert!(stderr.contains(expected), "{stderr}");
+    Ok(())
+}
+
 #[test]
 fn test_cluster_wrong_arguments() -> Result<(), String> {
     let (code, _, stderr) = status(&["--cluster", "--json", "--cluster"])?;

@@ -16,7 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::signal::unix::{signal, SignalKind};
 
-pub const USAGE: &str = "usage: rradius-server status [--config <path>] [--watch] [--json] [--cluster]";
+pub const USAGE: &str = "usage: rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]";
 
 /// How long one exchange with the metrics port may take.
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -583,11 +583,20 @@ pub fn view(address: SocketAddr, before: &Sample, after: &Sample, extra: &[Statu
 }
 
 /// A number as people read it: whole numbers without a fraction.
-fn number(value: f64) -> String {
+pub(crate) fn number(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         format!("{}", value as i64)
     } else {
         format!("{value}")
+    }
+}
+
+/// What an item shows, as text.
+pub(crate) fn reading_text(reading: &Reading) -> String {
+    match reading {
+        Reading::Value(Value::Number(value)) => number(*value),
+        Reading::Value(Value::Text(text)) => text.clone(),
+        Reading::Rate { rate, total } => format!("{rate:.1}/s ({})", number(*total)),
     }
 }
 
@@ -602,12 +611,7 @@ pub fn text(view: &View) -> String {
         let _ = writeln!(out, "\n{}", section.title);
         let width = section.items.iter().map(|item| item.label.chars().count()).max().unwrap_or(0);
         for item in &section.items {
-            let shown = match &item.reading {
-                Reading::Value(Value::Number(value)) => number(*value),
-                Reading::Value(Value::Text(text)) => text.clone(),
-                Reading::Rate { rate, total } => format!("{rate:.1}/s ({})", number(*total)),
-            };
-            let _ = writeln!(out, "  {:width$}  {shown}", item.label);
+            let _ = writeln!(out, "  {:width$}  {}", item.label, reading_text(&item.reading));
         }
     }
     out
@@ -935,12 +939,34 @@ fn now_unix() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64())
 }
 
+/// What the full-screen view shows: one node, or the cluster's members.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Data {
+    /// A node's view, or why there is none yet.
+    Node(Result<View, String>),
+    Cluster(ClusterView),
+}
+
+/// Where the full-screen view gets its data; `None` when the command prints.
+pub(crate) type Sink = Option<tokio::sync::mpsc::UnboundedSender<Data>>;
+
+/// Tells the user what went wrong: on standard error, or in the full-screen view.
+fn report(sink: &Sink, message: String) {
+    match sink {
+        Some(sink) => {
+            let _ = sink.send(Data::Node(Err(message)));
+        }
+        None => eprintln!("{message}"),
+    }
+}
+
 /// How the command prints.
 #[derive(Debug, Clone, Copy)]
 struct Options {
     watch: bool,
     json: bool,
     cluster: bool,
+    tui: bool,
 }
 
 /// Prints one look, as JSON or as text, clearing the terminal before it when `clear`.
@@ -961,7 +987,7 @@ fn print_out(text: impl FnOnce() -> String, json: impl FnOnce() -> serde_json::V
 /// The `status` command; returns the exit status.
 pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
     crate::logging::init_for_command();
-    let mut options = Options { watch: false, json: false, cluster: false };
+    let mut options = Options { watch: false, json: false, cluster: false, tui: false };
     let mut config_path = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -969,11 +995,25 @@ pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
             "--watch" if !options.watch => options.watch = true,
             "--json" if !options.json => options.json = true,
             "--cluster" if !options.cluster => options.cluster = true,
+            "--tui" if !options.tui => options.tui = true,
             "--config" if config_path.is_none() => match rest.next() {
                 Some(path) => config_path = Some(path.clone()),
                 None => return usage(),
             },
             _ => return usage(),
+        }
+    }
+    if options.tui && (options.json || options.watch) {
+        return usage();
+    }
+    if options.tui {
+        if !cfg!(feature = "tui") {
+            eprintln!("this build has no `tui` feature: build rradius-server with `--features tui` to get `status --tui`");
+            return 2;
+        }
+        if !std::io::stdout().is_terminal() {
+            eprintln!("status --tui needs a terminal: standard output is not one");
+            return 2;
         }
     }
     let explicit = config_path.is_some();
@@ -994,7 +1034,7 @@ pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
         return 2;
     };
     let extra = extensions.status_sections();
-    let watching: Pin<Box<dyn Future<Output = i32> + '_>> = if options.cluster { Box::pin(watch_cluster(&config.cluster, target(bind), &extra, options)) } else { Box::pin(watch_one(target(bind), &extra, options)) };
+    let watching = if options.tui { watch_screen(&config.cluster, target(bind), &extra, options) } else { watch_sampling(&config.cluster, target(bind), &extra, options, None) };
     let (Ok(mut terminate), Ok(mut interrupt)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
         return watching.await;
     };
@@ -1005,20 +1045,50 @@ pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
     }
 }
 
+/// The sampling loop of the command, for the view `options` ask for; `sink` is where the full-screen
+/// view takes its data.
+fn watch_sampling<'a>(cluster: &'a ClusterSettings, local: SocketAddr, extra: &'a [StatusSection], options: Options, sink: Sink) -> Pin<Box<dyn Future<Output = i32> + 'a>> {
+    if options.cluster {
+        Box::pin(async move { watch_cluster(cluster, local, extra, options, &sink).await })
+    } else {
+        Box::pin(async move { watch_one(local, extra, options, &sink).await })
+    }
+}
+
+/// `status --tui`: the sampling loop feeds the screen, and the command ends with the screen (`q`) or
+/// with the loop failing.
+#[cfg(feature = "tui")]
+fn watch_screen<'a>(cluster: &'a ClusterSettings, local: SocketAddr, extra: &'a [StatusSection], options: Options) -> Pin<Box<dyn Future<Output = i32> + 'a>> {
+    Box::pin(async move {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let options = Options { watch: true, ..options };
+        let sampling = watch_sampling(cluster, local, extra, options, Some(tx));
+        tokio::select! {
+            status = crate::status_screen::run(rx) => status,
+            status = sampling => status,
+        }
+    })
+}
+
+#[cfg(not(feature = "tui"))]
+fn watch_screen<'a>(_: &'a ClusterSettings, _: SocketAddr, _: &'a [StatusSection], _: Options) -> Pin<Box<dyn Future<Output = i32> + 'a>> {
+    Box::pin(async { 2 })
+}
+
 /// How long `--cluster --watch` uses the members it found before asking the cluster again.
 const MEMBERS_EVERY: Duration = Duration::from_secs(10);
 
 /// `status --cluster`: two samples of every member a second apart; with `--watch`, one more each
 /// second, asking the cluster for its members again every `MEMBERS_EVERY`.
-async fn watch_cluster(cluster: &ClusterSettings, local: SocketAddr, extra: &[StatusSection], options: Options) -> i32 {
+async fn watch_cluster(cluster: &ClusterSettings, local: SocketAddr, extra: &[StatusSection], options: Options, sink: &Sink) -> i32 {
     let api = match Api::new(cluster.secret_api.clone()) {
         Ok(api) => api,
         Err(e) => {
-            eprintln!("{e}");
+            report(sink, e);
             return 2;
         }
     };
-    let clear = options.watch && !options.json && std::io::stdout().is_terminal();
+    let clear = options.watch && !options.json && sink.is_none() && std::io::stdout().is_terminal();
     let mut known: Option<Known> = None;
     let mut before: BTreeMap<u64, Sample> = BTreeMap::new();
     let mut next = Instant::now();
@@ -1027,6 +1097,11 @@ async fn watch_cluster(cluster: &ClusterSettings, local: SocketAddr, extra: &[St
         if stale {
             match know_members(cluster, &api, local).await {
                 Ok(found) => known = Some(found),
+                Err(e) if sink.is_some() => {
+                    report(sink, e);
+                    tokio::time::sleep(INTERVAL).await;
+                    continue;
+                }
                 Err(e) => {
                     eprintln!("{e}");
                     return 2;
@@ -1044,7 +1119,12 @@ async fn watch_cluster(cluster: &ClusterSettings, local: SocketAddr, extra: &[St
         next = Instant::now() + INTERVAL;
         let after = sample_members(&known.targets).await;
         let shown = cluster_view(known, &before, &after, extra, now_unix());
-        print_out(|| cluster_text(&shown), || cluster_json(&shown), options, clear);
+        match sink {
+            Some(sink) => {
+                let _ = sink.send(Data::Cluster(shown.clone()));
+            }
+            None => print_out(|| cluster_text(&shown), || cluster_json(&shown), options, clear),
+        }
         if !options.watch {
             return if shown.members.iter().any(|member| member.shown.is_ok()) { 0 } else { 3 };
         }
@@ -1053,7 +1133,7 @@ async fn watch_cluster(cluster: &ClusterSettings, local: SocketAddr, extra: &[St
 }
 
 /// `status` of this node: two samples a second apart, then one more each second with `--watch`.
-async fn watch_one(address: SocketAddr, extra: &[StatusSection], options: Options) -> i32 {
+async fn watch_one(address: SocketAddr, extra: &[StatusSection], options: Options, sink: &Sink) -> i32 {
     {
         let mut before = match sample(address).await {
             Ok(sample) => sample,
@@ -1062,17 +1142,17 @@ async fn watch_one(address: SocketAddr, extra: &[StatusSection], options: Option
                 return 3;
             }
             Err(e) => {
-                eprintln!("{}", e.message(address));
+                report(sink, e.message(address));
                 loop {
                     tokio::time::sleep(INTERVAL).await;
                     match sample(address).await {
                         Ok(sample) => break sample,
-                        Err(e) => eprintln!("{}", e.message(address)),
+                        Err(e) => report(sink, e.message(address)),
                     }
                 }
             }
         };
-        let clear = options.watch && !options.json && std::io::stdout().is_terminal();
+        let clear = options.watch && !options.json && sink.is_none() && std::io::stdout().is_terminal();
         // A failed sample leaves `before` as it is, so that the next rates are over the whole time
         // since it was had; only the time of the next try moves on.
         let mut next = before.at + INTERVAL;
@@ -1082,7 +1162,12 @@ async fn watch_one(address: SocketAddr, extra: &[StatusSection], options: Option
                 Ok(after) => {
                     next = after.at + INTERVAL;
                     let shown = view(address, &before, &after, extra, now_unix());
-                    print_out(|| text(&shown), || json(&shown), options, clear);
+                    match sink {
+                        Some(sink) => {
+                            let _ = sink.send(Data::Node(Ok(shown)));
+                        }
+                        None => print_out(|| text(&shown), || json(&shown), options, clear),
+                    }
                     if !options.watch {
                         return 0;
                     }
@@ -1093,7 +1178,7 @@ async fn watch_one(address: SocketAddr, extra: &[StatusSection], options: Option
                     return 3;
                 }
                 Err(e) => {
-                    eprintln!("{}", e.message(address));
+                    report(sink, e.message(address));
                     next = Instant::now() + INTERVAL;
                 }
             }
