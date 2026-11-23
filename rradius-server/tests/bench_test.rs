@@ -451,7 +451,7 @@ fn test_tacacs_wrong_password_rejected() -> Result<(), String> {
 }
 
 /// CHAP needs the chain to hold the password, so `tacacs-chap` is not in `check_tacacs_loads`:
-/// without a chain the server answers ERROR.
+/// without a chain the server answers RESTART.
 #[test]
 fn test_tacacs_chap_through_a_chain() -> Result<(), String> {
     let server = start_tacacs("return 'reject'", true)?;
