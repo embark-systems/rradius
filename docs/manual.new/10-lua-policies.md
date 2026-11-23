@@ -288,7 +288,7 @@ sql_execute('INSERT INTO last_login (username, at, client) VALUES (?, ?, ?) ' ..
 
 ### 資料庫連不上時
 
-寫入要等 leader 確認。叢集沒有 leader、或一個請求等資料庫的總時間超過 `lua.query_timeout_ms`，呼叫就出錯，例如 `sql_query timed out: the database calls of one request have 5000 ms together`。
+寫入要等 leader 確認。叢集沒有 leader 超過 5 秒後，新的寫入立刻出錯；失去多數後的第一次寫入已交給叢集，要等 30 秒才失敗（見[第 16 章](16-cluster.md)）。一個請求等資料庫的總時間超過 `lua.query_timeout_ms` 時，呼叫也出錯，例如 `sql_query timed out: the database calls of one request have 5000 ms together`。
 
 這類失敗表示「現在問不到」，不表示這個人不能登入，所以伺服器的處理不同於一般的錯誤：
 
