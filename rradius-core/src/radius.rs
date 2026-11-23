@@ -263,6 +263,15 @@ pub fn decrypt_user_password(cipher: &[u8], shared_secret: &[u8], request_authen
 /// The longest value an `encrypt=1` attribute takes, which is what User-Password takes.
 const MAX_USER_PASSWORD_VALUE: usize = 128;
 
+/// The chain name an authentication record carries for `client`: its chain's, or `script` when
+/// a Lua script decides.
+fn chain_label<'a>(state: &RadiusState, client: &'a Client) -> &'a str {
+    match state.chains.as_deref().and_then(|chains| chains.for_client(client)) {
+        Some(_) => client.auth.as_deref().unwrap_or("default"),
+        None => "script",
+    }
+}
+
 /// Whether `length` octets can be a User-Password (RFC 2865 section 5.2): 16 to 128, in whole
 /// blocks of 16. Anything else is refused before it is decrypted and handed to a chain, since
 /// the work of a password hash grows with the length.
@@ -2272,7 +2281,7 @@ impl RadiusServer {
                 log_line(tracing::Level::WARN, line);
             }
             let user = String::from_utf8_lossy(packet.attribute(1).unwrap_or_default()).into_owned();
-            let chain = state.chains.as_deref().and_then(|chains| chains.for_client(client)).map_or("script", |_| client.auth.as_deref().unwrap_or("default"));
+            let chain = chain_label(state, client);
             crate::logging::auth_record(&crate::logging::AuthRecord { protocol: "radius", client: &client.name, source, user: &user, account: "", chain, handler: "length", decision: "reject" });
             let rejection = RadiusPacket::create_response(ACCESS_REJECT, packet, Vec::new(), client.secret.as_slice());
             return (rejection.len() <= MAX_PACKET_LEN).then_some(rejection);
@@ -2302,10 +2311,7 @@ impl RadiusServer {
             let request = crate::second_factor::SecondFactorRequest { protocol: "radius", client, mode: *mode, user: &factor_user, password: factor_password.as_deref().map(Vec::as_slice), state: packet.attribute(STATE) };
             let before = factor.before_chain(&request).await;
             // Named as the chain's own record would be.
-            let chain = match state.chains.as_deref().and_then(|chains| chains.for_client(client)) {
-                Some(_) => client.auth.as_deref().unwrap_or("default"),
-                None => "script",
-            };
+            let chain = chain_label(state, client);
             match before {
                 crate::second_factor::Before::Continue { password: Some(password) } => {
                     for (name, value) in &mut attributes {
@@ -7774,6 +7780,23 @@ pub(crate) mod tests {
             let bytes = server.handle_auth(&request, LOCALHOST).await.ok_or("no response")?;
             assert_eq!(RadiusPacket::parse(&bytes)?.code, ACCESS_ACCEPT, "length {length}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_wrong_length_user_password_is_logged_without_the_password() -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _db) = accounting_server("return 'accept'").await;
+        let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"length-log-user".to_vec()), (USER_PASSWORD, b"hunter2-hunter2-hunter2-x".to_vec())], SECRET);
+        let log = logged_during(async {
+            let _ = server.handle_auth(&request, LOCALHOST).await;
+        })
+        .await;
+        assert!(log.contains("25 octets"), "{log}");
+        assert!(log.contains("RADIUS client "), "{log}");
+        assert!(!log.contains("hunter2"), "{log}");
+        let records = crate::logging::records_for("length-log-user");
+        let record = records.last().ok_or("no auth record")?;
+        assert_eq!((record.handler.as_str(), record.decision.as_str(), record.chain.as_str()), ("length", "reject", "script"));
         Ok(())
     }
 
