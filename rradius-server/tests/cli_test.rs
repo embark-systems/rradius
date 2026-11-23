@@ -1330,6 +1330,21 @@ fn test_check_warns_about_plain_ldap() -> Result<(), String> {
     Ok(())
 }
 
+/// spec Verified TLS to External Databases: the check warns about a remote database without TLS, and still succeeds.
+#[test]
+fn test_check_warns_about_plain_database() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    let databases = "[databases.legacy]\nkind = \"postgresql\"\nhost = \"db.example.com\"\ndatabase = \"d\"\nuser = \"u\"\npassword = \"Not-A-Real-Password-0123\"\ntls = \"off\"\n[databases.local]\nkind = \"postgresql\"\nhost = \"127.0.0.1\"\ndatabase = \"d\"\nuser = \"u\"\ntls = \"off\"\n";
+    std::fs::write(&config, format!("{text}{databases}")).map_err(|e| e.to_string())?;
+    let (code, stdout, stderr) = check_command(PROGRAM, &config);
+    assert_eq!(code, Some(0), "{stdout} {stderr}");
+    let all = format!("{stdout}{stderr}");
+    assert!(all.contains("databases.legacy") && all.contains("db.example.com unencrypted") && !all.contains("databases.local") && !all.contains("Not-A-Real-Password"), "{all}");
+    Ok(())
+}
+
 /// spec Listener Bind Failure: a TACACS+ port that is taken stops the start, as the RADIUS port does.
 #[test]
 fn test_tacacs_port_in_use_stops_the_start() -> Result<(), String> {

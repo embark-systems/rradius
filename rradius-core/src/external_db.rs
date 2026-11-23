@@ -99,12 +99,10 @@ impl ExternalDatabases {
     /// opens one, so a database that is down does not keep the server from starting. Needs a
     /// Tokio runtime.
     pub fn open(settings: &BTreeMap<String, DatabaseSettings>) -> Self {
+        warn_about_plain(settings);
         let databases = settings
             .iter()
             .map(|(name, settings)| {
-                if settings.tls == DatabaseTls::Off && !is_loopback(&settings.host) {
-                    tracing::warn!("databases.{name}: tls = \"off\" sends the password and the data to {} unencrypted", settings.host);
-                }
                 (name.clone(), Arc::new(ExternalDatabase::open(name, settings)))
             })
             .collect();
@@ -173,6 +171,14 @@ async fn check_forever(database: std::sync::Weak<ExternalDatabase>) {
 impl std::fmt::Debug for ExternalDatabases {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.names()).finish()
+    }
+}
+
+/// A warning for each database with `tls = "off"` whose host is not this machine: its password
+/// and data cross the network in the clear. Said at startup and by the configuration check.
+pub fn warn_about_plain(settings: &BTreeMap<String, DatabaseSettings>) {
+    for (name, settings) in settings.iter().filter(|(_, settings)| settings.tls == DatabaseTls::Off && !is_loopback(&settings.host)) {
+        tracing::warn!("databases.{name}: tls = \"off\" sends the password and the data to {} unencrypted", settings.host);
     }
 }
 

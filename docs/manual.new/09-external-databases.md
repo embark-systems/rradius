@@ -135,7 +135,7 @@ ca_file = "db-ca.pem"
 
 憑證驗不過時，和資料庫連不上一樣處理：`required_for_ready = true` 時啟動就記 `not reachable at startup: …`，登入不回應（見[資料庫連不上時](#資料庫連不上時)）。
 
-`tls = "off"` 只適合資料庫在同一台機器上（`host` 是 `127.0.0.1` 之類的 loopback 位址）。`host` 不是 loopback 時，啟動時會警告：
+`tls = "off"` 只適合資料庫在同一台機器上（`host` 是 `127.0.0.1` 之類的 loopback 位址）。`host` 不是 loopback 時，啟動和 `check` 都會警告：
 
 ```text
 … WARN rradius_core::external_db: databases.legacy: tls = "off" sends the password and the data to db.example.com unencrypted
