@@ -270,6 +270,8 @@ node 4  voter            raft 10.0.0.4:8100  api 10.0.0.4:8200  (not in this con
 | 20.0 ms | 6.0–6.9 秒 | 7.2–17.6 秒 |
 | 50.1 ms | 6.4–6.8 秒 | 7.4–17.8 秒 |
 
+（這張表是改用 1 秒重連間隔之前的量測；改後在 0 ms 量到 7.2–7.5 秒，見下方「寫入恢復比選舉晚一點」。）
+
 - **選舉時間約 5 到 7 秒，量到的範圍內看不出和 RTT 有關。**
 - **寫入恢復比選舉晚一點，約 7 到 8 秒（選舉約 6 到 7 秒）：** 2026-11-23 量（三節點，同一台主機的 Docker，RTT 0，停掉 leader；原始數字在 `tools/cluster-latency/results/hiqlite-fast-reconnect/`）：選舉 6.3 到 6.7 秒，第一次寫入成功在 7.2 到 7.5 秒，即選舉後約 0.5 到 1 秒；同樣條件下改前的版本是 15.1 到 15.5 秒（3 次）。原因：叢集資料庫的用戶端（hiqlite 0.16）把「現在的 leader 是誰」快取起來，只在它重連的迴圈裡更新；原版重連是前 5 次每 1 秒、之後每 5 秒，選舉在第 5 秒之後才完成時，要再多等一次 5 秒。現在 rradius 載入一份修改過的 hiqlite（`vendor/hiqlite`，只把 5 秒改成 1 秒，見該目錄的 `MODIFICATIONS`），所以每秒重連一次；這段時間節點記錄每秒一行 `Could not connect Client API WebSocket to node1`（舊 leader），每個請求 5000 ms 的資料庫預算（`[lua] query_timeout_ms`）也會逾時。企業版目前仍用原版的 5 秒間隔（見變更 `hiqlite-fast-reconnect`）；這個間隔是 hiqlite 內部的常數，沒有設定可以調。
   - **實驗：** 三節點、節點間 RTT 約 0、一台主機的 Docker，殺掉 leader，兩個存活節點各自量第一個成功的寫入。shipped 版本 3 次都是 15.1 秒（選舉 6.3 到 7.1 秒）；在複本裡把 5 秒的間隔改成 1 秒後是 7.2、7.2、6.1 秒（選舉 5.7 到 7.1 秒），寫入緊跟在選舉之後。原始數字、重算方式與重跑步驟在 `tools/cluster-latency/results/stall-experiment/` 與該目錄的 `README.md`。
