@@ -2027,7 +2027,8 @@ pub(crate) mod tests {
             timeout: std::time::Duration::from_secs(5),
         };
         let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![handler]);
-        Ok(Arc::new(AuthChains::new(Some(chain), Vec::new())))
+        // These tests are about CHAP and MS-CHAP, so MS-CHAPv1 is turned on, as the default is off.
+        Ok(Arc::new(AuthChains::new(Some(chain), Vec::new()).with_mschapv1(true)))
     }
 
     fn typed_start_body(authen_type: u8, service: u8, user: &[u8], data: &[u8]) -> Vec<u8> {
@@ -2066,7 +2067,7 @@ pub(crate) mod tests {
         data
     }
 
-    /// With `allow_mschapv1 = false` an MS-CHAP START that passes by default is answered FAIL, and
+    /// With `allow_mschapv1 = false` an MS-CHAP START that passes when it is on is answered FAIL, and
     /// CHAP and MS-CHAPv2 are still decided by the chain.
     #[tokio::test]
     async fn test_mschap_refused_when_turned_off() -> Result<(), Box<dyn std::error::Error>> {
@@ -2134,6 +2135,27 @@ pub(crate) mod tests {
             let mut connection = AsciiConnection::with_enable(script_engine("return 'reject'").await, Some(chains.clone()), EnableMode::Login).await;
             let (seq, status, ..) = connection.ask(ASCII_SESSION, 1, &body).await;
             assert_eq!((seq, status), (2, expected), "{label}");
+        }
+        Ok(())
+    }
+
+    /// Without a setting an MS-CHAP START is answered FAIL, and CHAP and MS-CHAPv2 are decided by the chain.
+    #[tokio::test]
+    async fn test_mschap_refused_by_default() -> Result<(), Box<dyn std::error::Error>> {
+        let db = crate::test_support::test_db();
+        db.execute("CREATE TABLE IF NOT EXISTS tacacs_mschap_default (username TEXT, password TEXT)").await?;
+        db.execute("DELETE FROM tacacs_mschap_default").await?;
+        db.execute("INSERT INTO tacacs_mschap_default VALUES ('alice', 'secret')").await?;
+        let handler = Handler::Sql { source: crate::auth_chain::SqlSource::Cluster(db), user_query: "SELECT password FROM tacacs_mschap_default WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: std::time::Duration::from_secs(5) };
+        let chains = Arc::new(AuthChains::new(Some(AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![handler])), Vec::new()));
+        let challenge = [0x11; 16];
+        for (label, body, expected) in [
+            ("MS-CHAP", typed_start_body(AUTHEN_TYPE_MSCHAP, 1, b"alice", &mschap_data(5, &challenge[..8], "secret", 1)), AUTHEN_STATUS_FAIL),
+            ("CHAP", typed_start_body(AUTHEN_TYPE_CHAP, 1, b"alice", &chap_data(7, &challenge, b"secret")), AUTHEN_STATUS_PASS),
+            ("MS-CHAPv2", typed_start_body(AUTHEN_TYPE_MSCHAPV2, 1, b"alice", &mschapv2_data(9, &challenge, "secret")), AUTHEN_STATUS_PASS),
+        ] {
+            let mut connection = AsciiConnection::with_enable(script_engine("return 'reject'").await, Some(chains.clone()), EnableMode::Login).await;
+            assert_eq!(connection.ask(ASCII_SESSION, 1, &body).await.1, expected, "{label}");
         }
         Ok(())
     }

@@ -64,7 +64,7 @@
 | `sql`、`ldap`、`lua` 等 | 這個處理器做出了決定 |
 | `none` | 沒有處理器給出答案，通常是帳號不存在或停用 |
 | `lockout` | 被登入失敗鎖定擋下，沒有檢查密碼 |
-| `mschapv1_refused` | `allow_mschapv1 = false`，拒絕 MS-CHAPv1 |
+| `mschapv1_refused` | 沒有 `allow_mschapv1 = true`（預設），拒絕 MS-CHAPv1 |
 | `length` | User-Password 長度不合（不是 16 到 128 個位元組、16 的倍數） |
 | `eap-peap`、`eap-tls` 等 | EAP 對話的結果 |
 
@@ -342,7 +342,7 @@ NAS 與伺服器的共用密碼不同時，結果依請求有沒有 Message-Auth
 | `handler="sql"`（或 `ldap` 等） | 處理器查到帳號，但密碼不對 | 確認密碼；確認 NAS 用的方法（PAP、CHAP、MS-CHAPv2）與帳號存的格式相容（[第 07 章](07-users-and-chains.md)） |
 | `handler="none"`，`account` 有值 | 沒有處理器認得這個帳號：不存在、停用，或查詢條件沒選到 | 用 `user show` 或直接查資料表 |
 | `handler="lockout"` | 被登入失敗鎖定 | 見[第 20 章](20-security.md) |
-| `handler="mschapv1_refused"` | MS-CHAPv1 被關掉 | 讓 NAS 改用其他方法，或打開 `allow_mschapv1` |
+| `handler="mschapv1_refused"` | MS-CHAPv1 預設是關的 | 讓 NAS 改用其他方法，或確認非用不可再寫 `allow_mschapv1 = true` |
 | `handler="length"` | User-Password 長度不合，NAS 沒把密碼補到 16 的倍數，或密碼超過 128 個位元組 | 看同時的 WARN 行裡的用戶端與長度；修 NAS 的設定，見[第 07 章](07-users-and-chains.md#密碼長度) |
 
 伴隨的警告，代表帳號資料本身有問題（都實測過）：

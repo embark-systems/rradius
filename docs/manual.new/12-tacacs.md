@@ -332,7 +332,7 @@ PASS
 … INFO rradius_auth: authentication protocol="tacacs" client="core-routers" source=127.0.0.1 user="netadmin1" account="netadmin1" chain="default" handler="no_password_check" decision="reject"
 ```
 
-哪些密碼格式能做 CHAP、MS-CHAP，`auth.allow_mschapv1` 怎麼關掉 MS-CHAPv1，都在[第 07 章](07-users-and-chains.md)。PAP 與 ASCII 能用任何格式。
+哪些密碼格式能做 CHAP、MS-CHAP，`auth.allow_mschapv1` 怎麼打開 MS-CHAPv1（預設是關的），都在[第 07 章](07-users-and-chains.md)。PAP 與 ASCII 能用任何格式。
 
 **什麼時候回 `RESTART`：** 下面幾種情況，rradius 回 `RESTART`，不跑驗證鏈，也不跑腳本，讓設備改用別的方式（通常是 PAP 或 ASCII）再試：
 

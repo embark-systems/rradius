@@ -487,7 +487,7 @@ mod tests {
         Ok(())
     }
 
-    /// A reload applies `[auth] allow_mschapv1`: an MS-CHAPv1 login is refused after it turns it off.
+    /// A reload applies `[auth] allow_mschapv1`: an MS-CHAPv1 login is refused by default and let through after a reload turns it on.
     #[tokio::test]
     async fn test_mschapv1_switch_follows_a_reload() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -502,11 +502,11 @@ mod tests {
         let source = std::net::IpAddr::from([127, 0, 0, 1]);
         let refusals = |log: &str| log.lines().filter(|line| line.contains("MS-CHAPv1 refused") && line.contains("reload-mschapv1")).count();
         let log = crate::test_support::radius::logged_during(async { server.handle_auth(&login, source).await }).await;
-        assert_eq!(refusals(&log), 0, "allowed by default: {log}");
-        write_config(dir.path(), &format!("{}{}", config_text(CLIENT), chain.replace("[auth]\n", "[auth]\nallow_mschapv1 = false\n")));
+        assert_eq!(refusals(&log), 1, "refused by default: {log}");
+        write_config(dir.path(), &format!("{}{}", config_text(CLIENT), chain.replace("[auth]\n", "[auth]\nallow_mschapv1 = true\n")));
         serving.try_reload().map_err(|e| e.to_string())?;
         let log = crate::test_support::radius::logged_during(async { server.handle_auth(&login, source).await }).await;
-        assert_eq!(refusals(&log), 1, "refused after the reload: {log}");
+        assert_eq!(refusals(&log), 0, "allowed after the reload: {log}");
         Ok(())
     }
 

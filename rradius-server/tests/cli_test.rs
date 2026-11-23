@@ -1206,7 +1206,7 @@ fn test_mschapv1_through_real_processes() -> Result<(), Box<dyn std::error::Erro
         let (config, auth_port) = write_config_with(dir.path(), "return 'accept'", None, WITH_MIGRATIONS);
         let tacacs = free_port();
         let text = std::fs::read_to_string(&config)?;
-        let handlers = if chain { "[auth]\n[[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE username = ?\"\n" } else { "" };
+        let handlers = if chain { "[auth]\nallow_mschapv1 = true\n[[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE username = ?\"\n" } else { "" };
         std::fs::write(&config, format!("{text}[tacacs]\nport = {tacacs}\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n{handlers}"))?;
         let child = Server::spawn(PROGRAM, dir.path(), &config);
         let mut server = Server { child, dir, config, auth_port };

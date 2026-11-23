@@ -78,7 +78,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 | `normalization` | 使用者名稱不符合 `[auth.username]`，沒有執行任何處理器 |
 | `no_password_check` | `all_accept` 的鏈裡，沒有一個比對密碼的處理器接受 |
 | `lockout` | 這個帳號被[登入失敗鎖定](#登入失敗鎖定)擋下，沒有比對密碼 |
-| `mschapv1_refused` | `allow_mschapv1 = false`，拒絕 MS-CHAPv1 |
+| `mschapv1_refused` | 沒有 `allow_mschapv1 = true`（預設），拒絕 MS-CHAPv1 |
 | `length` | RADIUS 的 User-Password 長度不是 16 到 128 個位元組、也不是 16 的倍數，沒有執行任何處理器（見[密碼長度](#密碼長度)） |
 
 ### 拒絕與「後端不能用」
@@ -407,16 +407,18 @@ TACACS+ 的登入也走同一條鏈，`[tacacs]` 的設定見[第 12 章](12-tac
 
 MS-CHAPv2 通過時，Access-Accept 帶 `MS-CHAP2-Success`、`MS-MPPE-Send-Key`、`MS-MPPE-Recv-Key`；失敗時 Access-Reject 帶 `MS-CHAP-Error`（錯誤 691）。使用者名稱寫成 `網域\帳號` 時，計算回應用的是反斜線之後的部分。MS-CHAPv1 只檢查 NT-Response，不接受只有 LM-Response 的回應。
 
-MS-CHAPv1 是很舊的協定。確定 NAS 都不用它時，可以整個關掉：
+MS-CHAPv1 是很舊的協定，**預設不接受**。只有 NAS 非用它不可（例如較舊的 PPTP 閘道）時，才明確打開：
 
 ```toml
 # rradius.toml（[auth] 裡）
 [auth]
 policy = "first_match"
-allow_mschapv1 = false
+allow_mschapv1 = true
 ```
 
-`auth.allow_mschapv1` 預設 `true`，可以 reload。設成 `false` 之後，MS-CHAPv1 的登入在任何處理器之前就被拒絕，認證紀錄的 `handler` 是 `mschapv1_refused`；不查資料庫，也不算一次失敗的登入。PAP、CHAP、MS-CHAPv2、EAP 不受影響。
+`auth.allow_mschapv1` 預設 `false`，可以 reload。沒寫這個鍵、或寫 `false` 時，MS-CHAPv1 的登入在任何處理器之前就被拒絕，認證紀錄的 `handler` 是 `mschapv1_refused`；不查資料庫，也不算一次失敗的登入。PAP、CHAP、MS-CHAPv2、EAP 不受影響。
+
+> **升級注意：** 這個預設以前是 `true`。只用 MS-CHAPv1 的舊設備升級後登入會全部失敗；認證紀錄的 `handler="mschapv1_refused"` 可以找出是哪些 NAS，確認非用不可再寫 `allow_mschapv1 = true`。
 
 > **未實機驗證：** `rradius-bench` 沒有 MS-CHAPv1 的負載，這一段只對照了程式碼與測試；設定本身過了 `check`。
 
