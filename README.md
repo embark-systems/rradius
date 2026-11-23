@@ -28,6 +28,7 @@ The documentation is written in Traditional Chinese.
 
 - [User manual](docs/manual/README.md): a guide by topic, with deployment scenarios, and reference appendices for the configuration, commands and metrics. Each scenario comes with a configuration you can start as is, in [`rradius-server/examples/scenarios/`](rradius-server/examples/scenarios/), covered by automated tests.
 - [Usage guide](docs/usage.md): reference for every setting and feature.
+- [Changelog](CHANGELOG.md) and [security policy](SECURITY.md): what each release changes, and how to report a vulnerability privately.
 
 ## Repository layout
 
