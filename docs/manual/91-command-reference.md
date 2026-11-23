@@ -399,7 +399,7 @@ rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]
 | `--watch` | 之後每秒再讀一次、更新畫面，直到 Ctrl+C；在終端機上會清畫面重畫 |
 | `--json` | 改印 JSON，一次一個物件 |
 | `--cluster` | 向叢集問成員，讀每個成員的指標埠，一行一個節點 |
-| `--tui` | 全螢幕互動畫面（需編進 `tui` feature）；不能和 `--json`、`--watch` 並用，標準輸出要是終端機，否則結束碼 2 |
+| `--tui` | 全螢幕互動畫面（需編進 `tui` feature；發行套件已編進）；不能和 `--json`、`--watch` 並用，標準輸出要是終端機，否則結束碼 2 |
 
 `status` 讀的是設定檔 `[metrics]` 的位址；`bind` 是 `0.0.0.0` 或 `::` 時改連本機位址。每一段、每一行的意思見 [17 監控、狀態與日誌](17-monitoring.md)。
 

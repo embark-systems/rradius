@@ -15,7 +15,7 @@ endif
 override_dh_auto_configure:
 
 override_dh_auto_build:
-	cargo build --release --locked -p rradius-server
+	cargo build --release --locked -p rradius-server --features tui
 
 # The test suite runs in CI; it needs ports and takes long.
 override_dh_auto_test:
