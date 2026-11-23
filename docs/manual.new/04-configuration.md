@@ -463,7 +463,7 @@ rradius_reload_last_success_timestamp_seconds 1795384713
 
 腳本已經換成新的，但伺服器還在舊的埠上。這行警告在重新啟動之前，每次 reload 都會再出現一次：伺服器拿來比較的是啟動時的設定。
 
-> **注意：** 字典**檔案的內容**改了不算「設定不同」：reload 只比較 `dictionary` 這個路徑。所以在字典裡加了新屬性再送 SIGHUP，日誌照樣寫 `configuration reloaded`，沒有任何警告，但伺服器仍用啟動時讀的字典，腳本用新屬性會得到 `unknown attribute`。改字典之後一定要重新啟動。詳見[第 06 章](06-dictionary.md)。
+> **注意：** 字典**檔案的內容**改了不算「設定不同」：reload 只比較 `dictionary` 這個路徑。但 reload 會重新讀字典檔，內容和啟動時不同就多寫一行 `WARN`：`dictionary files changed since the server started; restart to apply: <路徑>`（最多列五個檔，其餘寫 `and N more`），每次 reload 只要還不同就會再寫。伺服器仍用啟動時讀的字典，腳本用新屬性會得到 `unknown attribute`。改字典之後一定要重新啟動。詳見[第 06 章](06-dictionary.md)。
 
 ## 停止伺服器：shutdown
 
@@ -574,7 +574,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 **解法：** 排時間重新啟動。在那之前，每次 reload 都會再列一次。
 
 **症狀：** 在字典加了屬性並 reload，日誌寫 `configuration reloaded`，但腳本得到 `unknown attribute '…'`。
-**原因：** 字典只在啟動時讀；reload 只比較 `dictionary` 的路徑，不看檔案內容。
+**原因：** 字典只在啟動時讀；reload 只比較 `dictionary` 的路徑來決定要不要重啟，但字典檔內容和啟動時不同時日誌會有 `dictionary files changed` 的 `WARN`。
 **解法：** 重新啟動伺服器。
 
 **症狀：** `shutdown.drain_ms must be at most 60000`。

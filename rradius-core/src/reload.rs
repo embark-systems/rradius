@@ -170,6 +170,9 @@ pub struct Serving {
     pub accounting_log: Option<Arc<crate::accounting_log::AccountingLog>>,
 }
 
+/// Most dictionary paths named in the warning about changed dictionary files.
+const DICTIONARY_PATHS_SHOWN: usize = 5;
+
 impl Serving {
     /// Reads the configuration again and applies it, or changes nothing. The result is
     /// one line in the log. Requests being handled finish with what they started with.
@@ -183,6 +186,13 @@ impl Serving {
                     tracing::info!("configuration reloaded from {}", self.config_path.display());
                 } else {
                     tracing::warn!("configuration reloaded from {}; these need a restart to apply: {}", self.config_path.display(), restart.join(", "));
+                }
+                let changed = self.shared.dictionary.changed_files();
+                if !changed.is_empty() {
+                    let shown: Vec<String> = changed.iter().take(DICTIONARY_PATHS_SHOWN).map(|p| p.display().to_string()).collect();
+                    let more = changed.len().saturating_sub(DICTIONARY_PATHS_SHOWN);
+                    let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
+                    tracing::warn!("dictionary files changed since the server started; restart to apply: {}{}", shown.join(", "), tail);
                 }
             }
             Err(e) => {
@@ -944,6 +954,43 @@ mod tests {
         assert!(error.starts_with(&clients.display().to_string()) && error.contains("line 3"), "{error}");
         assert!(Arc::ptr_eq(&before, &server.state()), "an error replaced something");
         assert_eq!(code(server.handle_auth(&request(5), there).await), ACCESS_ACCEPT);
+    }
+
+    /// spec Reload Warns About Changed Dictionary Files: a reload names the dictionary files that
+    /// no longer read as at startup, at most five and then a count, on every reload while they
+    /// differ, and says nothing when they match.
+    #[tokio::test]
+    async fn test_reload_warns_about_changed_dictionary_files() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let (mut serving, _server) = serving(dir.path(), "return 'accept'", &config_text(CLIENT));
+        let mut files = Vec::new();
+        let mut dictionary = crate::dictionary::Dictionary::new();
+        for n in 0..7 {
+            let path = dir.path().join(format!("dict{n}"));
+            std::fs::write(&path, format!("ATTRIBUTE Test-Attr-{n} {} integer\n", 3000 + n)).map_err(|e| e.to_string())?;
+            dictionary.load_from_file(&path).map_err(|e| e.to_string())?;
+            files.push(path);
+        }
+        serving.shared.dictionary = Arc::new(dictionary);
+
+        let log = crate::test_support::radius::logged_during(async { serving.reload() }).await;
+        assert!(!log.contains("dictionary files changed"), "{log}");
+
+        std::fs::write(&files[2], "ATTRIBUTE Test-Attr-2 3002 string\n").map_err(|e| e.to_string())?;
+        let log = crate::test_support::radius::logged_during(async { serving.reload() }).await;
+        let line = log.lines().find(|line| line.contains("dictionary files changed")).ok_or_else(|| format!("no warning: {log}"))?;
+        assert!(line.contains("restart to apply") && line.contains("dict2") && !line.contains("more"), "{line}");
+        let again = crate::test_support::radius::logged_during(async { serving.reload() }).await;
+        assert!(again.contains("dictionary files changed") && again.contains("dict2"), "every reload warns: {again}");
+
+        for path in &files[..] {
+            std::fs::write(path, "# changed\n").map_err(|e| e.to_string())?;
+        }
+        let log = crate::test_support::radius::logged_during(async { serving.reload() }).await;
+        let line = log.lines().find(|line| line.contains("dictionary files changed")).ok_or_else(|| format!("no warning: {log}"))?;
+        assert!(line.contains("and 2 more"), "{line}");
+        assert_eq!(line.matches("/dict").count(), 5, "{line}");
+        Ok(())
     }
 
     /// A sender for tests: what a configuration's RADIUS clients are, by name or address, is

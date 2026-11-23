@@ -958,7 +958,7 @@ docker compose kill -s HUP rradius
 收到 SIGHUP 時重讀設定檔（包含 `secret_file`）並套用，結果寫一行到記錄：`configuration reloaded from ...` 或 `reload failed, keeping the running configuration: ...`。
 
 - **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）、`[lua.http]`，以及 `[radius.accounting_log]` 的 `file`（重新開檔，見 2.18 節）。
-- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_connections_per_source`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[queries]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
+- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀；內容和啟動時不同時，記錄會多一行 `dictionary files changed since the server started; restart to apply: ...`，每次 reload 都有）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_connections_per_source`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[queries]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
 - **全部成功才會套用。** 檢查和啟動時相同，任何一項有誤就全部維持原狀，程序繼續服務；修正後再送一次 SIGHUP 即可。
 - 進行中的請求用舊內容做完，不會中斷。已開啟的 TACACS+ 連線不會因此斷線，但下一個封包會依新名單處理：client 被移除時關閉連線，密碼更換後要用新密碼。
 - `auto` 學到的值和重送快取會保留。每次重新載入都會重建 LDAP 連線池。

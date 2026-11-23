@@ -48,6 +48,11 @@ impl fmt::Display for DictionaryError {
 
 impl std::error::Error for DictionaryError {}
 
+fn fingerprint(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).into()
+}
+
 /// Parser state that is scoped to a single dictionary file.
 struct FileState {
     vendor: u32,
@@ -63,6 +68,9 @@ pub struct Dictionary {
     vendors: HashMap<String, u32>,
     values: HashMap<String, HashMap<u64, String>>,
     vendor_formats: HashMap<u32, VendorFormat>,
+    /// Every file read by `load_from_file` and its `$INCLUDE`s, with the SHA-256 of what was read,
+    /// so that a reload can tell that the files changed on disk, which it does not apply.
+    sources: Vec<(PathBuf, [u8; 32])>,
 }
 
 impl Attribute {
@@ -123,7 +131,21 @@ impl Dictionary {
         let path = path.as_ref();
         let content = fs::read_to_string(path)
             .map_err(|e| DictionaryError(format!("{}: cannot read dictionary: {}", path.display(), e)))?;
+        self.sources.push((path.to_path_buf(), fingerprint(content.as_bytes())));
         self.load_content(path, &content, &mut Vec::new())
+    }
+
+    /// The files this dictionary was loaded from that no longer read as the same bytes, or that
+    /// cannot be read: what a reload would show differently if it read the dictionary again.
+    pub fn changed_files(&self) -> Vec<PathBuf> {
+        let mut changed: Vec<PathBuf> = Vec::new();
+        for (path, loaded) in &self.sources {
+            let same = fs::read(path).is_ok_and(|bytes| fingerprint(&bytes) == *loaded);
+            if !same && !changed.contains(path) {
+                changed.push(path.clone());
+            }
+        }
+        changed
     }
 
     /// Loads dictionary text as if it were read from `path`, which `$INCLUDE` lines are
@@ -227,6 +249,7 @@ impl Dictionary {
                 }
                 let content = fs::read_to_string(&include_path)
                     .map_err(|e| format!("cannot include '{}': {}", include_path.display(), e))?;
+                self.sources.push((include_path.clone(), fingerprint(content.as_bytes())));
                 self.load_content(&include_path, &content, loading).map_err(|e| e.to_string())?;
             }
             other => return Err(format!("unsupported directive '{}'", other)),
@@ -502,6 +525,30 @@ mod tests {
         let err = load_error(&["BEGIN-VENDOR Nobody"]);
         assert!(err.contains("dictionary:1:"), "unexpected error: {err}");
         assert!(err.contains("Nobody"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_changed_files_after_loading() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let main = write_dict(dir.path(), "dictionary", &["ATTRIBUTE User-Name 1 string", "$INCLUDE dictionary.example"]);
+        let example = write_dict(dir.path(), "dictionary.example", &["ATTRIBUTE Example-Room 9000 string"]);
+        let mut dict = Dictionary::new();
+        dict.load_from_file(&main)?;
+        assert!(dict.changed_files().is_empty(), "nothing changed yet");
+        // Text that is not a dictionary is not loaded from a file at all.
+        let mut from_text = Dictionary::new();
+        from_text.load_from_str("dictionary", "ATTRIBUTE User-Name 1 string")?;
+        assert!(from_text.changed_files().is_empty());
+
+        fs::write(&example, "ATTRIBUTE Example-Room 9000 string\nATTRIBUTE Example-Floor 9001 integer\n")?;
+        assert_eq!(dict.changed_files(), vec![example.clone()], "the included file changed");
+        write_dict(dir.path(), "dictionary.example", &["ATTRIBUTE Example-Room 9000 string"]);
+        assert!(dict.changed_files().is_empty(), "the same bytes again is not a change");
+        fs::write(&main, "ATTRIBUTE User-Name 1 string\n$INCLUDE dictionary.example\nATTRIBUTE User-Password 2 string\n")?;
+        assert_eq!(dict.changed_files(), vec![main.clone()], "the main file changed");
+        fs::remove_file(&example)?;
+        assert_eq!(dict.changed_files(), vec![main, example], "a file that cannot be read has changed");
+        Ok(())
     }
 
     #[test]
