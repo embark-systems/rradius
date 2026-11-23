@@ -316,7 +316,7 @@ secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 | --- | --- | --- | --- | --- | --- |
 | `auth.policy` | 字串 | `first_match` | | 可 | 預設鏈怎麼合併處理器的結果：`first_match` 採用第一個有答案的處理器；`all_accept` 每個處理器都執行，任何一個拒絕就拒絕，且至少要有一個接受。 |
 | `auth.handlers` | 表陣列 | — | 條件 | 可 | 預設鏈的處理器，依序嘗試。沒有具名的鏈時必填。欄位依 `type` 而不同，見下方各處理器的表。 |
-| `auth.allow_mschapv1` | 布林 | `true` | | 可 | 驗證鏈要不要處理 MS-CHAPv1 登入。設成 `false` 時，MS-CHAPv1 在任何處理器之前就被拒絕，也不計入 `auth.lockout`；PAP、CHAP、MS-CHAPv2 與 EAP 不受影響。 |
+| `auth.allow_mschapv1` | 布林 | `false` | | 可 | 驗證鏈要不要處理 MS-CHAPv1 登入。沒寫或 `false` 時，MS-CHAPv1 在任何處理器之前就被拒絕，也不計入 `auth.lockout`；PAP、CHAP、MS-CHAPv2 與 EAP 不受影響。 |
 
 `auth.policy` 與 `[auth.username]` 只作用在預設鏈。沒有 `[[auth.handlers]]` 卻寫了它們，`check` 失敗，例如 `auth.username is set but the default chain has no [[auth.handlers]] entries`；具名的鏈要寫自己的 `policy` 與 `username`。
 

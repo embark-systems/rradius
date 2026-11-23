@@ -3971,13 +3971,13 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// With `allow_mschapv1 = false` the same request that is accepted by default is refused, with the
+    /// With `allow_mschapv1 = false` the same request that is accepted with it on is refused, with the
     /// MS-CHAP-Error of any refused MS-CHAPv1 login and no keys; PAP and MS-CHAPv2 still work.
     #[tokio::test]
     async fn test_mschapv1_refused_when_turned_off() -> Result<(), String> {
         let server = chain_server().await;
         let accepted = reply_to(&server, &mschapv1_request("User", "clientPass", 1, 8, 50)).await?;
-        assert_eq!(accepted.code, ACCESS_ACCEPT, "allowed by default");
+        assert_eq!(accepted.code, ACCESS_ACCEPT, "allowed when turned on");
         let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![chain_sql_handler().await]);
         let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'reject'").map_err(|e| e.to_string())?);
         let server = RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine, share_dictionary())
@@ -3987,6 +3987,20 @@ pub(crate) mod tests {
         let error = microsoft_attribute(&reply, 2).ok_or("no MS-CHAP-Error")?;
         assert_eq!((error[0], &error[1..]), (5, b"E=691 R=0".as_slice()));
         assert!(microsoft_attribute(&reply, 12).is_none(), "no keys for a refusal");
+        Ok(())
+    }
+
+    /// Without a setting an MS-CHAPv1 login is refused with the MS-CHAP-Error, whatever the handlers hold.
+    #[tokio::test]
+    async fn test_mschapv1_refused_by_default() -> Result<(), String> {
+        let chain = AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![chain_sql_handler().await]);
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'accept'").map_err(|e| e.to_string())?);
+        let server = RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine, share_dictionary())
+            .with_auth_chains(Arc::new(AuthChains::new(Some(chain), Vec::new())));
+        let reply = reply_to(&server, &mschapv1_request("User", "clientPass", 1, 8, 50)).await?;
+        assert_eq!(reply.code, ACCESS_REJECT);
+        let error = microsoft_attribute(&reply, 2).ok_or("no MS-CHAP-Error")?;
+        assert_eq!((error[0], &error[1..]), (5, b"E=691 R=0".as_slice()));
         Ok(())
     }
 
@@ -8046,7 +8060,7 @@ pub(crate) mod tests {
         // The top-level script rejects everything, so an accept proves the chain decided.
         let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'reject'").unwrap());
         RadiusServer::new(any_addr(), any_addr(), local_clients("xyzzy5461"), engine, share_dictionary())
-            .with_auth_chains(Arc::new(AuthChains::new(Some(chain), Vec::new())))
+            .with_auth_chains(Arc::new(AuthChains::new(Some(chain), Vec::new()).with_mschapv1(true)))
     }
 
     /// A second factor for tests. An answer carrying the State `fake-state` is accepted with the

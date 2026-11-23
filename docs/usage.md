@@ -2180,7 +2180,7 @@ ORDER BY accounts DESC, scheme;
 
 ### 5.2 MS-CHAPv1
 
-PPTP VPN 和舊的撥接設備仍會用 MS-CHAPv1（RFC 2433）。RADIUS 的 `MS-CHAP-Challenge`（8 個位元組）加 `MS-CHAP-Response`（50 個位元組：識別碼、旗標、LM 回應、NT 回應），和 TACACS+ 的 MSCHAP 認證（`authen_type` 5，4.6 節）都支援，由 `sql` 處理器和 `ldap` 處理器的 `attribute` 模式驗證，儲存格式與 MS-CHAPv2 相同（明文、`{clear}` 或 `{nthash}`）。預設驗證；不需要的部署可以用 `[auth] allow_mschapv1 = false` 整個關掉（見下面的「關閉 MS-CHAPv1」）。
+PPTP VPN 和舊的撥接設備仍會用 MS-CHAPv1（RFC 2433）。RADIUS 的 `MS-CHAP-Challenge`（8 個位元組）加 `MS-CHAP-Response`（50 個位元組：識別碼、旗標、LM 回應、NT 回應），和 TACACS+ 的 MSCHAP 認證（`authen_type` 5，4.6 節）都支援，由 `sql` 處理器和 `ldap` 處理器的 `attribute` 模式驗證，儲存格式與 MS-CHAPv2 相同（明文、`{clear}` 或 `{nthash}`）。**預設不接受**：非用不可的設備才寫 `[auth] allow_mschapv1 = true`（見下面的「關閉 MS-CHAPv1」）。
 
 > **風險：MS-CHAPv1 的密碼雜湊只用 DES（56 位元），擷取到的挑戰與回應可以幾乎即時還原 NT hash，和密碼強度無關；NT hash 外洩就等於密碼外洩。Windows 也已預設關閉它。** 只在管理網路或無法升級的舊設備上使用，能用 MS-CHAPv2、PEAP 或 EAP-TLS 就不要用它。
 
@@ -2190,7 +2190,7 @@ PPTP VPN 和舊的撥接設備仍會用 MS-CHAPv1（RFC 2433）。RADIUS 的 `MS
 - **不能驗證的處理器：** `ldap` 處理器的 `bind` 模式（目錄只看到密碼）拒絕；`netlogon` 處理器只處理 MS-CHAPv2，MS-CHAPv1 略過，所以只有它的串接會拒絕；最上層腳本和 `lua` 處理器看不到回應，不替腳本驗，腳本看得到的是請求的屬性。
 - **不支援：** 換密碼（`MS-CHAP-CPW`）、EAP 內層的 MS-CHAPv1（PEAP、TTLS）、LM 回應。請求同時帶 `User-Password`、`CHAP-Password` 或 `MS-CHAP2-Response` 時，照 PAP、CHAP、MS-CHAPv2 的順序，MS-CHAPv1 排在最後。
 - **RADIUS User-Password 長度：** 依 RFC 2865 第 5.2 節，長度要是 16 到 128 個位元組、16 的倍數；不合的 Access-Request 在解密前就回 Access-Reject，不執行處理器與腳本，不計入 `[auth.lockout]`，驗證記錄的 handler 是 `length`，並記一行限速的 WARN（客戶端與長度，不含密碼）。固定值，沒有設定。**升級注意：** 以前超過 128 個位元組、或沒補齊到 16 倍數的 User-Password 會被接受，現在被拒；先看驗證記錄有沒有 `handler="length"`。
-- **關閉 MS-CHAPv1（`[auth] allow_mschapv1`）：** 選用的布林，預設 `true`，行為和沒有這個鍵時一樣。設成 `false` 時，驗證鏈在任何處理器之前就拒絕 MS-CHAPv1 的登入（RADIUS 的 `MS-CHAP-Response`、TACACS+ 的 MSCHAP START）：RADIUS 回 Access-Reject 並帶 `MS-CHAP-Error`（`E=691 R=0`），TACACS+ 回 FAIL，驗證記錄的 handler 是 `mschapv1_refused`。**不查資料庫與目錄，也不計入 `[auth.lockout]` 的失敗次數、不佔它的名額**（它不是密碼猜測），所以舊設備一直重試不會把帳號鎖住。每次拒絕記一行 INFO（客戶端、協定、帳號，不含 challenge 與回應）。PAP、CHAP、MS-CHAPv2、EAP 不受影響；SIGHUP 重新載入時生效。**關之前先確認沒有設備在用：** `rradius_password_checks_total` 只按儲存格式分，分不出登入用的是哪個協定，不能用它判斷；看驗證記錄裡 MS-CHAP 的登入，或先在測試環境關掉，觀察記錄裡有沒有 `MS-CHAPv1 refused` 的行。仍送 MS-CHAPv1 的舊設備關掉後全部登入失敗。沒有 `[auth]` 時由 Lua 腳本自己處理的 `MS-CHAP-Response` 不在這個開關範圍。**預設改成 `false` 留到下一個有破壞性變更的版本。** MS-CHAPv1 成功時回的 `MS-CHAP-MPPE-Keys` 由 NT hash 導出，強度不超過 NT hash，這由協定決定，開關是唯一的緩解。
+- **關閉 MS-CHAPv1（`[auth] allow_mschapv1`）：** 選用的布林，預設 `false`：沒寫這個鍵和寫 `false` 一樣。沒寫或 `false` 時，驗證鏈在任何處理器之前就拒絕 MS-CHAPv1 的登入（RADIUS 的 `MS-CHAP-Response`、TACACS+ 的 MSCHAP START）：RADIUS 回 Access-Reject 並帶 `MS-CHAP-Error`（`E=691 R=0`），TACACS+ 回 FAIL，驗證記錄的 handler 是 `mschapv1_refused`。**不查資料庫與目錄，也不計入 `[auth.lockout]` 的失敗次數、不佔它的名額**（它不是密碼猜測），所以舊設備一直重試不會把帳號鎖住。每次拒絕記一行 INFO（客戶端、協定、帳號，不含 challenge 與回應）。PAP、CHAP、MS-CHAPv2、EAP 不受影響；SIGHUP 重新載入時生效。**升級注意：** 這個預設以前是 `true`。仍送 MS-CHAPv1 的舊設備升級後全部登入失敗；`rradius_password_checks_total` 只按儲存格式分，分不出登入用的是哪個協定，要找出它們，看驗證記錄裡 `handler="mschapv1_refused"` 的行或日誌裡的 `MS-CHAPv1 refused`，確認非用不可再寫 `allow_mschapv1 = true`。沒有 `[auth]` 時由 Lua 腳本自己處理的 `MS-CHAP-Response` 不在這個開關範圍。MS-CHAPv1 成功時回的 `MS-CHAP-MPPE-Keys` 由 NT hash 導出，強度不超過 NT hash，這由協定決定，開關是唯一的緩解。
 - **字典：** `MS-CHAP-MPPE-Keys` 是 `encrypt=1` 的屬性，`set_attr` 現在支援 `encrypt=1`（4.5 節）；長度固定的 `octets[N]` 屬性也能用 `set_attr` 設，值要剛好 N 個位元組。
 
 ## 6. 範例：VPN 閘道走 LDAP、其他設備走 SQL

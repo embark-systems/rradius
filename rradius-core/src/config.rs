@@ -2259,7 +2259,7 @@ fn auth_settings(raw: RawAuth, base: &Path) -> Result<AuthSettings, String> {
     }
     let lockout = raw.lockout.map(lockout_settings).transpose()?;
     let password_limits = password_limits(raw.password_limits)?;
-    Ok(AuthSettings { default, chains, lockout, password_limits, allow_mschapv1: raw.allow_mschapv1.unwrap_or(true) })
+    Ok(AuthSettings { default, chains, lockout, password_limits, allow_mschapv1: raw.allow_mschapv1.unwrap_or(false) })
 }
 
 fn script_http_settings(raw: RawScriptHttp, base: &Path) -> Result<ScriptHttpSettings, String> {
@@ -4065,14 +4065,14 @@ mod tests {
         Ok(())
     }
 
-    /// `[auth] allow_mschapv1`: true without the key, either value, and a non-boolean is refused.
+    /// `[auth] allow_mschapv1`: false without the key, either value, and a non-boolean is refused.
     #[test]
     fn test_auth_allow_mschapv1_setting() -> Result<(), String> {
         let allowed = |line: &str| -> Result<bool, String> {
             let (_dir, result) = load_str(&base(&format!("\n[auth]\n{line}\n{SQL_HANDLER}{RADIUS_CLIENT}")));
             Ok(result.map_err(|e| e.to_string())?.auth.ok_or("no [auth]")?.allow_mschapv1)
         };
-        assert!(allowed("")?, "the default allows it");
+        assert!(!allowed("")?, "the default refuses it");
         assert!(allowed("allow_mschapv1 = true")?);
         assert!(!allowed("allow_mschapv1 = false")?);
         let error = allowed("allow_mschapv1 = \"no\"").err().ok_or("loaded a string")?;

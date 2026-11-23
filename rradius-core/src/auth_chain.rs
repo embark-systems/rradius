@@ -155,7 +155,7 @@ fn origin_of(request: &LuaRequest) -> String {
 
 impl AuthChain {
     pub fn new(policy: AuthPolicy, handlers: Vec<Handler>) -> Self {
-        Self { policy, handlers, username: None, lockout: None, allow_mschapv1: true }
+        Self { policy, handlers, username: None, lockout: None, allow_mschapv1: false }
     }
 
     /// Whether a handler compares passwords, so that a secret a script cannot check, such as a
@@ -214,7 +214,7 @@ impl AuthChain {
     pub async fn authenticate(&self, credentials: &Credentials, request: &LuaRequest) -> AuthResult {
         // Before the failure counts: a refused protocol is no guess, and no handler is asked.
         if !self.allow_mschapv1 && matches!(credentials.secret, Secret::MsChapV1 { .. }) {
-            tracing::info!("MS-CHAPv1 refused: client {}, protocol {}, user {:?}; [auth] allow_mschapv1 is false", request.client, request.protocol, credentials.user.as_deref().unwrap_or(""));
+            tracing::info!("MS-CHAPv1 refused: client {}, protocol {}, user {:?}; [auth] allow_mschapv1 is not true", request.client, request.protocol, credentials.user.as_deref().unwrap_or(""));
             return AuthResult { decision: Outcome::Reject, attributes: Vec::new(), handler: "mschapv1_refused", account: None, verified: false, unavailable: false };
         }
         // A login by certificate proves a name and guesses nothing, so it is neither limited nor counted.
@@ -969,7 +969,8 @@ mod tests {
             default_user: None,
             timeout: Duration::from_secs(5),
         };
-        let chain = AuthChain::new(AuthPolicy::FirstMatch, vec![handler]);
+        let mut chain = AuthChain::new(AuthPolicy::FirstMatch, vec![handler]);
+        chain.allow_mschapv1 = true;
         let challenge = [0x10, 0x2D, 0xB5, 0xDF, 0x08, 0x5D, 0x30, 0x41];
         let nt_response = [0x4E, 0x9D, 0x3C, 0x8F, 0x9C, 0xFD, 0x38, 0x5D, 0x5B, 0xF4, 0xD3, 0x24, 0x67, 0x91, 0x95, 0x6C, 0xA4, 0xC3, 0x51, 0xAB, 0x40, 0x9A, 0x3D, 0x61];
         let v1 = |user: &str, challenge: [u8; 8], nt_response: [u8; 24]| Credentials { user: Some(user.to_string()), secret: Secret::MsChapV1 { ident: 5, challenge, nt_response } };
@@ -1282,15 +1283,18 @@ mod tests {
         Credentials { user: Some(user.to_string()), secret: Secret::MsChapV1 { ident: 1, challenge: [3u8; 8], nt_response } }
     }
 
-    /// `allow_mschapv1`: allowed by default; refused when off, before any handler and without
+    /// `allow_mschapv1`: refused by default and when off, allowed when on; before any handler and without
     /// counting a failure; PAP and the log are as the spec says.
     #[tokio::test]
     async fn test_mschapv1_can_be_turned_off() -> Result<(), String> {
         let (mut chain, lockout) = lockout_chain("lock_mschapv1", 2, Duration::from_secs(5)).await?;
         let mut here = from_device("radius", "Calling-Station-Id", "aa-bb-cc-dd-ee-01");
         here.client = "nas7".to_string();
+        let by_default = chain.authenticate(&mschapv1("alice", "secret"), &here).await;
+        assert!(!by_default.accepted() && by_default.handler == "mschapv1_refused", "refused by default: {by_default:?}");
+        chain.allow_mschapv1 = true;
         let allowed = chain.authenticate(&mschapv1("alice", "secret"), &here).await;
-        assert!(allowed.accepted() && allowed.handler == "sql", "allowed by default: {allowed:?}");
+        assert!(allowed.accepted() && allowed.handler == "sql", "allowed when on: {allowed:?}");
         chain.allow_mschapv1 = false;
         let log = crate::test_support::radius::logged_during(async {
             for _ in 0..5 {
@@ -1318,6 +1322,7 @@ mod tests {
         let db = test_db();
         let missing = Handler::Sql { source: SqlSource::Cluster(db), user_query: "SELECT password FROM no_such_mschapv1_table WHERE username = ?".to_string(), reply_query: None, certificate_query: None, default_user: None, timeout: Duration::from_secs(5) };
         let mut broken = AuthChain::new(AuthPolicy::FirstMatch, vec![missing]);
+        broken.allow_mschapv1 = true;
         let asked = broken.authenticate(&mschapv1("alice", "secret"), &here).await;
         assert_eq!(asked.handler, "sql", "the handler is reached while it is allowed: {asked:?}");
         broken.allow_mschapv1 = false;
