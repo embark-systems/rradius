@@ -335,7 +335,7 @@ pub fn load_report(outcome: &LoadOutcome, params: &RunParams, warnings: &mut Vec
             if report::rate_not_met(sent, scheduled, p99) {
                 warnings.push(Warning {
                     code: "rate_not_met".to_string(),
-                    message: format!("{}: sent {sent} of {scheduled} scheduled requests, send lag p99 {p99:.1} us", spec.kind.name()),
+                    message: report::rate_not_met_message(spec.kind.name(), sent, scheduled, p99),
                 });
             }
             (Some(SendLag { p99 }), None)

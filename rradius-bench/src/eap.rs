@@ -47,6 +47,11 @@ const PEER_CHALLENGE: [u8; 16] = *b"rradius-bench-pc";
 const AVP_USER_NAME: u32 = 1;
 const AVP_USER_PASSWORD: u32 = 2;
 const AVP_MANDATORY: u8 = 0x40;
+const AVP_VENDOR: u8 = 0x80;
+/// RFC 5281 section 11.2.4: Microsoft's AVPs inside the tunnel.
+const AVP_MS_CHAP_CHALLENGE: u32 = 11;
+const AVP_MS_CHAP2_RESPONSE: u32 = 25;
+const AVP_MS_CHAP2_SUCCESS: u32 = 26;
 
 const VENDOR_SPECIFIC: u8 = 26;
 const MICROSOFT: u32 = 311;
@@ -59,6 +64,8 @@ pub enum Method {
     Tls,
     Peap,
     Ttls,
+    /// TTLS with inner MS-CHAPv2.
+    TtlsMschapv2,
     /// No TLS: see `crate::aka`.
     AkaPrime,
 }
@@ -69,6 +76,7 @@ impl Method {
             Step::EapTls => Some(Method::Tls),
             Step::Peap => Some(Method::Peap),
             Step::Ttls => Some(Method::Ttls),
+            Step::TtlsMschapv2 => Some(Method::TtlsMschapv2),
             Step::AkaPrime => Some(Method::AkaPrime),
             _ => None,
         }
@@ -78,7 +86,7 @@ impl Method {
         match self {
             Method::Tls => TYPE_TLS,
             Method::Peap => TYPE_PEAP,
-            Method::Ttls => TYPE_TTLS,
+            Method::Ttls | Method::TtlsMschapv2 => TYPE_TTLS,
             Method::AkaPrime => crate::aka::TYPE_AKA_PRIME,
         }
     }
@@ -88,6 +96,7 @@ impl Method {
             Method::Tls => "eap-tls",
             Method::Peap => "peap",
             Method::Ttls => "ttls",
+            Method::TtlsMschapv2 => "ttls-mschapv2",
             Method::AkaPrime => "aka-prime",
         }
     }
@@ -185,6 +194,9 @@ pub struct EapClient {
     /// MS-CHAPv2: the server's challenge and our response, for checking its Success.
     mschap: Option<([u8; 16], [u8; 24])>,
     avps_sent: bool,
+    /// TTLS with MS-CHAPv2: the identifier the tunnel exports, and whether the server proved itself.
+    tunnel_ident: u8,
+    proved: bool,
     /// Asked once for this method instead of the one the server offered.
     nak_sent: bool,
     aka: Option<crate::aka::AkaPeer>,
@@ -204,6 +216,8 @@ impl EapClient {
             peap: PeapState::Opening,
             mschap: None,
             avps_sent: false,
+            tunnel_ident: 0,
+            proved: false,
             nak_sent: false,
             aka,
         }
@@ -315,6 +329,15 @@ impl EapClient {
             }
             Method::Ttls if plain.is_empty() => None,
             Method::Ttls => return Err("inner data from the server, where TTLS with PAP expects none".to_string()),
+            Method::TtlsMschapv2 if !handshaking && !self.avps_sent => {
+                self.avps_sent = true;
+                Some(self.mschapv2_avps()?)
+            }
+            Method::TtlsMschapv2 if plain.is_empty() => None,
+            Method::TtlsMschapv2 => {
+                self.check_proof(&plain)?;
+                None
+            }
             Method::AkaPrime => return Err("TLS data in an AKA' conversation".to_string()),
         };
         if let Some(reply) = reply {
@@ -426,6 +449,51 @@ impl EapClient {
         avps
     }
 
+    /// TTLS's inner MS-CHAPv2 (RFC 5281 section 11.2.4): User-Name, and the challenge and its
+    /// response, where the challenge and identifier are what both ends export from the TLS session.
+    fn mschapv2_avps(&mut self) -> Result<Vec<u8>, String> {
+        let tls = self.tls.as_ref().ok_or("TLS data before the TLS start")?;
+        let mut exported = [0u8; 17];
+        tls.export_keying_material(&mut exported[..], b"ttls challenge", None).map_err(|e| format!("TLS: {e}"))?;
+        let challenge: [u8; 16] = std::array::from_fn(|i| exported[i]);
+        let ident = exported[16];
+        let name = std::str::from_utf8(&self.identity).map_err(|_| "the user name is not text".to_string())?;
+        let response = crate::packet::mschapv2_response(&self.password, name, &PEER_CHALLENGE, &challenge)?;
+        self.mschap = Some((challenge, response));
+        self.tunnel_ident = ident;
+        let mut value = vec![ident, 0];
+        value.extend_from_slice(&PEER_CHALLENGE);
+        value.extend_from_slice(&[0u8; 8]);
+        value.extend_from_slice(&response);
+        let mut avps = avp(AVP_USER_NAME, &self.identity);
+        avps.extend(vendor_avp(AVP_MS_CHAP_CHALLENGE, MICROSOFT, &challenge));
+        avps.extend(vendor_avp(AVP_MS_CHAP2_RESPONSE, MICROSOFT, &value));
+        Ok(avps)
+    }
+
+    /// What the server sends after the response: an MS-CHAP2-Success that proves it knows the
+    /// password. Nothing else is expected in the tunnel.
+    fn check_proof(&mut self, mut data: &[u8]) -> Result<(), String> {
+        while !data.is_empty() {
+            let ParsedAvp { code, vendor, value, rest } = parse_avp(data).ok_or("an inner AVP whose length does not fit")?;
+            data = rest;
+            if (vendor, code) != (Some(MICROSOFT), AVP_MS_CHAP2_SUCCESS) {
+                return Err(format!("an inner AVP {code} where only MS-CHAP2-Success is expected"));
+            }
+            let (&ident, text) = value.split_first().ok_or("an MS-CHAP2-Success without an identifier")?;
+            let (challenge, response) = self.mschap.ok_or("an MS-CHAP2-Success before a Response")?;
+            if ident != self.tunnel_ident || self.proved {
+                return Err("an MS-CHAP2-Success with the wrong identifier, or a second one".to_string());
+            }
+            let expected = authenticator_response(&self.password, &response, &PEER_CHALLENGE, &challenge, &self.identity);
+            if !text.starts_with(expected.as_bytes()) {
+                return Err("an MS-CHAP2-Success that does not prove the server knows the password".to_string());
+            }
+            self.proved = true;
+        }
+        Ok(())
+    }
+
     /// Whether the MS-MPPE keys in an Access-Accept are the ones this login's TLS session or
     /// AKA' Challenge gives, decrypted with `secret` and the Request Authenticator of the request it answers.
     pub fn check_keys(&self, accept: &[u8], request_authenticator: &[u8; 16], secret: &[u8]) -> Result<(), String> {
@@ -468,6 +536,7 @@ impl EapClient {
             Method::Tls => true,
             Method::Peap => self.peap == PeapState::Done,
             Method::Ttls => self.avps_sent,
+            Method::TtlsMschapv2 => self.proved,
             Method::AkaPrime => false,
         };
         if !inner_done {
@@ -478,7 +547,7 @@ impl EapClient {
         let mut material = [0u8; 128];
         let tls13 = tls.protocol_version() == Some(rustls::ProtocolVersion::TLSv1_3);
         let (label, context): (&[u8], Option<&[u8]>) = match self.setup.method {
-            Method::Ttls => (b"ttls keying material", None),
+            Method::Ttls | Method::TtlsMschapv2 => (b"ttls keying material", None),
             Method::Tls if tls13 => (b"EXPORTER_EAP_TLS_Key_Material", Some(&[TYPE_TLS])),
             _ => (b"client EAP encryption", None),
         };
@@ -503,6 +572,38 @@ fn avp(code: u32, data: &[u8]) -> Vec<u8> {
     avp.extend_from_slice(data);
     avp.resize(length.div_ceil(4) * 4, 0);
     avp
+}
+
+/// One Diameter AVP with a vendor (RFC 5281 section 10.1), mandatory, padded to four octets.
+fn vendor_avp(code: u32, vendor: u32, data: &[u8]) -> Vec<u8> {
+    let length = 12 + data.len();
+    let mut avp = code.to_be_bytes().to_vec();
+    avp.push(AVP_MANDATORY | AVP_VENDOR);
+    avp.extend_from_slice(&(length as u32).to_be_bytes()[1..]);
+    avp.extend_from_slice(&vendor.to_be_bytes());
+    avp.extend_from_slice(data);
+    avp.resize(length.div_ceil(4) * 4, 0);
+    avp
+}
+
+/// The first AVP of `data`, and what follows it.
+struct ParsedAvp<'a> {
+    code: u32,
+    vendor: Option<u32>,
+    value: &'a [u8],
+    rest: &'a [u8],
+}
+
+fn parse_avp(data: &[u8]) -> Option<ParsedAvp<'_>> {
+    let head = data.get(..8)?;
+    let code = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
+    let length = u32::from_be_bytes([0, head[5], head[6], head[7]]) as usize;
+    let header = if head[4] & AVP_VENDOR != 0 { 12 } else { 8 };
+    if length < header || length > data.len() {
+        return None;
+    }
+    let vendor = if header == 12 { Some(u32::from_be_bytes([data[8], data[9], data[10], data[11]])) } else { None };
+    Some(ParsedAvp { code, vendor, value: &data[header..length], rest: &data[length.next_multiple_of(4).min(data.len())..] })
 }
 
 /// The attributes of a RADIUS packet, stopping at the first that does not fit.
@@ -823,6 +924,85 @@ mod tests {
         let mut plain = Vec::new();
         let _ = server.reader().read_to_end(&mut plain);
         assert_eq!(plain, client.avps(), "the AVPs came through the tunnel");
+    }
+
+    /// What a server of the tunnel does with the client's MS-CHAPv2 AVPs: the Success AVP it sends
+    /// back, as TLS data, for `proof_for`'s idea of the password.
+    fn tunnel_success(server: &mut ServerConnection, client_avps: &[u8], proof_for: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let (mut name, mut challenge, mut response) = (None, None, None);
+        let mut rest = client_avps;
+        while !rest.is_empty() {
+            let ParsedAvp { code, vendor, value, rest: next } = parse_avp(rest).ok_or("an AVP that does not parse")?;
+            match (vendor, code) {
+                (None, AVP_USER_NAME) => name = Some(value.to_vec()),
+                (Some(MICROSOFT), AVP_MS_CHAP_CHALLENGE) => challenge = Some(value.to_vec()),
+                (Some(MICROSOFT), AVP_MS_CHAP2_RESPONSE) => response = Some(value.to_vec()),
+                _ => return Err("an AVP nobody asked for".into()),
+            }
+            rest = next;
+        }
+        let (name, challenge, response) = (name.ok_or("no name")?, challenge.ok_or("no challenge")?, response.ok_or("no response")?);
+        let mut exported = [0u8; 17];
+        server.export_keying_material(&mut exported[..], b"ttls challenge", None)?;
+        assert_eq!(challenge, exported[..16], "the challenge is what the tunnel exports");
+        assert_eq!(response[0], exported[16], "the identifier is the one the tunnel exports");
+        assert_eq!(name, b"alice");
+        let nt: [u8; 24] = response[26..50].try_into()?;
+        let challenge: [u8; 16] = challenge[..].try_into()?;
+        let proof = authenticator_response(proof_for, &nt, &PEER_CHALLENGE, &challenge, &name);
+        let mut data = vec![response[0]];
+        data.extend_from_slice(proof.as_bytes());
+        server.writer().write_all(&vendor_avp(AVP_MS_CHAP2_SUCCESS, MICROSOFT, &data))?;
+        let mut out = Vec::new();
+        while server.wants_write() {
+            server.write_tls(&mut out)?;
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn test_ttls_mschapv2_proves_the_server_and_waits_for_it() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let (mut client, mut server) = handshake(Method::TtlsMschapv2, dir.path());
+        assert!(client.avps_sent);
+        assert!(!client.proved, "no Accept counts before the server's proof");
+        assert!(client.tls_msk().is_err(), "keys alone are not the end of the inner method");
+        let mut plain = Vec::new();
+        let _ = server.reader().read_to_end(&mut plain);
+        let answer = tunnel_success(&mut server, &plain, "secret")?;
+        client.incoming = answer;
+        client.take_incoming()?;
+        assert!(client.proved);
+        assert!(client.tls_msk().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn test_ttls_mschapv2_refuses_a_proof_for_another_password() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let (mut client, mut server) = handshake(Method::TtlsMschapv2, dir.path());
+        let mut plain = Vec::new();
+        let _ = server.reader().read_to_end(&mut plain);
+        client.incoming = tunnel_success(&mut server, &plain, "other")?;
+        let error = client.take_incoming().err().ok_or("a wrong proof was accepted")?;
+        assert!(error.contains("does not prove"), "{error}");
+        assert!(!client.proved);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ttls_mschapv2_refuses_an_unexpected_inner_avp() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let (mut client, mut server) = handshake(Method::TtlsMschapv2, dir.path());
+        server.writer().write_all(&avp(AVP_USER_NAME, b"alice"))?;
+        let mut out = Vec::new();
+        while server.wants_write() {
+            server.write_tls(&mut out)?;
+        }
+        client.incoming = out;
+        let error = client.take_incoming().err().ok_or("an unexpected AVP was accepted")?;
+        assert!(error.contains("only MS-CHAP2-Success"), "{error}");
+        Ok(())
     }
 
     #[test]

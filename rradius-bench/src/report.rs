@@ -139,6 +139,16 @@ pub fn rate_not_met(sent: u64, scheduled: u64, send_lag_p99_us: f64) -> bool {
     (sent as f64) < scheduled as f64 * RATE_MET_SHARE || send_lag_p99_us > MAX_SEND_LAG_US
 }
 
+/// The `rate_not_met` message. Under 1% sent says why that happens: the requests of the window
+/// come after a backlog the tool or the server never clears, so none go out inside it.
+pub fn rate_not_met_message(kind: &str, sent: u64, scheduled: u64, send_lag_p99_us: f64) -> String {
+    let mut message = format!("{kind}: sent {sent} of {scheduled} scheduled requests, send lag p99 {send_lag_p99_us:.1} us");
+    if (sent as f64) < scheduled as f64 * 0.01 {
+        message.push_str("; the tool or the server could not keep up with this rate, so lower rate or raise concurrency and threads");
+    }
+    message
+}
+
 const UNTRUSTWORTHY: [&str; 3] = ["tool_saturated", "rate_not_met", "duplicate_path"];
 
 /// Warnings about the server's counters.
@@ -320,6 +330,16 @@ mod tests {
         let result = report(vec![step(0, 0, 0, 0, 0, 0)], vec![warning]);
         assert_eq!(result.exit_code(), 0);
         assert!(!result.trustworthy);
+    }
+
+    #[test]
+    fn test_rate_not_met_message_says_why_when_almost_nothing_went_out() {
+        let nothing = rate_not_met_message("pap", 0, 1_000_000, 0.0);
+        assert_eq!(nothing, "pap: sent 0 of 1000000 scheduled requests, send lag p99 0.0 us; the tool or the server could not keep up with this rate, so lower rate or raise concurrency and threads");
+        let behind = rate_not_met_message("pap", 150_000, 1_000_000, 492_306.0);
+        assert_eq!(behind, "pap: sent 150000 of 1000000 scheduled requests, send lag p99 492306.0 us");
+        assert!(rate_not_met_message("pap", 9_999, 1_000_000, 0.0).contains("could not keep up"));
+        assert!(!rate_not_met_message("pap", 10_000, 1_000_000, 0.0).contains("could not keep up"));
     }
 
     #[test]
