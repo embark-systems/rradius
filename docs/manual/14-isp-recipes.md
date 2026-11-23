@@ -104,7 +104,7 @@ minutes = 60
 
 `code=2` 是 Access-Accept、`3` 是 Access-Reject、`5` 是 Accounting-Response。追蹤的完整說明見[第 17 章](17-monitoring.md)。
 
-接著在一個終端機啟動伺服器（`rradius-server server --config rradius.toml`），在另一個終端機做每一節的測試。本章用到 `rradius-bench` 的三種負載：
+接著在一個終端機啟動伺服器（`rradius-server serve --config rradius.toml`），在另一個終端機做每一節的測試。本章用到 `rradius-bench` 的三種負載：
 
 - `pap`：送一筆登入。
 - `acct-start`：送一筆 Accounting-Start，session ID 每次執行都不同。

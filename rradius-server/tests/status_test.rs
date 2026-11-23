@@ -306,7 +306,7 @@ fn test_cluster_three_nodes() -> Result<(), String> {
         let path = dir.path().join(format!("node{}.toml", i + 1));
         std::fs::write(&path, config).map_err(|e| e.to_string())?;
         let log = std::fs::File::create(dir.path().join(format!("node{}.log", i + 1))).map_err(|e| e.to_string())?;
-        let child = Command::new(PROGRAM).arg("server").arg("--config").arg(&path).current_dir(dir.path()).stdout(Stdio::null()).stderr(log).spawn().map_err(|e| e.to_string())?;
+        let child = Command::new(PROGRAM).arg("serve").arg("--config").arg(&path).current_dir(dir.path()).stdout(Stdio::null()).stderr(log).spawn().map_err(|e| e.to_string())?;
         children.0.push(Some(child));
         configs.push(path.to_string_lossy().into_owned());
     }

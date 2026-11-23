@@ -317,7 +317,7 @@ configuration ok
 三個節點要一起啟動：第一個起來的節點要等到湊滿過半數才會開始服務。每個節點開一個終端機，或像這樣放到背景，日誌寫進檔案：
 
 ```console
-$ for n in 1 2 3; do rradius-server server --config node$n.toml > node$n.log 2>&1 & done
+$ for n in 1 2 3; do rradius-server serve --config node$n.toml > node$n.log 2>&1 & done
 ```
 
 在這台機器上，從啟動到三個節點的 `/readyz` 都回 `ok`，大約 9 秒。節點 1 的日誌（拿掉時間）：
@@ -550,7 +550,7 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 
 ```console
 $ rm -rf data3
-$ rradius-server server --config node3.toml > node3.log 2>&1 &
+$ rradius-server serve --config node3.toml > node3.log 2>&1 &
 ```
 
 ```text
@@ -606,7 +606,7 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 依照[節點 1 的設定](#節點-1-的設定)的表做 `node4.toml`，`[[cluster.nodes]]` 列出節點 1 到 4，然後啟動：
 
 ```console
-$ rradius-server server --config node4.toml > node4.log 2>&1 &
+$ rradius-server serve --config node4.toml > node4.log 2>&1 &
 ```
 
 這台機器上大約 4 秒後就緒，日誌依序是 `cluster node 4 started`、`has caught up with the cluster`、`Servers started`。加入前建立的帳號馬上能在節點 4 登入：

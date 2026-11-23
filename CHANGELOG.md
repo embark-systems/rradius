@@ -4,6 +4,10 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+#### Changed
+
+- **Breaking:** the subcommand that starts the service is now `serve`: `rradius-server serve [--config <path>]` (and `rradius-enterprise serve`). The name `server` is no longer accepted: it prints the usage and exits with status 2. Change the `ExecStart` of a systemd unit, the `command` of a Compose file, the `CMD` of a Dockerfile, the `args` of a Kubernetes container and the command of a FreeBSD rc script when you upgrade.
+
 ### 0.1.0
 
 The first release.

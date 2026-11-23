@@ -30,7 +30,7 @@ spec:
           image: rradius-server:latest
           imagePullPolicy: IfNotPresent
           # Pod rradius-N reads rradius-N.toml, whose node_id is N+1.
-          args: ["server", "--config", "/etc/rradius/$(POD_NAME).toml"]
+          args: ["serve", "--config", "/etc/rradius/$(POD_NAME).toml"]
           env:
             - name: POD_NAME
               valueFrom:

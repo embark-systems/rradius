@@ -17,7 +17,7 @@ RADIUS 與 TACACS+ 的 AAA 伺服器，用 Rust 寫成。認證和計費的邏�
 ```bash
 cargo build --release
 cd rradius-server
-../target/release/rradius-server server --config examples/scenarios/quick-start/rradius.toml
+../target/release/rradius-server serve --config examples/scenarios/quick-start/rradius.toml
 ```
 
 也可以用 Docker：先執行 `docker/init-secrets.sh`，再 `docker compose up --build`（單機）或用 `compose.cluster.yaml`（三台），見[使用文件 1.1 節](docs/usage.md#11-docker)。發行檔用 `packages/tarball/release.sh` 產生，見 [`packages/tarball/README.md`](packages/tarball/README.md)。

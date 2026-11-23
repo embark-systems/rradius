@@ -159,7 +159,7 @@ impl Server {
         let stderr = std::fs::File::create(dir.join("stderr.log")).unwrap();
         let stdout = std::fs::File::create(dir.join("stdout.log")).unwrap();
         Command::new(program)
-            .args(["server", "--config", config.to_str().unwrap()])
+            .args(["serve", "--config", config.to_str().unwrap()])
             .current_dir(dir)
             .stdout(stdout)
             .stderr(stderr)

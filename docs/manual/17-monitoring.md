@@ -89,7 +89,7 @@ interval_ms = 5000
 ```console
 $ rradius-server check --config rradius.toml
 configuration ok
-$ rradius-server server --config rradius.toml
+$ rradius-server serve --config rradius.toml
 …
 … INFO rradius_core::tacacs: TACACS+ Server listening on 127.0.0.1:4949
 … INFO rradius_core::radius: RADIUS Server listening on 127.0.0.1:1812 and 127.0.0.1:1813

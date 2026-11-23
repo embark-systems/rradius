@@ -199,7 +199,7 @@ configuration ok
 開一個終端機，在前景啟動：
 
 ```console
-$ rradius-server server --config rradius.toml
+$ rradius-server serve --config rradius.toml
 … WARN hiqlite::store::state_machine::sqlite::writer: No metadata exists inside the DB yet
 … WARN hiqlite::store::state_machine::sqlite::writer: No metadata exists inside the DB yet
 … INFO rradius_core::cli: cluster node 1 started

@@ -119,7 +119,7 @@ return 'accept'
 ```console
 $ rradius-server check --config rradius.toml
 configuration ok
-$ rradius-server server --config rradius.toml
+$ rradius-server serve --config rradius.toml
 ```
 
 `check` 會編譯腳本，語法錯誤在這裡就會看到。在另一個終端機登入：

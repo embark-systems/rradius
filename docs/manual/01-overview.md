@@ -30,7 +30,7 @@ rradius 是一套 AAA 伺服器：它替 NAS（網路存取設備，例如 AP �
 
 1. **登入規則寫在設定檔、SQL 與 Lua 腳本裡。** 簡單的情況只要在設定檔寫一段 SQL 查詢；要判斷時段、配額、群組這類規則時，寫一個 Lua 腳本（實際上是 Luau 方言）。
 2. **資料放在內建的叢集資料庫。** 帳號、計費、session 都存在程式自己帶的資料庫裡，單機就能跑，要高可用時把幾台組成叢集，不必另外架資料庫伺服器。
-3. **只有一個執行檔。** 伺服器和管理指令都是 `rradius-server`：`rradius-server server` 啟動服務，`rradius-server user add` 新增帳號，`rradius-server status` 看狀態。
+3. **只有一個執行檔。** 伺服器和管理指令都是 `rradius-server`：`rradius-server serve` 啟動服務，`rradius-server user add` 新增帳號，`rradius-server status` 看狀態。
 
 rradius **不做**的事：
 
@@ -132,7 +132,7 @@ rradius 跑起來需要三樣東西，各自的角色不同：
 
 ```console
 $ rradius-server help
-usage: rradius-server server [--config <path>]
+usage: rradius-server serve [--config <path>]
 usage: rradius-server check [--config <path>]
 usage: rradius-server status [--config <path>] [--watch] [--json] [--cluster]
 usage: rradius-server --version
@@ -154,7 +154,7 @@ without --config, the configuration is /etc/rradius/rradius.toml
 
 | 指令 | 做什麼 | 說明在 |
 | --- | --- | --- |
-| `server` | 啟動伺服器 | 第 03 章 |
+| `serve` | 啟動伺服器 | 第 03 章 |
 | `check` | 檢查設定檔，不啟動任何服務 | 第 04 章 |
 | `config show`／`diff`／`init` | 印出帶預設值的完整設定、比較兩份設定、產生底稿 | 第 04 章 |
 | `schema` | 印出設定檔的 JSON Schema，含每個鍵的說明與預設值 | 第 04 章 |

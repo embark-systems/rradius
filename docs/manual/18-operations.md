@@ -263,7 +263,7 @@ configuration ok
 
 ```console
 $ printf -- '-- edited\n' >> migrations/1_schema.sql
-$ rradius-server server --config rradius.toml
+$ rradius-server serve --config rradius.toml
 …
 migration file '1_schema.sql' changed after it was applied
 $ echo $?
@@ -276,7 +276,7 @@ $ echo $?
 
 ```console
 $ mv migrations/3_user_note.sql migrations/5_user_note.sql
-$ rradius-server server --config rradius.toml
+$ rradius-server serve --config rradius.toml
 migration numbering must start at 1 without gaps or repeats: expected number 3, found '5_user_note.sql'
 $ echo $?
 2
@@ -456,7 +456,7 @@ SIGHUP 之後的計費寫進新的 `acct.jsonl`，舊檔不再增加。
 | --- | --- | --- |
 | `ConditionPathExists` | `/etc/rradius/rradius.toml` | 沒有設定檔就不啟動 |
 | `User`、`Group` | `rradius` | 用一般使用者執行 |
-| `ExecStart` | `/usr/bin/rradius-server server` | 讀預設設定檔 |
+| `ExecStart` | `/usr/bin/rradius-server serve` | 讀預設設定檔 |
 | `ExecReload` | `/bin/kill -HUP $MAINPID` | `systemctl reload rradius` 就是 reload |
 | `Restart`、`RestartSec` | `on-failure`、`2` | 結束碼不是 0 時，2 秒後重啟 |
 | `TimeoutStopSec` | `60` | 等關機的時間 |
@@ -476,7 +476,7 @@ SIGHUP 之後的計費寫進新的 `acct.jsonl`，舊檔不再增加。
 
 原始碼的 `compose.yaml`（單節點）、`compose.cluster.yaml`（三節點，[第 16 章](16-cluster.md)）與 `deploy/synology/compose.yaml`（Synology 的 Container Manager 專案）都用同一個 image：
 
-- 程式以 `ENTRYPOINT ["/usr/local/bin/rradius-server"]` 執行，預設參數 `server --config /etc/rradius/rradius.toml`，以 `rradius` 使用者執行；資料在 volume `/var/lib/rradius`。
+- 程式以 `ENTRYPOINT ["/usr/local/bin/rradius-server"]` 執行，預設參數 `serve --config /etc/rradius/rradius.toml`，以 `rradius` 使用者執行；資料在 volume `/var/lib/rradius`。
 - `stop_grace_period: 30s`：給關機足夠的時間。Docker 預設的 10 秒不夠。
 - `restart: unless-stopped`：異常結束後自動重啟。
 - 根檔案系統唯讀，設定以唯讀方式掛進 `/etc/rradius`。

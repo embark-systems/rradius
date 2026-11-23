@@ -16,7 +16,7 @@ fn run(args: &[&str]) -> (Option<i32>, String) {
     (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
-/// Without `--config`, `server` and `check` read the default configuration, which is not
+/// Without `--config`, `serve` and `check` read the default configuration, which is not
 /// there when the tests run unless a prefix pointed it at one.
 #[test]
 fn test_missing_config_argument() {
@@ -24,7 +24,7 @@ fn test_missing_config_argument() {
     if Path::new(default).exists() {
         return;
     }
-    let (code, stderr) = run(&["server"]);
+    let (code, stderr) = run(&["serve"]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains(default) && stderr.contains("give --config <path> for another"), "unexpected stderr: {stderr}");
     let (code, stderr) = run(&["check"]);
@@ -36,7 +36,7 @@ fn test_missing_config_argument() {
     assert!(stderr.contains(default), "unexpected stderr: {stderr}");
     let (code, stderr) = run(&["--confg", "x"]);
     assert_eq!(code, Some(2));
-    assert!(stderr.contains("usage: rradius-server server [--config <path>]") && stderr.contains(&format!("without --config, the configuration is {default}")), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("usage: rradius-server serve [--config <path>]") && stderr.contains(&format!("without --config, the configuration is {default}")), "unexpected stderr: {stderr}");
 }
 
 /// The exit status, standard output and standard error of the program run with `args`.
@@ -52,7 +52,7 @@ fn test_help_prints_the_usage() -> Result<(), String> {
     for help in ["help", "--help", "-h"] {
         let (code, stdout, stderr) = output_of(&[help])?;
         assert_eq!(code, Some(0), "{help}: {stderr}");
-        for line in ["usage: rradius-server server [--config <path>]", "usage: rradius-server check [--config <path>]", "usage: rradius-server --version", "usage: rradius-server config show", "usage: rradius-server tuning", "usage: rradius-server user"] {
+        for line in ["usage: rradius-server serve [--config <path>]", "usage: rradius-server check [--config <path>]", "usage: rradius-server --version", "usage: rradius-server config show", "usage: rradius-server tuning", "usage: rradius-server user"] {
             assert!(stdout.contains(line), "{help}: {line} missing from {stdout}");
         }
         assert!(stdout.ends_with(&format!("without --config, the configuration is {default}\n")), "{help}: {stdout}");
@@ -68,7 +68,7 @@ fn test_no_arguments_print_the_usage() -> Result<(), String> {
     let output = Command::new(PROGRAM).current_dir(dir.path()).output().map_err(|e| e.to_string())?;
     let (stdout, stderr) = (String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     assert_eq!(output.status.code(), Some(0), "{stderr}");
-    assert!(stdout.starts_with("usage: rradius-server server [--config <path>]\nusage: rradius-server check [--config <path>]\n"), "{stdout}");
+    assert!(stdout.starts_with("usage: rradius-server serve [--config <path>]\nusage: rradius-server check [--config <path>]\n"), "{stdout}");
     assert!(stderr.is_empty(), "{stderr}");
     let (_, help, _) = output_of(&["--help"])?;
     assert_eq!(stdout, help);
@@ -83,7 +83,7 @@ fn test_old_flags_name_the_subcommands() -> Result<(), String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let (config, _) = write_config(dir.path(), "return 'accept'", None);
     let config = config.to_str().ok_or("path not UTF-8")?;
-    let start = "to start the server: rradius-server server --config <path>";
+    let start = "to start the server: rradius-server serve --config <path>";
     let check = "to check a configuration: rradius-server check [--config <path>]";
     for (args, hint) in [
         (&["--config", config][..], Some(start)),
@@ -94,7 +94,7 @@ fn test_old_flags_name_the_subcommands() -> Result<(), String> {
     ] {
         let (code, stdout, stderr) = output_of(args)?;
         assert_eq!(code, Some(2), "{args:?}");
-        assert!(stdout.is_empty() && stderr.contains("usage: rradius-server server [--config <path>]"), "{args:?}: {stderr}");
+        assert!(stdout.is_empty() && stderr.contains("usage: rradius-server serve [--config <path>]"), "{args:?}: {stderr}");
         match hint {
             Some(hint) => {
                 assert!(stderr.trim_end().ends_with(hint), "{args:?}: {stderr}");
@@ -108,13 +108,13 @@ fn test_old_flags_name_the_subcommands() -> Result<(), String> {
     Ok(())
 }
 
-/// After `server` and `check` only `--config <path>` is taken.
+/// After `serve` and `check` only `--config <path>` is taken.
 #[test]
 fn test_server_and_check_arguments() -> Result<(), String> {
     for (args, usage) in [
-        (&["server", "extra"][..], "usage: rradius-server server [--config <path>]"),
-        (&["server", "--config"], "usage: rradius-server server [--config <path>]"),
-        (&["server", "--config", "a.toml", "extra"], "usage: rradius-server server [--config <path>]"),
+        (&["serve", "extra"][..], "usage: rradius-server serve [--config <path>]"),
+        (&["serve", "--config"], "usage: rradius-server serve [--config <path>]"),
+        (&["serve", "--config", "a.toml", "extra"], "usage: rradius-server serve [--config <path>]"),
         (&["check", "extra"], "usage: rradius-server check [--config <path>]"),
         (&["check", "--config", "a.toml", "extra"], "usage: rradius-server check [--config <path>]"),
     ] {
@@ -125,9 +125,20 @@ fn test_server_and_check_arguments() -> Result<(), String> {
     Ok(())
 }
 
+/// The old name of `serve` is gone: the full usage, no hint line, status 2, no port.
+#[test]
+fn test_server_subcommand_removed() -> Result<(), String> {
+    let (code, stdout, stderr) = output_of(&["server", "--config", "a.toml"])?;
+    assert_eq!(code, Some(2));
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("usage: rradius-server serve [--config <path>]"), "{stderr}");
+    assert!(!stderr.contains("usage: rradius-server server") && !stderr.contains("to start the server:"), "{stderr}");
+    Ok(())
+}
+
 #[test]
 fn test_nonexistent_config_file() {
-    let (code, stderr) = run(&["server", "--config", "/nonexistent.toml"]);
+    let (code, stderr) = run(&["serve", "--config", "/nonexistent.toml"]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("/nonexistent.toml"), "unexpected stderr: {stderr}");
 }
@@ -144,7 +155,7 @@ fn test_unknown_auth_handler_type() {
          [radius]\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n",
     )
     .unwrap();
-    let (code, stderr) = run(&["server", "--config", path.to_str().unwrap()]);
+    let (code, stderr) = run(&["serve", "--config", path.to_str().unwrap()]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("unknown variant") && stderr.contains("expected") && !stderr.contains("kerberos"), "unexpected stderr: {stderr}");
 }
@@ -171,7 +182,7 @@ fn test_missing_auth_handler_script() {
         ),
     )
     .unwrap();
-    let (code, stderr) = run(&["server", "--config", path.to_str().unwrap()]);
+    let (code, stderr) = run(&["serve", "--config", path.to_str().unwrap()]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("missing.lua"), "unexpected stderr: {stderr}");
 }
@@ -179,7 +190,7 @@ fn test_missing_auth_handler_script() {
 fn run_with_scripts(script: &str, handler: Option<&str>) -> (Option<i32>, String) {
     let dir = tempfile::tempdir().unwrap();
     let (path, _) = write_config(dir.path(), script, handler);
-    run(&["server", "--config", path.to_str().unwrap()])
+    run(&["serve", "--config", path.to_str().unwrap()])
 }
 
 /// The outcome end to end, on a real server with a real file. mlua also refuses
@@ -255,7 +266,7 @@ fn test_migrations_survive_restart() {
 fn exit_with_migrations(files: &[(&str, &str)]) -> (Option<i32>, String) {
     let dir = dir_with_migrations(files);
     let (path, _) = write_config_with(dir.path(), "return 'accept'", None, WITH_MIGRATIONS);
-    run(&["server", "--config", path.to_str().unwrap()])
+    run(&["serve", "--config", path.to_str().unwrap()])
 }
 
 #[test]
@@ -276,7 +287,7 @@ fn test_failing_migration_stops_startup() {
 fn test_missing_migrations_directory_stops_startup() {
     let dir = tempfile::tempdir().unwrap();
     let (path, _) = write_config_with(dir.path(), "return 'accept'", None, WITH_MIGRATIONS);
-    let (code, stderr) = run(&["server", "--config", path.to_str().unwrap()]);
+    let (code, stderr) = run(&["serve", "--config", path.to_str().unwrap()]);
     assert_eq!(code, Some(2), "unexpected stderr: {stderr}");
     assert!(stderr.contains(&dir.path().join("migrations").display().to_string()), "unexpected stderr: {stderr}");
 }
@@ -368,7 +379,7 @@ fn lone_node_config(dir: &Path) -> PathBuf {
 fn run_within(limit: Duration, config: &Path) -> (Option<i32>, String) {
     let stderr_path = config.with_extension("stderr");
     let mut child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
-        .args(["server", "--config", config.to_str().unwrap()])
+        .args(["serve", "--config", config.to_str().unwrap()])
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&stderr_path).unwrap())
         .spawn()
@@ -810,7 +821,7 @@ fn test_invalid_log_settings_stop_startup() {
         let (config, _) = write_config(dir.path(), "return 'accept'", None);
         let text = std::fs::read_to_string(&config).unwrap();
         std::fs::write(&config, format!("{text}[log]\n{setting}\n")).unwrap();
-        let (code, stderr) = run(&["server", "--config", config.to_str().unwrap()]);
+        let (code, stderr) = run(&["serve", "--config", config.to_str().unwrap()]);
         assert_eq!(code, Some(2), "{stderr}");
         assert!(stderr.contains(expected), "{setting}: {stderr}");
     }
@@ -934,7 +945,7 @@ fn piped_server(script: &str) -> (Server, u16) {
     std::fs::write(&config, format!("{text}[metrics]\nport = {port}\n")).unwrap();
     let stdout = std::fs::File::create(dir.path().join("stdout.log")).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
-        .args(["server", "--config", config.to_str().unwrap()])
+        .args(["serve", "--config", config.to_str().unwrap()])
         .current_dir(dir.path())
         .stdout(stdout)
         .stderr(Stdio::piped())
@@ -1649,7 +1660,7 @@ fn test_out_of_file_descriptors() {
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(&config, format!("{text}[metrics]\nport = {metrics_port}\n[tacacs]\nport = {tacacs_port}\n# All the test's connections come from one address, and must reach the file descriptor limit.\nmax_connections_per_source = 1024\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n")).unwrap();
     let child = Command::new("sh")
-        .args(["-c", "ulimit -n 128 && exec \"$0\" server --config \"$1\"", env!("CARGO_BIN_EXE_rradius-server"), config.to_str().unwrap()])
+        .args(["-c", "ulimit -n 128 && exec \"$0\" serve --config \"$1\"", env!("CARGO_BIN_EXE_rradius-server"), config.to_str().unwrap()])
         .current_dir(dir.path())
         .stdout(std::fs::File::create(dir.path().join("stdout.log")).unwrap())
         .stderr(std::fs::File::create(dir.path().join("stderr.log")).unwrap())
@@ -1931,7 +1942,7 @@ fn test_spool_directory_that_cannot_be_used() {
     let (config, _) = write_config(dir.path(), "return 'accept'", None);
     let text = std::fs::read_to_string(&config).unwrap().replace("[[radius.clients]]", "[radius.accounting_spool]\ndir = \"a-file/spool\"\n[[radius.clients]]");
     std::fs::write(&config, text).unwrap();
-    let (code, stderr) = run(&["server", "--config", config.to_str().unwrap()]);
+    let (code, stderr) = run(&["serve", "--config", config.to_str().unwrap()]);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(stderr.contains("accounting_spool.dir"), "{stderr}");
     assert!(!dir.path().join("spool").exists());
@@ -2465,7 +2476,7 @@ fn test_ocsp_needs_the_enterprise_program() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let config = write_tls_config(dir.path(), &section)?;
         let config = config.to_str().ok_or("a path that is not UTF-8")?;
-        for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
+        for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
             let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
@@ -2485,7 +2496,7 @@ fn test_backups_need_the_enterprise_program() -> Result<(), String> {
     text.push_str("\n[cluster.backup]\ninterval_minutes = 60\n");
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     let config = config.to_str().ok_or("a path that is not UTF-8")?;
-    for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
+    for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
         let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
@@ -2504,7 +2515,7 @@ fn test_accounting_export_needs_enterprise() -> Result<(), String> {
     text.push_str("\n[accounting_export]\ndirectory = \"exports\"\n[accounting_export.table]\nquery = \"SELECT 1\"\n");
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     let config = config.to_str().ok_or("a path that is not UTF-8")?;
-    for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
+    for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
         let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
@@ -2539,7 +2550,7 @@ fn test_diameter_needs_enterprise() -> Result<(), String> {
     text.push_str(SECTION);
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     let config = config.to_str().ok_or("a path that is not UTF-8")?;
-    for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
+    for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
         let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
@@ -2713,7 +2724,7 @@ fn core_column(table: Vec<(String, Said)>) -> Result<(), String> {
         let config = config.to_str().ok_or("a path that is not UTF-8")?;
         match expected.in_core {
             Some(message) => {
-                for args in [vec!["server", "--config", config], vec!["check", "--config", config]] {
+                for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
                     let output = Command::new(PROGRAM).args(&args).output().map_err(|e| e.to_string())?;
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     assert_eq!(output.status.code(), Some(2), "{section}: {args:?}: {stderr}");

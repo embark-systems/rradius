@@ -27,7 +27,7 @@ pub struct Program {
     pub extensions: crate::extension::Extensions,
 }
 
-const USAGE: &str = "usage: rradius-server server [--config <path>]";
+const USAGE: &str = "usage: rradius-server serve [--config <path>]";
 const SCHEMA_USAGE: &str = "usage: rradius-server schema [--lang en|zh-TW]";
 
 /// The name of the program that runs, once `main` has it.
@@ -252,9 +252,9 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", full_usage(extensions, default));
             return Ok(());
         }
-        [_, server] if server == "server" => default,
-        [_, server, flag, path] if server == "server" && flag == "--config" => path.as_str(),
-        [_, server, ..] if server == "server" => exit_with(named(USAGE)),
+        [_, serve] if serve == "serve" => default,
+        [_, serve, flag, path] if serve == "serve" && flag == "--config" => path.as_str(),
+        [_, serve, ..] if serve == "serve" => exit_with(named(USAGE)),
         [_, check] if check == "check" => std::process::exit(admin::check(default)),
         [_, check, flag, path] if check == "check" && flag == "--config" => std::process::exit(admin::check(path)),
         [_, check, ..] if check == "check" => exit_with(named(admin::CHECK_USAGE)),
@@ -263,7 +263,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         [_, flag, ..] if (flag == "--config" || flag == "--check") && args.iter().any(|arg| arg == "--check") => {
             exit_with(full_usage(extensions, default) + &format!("\nto check a configuration: {} check [--config <path>]", program.name))
         }
-        [_, flag, ..] if flag == "--config" => exit_with(full_usage(extensions, default) + &format!("\nto start the server: {} server --config <path>", program.name)),
+        [_, flag, ..] if flag == "--config" => exit_with(full_usage(extensions, default) + &format!("\nto start the server: {} serve --config <path>", program.name)),
         _ => exit_with(full_usage(extensions, default)),
     };
     // Only now: the commands above do not listen for these, and must end on them. As PID 1 the

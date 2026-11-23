@@ -250,7 +250,7 @@ configuration ok
 
 沒有先跑 `setup.sh` 時，`check` 會失敗：`rradius.toml: radius.eap.cert_file 'certs/server.pem': I/O error: No such file or directory (os error 2)`。
 
-啟動伺服器（`rradius-server server --config rradius.toml`），再開一個終端機。
+啟動伺服器（`rradius-server serve --config rradius.toml`），再開一個終端機。
 
 **驗證：** 用 `rradius-bench` 扮演用戶端與 NAS：
 

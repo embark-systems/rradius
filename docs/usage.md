@@ -9,7 +9,7 @@ rradius-server 是一個 AAA（認證、授權、計費）伺服器，支援 RAD
 ```bash
 cd rradius-server
 cargo build --release
-./target/release/rradius-server server --config /etc/rradius/rradius.toml
+./target/release/rradius-server serve --config /etc/rradius/rradius.toml
 ```
 
 `rradius-server --version` 印出版本和預設設定檔，例如：
@@ -19,7 +19,7 @@ rradius-server 0.1.0
 default config: /etc/rradius/rradius.toml
 ```
 
-**預設設定檔：** 沒有給 `--config` 時，`server`、`check` 和所有管理指令（`user`，以及企業版的指令）都讀預設設定檔。它在建置時決定：建置時設了環境變數 `RRADIUS_PREFIX` 就是 `$RRADIUS_PREFIX/etc/rradius/rradius.toml`，沒有設（或是空字串、`/`）就是 `/etc/rradius/rradius.toml`。前綴要給絕對路徑，結尾的 `/` 會去掉。執行時的環境變數不影響它，要確認建出來的是哪一個，看 `--version` 的第二行。例如裝在 `/usr/local`：
+**預設設定檔：** 沒有給 `--config` 時，`serve`、`check` 和所有管理指令（`user`，以及企業版的指令）都讀預設設定檔。它在建置時決定：建置時設了環境變數 `RRADIUS_PREFIX` 就是 `$RRADIUS_PREFIX/etc/rradius/rradius.toml`，沒有設（或是空字串、`/`）就是 `/etc/rradius/rradius.toml`。前綴要給絕對路徑，結尾的 `/` 會去掉。執行時的環境變數不影響它，要確認建出來的是哪一個，看 `--version` 的第二行。例如裝在 `/usr/local`：
 
 ```bash
 RRADIUS_PREFIX=/usr/local cargo build --release
@@ -42,8 +42,8 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 - **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡；執行檔放到 `PATH` 裡。
 - **自己產生發行檔：** `packages/tarball/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
 
-- **啟動服務要用 `server` 子命令：** `rradius-server server [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`server` 後面接其他參數時印出它的用法，狀態碼 2。
-- **不帶參數只印用法：** `rradius-server`、`rradius-server help`（或 `-h`、`--help`）把所有子命令的用法印到 stdout，最後一行寫出預設設定檔，狀態碼 0，不讀設定檔也不啟動任何東西。參數不對時印出同樣的用法到 stderr，狀態碼 2；第一個參數是 `--config` 或 `--check` 時（舊的寫法）多一行提示改用 `server --config <path>` 或 `check --config <path>`，不會啟動也不會檢查。
+- **啟動服務要用 `serve` 子命令：** `rradius-server serve [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`serve` 後面接其他參數時印出它的用法，狀態碼 2。
+- **不帶參數只印用法：** `rradius-server`、`rradius-server help`（或 `-h`、`--help`）把所有子命令的用法印到 stdout，最後一行寫出預設設定檔，狀態碼 0，不讀設定檔也不啟動任何東西。參數不對時印出同樣的用法到 stderr，狀態碼 2；第一個參數是 `--config` 或 `--check` 時（舊的寫法）多一行提示改用 `serve --config <path>` 或 `check --config <path>`，不會啟動也不會檢查。
 - `rradius-server check [--config <path>]` 只檢查設定，見下方。`[radius.accounting_spool] dir` 也會檢查：要是目錄且寫得進去，還不存在時最近的上層目錄要寫得進去。只寫一個暫時檔再刪除，不會建立目錄或動到暫存內容。這是用執行 `check` 的帳號判斷，和實際執行服務的帳號不同時結果可能不同。
 - 設定檔錯誤（欄位拼錯、缺少必填項、腳本語法錯誤等）一律在啟動時失敗，狀態碼 2，錯誤訊息會指出設定檔路徑與出錯的欄位或檔案。
 - 設定檔中的相對路徑都以設定檔所在目錄為準，與啟動時的工作目錄無關。
@@ -62,7 +62,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 
 ```bash
 cd rradius-server
-cargo run -- server --config examples/rradius.toml
+cargo run -- serve --config examples/rradius.toml
 ```
 
 ### 1.1 Docker
@@ -2393,7 +2393,7 @@ cargo build --release --locked --manifest-path rradius-server/Cargo.toml
 在 `rradius-server/benchmarks/` 目錄啟動伺服器，資料會放在該目錄的 `data/`（已被 gitignore）：
 
 ```bash
-cd rradius-server/benchmarks && ../../target/release/rradius-server server --config accept.toml
+cd rradius-server/benchmarks && ../../target/release/rradius-server serve --config accept.toml
 ```
 
 換一組設定前請先停掉伺服器。下面的命令在專案根目錄的另一個終端機執行。
