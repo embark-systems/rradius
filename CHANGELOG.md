@@ -16,7 +16,7 @@ The first release.
 - **Policies:** authentication and accounting logic in Luau scripts and SQL.
 - **Clustering:** a built-in hiqlite cluster (SQLite replicated with Raft) of three or more nodes that keeps serving when one node is down; nodes can be added and removed while running; the configuration is reloaded with SIGHUP.
 - **Operations:** Prometheus metrics, structured logs, `check` to validate a configuration, `status` (one node or the whole cluster; `--watch`, `--json`), and commands for users, sessions, queries and the cluster.
-- **`status --tui`:** a full-screen view of `status`, one panel at a time. It is built with the `tui` Cargo feature, which the packaged builds (deb, rpm, tarball, Docker image) include; a build from source needs `cargo build --features tui`.
+- **`status --tui`:** a full-screen view of `status`, one panel at a time. It is part of every build.
 - **Documentation:** the user manual in `docs/manual/` (a guide by topic with deployment scenarios, and reference appendices for the configuration, commands, metrics and Lua API) and the usage guide in `docs/usage.md`. The scenario examples in `rradius-server/examples/scenarios/` are started by automated tests.
 - **Packaging and deployment:** a Docker image and Compose files, Kubernetes and Synology examples, Prometheus alert rules, and packaging for deb, rpm, FreeBSD and tarball releases.
 

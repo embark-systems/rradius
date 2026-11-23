@@ -197,15 +197,15 @@ fn test_tui_with_other_outputs() -> Result<(), String> {
     Ok(())
 }
 
-/// With the output sent to a pipe, `--tui` writes nothing there and refuses: for lack of a terminal
-/// in a build with the feature, for lack of the feature in one without.
+/// With the output sent to a pipe, `--tui` writes nothing there and refuses for lack of a terminal;
+/// every build has the view, so the message never speaks of a feature.
 #[test]
 fn test_tui_needs_a_terminal() -> Result<(), String> {
     let (code, stdout, stderr) = status(&["--tui"])?;
     assert_eq!(code, Some(2), "{stderr}");
     assert!(stdout.is_empty(), "{stdout:?}");
-    let expected = if cfg!(feature = "tui") { "needs a terminal" } else { "no `tui` feature" };
-    assert!(stderr.contains(expected), "{stderr}");
+    assert!(stderr.contains("needs a terminal"), "{stderr}");
+    assert!(!stderr.contains("feature"), "{stderr}");
     Ok(())
 }
 

@@ -16,7 +16,7 @@ ENV LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build \
     if [ "$(uname -m)" = aarch64 ]; then export JEMALLOC_SYS_WITH_LG_PAGE=16; fi \
-    && CARGO_TARGET_DIR=/build cargo build --release --locked -p rradius-server --features tui \
+    && CARGO_TARGET_DIR=/build cargo build --release --locked -p rradius-server \
     && cp /build/release/rradius-server /usr/local/bin/rradius-server
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc

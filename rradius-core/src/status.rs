@@ -1006,15 +1006,9 @@ pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
     if options.tui && (options.json || options.watch) {
         return usage();
     }
-    if options.tui {
-        if !cfg!(feature = "tui") {
-            eprintln!("this build has no `tui` feature: build rradius-server with `--features tui` to get `status --tui`");
-            return 2;
-        }
-        if !std::io::stdout().is_terminal() {
-            eprintln!("status --tui needs a terminal: standard output is not one");
-            return 2;
-        }
+    if options.tui && !std::io::stdout().is_terminal() {
+        eprintln!("status --tui needs a terminal: standard output is not one");
+        return 2;
     }
     let explicit = config_path.is_some();
     let path = config_path.unwrap_or_else(|| crate::config::default_config_path().to_string());
@@ -1057,7 +1051,6 @@ fn watch_sampling<'a>(cluster: &'a ClusterSettings, local: SocketAddr, extra: &'
 
 /// `status --tui`: the sampling loop feeds the screen, and the command ends with the screen (`q`) or
 /// with the loop failing.
-#[cfg(feature = "tui")]
 fn watch_screen<'a>(cluster: &'a ClusterSettings, local: SocketAddr, extra: &'a [StatusSection], options: Options) -> Pin<Box<dyn Future<Output = i32> + 'a>> {
     Box::pin(async move {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1068,11 +1061,6 @@ fn watch_screen<'a>(cluster: &'a ClusterSettings, local: SocketAddr, extra: &'a 
             status = sampling => status,
         }
     })
-}
-
-#[cfg(not(feature = "tui"))]
-fn watch_screen<'a>(_: &'a ClusterSettings, _: SocketAddr, _: &'a [StatusSection], _: Options) -> Pin<Box<dyn Future<Output = i32> + 'a>> {
-    Box::pin(async { 2 })
 }
 
 /// How long `--cluster --watch` uses the members it found before asking the cluster again.
