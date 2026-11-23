@@ -1270,7 +1270,7 @@ rradius-server user show --config /etc/rradius/rradius.toml alice
 | 完成 | `added alice`、`password changed for alice`、`enabled alice`、`disabled alice`、`deleted alice`；`show` 印出每欄一行 `欄名=值`，多列之間空一行 | 0 |
 | 沒有符合的帳號（`passwd`、`enable`、`disable`、`delete` 改到 0 列，`show` 查無資料） | `no account alice` | 1 |
 | 資料庫拒絕，例如 `add` 已存在的帳號 | 錯誤訊息（stderr） | 1 |
-| 用法、設定、名稱或密碼有誤，沒有送出任何東西 | 錯誤訊息（stderr） | 2 |
+| 用法、設定、名稱或密碼有誤，沒有送出任何東西；節點拒絕 `[cluster] secret_api`（立刻回，訊息有 `refused the api secret` 與節點位址） | 錯誤訊息（stderr） | 2 |
 | 連不到叢集，或 30 秒內沒有回應 | 錯誤訊息（stderr） | 3 |
 
 任何輸出和錯誤訊息都不包含密碼或存放值。
@@ -1463,7 +1463,7 @@ rradius-server session list --json
   | --- | --- |
   | 0 | 印出至少一列 |
   | 1 | 沒有列：`list` 印 `no sessions`，`show` 印 `no sessions for <名稱>`；加 `--json` 時印 `[]` |
-  | 2 | 指令或設定有誤（沒有 `[sessions]`、缺語句、缺名稱、名稱被拒絕）、或資料庫拒絕這條語句（例如表不存在），原因在標準錯誤 |
+  | 2 | 指令或設定有誤（沒有 `[sessions]`、缺語句、缺名稱、名稱被拒絕）、節點拒絕 `[cluster] secret_api`（立刻回，不等 30 秒）、或資料庫拒絕這條語句（例如表不存在），原因在標準錯誤 |
   | 3 | 叢集連不上或 30 秒內沒有回答 |
 
 **兩個現成的查詢。** 都在測試裡對臨時叢集跑過（`rradius-server/tests/session_test.rs` 與 quick-start 情境）：
