@@ -2430,7 +2430,7 @@ target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metr
 
 ### EAP 登入
 
-`eap-tls`、`peap`（內層 EAP-MSCHAPv2）和 `ttls`（內層 PAP）負載跑完整的 EAP 登入：一次登入算一個請求，從第一個 Access-Request 算到 Access-Accept 或 Access-Reject，報告的 `rounds` 是每次登入平均幾個 Access-Request。Access-Accept 帶的 MS-MPPE 金鑰要和 TLS 匯出的金鑰相同才算 `accept`，不同就算 `invalid`，所以算到的都是真的完成的登入。
+`eap-tls`、`peap`（內層 EAP-MSCHAPv2）、`ttls`（內層 PAP）和 `ttls-mschapv2`（內層 MS-CHAPv2）負載跑完整的 EAP 登入：一次登入算一個請求，從第一個 Access-Request 算到 Access-Accept 或 Access-Reject，報告的 `rounds` 是每次登入平均幾個 Access-Request。Access-Accept 帶的 MS-MPPE 金鑰要和 TLS 匯出的金鑰相同才算 `accept`，不同就算 `invalid`，所以算到的都是真的完成的登入。
 
 - **選項。** `--cert-file`、`--key-file` 是 `eap-tls` 登入用的憑證；`--tls-version` 是 `1.2`（預設）或 `1.3`，`1.3` 只能用在 `eap-tls`；`--eap-fragment` 是工具每段送出的 TLS 資料上限（預設 1000 octets）。EAP 一律帶 Message-Authenticator，不能配 `--no-message-authenticator`。
 - **伺服器憑證預設不檢查。** 壓測對象多半用自己做的憑證，所以預設接受任何伺服器憑證（仍檢查握手的簽章）；給 `--ca-file` 才檢查，名稱用 `--tls-name`（預設是 `--server`）。不要拿這個預設去連正式環境。
@@ -2570,7 +2570,7 @@ target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --taca
 
 ### 固定併發與固定速率
 
-`--load` 的格式是 `KIND[,concurrency=N][,rate=N][,window=N][,threads=N][,alive=N]`，可以重複，每個負載各用自己的執行緒，所以背景壓力不會讓量測登入的執行緒排隊。`KIND` 可以是 `pap`、`chap`、`chap-authenticator`、`mschapv2`、`acct-start`、`acct-alive`、`acct-stop`、`acct-on`、`acct-off`、`status-auth`、`status-acct`、`session`，EAP 的 `eap-tls`、`peap`、`ttls`、`aka-prime`（見上方〈EAP 登入〉，以及 rradius-enterprise 使用文件第 9 章〈EAP-AKA'〉），以及 TACACS+ 的 `tacacs-pap`、`tacacs-ascii`、`tacacs-author`、`tacacs-acct`（見上方〈TACACS+〉）。
+`--load` 的格式是 `KIND[,concurrency=N][,rate=N][,window=N][,threads=N][,alive=N]`，可以重複，每個負載各用自己的執行緒，所以背景壓力不會讓量測登入的執行緒排隊。`KIND` 可以是 `pap`、`chap`、`chap-authenticator`、`mschapv2`、`acct-start`、`acct-alive`、`acct-stop`、`acct-on`、`acct-off`、`status-auth`、`status-acct`、`session`，EAP 的 `eap-tls`、`peap`、`ttls`、`ttls-mschapv2`、`aka-prime`（見上方〈EAP 登入〉，以及 rradius-enterprise 使用文件第 9 章〈EAP-AKA'〉），以及 TACACS+ 的 `tacacs-pap`、`tacacs-ascii`、`tacacs-author`、`tacacs-acct`（見上方〈TACACS+〉）。
 
 - **固定併發（`concurrency=N`）用來量吞吐。** 收到回應才送下一個，所以延遲大多是排隊，不適合拿來說明延遲。
 - **固定速率（`rate=N`）用來量延遲。** 依排程送出，不等回應，延遲從預定時間起算，伺服器卡住時後面的請求也會算進去。
@@ -2585,7 +2585,7 @@ target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --taca
 | 警告 | 意思 |
 | --- | --- |
 | `tool_saturated` | 工具的 worker 忙碌超過 90%，量到的是工具的上限 |
-| `rate_not_met` | 固定速率沒有照排程送出，通常是 CPU 被搶走 |
+| `rate_not_met` | 固定速率沒有照排程送出，通常是 CPU 被搶走，或要求的速率超過工具或伺服器能處理的量。送出的請求不到排程的 1% 時（量測窗口內的請求要等落後的排程清完才送，所以報告的 `sent` 是 0），訊息會加註「跟不上這個速率」：降低 `rate`，或加大 `concurrency` 與 `threads`。退出碼不受影響 |
 | `duplicate_path` | 伺服器走了重送快取，腳本沒有執行 |
 
 - 下面這些警告不影響 `trustworthy`，要自己判斷。`trustworthy` 為 true 也不代表伺服器沒有丟封包：

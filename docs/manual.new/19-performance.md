@@ -289,7 +289,7 @@ warnings:
 | `acct-start`、`acct-alive`、`acct-stop`、`acct-on`、`acct-off` | Accounting-Request |
 | `status-auth`、`status-acct` | Status-Server，送到認證埠或計費埠 |
 | `session` | 一次登入、Start、`alive` 個 Interim-Update、Stop，共用同一個 session ID |
-| `eap-tls`、`peap`、`ttls` | 完整的 EAP 對話；`concurrency`、`rate` 數的是對話。`eap-tls` 要 `--cert-file`、`--key-file` |
+| `eap-tls`、`peap`、`ttls`、`ttls-mschapv2` | 完整的 EAP 對話（`ttls` 內層 PAP，`ttls-mschapv2` 內層 MS-CHAPv2）；`concurrency`、`rate` 數的是對話。`eap-tls` 要 `--cert-file`、`--key-file` |
 | `tacacs-pap`、`tacacs-chap`、`tacacs-ascii`、`tacacs-author`、`tacacs-acct` | TACACS+，用 `--tacacs-port`；`--tacacs-connect keep`（預設，一條連線一直用）或 `per-request` |
 
 > **企業版：** `aka-prime` 負載與 `--transport tls`（RadSec）要對企業版的伺服器才有用。
@@ -460,7 +460,7 @@ $ rradius-bench run --server 127.0.0.1 --auth-port 1812 --secret bench-secret \
     --load pap,rate=500000 --duration 2 --warmup 1 --metrics-url http://127.0.0.1:9812/metrics
 …
 warnings:
-  rate_not_met: pap: sent 0 of 1000000 scheduled requests, send lag p99 0.0 us
+  rate_not_met: pap: sent 0 of 1000000 scheduled requests, send lag p99 0.0 us; the tool or the server could not keep up with this rate, so lower rate or raise concurrency and threads
 
 these numbers do not describe the server alone: see the warnings
 ```

@@ -32,6 +32,7 @@ fn test_invalid_arguments_exit_3_and_send_nothing() {
         &["--load", "eap-tls,concurrency=1", "--cert-file", "/nonexistent.pem", "--key-file", "/nonexistent.key"],
         &["--load", "peap,concurrency=1", "--tls-version", "1.3"],
         &["--load", "ttls,concurrency=1", "--tls-version", "1.3"],
+        &["--load", "ttls-mschapv2,concurrency=1", "--tls-version", "1.3"],
         &["--load", "peap,concurrency=1", "--tls-version", "1.1"],
         &["--load", "peap,concurrency=1", "--no-message-authenticator"],
         &["--load", "ttls,concurrency=1", "--eap-fragment", "10"],

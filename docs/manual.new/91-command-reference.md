@@ -714,6 +714,7 @@ socket 數是 `concurrency ÷ window` 無條件進位。例如 `pap,concurrency=
 | `eap-tls` | EAP-TLS 對話，要 `--cert-file`、`--key-file` | reject（驗證環境沒有 `certificate_query`，日誌 `not authorized`） |
 | `peap` | PEAP 對話，內層 MS-CHAPv2 | accept |
 | `ttls` | EAP-TTLS 對話，內層 PAP | accept |
+| `ttls-mschapv2` | EAP-TTLS 對話，內層 MS-CHAPv2 | accept |
 | `aka-prime` | EAP-AKA' 對話，`--password KI:OPC` | reject（核心不提供這個方法，日誌 `the peer asked only for methods this server does not offer`） |
 | `tacacs-pap` | TACACS+ PAP 認證 | accept |
 | `tacacs-chap` | TACACS+ CHAP 認證（伺服器要有能比對密碼的驗證鏈，否則伺服器回 `RESTART`，算 `invalid`） | accept（有驗證鏈時） |

@@ -71,6 +71,8 @@ pub enum Step {
     EapTls,
     Peap,
     Ttls,
+    /// EAP-TTLS with inner MS-CHAPv2 instead of PAP.
+    TtlsMschapv2,
     AkaPrime,
     /// TACACS+ (RFC 8907), see `crate::tacacs`: not RADIUS, so not in `ALL`.
     TacacsPap,
@@ -81,7 +83,7 @@ pub enum Step {
 }
 
 impl Step {
-    pub const ALL: [Step; 15] = [
+    pub const ALL: [Step; 16] = [
         Step::Pap,
         Step::Chap,
         Step::ChapAuthenticator,
@@ -96,6 +98,7 @@ impl Step {
         Step::EapTls,
         Step::Peap,
         Step::Ttls,
+        Step::TtlsMschapv2,
         Step::AkaPrime,
     ];
 
@@ -117,6 +120,7 @@ impl Step {
             Step::EapTls => "eap-tls",
             Step::Peap => "peap",
             Step::Ttls => "ttls",
+            Step::TtlsMschapv2 => "ttls-mschapv2",
             Step::AkaPrime => "aka-prime",
             Step::TacacsPap => "tacacs-pap",
             Step::TacacsChap => "tacacs-chap",
@@ -141,7 +145,7 @@ impl Step {
 
     /// Whether this is an EAP conversation of several Access-Requests.
     pub fn is_eap(self) -> bool {
-        matches!(self, Step::EapTls | Step::Peap | Step::Ttls | Step::AkaPrime)
+        matches!(self, Step::EapTls | Step::Peap | Step::Ttls | Step::TtlsMschapv2 | Step::AkaPrime)
     }
 
     pub fn is_tacacs(self) -> bool {
@@ -583,7 +587,7 @@ pub fn verify_response(reply: &[u8], step: Step, request_authenticator: &[u8; 16
         _ => return Err(Invalid::UnexpectedCode),
     };
     let allowed = match step {
-        Step::Pap | Step::Chap | Step::ChapAuthenticator | Step::MsChapV2 | Step::EapTls | Step::Peap | Step::Ttls | Step::AkaPrime => answer != Answer::Accounting,
+        Step::Pap | Step::Chap | Step::ChapAuthenticator | Step::MsChapV2 | Step::EapTls | Step::Peap | Step::Ttls | Step::TtlsMschapv2 | Step::AkaPrime => answer != Answer::Accounting,
         Step::StatusAuth => matches!(answer, Answer::Accept | Answer::Reject),
         _ => answer == Answer::Accounting,
     };

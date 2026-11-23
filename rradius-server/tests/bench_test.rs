@@ -40,7 +40,7 @@ fn bench(server: &Server, args: &[&str]) -> Output {
 
 #[test]
 fn test_eap_wrong_password_rejected() -> Result<(), String> {
-    for (kind, method) in [("peap", "peap"), ("ttls", "ttls")] {
+    for (kind, method) in [("peap", "peap"), ("ttls", "ttls"), ("ttls-mschapv2", "ttls")] {
         let server = start_with("return 'accept'", true, Some(method))?;
         let load = format!("{kind},concurrency=4");
         let output = bench(&server, &["--load", &load, "--requests", "8", "--user", "alice", "--password", "wrong", "--timeout", "2"]);
@@ -204,7 +204,7 @@ const ALL_KINDS: [&str; 4] = ["pap", "chap", "chap-authenticator", "mschapv2"];
 /// session gives, in several rounds.
 #[test]
 fn test_eap_against_server() -> Result<(), String> {
-    for (kind, method, extra) in [("eap-tls", "tls", &["--tls-version", "1.2"][..]), ("eap-tls", "tls", &["--tls-version", "1.3"]), ("peap", "peap", &[]), ("ttls", "ttls", &[])] {
+    for (kind, method, extra) in [("eap-tls", "tls", &["--tls-version", "1.2"][..]), ("eap-tls", "tls", &["--tls-version", "1.3"]), ("peap", "peap", &[]), ("ttls", "ttls", &[]), ("ttls-mschapv2", "ttls", &[])] {
         let server = start_with("return 'accept'", true, Some(method))?;
         let (cert, key, ca) = (server.file("alice.pem"), server.file("alice.key"), server.file("ca.pem"));
         let load = format!("{kind},concurrency=4");
