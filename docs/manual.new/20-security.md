@@ -56,7 +56,7 @@ rradius 對安全問題有兩種反應：
 | `include` 的檔案與目錄別人寫不了 | `check` 沒有 `can be written by its group or by others` | [祕密檔的權限](#祕密檔的權限) |
 | 共用密碼是隨機產生、至少 24 個位元組 | `check` 沒有 `shorter than 16 octets`、`public shared secret` | [共用密碼的長度與範例值](#共用密碼的長度與範例值) |
 | Message-Authenticator 維持預設 `yes` | `config show` 裡 `require_message_authenticator = "yes"` | [Message-Authenticator 與 limit_proxy_state](#message-authenticator-與-limit_proxy_state) |
-| MS-CHAPv1 維持預設關閉 | `[auth]` 沒有 `allow_mschapv1 = true` | [關掉 MS-CHAPv1](#關掉-ms-chapv1) |
+| MS-CHAPv1 維持預設關閉（有 `[auth]` 驗證鏈時） | `[auth]` 沒有 `allow_mschapv1 = true` | [關掉 MS-CHAPv1](#關掉-ms-chapv1) |
 | 帳號表的密碼都有格式前綴 | 日誌沒有 `no scheme prefix` | [儲存的密碼：格式與雜湊成本上限](#儲存的密碼格式與雜湊成本上限) |
 | 開啟登入失敗鎖定 | 設定有 `[auth.lockout]`，`/metrics` 有 `rradius_auth_lockouts_total` | [登入失敗鎖定](#登入失敗鎖定) |
 | 腳本只能呼叫白名單上的主機 | `[lua.http]` 的 `allowed_hosts` 只列需要的主機 | [腳本：沙箱、時限與 HTTP 白名單](#腳本沙箱時限與-http-白名單) |
@@ -301,7 +301,7 @@ rradius.toml: radius clients: client '127.0.0.0/24': require_message_authenticat
 
 目標：不接受 MS-CHAPv1 登入。
 
-MS-CHAPv1 是很舊的方法，**預設就是關的**，什麼都不用寫。想在設定檔裡明確寫出來時：
+MS-CHAPv1 是很舊的方法。有 `[auth]` 驗證鏈時它**預設就是關的**，什麼都不用寫；沒有 `[auth]`、由 Lua 腳本自己處理 `MS-CHAP-Response` 的設定不在這個開關的範圍，腳本要自己決定。想在設定檔裡明確寫出來時：
 
 ```toml
 # rradius.toml
@@ -319,7 +319,7 @@ allow_mschapv1 = false
 `rradius-bench` 沒有 MS-CHAPv1 的負載。這裡用一個自己寫的小程式送出一筆帶 `MS-CHAP-Challenge` 與 `MS-CHAP-Response` 的 Access-Request，伺服器回 Access-Reject，日誌是：
 
 ```text
-… INFO rradius_core::auth_chain: MS-CHAPv1 refused: client localhost, protocol radius, user "dave"; [auth] allow_mschapv1 is false
+… INFO rradius_core::auth_chain: MS-CHAPv1 refused: client localhost, protocol radius, user "dave"; [auth] allow_mschapv1 is not true
 … INFO rradius_auth: authentication protocol="radius" client="localhost" source=127.0.0.1 user="dave" account="" chain="default" handler="mschapv1_refused" decision="reject"
 ```
 

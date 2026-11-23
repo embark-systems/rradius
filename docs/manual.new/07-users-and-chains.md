@@ -78,7 +78,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 | `normalization` | 使用者名稱不符合 `[auth.username]`，沒有執行任何處理器 |
 | `no_password_check` | `all_accept` 的鏈裡，沒有一個比對密碼的處理器接受 |
 | `lockout` | 這個帳號被[登入失敗鎖定](#登入失敗鎖定)擋下，沒有比對密碼 |
-| `mschapv1_refused` | 沒有 `allow_mschapv1 = true`（預設），拒絕 MS-CHAPv1 |
+| `mschapv1_refused` | 預設（沒寫或 `allow_mschapv1 = false`），拒絕 MS-CHAPv1 |
 | `length` | RADIUS 的 User-Password 長度不是 16 到 128 個位元組、也不是 16 的倍數，沒有執行任何處理器（見[密碼長度](#密碼長度)） |
 
 ### 拒絕與「後端不能用」
@@ -407,7 +407,7 @@ TACACS+ 的登入也走同一條鏈，`[tacacs]` 的設定見[第 12 章](12-tac
 
 MS-CHAPv2 通過時，Access-Accept 帶 `MS-CHAP2-Success`、`MS-MPPE-Send-Key`、`MS-MPPE-Recv-Key`；失敗時 Access-Reject 帶 `MS-CHAP-Error`（錯誤 691）。使用者名稱寫成 `網域\帳號` 時，計算回應用的是反斜線之後的部分。MS-CHAPv1 只檢查 NT-Response，不接受只有 LM-Response 的回應。
 
-MS-CHAPv1 是很舊的協定，**預設不接受**。只有 NAS 非用它不可（例如較舊的 PPTP 閘道）時，才明確打開：
+MS-CHAPv1 是很舊的協定，有 `[auth]` 驗證鏈時**預設不接受**（沒有 `[auth]`、由 Lua 腳本自己處理的設定不在這個開關的範圍）。只有 NAS 非用它不可（例如較舊的 PPTP 閘道）時，才明確打開：
 
 ```toml
 # rradius.toml（[auth] 裡）

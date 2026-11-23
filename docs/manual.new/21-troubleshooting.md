@@ -64,7 +64,7 @@
 | `sql`、`ldap`、`lua` 等 | 這個處理器做出了決定 |
 | `none` | 沒有處理器給出答案，通常是帳號不存在或停用 |
 | `lockout` | 被登入失敗鎖定擋下，沒有檢查密碼 |
-| `mschapv1_refused` | 沒有 `allow_mschapv1 = true`（預設），拒絕 MS-CHAPv1 |
+| `mschapv1_refused` | 預設（沒寫或 `allow_mschapv1 = false`），拒絕 MS-CHAPv1 |
 | `length` | User-Password 長度不合（不是 16 到 128 個位元組、16 的倍數） |
 | `eap-peap`、`eap-tls` 等 | EAP 對話的結果 |
 

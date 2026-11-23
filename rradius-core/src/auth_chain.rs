@@ -214,7 +214,7 @@ impl AuthChain {
     pub async fn authenticate(&self, credentials: &Credentials, request: &LuaRequest) -> AuthResult {
         // Before the failure counts: a refused protocol is no guess, and no handler is asked.
         if !self.allow_mschapv1 && matches!(credentials.secret, Secret::MsChapV1 { .. }) {
-            tracing::info!("MS-CHAPv1 refused: client {}, protocol {}, user {:?}; [auth] allow_mschapv1 is false", request.client, request.protocol, credentials.user.as_deref().unwrap_or(""));
+            tracing::info!("MS-CHAPv1 refused: client {}, protocol {}, user {:?}; [auth] allow_mschapv1 is not true", request.client, request.protocol, credentials.user.as_deref().unwrap_or(""));
             return AuthResult { decision: Outcome::Reject, attributes: Vec::new(), handler: "mschapv1_refused", account: None, verified: false, unavailable: false };
         }
         // A login by certificate proves a name and guesses nothing, so it is neither limited nor counted.
