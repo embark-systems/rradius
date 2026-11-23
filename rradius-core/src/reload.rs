@@ -3,7 +3,7 @@
 
 use crate::auth_chain::{AuthChains, LuaLimits};
 use crate::clients::RadsecClients;
-use crate::config::{self, ServerConfig};
+use crate::config::{self, AuthHandlerSettings, ServerConfig};
 use crate::dictionary::Dictionary;
 use crate::script_http::ScriptHttp;
 use crate::lua_engine::{Db, LuaAuthEngine, LuaVms};
@@ -72,6 +72,24 @@ pub fn warn_about_short_secrets(config: &ServerConfig) {
     crate::extension::installed().warn_about(config);
 }
 
+/// Warns about each `ldap` handler URL that is plain `ldap://` with `allow_plaintext = true`: what
+/// crosses the network to it, the passwords of the users and the directory's answers, is not encrypted.
+pub fn warn_about_plain_ldap(config: &ServerConfig) {
+    let Some(auth) = &config.auth else { return };
+    let named = auth.chains.iter().map(|(name, chain)| (format!("auth.chains.{name}"), chain));
+    for (prefix, chain) in auth.default.iter().map(|chain| ("auth.handlers".to_string(), chain)).chain(named) {
+        for handler in &chain.handlers {
+            let AuthHandlerSettings::Ldap(ldap) = handler else { continue };
+            if !ldap.allow_plaintext {
+                continue;
+            }
+            for url in ldap.urls.iter().filter(|url| url.starts_with("ldap://")) {
+                tracing::warn!("{prefix}: ldap handler {url} is used without encryption because allow_plaintext is true: the passwords of the users and the directory's answers cross the network in the clear");
+            }
+        }
+    }
+}
+
 /// RadSec clients that are networks and take any certificate of `client_ca_file` from anywhere
 /// in them, unless they are told otherwise.
 pub fn warn_about_radsec_networks(config: &ServerConfig) {
@@ -102,6 +120,7 @@ fn warn_about_network_clients(clients: &crate::clients::ClientTable) {
 pub fn build(config: &ServerConfig, shared: &Shared) -> Result<Generation, String> {
     warn_about_short_secrets(config);
     warn_about_radsec_networks(config);
+    warn_about_plain_ldap(config);
     let script = &config.lua.script;
     let source = std::fs::read_to_string(script).map_err(|e| format!("cannot read script '{}': {}", script.display(), e))?;
     let engine = LuaAuthEngine::new(shared.vms.clone(), shared.db.clone(), source).map_err(|e| format!("cannot compile script '{}': {}", script.display(), e))?;
@@ -387,6 +406,31 @@ mod tests {
         assert_eq!(lines.len(), 2, "{log}");
         assert!(lines.iter().any(|l| l.contains("RADIUS client 'nas1'")) && lines.iter().any(|l| l.contains("TACACS+ client 'router1'")), "{log}");
         assert!(!log.contains("router2") && !log.to_lowercase().contains("change-me-0123"), "{log}");
+        Ok(())
+    }
+
+    /// spec Plain LDAP Warning: `ldap://` with `allow_plaintext`, and only that.
+    #[tokio::test]
+    async fn test_plain_ldap_is_warned_about() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let warned = |urls: &str, plaintext: bool| -> Result<ServerConfig, String> {
+            let text = format!(
+                "dictionary = \"d\"\n[lua]\nscript = \"auth.lua\"\n{CLUSTER}[auth]\n[[auth.handlers]]\ntype = \"ldap\"\nurls = {urls}\nallow_plaintext = {plaintext}\n\
+                 bind_dn = \"cn=radius,dc=example,dc=test\"\nbind_password = \"Not-A-Real-Password-0123\"\nbase_dn = \"dc=example,dc=test\"\nfilter = \"(uid={{user}})\"\n\
+                 [radius]\n{CLIENT}"
+            );
+            config::load(&write_config(dir.path(), &text)).map_err(|e| e.to_string())
+        };
+        let config = warned("[\"ldap://dir.example.test\", \"ldaps://safe.example.test\"]", true)?;
+        let log = crate::test_support::radius::logged_during(async { warn_about_plain_ldap(&config) }).await;
+        let lines: Vec<&str> = log.lines().filter(|line| line.contains("without encryption")).collect();
+        assert_eq!(lines.len(), 1, "{log}");
+        assert!(lines[0].contains("ldap://dir.example.test") && !lines[0].contains("safe.example.test") && !log.contains("Not-A-Real-Password"), "{log}");
+        for (urls, plaintext) in [("[\"ldaps://dir.example.test\"]", true), ("[\"ldap://dir.example.test\"]", false)] {
+            let config = warned(urls, plaintext)?;
+            let log = crate::test_support::radius::logged_during(async { warn_about_plain_ldap(&config) }).await;
+            assert!(!log.contains("without encryption"), "{urls} {plaintext}: {log}");
+        }
         Ok(())
     }
 

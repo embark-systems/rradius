@@ -55,5 +55,6 @@ fn check_configuration(config_path: &str) -> Result<(), String> {
     crate::extension::installed().check_files(&config)?;
     crate::reload::warn_about_short_secrets(&config);
     crate::reload::warn_about_radsec_networks(&config);
+    crate::reload::warn_about_plain_ldap(&config);
     Ok(())
 }

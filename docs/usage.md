@@ -196,7 +196,7 @@ dictionary = "/usr/share/rradius/dictionary"
 - **語法與型別錯誤指到引入的檔案和檔內的行：** `/etc/rradius/conf.d/20-radius.toml: line 3: ...`，不顯示設定的值。合併後才做的檢查（例如重複的用戶端名稱）訊息只寫主設定檔名稱；訊息有單引號括起的名稱時，後面附上 `(in <檔案> line <行>)`，列出以引號字串寫著該名稱的行（最多三處，其餘 `and N more`），名稱只在主檔或找不到時不附。
 - **`config show` 印出所有檔案合併後的設定（包括 `include` 這一行本身，所以輸出不是設定檔，不要存起來當設定檔用）；** `check`、`config diff`、重新載入（SIGHUP）都讀引入的檔案：改了引入的檔案要送 SIGHUP 才生效，有錯時整份維持原狀。
 - **每個引入的檔案自己要是完整的 TOML**（沒有關閉的字串或陣列會被拒絕，錯誤指到那個檔案），檔案開頭的位元組順序記號（BOM）會被忽略；檔案要小於 1 MiB，`include` 最多對應 1000 個檔案；同一個檔案被兩個名稱符合只讀一次，符合到主設定檔本身的會被略過。
-- **引入的檔案或它所在的目錄對群組或其他人可寫時，** 記一行 WARN，因為它能改變誰可以登入；檔案和主檔一樣要保護，要放密碼就用 `*_file`。
+- **引入的檔案或它所在的目錄對群組或其他人可寫時，** 記一行 WARN，因為它能改變誰可以登入；主設定檔本身或它所在的目錄對群組或其他人可寫時，啟動、reload 與 `check` 也各記一行 WARN（`configuration file … can be written by its group or by others`），只可讀不警告；檔案和主檔一樣要保護，要放密碼就用 `*_file`。
 - **舊版的伺服器不認得 `include`**（未知欄位，拒絕載入）；新舊版本混用時要注意。
 
 **看生效的設定、比較節點、產生起始設定：** `config` 的三個子指令都依同一份 schema 運作，不啟動任何東西、不寫檔案，rradius-enterprise 也有，並包含企業版的區段。
@@ -485,7 +485,7 @@ auth = "vpn"                    # 選填；指定具名認證串接
 [tacacs]
 bind = "0.0.0.0"     # 預設 0.0.0.0
 port = 49            # 預設 49（需要權限）
-max_body_len = 65536 # 預設 65536，超過的封包會中斷連線
+max_body_len = 65536 # 預設 65536，超過的封包會中斷連線；必須大於 0
 max_connections = 1024 # 預設 1024，同時開啟的連線數
 max_connections_per_source = 64 # 預設 64，同一個來源位址同時開啟的連線數，必須大於 0
 idle_timeout_ms = 300000 # 預設，這段時間沒有收到完整封包就關閉，必須大於 0
@@ -777,6 +777,8 @@ port = 9812         # 預設
 ```
 
 `GET /metrics` 回傳 Prometheus 文字格式。沒有這個區段時不開這個埠。**這個埠沒有認證也沒有 TLS**，請只綁定內部位址。
+
+埠被別的程式佔用時，伺服器不結束：日誌記一行 `ERROR … metrics: cannot listen on <位址>: …`，RADIUS 與 TACACS+ 照常服務，但沒有 `/metrics`、`/livez`、`/readyz`。TACACS+ 的埠被佔用則和 RADIUS 一樣，啟動以結束碼 1 結束（`TACACS+ server error: …`）。
 
 同一個埠也回答兩個健康檢查，給 Kubernetes 的探針或負載平衡器用（範例見 `deploy/kubernetes/` 與手冊第 13 章）：
 
@@ -1613,7 +1615,7 @@ script = "site_rules.lua"   # 以設定檔目錄解析
 | `reply_attributes` | 無 | 回應屬性名稱對 LDAP 屬性名稱，例如 `{ "Filter-Id" = "radiusFilterId" }`，依寫入順序 |
 | `timeout_ms` | 5000 | 每個 URL 從取得連線到最後一個操作的時限 |
 | `ca_file` | 無 | 額外信任的 CA（PEM），以設定檔目錄解析 |
-| `allow_plaintext` | `false` | 為 `false` 時 `ldap://` 一律以 StartTLS 升級 |
+| `allow_plaintext` | `false` | 為 `false` 時 `ldap://` 一律以 StartTLS 升級；為 `true` 且用 `ldap://` 時，啟動、reload 與 `check` 都會警告不加密 |
 | `pool_size` | 4 | 每個 URL 保持的連線數上限 |
 | `required_groups` | 無 | 必須屬於其中一個群組，否則拒絕 |
 | `group_attribute` | `memberOf` | 從使用者項目的這個屬性讀群組 |

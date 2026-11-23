@@ -177,7 +177,7 @@ port = 9812
 | `tacacs.max_connections` | `1024` | 要重啟 | 同時開著的連線上限，要大於 0 |
 | `tacacs.max_connections_per_source` | `64` | 要重啟 | 同一個來源位址同時開著的連線上限 |
 | `tacacs.idle_timeout_ms` | `300000` | 要重啟 | 這麼久沒收到完整的封包就關掉連線，毫秒，要大於 0 |
-| `tacacs.max_body_len` | `65536` | 要重啟 | 封包內容的上限，位元組，超過就關掉連線 |
+| `tacacs.max_body_len` | `65536` | 要重啟 | 封包內容的上限，位元組，超過就關掉連線，要大於 0（設 0 載入時就失敗：`tacacs.max_body_len must be greater than 0`） |
 | `tacacs.enable` | `deny` | 可以 | enable 請求怎麼處理：`deny` 或 `login` |
 | `tacacs.authorize_groups` | 空的 | 可以 | 授權群組：名稱對到一串規則 |
 | `tacacs.clients` | 無，至少一個 | 可以 | 允許連線的設備 |

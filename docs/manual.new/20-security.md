@@ -161,7 +161,7 @@ configuration ok
 
 這裡的標準是「別人寫不了」，所以 `644` 的設定檔沒有警告；`664` 就有。
 
-> **警告：** 主設定檔 `rradius.toml` 本身不在檢查範圍。實測把它改成 `666`，`check` 沒有任何警告。主設定檔與它所在的目錄要自己設成只有 root 能寫。
+> **警告：** 主設定檔 `rradius.toml` 或它所在的目錄可以被群組或其他人寫入時，啟動、每次 reload 與 `check` 都會警告 `configuration file … can be written by its group or by others, which lets them change who may log in`（目錄則是 `the directory of configuration file …`），和被讀進來的檔案一樣；只可讀不警告。警告不會擋啟動。主設定檔與它所在的目錄仍要自己設成只有 root 能寫。
 
 `include` 的用法見[第 04 章](04-configuration.md)。
 
@@ -559,7 +559,7 @@ ldap 處理器的 `urls`：
 - `ldap://`：預設用 StartTLS 升級成加密連線。
 - `ldap://` 加上 `allow_plaintext = true`：**不加密**，`bind` 檢查密碼時，使用者的密碼以明文送到目錄伺服器。
 
-`allow_plaintext = true` 沒有任何警告，`check` 照樣通過（實測）。除非目錄伺服器就在同一台機器，不要開它。內部 CA 用 `ca_file` 指定。詳細見[第 08 章](08-ldap-and-ad.md)。
+`allow_plaintext = true` 並使用 `ldap://` 時，啟動、每次 reload 與 `check` 都會警告 `ldap handler ldap://… is used without encryption because allow_plaintext is true`，但 `check` 照樣通過。除非目錄伺服器就在同一台機器，不要開它。內部 CA 用 `ca_file` 指定。詳細見[第 08 章](08-ldap-and-ad.md)。
 
 > **未實機驗證：** 沒有接上真的 LDAP 或 PostgreSQL／MySQL 伺服器測試加密連線，只用 `check` 與一個連不到的位址確認了設定與警告。
 
