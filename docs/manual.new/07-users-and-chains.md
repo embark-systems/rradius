@@ -79,6 +79,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 | `no_password_check` | `all_accept` 的鏈裡，沒有一個比對密碼的處理器接受 |
 | `lockout` | 這個帳號被[登入失敗鎖定](#登入失敗鎖定)擋下，沒有比對密碼 |
 | `mschapv1_refused` | `allow_mschapv1 = false`，拒絕 MS-CHAPv1 |
+| `length` | RADIUS 的 User-Password 長度不是 16 到 128 個位元組、也不是 16 的倍數，沒有執行任何處理器（見[密碼長度](#密碼長度)） |
 
 ### 拒絕與「後端不能用」
 
@@ -658,6 +659,18 @@ allowed = "[a-z0-9._-]+"
 - **EAP-TLS 憑證**：憑證證明的是整個名稱。整理時除了 ASCII 大小寫之外還改了別的（例如去掉 realm），這筆登入就被拒絕（[第 11 章](11-eap.md)）。
 
 > **注意：** `allowed` 會自動加上頭尾錨點，寫 `[a-z0-9._-]+` 就是「整個名稱只能有這些字元」，不必自己寫 `^…$`。
+
+## 密碼長度
+
+RADIUS 的 User-Password 依 RFC 2865 第 5.2 節固定是 16 到 128 個位元組，而且是 16 的倍數（NAS 把密碼補零到整塊）。收到長度不合的請求，rradius 在解密之前就回 Access-Reject，不執行處理器與腳本，也不算進[登入失敗鎖定](#登入失敗鎖定)，因為這不是猜密碼；認證紀錄的 `handler` 是 `length`。
+
+每次拒絕記一行 WARN，只有用戶端名稱與長度，不含密碼，而且有限速，被灌請求時不會灌爆日誌：
+
+```text
+… WARN rradius_core::radius: RADIUS client nas1: Access-Request refused, its User-Password is 240 octets, not 16 to 128 in whole blocks of 16
+```
+
+> **升級注意：** 以前超過 128 個位元組的 User-Password 會被解開、照常驗證；現在被拒絕。不補齊到 16 倍數的 NAS 也會被拒絕。升級前用認證紀錄確認沒有 `handler="length"` 的行；有的話是 NAS 的設定問題，不是密碼錯。
 
 ## 登入失敗鎖定
 

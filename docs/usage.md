@@ -1969,7 +1969,7 @@ set_attr('WiMAX-Release', '2.0')
 - 共同欄位：`user`、`port`、`rem_addr`。
 - 認證：另有 `data`（PAP 和 ASCII 是密碼；CHAP、MS-CHAPv2 是 PPP id、challenge 和回應，見下方）與 `authen_type`（數字，1 為 ASCII、2 為 PAP、3 為 CHAP、6 為 MS-CHAPv2）。
 - **ASCII 互動式登入**（RFC 8907）：START 沒帶帳號時伺服器回 GETUSER，再回不顯示輸入的 GETPASS，帳號密碼都取得後才執行認證串接或腳本，和 PAP 一樣由 `user` 與 `data` 取得。空帳號最多問三次；每條連線最多 8 個未完成的登入，60 秒內要完成。
-- **長度上限：** TACACS+ 的密碼（PAP 的 `data`、ASCII 登入的密碼，以及第二因素的驗證碼）最多 128 個位元組，ASCII 登入的帳號最多 255 個位元組，和 RADIUS 的 `User-Password` 與 TTLS 內層密碼一致。超過的回 FAIL，不進認證串接或腳本，所以不計入 `[auth.lockout]`，並記一行 INFO（client、帳號、長度，不含內容）；ASCII 登入階段隨之結束。上限固定，沒有設定。超過 128 個位元組的長通關句無法透過 TACACS+ 登入。
+- **長度上限：** TACACS+ 的密碼（PAP 的 `data`、ASCII 登入的密碼，以及第二因素的驗證碼）最多 128 個位元組，ASCII 登入的帳號最多 255 個位元組，與 RADIUS 的 `User-Password` 上限（16 到 128 個位元組，16 的倍數）相同。超過的回 FAIL，不進認證串接或腳本，所以不計入 `[auth.lockout]`，並記一行 INFO（client、帳號、長度，不含內容）；ASCII 登入階段隨之結束。上限固定，沒有設定。超過 128 個位元組的長通關句無法透過 TACACS+ 登入。
 - **升級注意：** 以前 ASCII LOGIN 的 START 會直接交給腳本，現在會先詢問帳號密碼。腳本要改從 `data` 取得密碼。
 - 認證的 START 另有 `priv_lvl`（0–15）與 `authen_service`（數字，1 為一般登入、2 為 enable）。
 - **enable 請求**（設備的 `enable` 指令，`authen_service` 是 2）由 `[tacacs] enable` 決定：
@@ -2189,6 +2189,7 @@ PPTP VPN 和舊的撥接設備仍會用 MS-CHAPv1（RFC 2433）。RADIUS 的 `MS
 - **失敗時** Access-Reject 帶 `MS-CHAP-Error`（`E=691 R=0`），不回 `MS-CHAP2-Success`（版本 1 沒有伺服器的證明）。
 - **不能驗證的處理器：** `ldap` 處理器的 `bind` 模式（目錄只看到密碼）拒絕；`netlogon` 處理器只處理 MS-CHAPv2，MS-CHAPv1 略過，所以只有它的串接會拒絕；最上層腳本和 `lua` 處理器看不到回應，不替腳本驗，腳本看得到的是請求的屬性。
 - **不支援：** 換密碼（`MS-CHAP-CPW`）、EAP 內層的 MS-CHAPv1（PEAP、TTLS）、LM 回應。請求同時帶 `User-Password`、`CHAP-Password` 或 `MS-CHAP2-Response` 時，照 PAP、CHAP、MS-CHAPv2 的順序，MS-CHAPv1 排在最後。
+- **RADIUS User-Password 長度：** 依 RFC 2865 第 5.2 節，長度要是 16 到 128 個位元組、16 的倍數；不合的 Access-Request 在解密前就回 Access-Reject，不執行處理器與腳本，不計入 `[auth.lockout]`，驗證記錄的 handler 是 `length`，並記一行限速的 WARN（客戶端與長度，不含密碼）。固定值，沒有設定。**升級注意：** 以前超過 128 個位元組、或沒補齊到 16 倍數的 User-Password 會被接受，現在被拒；先看驗證記錄有沒有 `handler="length"`。
 - **關閉 MS-CHAPv1（`[auth] allow_mschapv1`）：** 選用的布林，預設 `true`，行為和沒有這個鍵時一樣。設成 `false` 時，驗證鏈在任何處理器之前就拒絕 MS-CHAPv1 的登入（RADIUS 的 `MS-CHAP-Response`、TACACS+ 的 MSCHAP START）：RADIUS 回 Access-Reject 並帶 `MS-CHAP-Error`（`E=691 R=0`），TACACS+ 回 FAIL，驗證記錄的 handler 是 `mschapv1_refused`。**不查資料庫與目錄，也不計入 `[auth.lockout]` 的失敗次數、不佔它的名額**（它不是密碼猜測），所以舊設備一直重試不會把帳號鎖住。每次拒絕記一行 INFO（客戶端、協定、帳號，不含 challenge 與回應）。PAP、CHAP、MS-CHAPv2、EAP 不受影響；SIGHUP 重新載入時生效。**關之前先確認沒有設備在用：** `rradius_password_checks_total` 只按儲存格式分，分不出登入用的是哪個協定，不能用它判斷；看驗證記錄裡 MS-CHAP 的登入，或先在測試環境關掉，觀察記錄裡有沒有 `MS-CHAPv1 refused` 的行。仍送 MS-CHAPv1 的舊設備關掉後全部登入失敗。沒有 `[auth]` 時由 Lua 腳本自己處理的 `MS-CHAP-Response` 不在這個開關範圍。**預設改成 `false` 留到下一個有破壞性變更的版本。** MS-CHAPv1 成功時回的 `MS-CHAP-MPPE-Keys` 由 NT hash 導出，強度不超過 NT hash，這由協定決定，開關是唯一的緩解。
 - **字典：** `MS-CHAP-MPPE-Keys` 是 `encrypt=1` 的屬性，`set_attr` 現在支援 `encrypt=1`（4.5 節）；長度固定的 `octets[N]` 屬性也能用 `set_attr` 設，值要剛好 N 個位元組。
 

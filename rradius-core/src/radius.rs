@@ -263,6 +263,22 @@ pub fn decrypt_user_password(cipher: &[u8], shared_secret: &[u8], request_authen
 /// The longest value an `encrypt=1` attribute takes, which is what User-Password takes.
 const MAX_USER_PASSWORD_VALUE: usize = 128;
 
+/// The chain name an authentication record carries for `client`: its chain's, or `script` when
+/// a Lua script decides.
+fn chain_label<'a>(state: &RadiusState, client: &'a Client) -> &'a str {
+    match state.chains.as_deref().and_then(|chains| chains.for_client(client)) {
+        Some(_) => client.auth.as_deref().unwrap_or("default"),
+        None => "script",
+    }
+}
+
+/// Whether `length` octets can be a User-Password (RFC 2865 section 5.2): 16 to 128, in whole
+/// blocks of 16. Anything else is refused before it is decrypted and handed to a chain, since
+/// the work of a password hash grows with the length.
+fn user_password_length_ok(length: usize) -> bool {
+    (16..=MAX_USER_PASSWORD_VALUE).contains(&length) && length.is_multiple_of(16)
+}
+
 /// Encrypts a value as RFC 2865 section 5.2 does User-Password, which RFC 2548 section 2.4.1 asks for
 /// `MS-CHAP-MPPE-Keys`: zero padding up to a multiple of 16, then b1 = MD5(secret + Request
 /// Authenticator), bi = MD5(secret + c(i-1)), c = p XOR b. The inverse of `decrypt_user_password`,
@@ -1589,6 +1605,8 @@ pub struct RadiusServer {
     acct_overload_lines: Mutex<DiscardLog>,
     /// EAP requests refused because their client has `mfa`.
     mfa_eap_lines: Mutex<DiscardLog>,
+    /// Requests refused for the length of their User-Password.
+    password_length_lines: Mutex<DiscardLog>,
     /// Requests handled at once, separately so accounting cannot starve authentication.
     auth_slots: Arc<Semaphore>,
     acct_slots: Arc<Semaphore>,
@@ -1630,6 +1648,7 @@ impl RadiusServer {
             unknown_realm_lines: Mutex::default(),
             auth_overload_lines: Mutex::default(),
             mfa_eap_lines: Mutex::default(),
+            password_length_lines: Mutex::default(),
             acct_overload_lines: Mutex::default(),
             auth_slots: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT)),
             acct_slots: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT)),
@@ -2256,6 +2275,17 @@ impl RadiusServer {
                 return self.process_eap(state, client, packet, source, settings).await;
             }
         }
+        if let Some(length) = packet.attribute(USER_PASSWORD).map(<[u8]>::len).filter(|length| !user_password_length_ok(*length)) {
+            let line = self.password_length_lines.lock().unwrap_or_else(PoisonError::into_inner).line(Instant::now(), || format!("RADIUS client {}: Access-Request refused, its User-Password is {length} octets, not 16 to {MAX_USER_PASSWORD_VALUE} in whole blocks of 16", client.name));
+            if let Some(line) = line {
+                log_line(tracing::Level::WARN, line);
+            }
+            let user = String::from_utf8_lossy(packet.attribute(1).unwrap_or_default()).into_owned();
+            let chain = chain_label(state, client);
+            crate::logging::auth_record(&crate::logging::AuthRecord { protocol: "radius", client: &client.name, source, user: &user, account: "", chain, handler: "length", decision: "reject" });
+            let rejection = RadiusPacket::create_response(ACCESS_REJECT, packet, Vec::new(), client.secret.as_slice());
+            return (rejection.len() <= MAX_PACKET_LEN).then_some(rejection);
+        }
         let secret = client.secret.as_slice();
         let mut attributes = request_attributes(packet, &self.dictionary, secret);
         if let Some(authenticator) = &state.pre_chain {
@@ -2281,10 +2311,7 @@ impl RadiusServer {
             let request = crate::second_factor::SecondFactorRequest { protocol: "radius", client, mode: *mode, user: &factor_user, password: factor_password.as_deref().map(Vec::as_slice), state: packet.attribute(STATE) };
             let before = factor.before_chain(&request).await;
             // Named as the chain's own record would be.
-            let chain = match state.chains.as_deref().and_then(|chains| chains.for_client(client)) {
-                Some(_) => client.auth.as_deref().unwrap_or("default"),
-                None => "script",
-            };
+            let chain = chain_label(state, client);
             match before {
                 crate::second_factor::Before::Continue { password: Some(password) } => {
                     for (name, value) in &mut attributes {
@@ -7724,6 +7751,53 @@ pub(crate) mod tests {
         let mut for_auth = bytes.clone();
         for_auth[4..20].copy_from_slice(&request.authenticator);
         assert_eq!(&bytes[4..20], &md5_with_secret(&for_auth, SECRET));
+    }
+
+    #[test]
+    fn test_user_password_length_ok() {
+        for length in [16, 32, 112, 128] {
+            assert!(user_password_length_ok(length), "{length}");
+        }
+        for length in [0, 1, 15, 17, 129, 144, 240, 253] {
+            assert!(!user_password_length_ok(length), "{length}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wrong_length_user_password_is_rejected_before_the_script() -> Result<(), Box<dyn std::error::Error>> {
+        for length in [0usize, 1, 17, 129, 144, 240, 253] {
+            let (server, db) = accounting_server("
+                sql_execute(\"INSERT INTO radius_acct_sessions VALUES ('length-test-ran')\")
+                return 'accept'").await;
+            let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"nemo".to_vec()), (USER_PASSWORD, vec![7; length])], SECRET);
+            let bytes = server.handle_auth(&request, LOCALHOST).await.ok_or("no response")?;
+            assert_eq!(RadiusPacket::parse(&bytes)?.code, ACCESS_REJECT, "length {length}");
+            assert_eq!(db.query_text("SELECT count(*) || '' FROM radius_acct_sessions WHERE id = 'length-test-ran'").await, "0", "script ran for length {length}");
+        }
+        for length in [16usize, 128] {
+            let (server, _db) = accounting_server("return 'accept'").await;
+            let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"nemo".to_vec()), (USER_PASSWORD, vec![7; length])], SECRET);
+            let bytes = server.handle_auth(&request, LOCALHOST).await.ok_or("no response")?;
+            assert_eq!(RadiusPacket::parse(&bytes)?.code, ACCESS_ACCEPT, "length {length}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_wrong_length_user_password_is_logged_without_the_password() -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _db) = accounting_server("return 'accept'").await;
+        let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"length-log-user".to_vec()), (USER_PASSWORD, b"hunter2-hunter2-hunter2-x".to_vec())], SECRET);
+        let log = logged_during(async {
+            let _ = server.handle_auth(&request, LOCALHOST).await;
+        })
+        .await;
+        assert!(log.contains("25 octets"), "{log}");
+        assert!(log.contains("RADIUS client "), "{log}");
+        assert!(!log.contains("hunter2"), "{log}");
+        let records = crate::logging::records_for("length-log-user");
+        let record = records.last().ok_or("no auth record")?;
+        assert_eq!((record.handler.as_str(), record.decision.as_str(), record.chain.as_str()), ("length", "reject", "script"));
+        Ok(())
     }
 
     async fn accounting_server(script: &str) -> (RadiusServer, crate::lua_engine::Db) {
