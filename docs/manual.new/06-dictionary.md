@@ -355,7 +355,7 @@ INSERT INTO user_reply VALUES
 字典只在伺服器啟動時讀一次。
 
 - 改了 `dictionary` 的**路徑**再 reload：reload 照樣成功，日誌的 `WARN` 列出 `these need a restart to apply: dictionary`。
-- 只改了字典**檔案的內容**（例如在 `dictionary.example` 加一個 `Example-Room`）再 reload：日誌只寫 `configuration reloaded`，**沒有任何警告**，但伺服器仍用舊的字典，腳本用新屬性會得到 `unknown attribute 'Example-Room'`。重新啟動之後才生效。
+- 只改了字典**檔案的內容**（例如在 `dictionary.example` 加一個 `Example-Room`）再 reload：日誌在 `configuration reloaded` 之後多一行 `WARN`：`dictionary files changed since the server started; restart to apply: <檔案路徑>`（最多列五個檔，其餘寫 `and N more`；只要檔案還和啟動時不同，每次 reload 都會寫），伺服器仍用舊的字典，腳本用新屬性會得到 `unknown attribute 'Example-Room'`。重新啟動之後才生效。
 
 > **警告：** 改了字典之後一定要重新啟動伺服器，不要只送 SIGHUP。先用 `check` 確認新的字典讀得進來：`check` 每次都從檔案重新讀字典。
 

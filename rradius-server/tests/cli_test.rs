@@ -475,6 +475,40 @@ fn test_reload_script() {
     assert_eq!(server.ask(b"s"), Some(radius::ACCESS_ACCEPT));
 }
 
+/// spec Reload Warns About Changed Dictionary Files: SIGHUP says which dictionary files differ
+/// from the ones the server started with, and the server goes on running the old ones.
+#[test]
+fn test_reload_warns_about_a_changed_dictionary() -> Result<(), String> {
+    let mut server = Server::start(PROGRAM, tempfile::tempdir().map_err(|e| e.to_string())?, "return 'accept'", None);
+    let copy = server.dir.path().join("share");
+    std::fs::create_dir(&copy).map_err(|e| e.to_string())?;
+    let share = Path::new(env!("CARGO_MANIFEST_DIR")).join("../share");
+    for entry in std::fs::read_dir(&share).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            std::fs::copy(entry.path(), copy.join(entry.file_name())).map_err(|e| e.to_string())?;
+        }
+    }
+    let dictionary = copy.join("dictionary");
+    let ours = format!("dictionary = \"{}\"", dictionary.display());
+    server.write_config_text(|text| text.lines().map(|line| if line.starts_with("dictionary") { ours.clone() } else { line.to_string() }).collect::<Vec<_>>().join("\n") + "\n");
+    server.restart(PROGRAM);
+    assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
+
+    let stderr = server.reload(RELOADED);
+    assert!(!stderr.contains("dictionary files changed"), "{stderr}");
+
+    let mut text = std::fs::read_to_string(&dictionary).map_err(|e| e.to_string())?;
+    text.push_str("\n# edited after the start\n");
+    std::fs::write(&dictionary, text).map_err(|e| e.to_string())?;
+    server.reload(RELOADED);
+    let stderr = server.wait_for_log("dictionary files changed");
+    let line = stderr.lines().rev().find(|line| line.contains("dictionary files changed")).ok_or_else(|| format!("no warning: {stderr}"))?;
+    assert!(line.contains("restart to apply") && line.contains(&dictionary.display().to_string()), "{line}");
+    assert_eq!(server.ask(b"s"), Some(radius::ACCESS_ACCEPT));
+    Ok(())
+}
+
 #[test]
 fn test_reload_chain_script() {
     let server = Server::start(PROGRAM, tempfile::tempdir().unwrap(), "return 'reject'", Some("return 'reject'"));
