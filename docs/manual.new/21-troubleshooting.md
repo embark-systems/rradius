@@ -166,6 +166,8 @@ conf.d/dup.toml: line 1: duplicate key
 conf.d/bad.toml: line 1: an included file has to begin with a table (`[section]`), not a setting: a setting before its first table would belong to the file before it
 ```
 
+合併後才檢查出的錯誤（例如 `radius clients: duplicate client name 'core'`）沒有行號，後面會附上 `(in conf.d/10-clients.toml line 3)` 之類的位置，用它找到出錯的那一筆。
+
 `duplicate key` 最常見的原因，是 `conf.d/` 裡的檔案又宣告了主設定檔已經有的表，例如 `[radius]`。同一個表只能出現一次，要改就改在原來的地方。
 
 字典與腳本：

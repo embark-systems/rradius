@@ -1315,6 +1315,26 @@ fn test_check_names_a_duplicate_client_name() -> Result<(), String> {
     Ok(())
 }
 
+/// spec Configuration Includes: a mistake found after the files are read together names the
+/// included file that holds the entry.
+#[test]
+fn test_check_names_the_included_file_of_a_duplicate_client_name() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, _) = write_config(dir.path(), "return 'accept'", None);
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&config, format!("include = [\"conf.d/*.toml\"]\n{text}")).map_err(|e| e.to_string())?;
+    std::fs::create_dir(dir.path().join("conf.d")).map_err(|e| e.to_string())?;
+    let clients = dir.path().join("conf.d/10-clients.toml");
+    let twins = "[[radius.clients]]\naddress = \"10.9.9.1\"\nname = \"twin\"\nsecret = \"a\"\n[[radius.clients]]\naddress = \"10.9.9.2\"\nname = \"twin\"\nsecret = \"b\"\n";
+    std::fs::write(&clients, twins).map_err(|e| e.to_string())?;
+    let (code, stdout, stderr) = check_command(PROGRAM, &config);
+    assert_eq!(code, Some(2), "{stdout} {stderr}");
+    let shown = clients.display().to_string();
+    assert!(stderr.contains("duplicate client name 'twin'"), "{stderr}");
+    assert!(stderr.contains(&format!("(in {shown} line 3, {shown} line 7)")), "{stderr}");
+    Ok(())
+}
+
 #[test]
 fn test_check_finds_problems() {
     let edit = |config: &Path, change: &dyn Fn(String) -> String| {
