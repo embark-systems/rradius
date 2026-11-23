@@ -4312,7 +4312,7 @@ mod tests {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         write_certificates(dir.path());
         let path = dir.path().join("rradius.toml");
-        std::fs::write(&path, base(&format!("\n[radius]\n[radius.eap]\nmethods = [\"tls\"]\ncert_file = \"server.pem\"\nkey_file = \"server.key\"\nclient_ca_file = \"ca.pem\"\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n"))).map_err(|e| e.to_string())?;
+        std::fs::write(&path, base("\n[radius]\n[radius.eap]\nmethods = [\"tls\"]\ncert_file = \"server.pem\"\nkey_file = \"server.key\"\nclient_ca_file = \"ca.pem\"\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n")).map_err(|e| e.to_string())?;
         let key = dir.path().join("server.key");
         let loaded = |mode: u32, times: usize| -> Result<String, String> {
             std::fs::set_permissions(&key, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
