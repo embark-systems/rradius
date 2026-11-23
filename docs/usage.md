@@ -193,7 +193,7 @@ dictionary = "/usr/share/rradius/dictionary"
 - **不能覆蓋。** 同一個設定、同一個表出現在兩個檔案是錯誤（和寫在同一個檔案裡相同：`duplicate key`），不是後者蓋前者；`[[radius.clients]]` 這類陣列的元素依檔案順序累加。
 - **相對路徑一律以主設定檔所在的目錄為準，** 包括引入檔裡的 `key_file`、`secret_file`。
 - **密碼檔的權限太寬會警告。** 用戶端的 `secret_file`、叢集的 `secret_raft_file`、`secret_api_file`、資料庫的 `password_file`、LDAP 的 `bind_password_file`、`machine_password_file`，以及 `[radius.eap]` 的 `key_file`（EAP-TLS、PEAP、TTLS 伺服器憑證的私鑰，讀到的人可以冒充這台伺服器）讀進來時，檔案的權限若讓群組可寫、或讓其他人有任何權限（例如 0644），啟動和每次重新載入（SIGHUP）都記一行 WARN，寫出設定名稱、路徑和權限，不寫內容。只警告、不拒絕：範例和 Docker 的密碼檔是 0644，照樣能啟動。權限收到 0600 或 0640 就不再警告。私鑰檔建議 0600 或 0640。保護資料表內容的金鑰（`ticket_seal_file`、EAP-AKA' 的 `key_file` 等）是另一回事，權限不對仍然拒絕啟動。
-- **錯誤指到引入的檔案和檔內的行：** `/etc/rradius/conf.d/20-radius.toml: line 3: ...`，不顯示設定的值。
+- **語法與型別錯誤指到引入的檔案和檔內的行：** `/etc/rradius/conf.d/20-radius.toml: line 3: ...`，不顯示設定的值。合併後才做的檢查（例如重複的用戶端名稱）訊息只寫主設定檔名稱；訊息有單引號括起的名稱時，後面附上 `(in <檔案> line <行>)`，列出以引號字串寫著該名稱的行（最多三處，其餘 `and N more`），名稱只在主檔或找不到時不附。
 - **`config show` 印出所有檔案合併後的設定（包括 `include` 這一行本身，所以輸出不是設定檔，不要存起來當設定檔用）；** `check`、`config diff`、重新載入（SIGHUP）都讀引入的檔案：改了引入的檔案要送 SIGHUP 才生效，有錯時整份維持原狀。
 - **每個引入的檔案自己要是完整的 TOML**（沒有關閉的字串或陣列會被拒絕，錯誤指到那個檔案），檔案開頭的位元組順序記號（BOM）會被忽略；檔案要小於 1 MiB，`include` 最多對應 1000 個檔案；同一個檔案被兩個名稱符合只讀一次，符合到主設定檔本身的會被略過。
 - **引入的檔案或它所在的目錄對群組或其他人可寫時，** 記一行 WARN，因為它能改變誰可以登入；檔案和主檔一樣要保護，要放密碼就用 `*_file`。

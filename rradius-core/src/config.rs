@@ -1467,7 +1467,7 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
 pub(crate) fn load_with_text(path: &Path, extensions: &crate::extension::Extensions) -> Result<(ServerConfig, String), ConfigError> {
     let text = fs::read_to_string(path).map_err(|e| ConfigError(format!("{}: cannot read configuration: {}", path.display(), e)))?;
     let (text, parts) = with_includes(path, text)?;
-    let config = load_text(path, &text, extensions).map_err(|error| locate(error, path, &parts))?;
+    let config = load_text(path, &text, extensions).map_err(|error| name_sources(locate(error, path, &parts), path, &parts, &text))?;
     Ok((config, text))
 }
 
@@ -2155,6 +2155,50 @@ fn locate(error: ConfigError, path: &Path, parts: &[Part]) -> ConfigError {
         Some(part) => ConfigError(format!("{}: {}{}{}", part.path.display(), &rest[..start], line - part.first_line + 1, &rest[end..])),
         None => error,
     }
+}
+
+/// Most places `name_sources` names.
+const SOURCES_SHOWN: usize = 3;
+
+/// An error of the text read together that has no line, and names entries in single quotes, such
+/// as `duplicate client name 'core'`: followed by where the text holds each name as a quoted
+/// string, ` (in conf.d/10-clients.toml line 2)`, when one of those lines is in an included file.
+/// Otherwise as it is.
+fn name_sources(error: ConfigError, path: &Path, parts: &[Part], text: &str) -> ConfigError {
+    if parts.is_empty() {
+        return error;
+    }
+    let prefix = format!("{}: ", path.display());
+    let Some(rest) = error.0.strip_prefix(&prefix) else { return error };
+    let names: Vec<&str> = rest.split('\'').skip(1).step_by(2).filter(|name| !name.is_empty() && !name.contains('\n')).take(SOURCES_SHOWN).collect();
+    let mut places: Vec<String> = Vec::new();
+    let mut in_an_included_file = false;
+    for name in names {
+        let needle = format!("\"{name}\"");
+        for (index, line) in text.lines().enumerate() {
+            if !line.contains(&needle) {
+                continue;
+            }
+            let number = index + 1;
+            let place = match parts.iter().find(|part| (part.first_line..part.first_line + part.lines).contains(&number)) {
+                Some(part) => {
+                    in_an_included_file = true;
+                    format!("{} line {}", part.path.display(), number - part.first_line + 1)
+                }
+                None => format!("{} line {}", path.display(), number),
+            };
+            if !places.contains(&place) {
+                places.push(place);
+            }
+        }
+    }
+    if !in_an_included_file {
+        return error;
+    }
+    let more = places.len().saturating_sub(SOURCES_SHOWN);
+    places.truncate(SOURCES_SHOWN);
+    let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
+    ConfigError(format!("{}{} (in {}{})", prefix, rest, places.join(", "), tail))
 }
 
 /// Where the file is wrong and why, in one line. The error's own display is not used
@@ -5116,6 +5160,68 @@ mod tests {
         // `include`, dictionary, [lua] and its script, [cluster] with three lines, [radius], then the port.
         assert!(error.starts_with(&format!("{}: line 11", dir.path().join("rradius.toml").display())), "{error}");
         Ok(())
+    }
+
+    const NAMED_CORE: &str = "[[radius.clients]]\nname = \"core\"\naddress = \"ADDRESS\"\nsecret = \"s\"\n";
+
+    /// spec Configuration Includes: a check after the files were read together says where the entry
+    /// it names is, when that is an included file.
+    #[test]
+    fn test_error_of_an_entry_names_the_included_file() -> Result<(), String> {
+        let core = |address: &str| NAMED_CORE.replace("ADDRESS", address);
+        let main = format!("include = [\"conf.d/*.toml\"]\n{}", base(""));
+        let message = |main: &str, files: &[(&str, &str)]| -> Result<(tempfile::TempDir, String), String> {
+            let (dir, result) = load_with_files(main, files);
+            let error = result.err().ok_or("a duplicate name accepted")?.to_string();
+            Ok((dir, error))
+        };
+        // Both in one included file.
+        let both = format!("{}{}", core("10.0.0.1"), core("10.0.0.2"));
+        let (dir, error) = message(&main, &[("conf.d/10-clients.toml", &both)])?;
+        let file = dir.path().join("conf.d/10-clients.toml").display().to_string();
+        let plain = format!("{}: radius clients: duplicate client name 'core'", dir.path().join("rradius.toml").display());
+        assert_eq!(error, format!("{plain} (in {file} line 2, {file} line 6)"));
+        // One in each of two included files.
+        let (dir, error) = message(&main, &[("conf.d/10-a.toml", &core("10.0.0.1")), ("conf.d/20-b.toml", &core("10.0.0.2"))])?;
+        let (a, b) = (dir.path().join("conf.d/10-a.toml").display().to_string(), dir.path().join("conf.d/20-b.toml").display().to_string());
+        assert!(error.ends_with(&format!("(in {a} line 2, {b} line 2)")), "{error}");
+        // One in the main file, one in an included file: both are named.
+        let (dir, error) = message(&format!("{main}{}", core("10.0.0.1")), &[("conf.d/10-b.toml", &core("10.0.0.2"))])?;
+        let b = dir.path().join("conf.d/10-b.toml").display().to_string();
+        let top = dir.path().join("rradius.toml").display().to_string();
+        assert!(error.contains(&format!("(in {top} line ")) && error.ends_with(&format!(", {b} line 2)")), "{error}");
+        Ok(())
+    }
+
+    /// Where nothing says an included file, the error is what it is without `include`.
+    #[test]
+    fn test_error_of_an_entry_is_left_alone_without_an_included_source() -> Result<(), String> {
+        let core = |address: &str| NAMED_CORE.replace("ADDRESS", address);
+        let both = format!("{}{}", core("10.0.0.1"), core("10.0.0.2"));
+        // Only in the main file.
+        let main = format!("include = [\"conf.d/*.toml\"]\n{}{both}", base(""));
+        let (dir, result) = load_with_files(&main, &[("conf.d/10-other.toml", ANOTHER_CLIENT)]);
+        let error = result.err().ok_or("a duplicate name accepted")?.to_string();
+        assert_eq!(error, format!("{}: radius clients: duplicate client name 'core'", dir.path().join("rradius.toml").display()));
+        // The quoted name is nowhere as a string: an unknown handler type named in the message.
+        let main = format!("include = [\"conf.d/*.toml\"]\n{}", base("[auth]\n"));
+        let (dir, result) = load_with_files(&main, &[("conf.d/10-other.toml", ANOTHER_CLIENT)]);
+        let error = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(!error.contains(" (in "), "{error} in {}", dir.path().display());
+        Ok(())
+    }
+
+    #[test]
+    fn test_name_sources_shows_three_places_and_counts_the_rest() {
+        let path = Path::new("/etc/rradius/rradius.toml");
+        let text = "include = []\nname = \"core\"\n[x]\nname = \"core\"\n[y]\nname = \"core\"\n[z]\nname = \"core\"\n[w]\nname = \"core\"\n";
+        let parts = [Part { path: PathBuf::from("/etc/rradius/conf.d/a.toml"), first_line: 2, lines: 9 }];
+        let error = name_sources(ConfigError("/etc/rradius/rradius.toml: duplicate 'core' and 'a\"b'".to_string()), path, &parts, text).0;
+        assert!(error.ends_with("(in /etc/rradius/conf.d/a.toml line 1, /etc/rradius/conf.d/a.toml line 3, /etc/rradius/conf.d/a.toml line 5 and 2 more)"), "{error}");
+        // A message that already has a line is `locate`'s, and one with no quoted name is left alone.
+        for message in ["/etc/rradius/rradius.toml: nothing quoted here", "/etc/rradius/conf.d/a.toml: line 2: `x`: 'core' is wrong"] {
+            assert_eq!(name_sources(ConfigError(message.to_string()), path, &parts, text).0, message);
+        }
     }
 
     /// What names a file: the wildcards, the order, and the files whose names begin with a dot.
