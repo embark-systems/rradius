@@ -1006,11 +1006,9 @@ pub async fn run(args: &[String], extensions: &Extensions) -> i32 {
     if options.tui && (options.json || options.watch) {
         return usage();
     }
-    if options.tui {
-        if !std::io::stdout().is_terminal() {
-            eprintln!("status --tui needs a terminal: standard output is not one");
-            return 2;
-        }
+    if options.tui && !std::io::stdout().is_terminal() {
+        eprintln!("status --tui needs a terminal: standard output is not one");
+        return 2;
     }
     let explicit = config_path.is_some();
     let path = config_path.unwrap_or_else(|| crate::config::default_config_path().to_string());
