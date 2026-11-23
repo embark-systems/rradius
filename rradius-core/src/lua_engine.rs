@@ -3810,7 +3810,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_retry_until_reports_no_answer() {
-        let result: Result<(), RetryEnd<String>> = retry_until(Duration::from_millis(50), Duration::from_millis(1), |_: &String| true, || std::future::pending()).await;
+        let result: Result<(), RetryEnd<String>> = retry_until(Duration::from_millis(50), Duration::from_millis(1), |_: &String| true, std::future::pending).await;
         assert_eq!(result, Err(RetryEnd::NoAnswer));
     }
 
