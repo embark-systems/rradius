@@ -1,0 +1,250 @@
+use crate::app_state::{AppState, RaftType};
+use crate::client::DbClient;
+use crate::config::RateLimitConfig;
+use crate::http_client::build_http_client;
+use crate::{Client, Error, tls};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
+use tokio::sync::{RwLock, watch};
+
+#[cfg(feature = "listen_notify")]
+use crate::client::listen_notify::remote::RemoteListener;
+
+#[cfg(feature = "sqlite")]
+use crate::client::stream::ClientStreamReq;
+
+const RATE_LIMIT_AWAIT_SIZE: usize = 64;
+
+impl Client {
+    /// Create a local client that skips network connections if not necessary
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn new_local(
+        state: Arc<AppState>,
+        tls_config: Option<Arc<rustls::ClientConfig>>,
+        tls_no_verify: bool,
+        #[cfg(feature = "sqlite")] tx_client_db: flume::Sender<ClientStreamReq>,
+        #[cfg(feature = "sqlite")] rx_client_db: flume::Receiver<ClientStreamReq>,
+        tx_shutdown: watch::Sender<bool>,
+        #[cfg(feature = "cache")] rate_limit_cache: Option<RateLimitConfig>,
+        #[cfg(feature = "sqlite")] rate_limit_db: Option<RateLimitConfig>,
+    ) -> Self {
+        let leader_id = state.id;
+        let leader_addr = state.addr_api.clone();
+
+        let secret = state.secret_api.as_bytes().to_vec();
+
+        #[cfg(feature = "cache")]
+        let leader_cache = Arc::new(RwLock::new((leader_id, leader_addr.clone())));
+        #[cfg(feature = "sqlite")]
+        let leader_db = Arc::new(RwLock::new((leader_id, leader_addr)));
+
+        #[cfg(feature = "cache")]
+        let (tx_client_cache, rx_client_cache) = flume::bounded(1);
+
+        #[allow(unused_variables)]
+        let (rate_limit_cache_await, rx_cache_await) =
+            crossbeam::channel::bounded(RATE_LIMIT_AWAIT_SIZE);
+        #[allow(unused_variables)]
+        let (rate_limit_db_await, rx_db_await) = crossbeam::channel::bounded(RATE_LIMIT_AWAIT_SIZE);
+
+        let db_client = DbClient {
+            state: Some(state),
+            #[cfg(feature = "cache")]
+            leader_cache,
+            #[cfg(feature = "sqlite")]
+            leader_db,
+            // TODO do we even still need this for a local client? -> all raft messages should use internal API ?
+            nodes: Vec::default(),
+            client: None,
+            #[cfg(feature = "cache")]
+            tx_client_cache,
+            #[cfg(feature = "sqlite")]
+            tx_client_db,
+            tls_config,
+            tls_no_verify,
+            api_secret: None,
+            request_id: AtomicUsize::new(0),
+            tx_shutdown: Some(tx_shutdown),
+            #[cfg(feature = "listen_notify")]
+            app_start: chrono::Utc::now().timestamp_micros(),
+            #[cfg(feature = "listen_notify")]
+            rx_notify: None,
+            #[cfg(feature = "cache")]
+            rate_limit_cache: rate_limit_cache.as_ref().map(|c| AtomicU32::new(c.rps)),
+            #[cfg(feature = "cache")]
+            rate_limit_cache_await,
+            #[cfg(feature = "sqlite")]
+            rate_limit_db: rate_limit_db.as_ref().map(|c| AtomicU32::new(c.rps)),
+            #[cfg(feature = "sqlite")]
+            rate_limit_db_await,
+        };
+
+        let slf = Self {
+            inner: Arc::new(db_client),
+        };
+
+        slf.find_set_active_leader().await;
+
+        #[cfg(feature = "cache")]
+        slf.open_stream(
+            secret.clone(),
+            slf.inner.leader_cache.clone(),
+            rx_client_cache,
+            RaftType::Cache,
+        );
+        #[cfg(feature = "sqlite")]
+        slf.open_stream(
+            secret,
+            slf.inner.leader_db.clone(),
+            rx_client_db,
+            RaftType::Sqlite,
+        );
+
+        #[cfg(all(feature = "cache", feature = "sqlite"))]
+        slf.spawn_rate_limit_ticker(rate_limit_cache, rate_limit_db, rx_cache_await, rx_db_await);
+        #[cfg(all(feature = "cache", not(feature = "sqlite")))]
+        slf.spawn_rate_limit_ticker(rate_limit_cache, None, rx_cache_await, rx_db_await);
+        #[cfg(all(not(feature = "cache"), feature = "sqlite"))]
+        slf.spawn_rate_limit_ticker(None, rate_limit_db, rx_cache_await, rx_db_await);
+
+        slf
+    }
+
+    /// Manually create a remote client.
+    ///
+    /// Provide any nodes as address. As long as all nodes can be reached,
+    /// leader changes will happen automatically.
+    ///
+    /// You never need to create the client yourself if your application embeds Hiqlite, as it will
+    /// return a `Client` from `hiqlite::start_node()` or `hiqlite::start_node_with_cache()`.
+    ///
+    /// **Note:**
+    /// If your client will be unable to reach all nodes, you can run the Hiqlite Server in proxy
+    /// mode like mentioned in the [README](https://github.com/sebadob/hiqlite/blob/main/README.md).
+    /// In this case, only provide the proxy's IP in the `nodes: Vec<String>`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn remote(
+        nodes: Vec<String>,
+        tls: bool,
+        tls_no_verify: bool,
+        api_secret: String,
+        with_proxy: bool,
+        #[cfg(feature = "cache")] rate_limit_cache: Option<RateLimitConfig>,
+        #[cfg(feature = "sqlite")] rate_limit_db: Option<RateLimitConfig>,
+    ) -> Result<Self, Error> {
+        if nodes.is_empty() {
+            return Err(Error::Config(
+                "You must provide at least 1 node to connect to".into(),
+            ));
+        }
+
+        let tls_config = if tls {
+            Some(tls::build_tls_config(tls_no_verify))
+        } else {
+            None
+        };
+
+        // we just use this as a placeholder to be able to initialize the remote note
+        let node_id = 0;
+        let node_addr = nodes[0].clone();
+
+        #[cfg(feature = "cache")]
+        let leader_cache = Arc::new(RwLock::new((node_id, node_addr.clone())));
+        #[cfg(feature = "sqlite")]
+        let leader_db = Arc::new(RwLock::new((node_id, node_addr)));
+
+        #[cfg(feature = "sqlite")]
+        let (tx_client_db, rx_client_db) = flume::bounded(1);
+        #[cfg(feature = "cache")]
+        let (tx_client_cache, rx_client_cache) = flume::bounded(1);
+
+        #[cfg(feature = "listen_notify")]
+        let (tx, ack_listen_notify) = tokio::sync::oneshot::channel();
+        #[cfg(feature = "listen_notify")]
+        let rx_notify = Some(RemoteListener::spawn(
+            leader_cache.clone(),
+            tls_config.clone(),
+            api_secret.clone(),
+            Some(tx),
+        ));
+
+        #[allow(unused_variables)]
+        let (rate_limit_cache_await, rx_cache_await) =
+            crossbeam::channel::bounded(RATE_LIMIT_AWAIT_SIZE);
+        #[allow(unused_variables)]
+        let (rate_limit_db_await, rx_db_await) = crossbeam::channel::bounded(RATE_LIMIT_AWAIT_SIZE);
+
+        let api_secret_bytes = api_secret.as_bytes().to_vec();
+
+        let db_client = DbClient {
+            state: None,
+            #[cfg(feature = "sqlite")]
+            leader_db,
+            #[cfg(feature = "cache")]
+            leader_cache,
+            nodes,
+            client: Some(build_http_client(tls_no_verify)),
+            #[cfg(feature = "cache")]
+            tx_client_cache,
+            #[cfg(feature = "sqlite")]
+            tx_client_db,
+            tls_config,
+            tls_no_verify,
+            api_secret: Some(api_secret),
+            request_id: AtomicUsize::new(0),
+            tx_shutdown: None,
+            #[cfg(feature = "listen_notify")]
+            app_start: chrono::Utc::now().timestamp_micros(),
+            #[cfg(feature = "listen_notify")]
+            rx_notify,
+            #[cfg(feature = "cache")]
+            rate_limit_cache: rate_limit_cache.as_ref().map(|c| AtomicU32::new(c.rps)),
+            #[cfg(feature = "cache")]
+            rate_limit_cache_await,
+            #[cfg(feature = "sqlite")]
+            rate_limit_db: rate_limit_db.as_ref().map(|c| AtomicU32::new(c.rps)),
+            #[cfg(feature = "sqlite")]
+            rate_limit_db_await,
+        };
+
+        let slf = Self {
+            inner: Arc::new(db_client),
+        };
+
+        // It should be enough to check for DB proxy here. When running, the forward to leader
+        // errors should never be forwarded through the proxy.
+        if !with_proxy {
+            slf.find_set_active_leader().await;
+        }
+
+        #[cfg(feature = "cache")]
+        slf.open_stream(
+            api_secret_bytes.clone(),
+            slf.inner.leader_cache.clone(),
+            rx_client_cache,
+            RaftType::Cache,
+        );
+
+        #[cfg(feature = "sqlite")]
+        slf.open_stream(
+            api_secret_bytes,
+            slf.inner.leader_db.clone(),
+            rx_client_db,
+            RaftType::Sqlite,
+        );
+
+        #[cfg(all(feature = "cache", feature = "sqlite"))]
+        slf.spawn_rate_limit_ticker(rate_limit_cache, rate_limit_db, rx_cache_await, rx_db_await);
+        #[cfg(all(feature = "cache", not(feature = "sqlite")))]
+        slf.spawn_rate_limit_ticker(rate_limit_cache, None, rx_cache_await, rx_db_await);
+        #[cfg(all(not(feature = "cache"), feature = "sqlite"))]
+        slf.spawn_rate_limit_ticker(None, rate_limit_db, rx_cache_await, rx_db_await);
+
+        #[cfg(feature = "listen_notify")]
+        ack_listen_notify.await.map_err(|_| {
+            Error::Timeout("Connecting to remote event listener stream timed out".to_string())
+        })?;
+
+        Ok(slf)
+    }
+}

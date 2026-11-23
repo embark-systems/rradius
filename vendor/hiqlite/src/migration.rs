@@ -1,0 +1,129 @@
+use bincode_next::{Decode, Encode};
+use rust_embed::RustEmbed;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+
+pub struct Migrations;
+
+impl Migrations {
+    pub fn build<T: RustEmbed>() -> Vec<Migration> {
+        match Self::try_build::<T>() {
+            Ok(m) => m,
+            Err(err) => {
+                panic!("{err}");
+            }
+        }
+    }
+
+    pub fn try_build<T: RustEmbed>() -> Result<Vec<Migration>, Cow<'static, str>> {
+        let mut files = Vec::with_capacity(2);
+        for name in T::iter() {
+            match name.split_once('_') {
+                None => {
+                    return Err(
+                        "Migration file name format is: `<integer>_<migration_name>.sql`".into(),
+                    );
+                }
+                Some((id, _)) => match id.parse::<u32>() {
+                    Ok(id) => {
+                        files.push((id, name));
+                    }
+                    Err(_) => {
+                        return Err(
+                            "Migration scripts must start with an increasing integer with no \
+                                gaps and starting at index 1; \
+                                format: `<integer>_<migration_name>.sql`"
+                                .into(),
+                        );
+                    }
+                },
+            }
+        }
+        if files.is_empty() {
+            return Ok(Vec::default());
+        }
+
+        files.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
+        if let Some((first_id, _)) = files.first()
+            && *first_id != 1
+        {
+            return Err("Migrations must start at index 1".into());
+        }
+
+        let mut res: Vec<Migration> = Vec::with_capacity(files.len());
+
+        for (id, file_name) in files {
+            let data = T::get(file_name.as_ref()).unwrap();
+            let hash = hex::encode(data.metadata.sha256_hash());
+            let content = data.data.to_vec();
+
+            let stripped = match file_name.strip_suffix(".sql") {
+                Some(s) => s,
+                None => {
+                    return Err("Migration scripts must always end with .sql".into());
+                }
+            };
+            // was valid above already
+            let (_, name) = stripped.split_once('_').unwrap();
+
+            let migration = Migration {
+                id,
+                name: name.to_string(),
+                hash,
+                content,
+            };
+
+            let len = res.len();
+            if len > 0 && migration.id != (res[len - 1].id + 1) {
+                let last_id = res[len - 1].id;
+                if migration.id == last_id {
+                    return Err(
+                        format!("Migration index has a duplicate id {}", migration.id).into(),
+                    );
+                } else {
+                    return Err(format!(
+                        "Migration index has a gap: {} does not follow {}",
+                        migration.id, last_id,
+                    )
+                    .into());
+                }
+            }
+
+            res.push(migration);
+        }
+
+        Ok(res)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
+pub struct Migration {
+    pub id: u32,
+    pub name: String,
+    /// sha256 hash as hex
+    pub hash: String,
+    pub content: Vec<u8>,
+}
+
+/// Applied migrations to the database.
+///
+/// Can be retrieved with `.query_map("SELECT * FROM _migrations", params!())`
+#[derive(Debug, Clone)]
+pub struct AppliedMigration {
+    pub id: u32,
+    pub name: String,
+    pub ts: i64,
+    /// sha256 hash as hex
+    pub hash: String,
+}
+
+impl From<&mut crate::Row<'_>> for AppliedMigration {
+    fn from(row: &mut crate::Row<'_>) -> Self {
+        Self {
+            id: row.get::<i64>("id") as u32,
+            name: row.get("name"),
+            ts: row.get("ts"),
+            hash: row.get("hash"),
+        }
+    }
+}

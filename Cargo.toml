@@ -3,5 +3,9 @@
 # stay out of the server's lock file.
 [workspace]
 members = ["rradius-core", "rradius-server", "rradius-bench"]
-exclude = ["rradius-server/fuzz", "rradius-server/spikes/hiqlite"]
+exclude = ["rradius-server/fuzz", "rradius-server/spikes/hiqlite", "vendor/hiqlite"]
 resolver = "2"
+
+# hiqlite 0.16.0 with one reconnect interval changed, see vendor/hiqlite/MODIFICATIONS.
+[patch.crates-io]
+hiqlite = { path = "vendor/hiqlite" }

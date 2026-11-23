@@ -1,0 +1,517 @@
+use crate::app_state::AppState;
+use crate::helpers::{
+    atomic_file_switch, parse_duration, set_path_access, validate_db_backup_snapshot,
+};
+use crate::store::logs;
+use crate::store::state_machine::sqlite::state_machine::{QueryWrite, StateMachineSqlite};
+use crate::{Client, Error, NodeConfig};
+use chrono::{DateTime, Utc};
+use std::env;
+use std::ops::Sub;
+use std::path::Path;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::Instant;
+use tokio::{fs, task, time};
+use tracing::{debug, error, info, warn};
+
+#[cfg(feature = "s3")]
+use crate::s3::S3Config;
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::state_machine::StateMachineMemory;
+
+pub const BACKUP_DB_NAME: &str = "restore.sqlite";
+
+#[derive(Debug, Clone)]
+pub struct BackupConfig {
+    cron_schedule: cron::Schedule,
+    keep_for: Duration,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            cron_schedule: cron::Schedule::from_str("0 30 2 * * * *").unwrap(),
+            keep_for: Duration::from_secs(30 * 24 * 3600),
+        }
+    }
+}
+
+impl BackupConfig {
+    pub fn new(cron_schedule: &str, keep_for: Duration) -> Result<Self, Error> {
+        Ok(Self {
+            cron_schedule: cron::Schedule::from_str(cron_schedule)
+                .map_err(|_| Error::Config("Invalid syntax for cron_schedule".into()))?,
+            keep_for,
+        })
+    }
+
+    pub fn from_env() -> Self {
+        let cron_str = env::var("HQL_BACKUP_CRON").unwrap_or_else(|_| "0 30 2 * * * *".to_string());
+        let cron_schedule =
+            cron::Schedule::from_str(&cron_str).expect("Invalid syntax for HQL_BACKUP_CRON");
+
+        let keep_for = env::var("HQL_BACKUP_KEEP_FOR")
+            .ok()
+            .as_deref()
+            .map(|v| parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR as Duration"))
+            .unwrap_or(Duration::from_secs(30 * 24 * 3600));
+
+        Self {
+            cron_schedule,
+            keep_for,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum BackupSource {
+    S3(String),
+    File(String),
+}
+
+impl BackupSource {
+    fn from_env() -> Option<Self> {
+        let var = env::var("HQL_BACKUP_RESTORE").ok()?;
+
+        if let Some(obj) = var.strip_prefix("s3:") {
+            return Some(Self::S3(obj.to_string()));
+        }
+
+        if let Some(file) = var.strip_prefix("file:") {
+            return Some(Self::File(file.to_string()));
+        }
+
+        error!(
+            "HQL_BACKUP_RESTORE must start with either 's3:' or 'file:'. \
+            Cannot restore from backup - unknown prefix: {}",
+            var
+        );
+        None
+    }
+}
+
+pub fn start_cron(
+    client: Client,
+    backup_config: BackupConfig,
+    #[cfg(feature = "s3")] s3_config: Option<Arc<S3Config>>,
+) {
+    task::spawn(Box::pin(async move {
+        info!("Backup cron task started");
+
+        loop {
+            let dur = {
+                let now = chrono::Local::now();
+                let Some(next) = backup_config.cron_schedule.upcoming(chrono::Local).next() else {
+                    // e.g. a cron with an impossible date like Feb 30: no upcoming event.
+                    // Keep the task alive instead of panicking and silently losing backups.
+                    warn!("Cron schedule has no upcoming event - retrying in 1 hour");
+                    time::sleep(Duration::from_secs(3600)).await;
+                    continue;
+                };
+                if next <= now {
+                    // don't set it to 0 to not go crazy in case of a bad config or timing
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_secs((next.timestamp() - now.timestamp()) as u64)
+                }
+            };
+            time::sleep(dur).await;
+
+            info!("Executing backup now");
+            let mut success = false;
+            let retries = 5;
+
+            for _ in 0..retries {
+                match backup_cron_job(
+                    &client,
+                    backup_config.keep_for,
+                    #[cfg(feature = "s3")]
+                    &s3_config,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        info!("Backup task finished successfully");
+                        success = true;
+                        break;
+                    }
+                    Err(err) => {
+                        if err.is_forward_to_leader().is_some() {
+                            debug!(
+                                "Raft currently has no leader - retrying in 10 seconds\n{:?}",
+                                err
+                            );
+                        } else {
+                            // If we get here, it was most likely an S3 failure. The other things
+                            // that could go wrong are disk / DB operations, which is somewhat
+                            // unlikely.
+                            error!("Error during backup task execution: {}", err);
+                        }
+                    }
+                }
+                time::sleep(Duration::from_secs(10)).await;
+            }
+
+            if !success {
+                warn!("Backup task failed after {} retries", retries);
+            }
+        }
+    }));
+}
+
+async fn backup_cron_job(
+    client: &Client,
+    keep_for: Duration,
+    #[cfg(feature = "s3")] s3_config: &Option<Arc<S3Config>>,
+) -> Result<(), Error> {
+    client.backup().await?;
+
+    #[cfg(feature = "s3")]
+    {
+        if let Some(s3_config) = s3_config {
+            // the backup task will be async in the background, but we can start cleaning up already
+            let threshold = Utc::now().sub(keep_for);
+
+            let list = s3_config.bucket.list("", None).await?;
+            for bucket in list {
+                if bucket.name != s3_config.bucket.name {
+                    info!("Found non-configured bucket {} - skipping", bucket.name);
+                    continue;
+                }
+
+                for object in bucket.contents.iter() {
+                    if let Some(dt) = dt_from_backup_name(&object.key)
+                        && dt < threshold
+                    {
+                        info!("Deleting expired backup: {}", object.key);
+                        s3_config.bucket.delete(object.key.clone()).await?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn backup_local_cleanup(
+    backup_path: String,
+    keep_for: Duration,
+) -> Result<(), Error> {
+    // just make sure the parsed TS later on is somewhat reasonable
+    let ts_min = 1704063600;
+
+    let ts_threshold = Utc::now().sub(keep_for).timestamp();
+
+    let path = Path::new(&backup_path);
+    let mut dir_entries = tokio::fs::read_dir(path).await?;
+
+    loop {
+        let entry = match dir_entries.next_entry().await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => break,
+            Err(err) => {
+                warn!("Error reading directory entries: {err:?}");
+                break;
+            }
+        };
+        if entry.metadata().await?.is_dir() {
+            continue;
+        }
+
+        let name = entry.file_name();
+        if let Some(s_orig) = name.to_str() {
+            // A backup is written to a temp file named "...sqlite~" and renamed into
+            // place; a crash between the two orphans that temp file. Strip the trailing
+            // '~' so it is judged by the same age rule as its final-name counterpart:
+            // old orphans are reclaimed, while an in-progress backup (fresh ts) is kept.
+            let s = s_orig.strip_suffix('~').unwrap_or(s_orig);
+
+            if !s.starts_with("backup_node_") && !s.ends_with(".sqlite") {
+                continue;
+            }
+
+            let stripped = s.strip_suffix(".sqlite").unwrap_or(s);
+            let (_, ts) = stripped.rsplit_once('_').unwrap_or_default();
+
+            match ts.parse::<i64>() {
+                Ok(ts) => {
+                    if ts > ts_min && ts < ts_threshold {
+                        // remove the on-disk file under its real name (keep any '~' suffix)
+                        let p = format!("{backup_path}/{s_orig}");
+                        info!("Cleaning up local backup {s_orig} ({p})");
+                        if let Err(err) = tokio::fs::remove_file(p).await {
+                            error!(?err, "Error removing local backup");
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!(?err, "Cannot parse ts from file {s_orig}")
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn dt_from_backup_name(name: &str) -> Option<DateTime<Utc>> {
+    if let Some(backup) = name.strip_prefix("backup_node_") {
+        let (_, rest) = match backup.split_once("_") {
+            None => {
+                error!("Invalid backup filename format on S3: {}", name);
+                return None;
+            }
+            Some(s) => s,
+        };
+        let ts = match rest.strip_suffix(".sqlite") {
+            None => {
+                error!(
+                    "Invalid backup filename on S3 - '.sqlite' suffix missing: {}",
+                    name
+                );
+                return None;
+            }
+            Some(ts) => ts,
+        };
+
+        match ts.parse::<i64>() {
+            Ok(ts) => DateTime::from_timestamp(ts, 0),
+            Err(err) => {
+                error!("Error parsing TS from remote backup as i64: {}", err);
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
+/// Check if the env var `HQL_BACKUP_RESTORE` is set and restores the given backup if so.
+/// Returns `Ok(true)` if backup has been applied.
+/// This will only run if the current node ID is `1`.
+pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<bool, Error> {
+    if let Some(src) = BackupSource::from_env() {
+        info!("Found backup restore request {:?}", src);
+
+        if node_config.node_id == 1 {
+            restore_backup(node_config, src).await?;
+            return Ok(true);
+        } else {
+            warn!("Cleaning up existing files and start restore cluster join");
+            cleanup_restore_data_dirs(&node_config.data_dir).await?;
+        }
+    }
+
+    Ok(false)
+}
+
+/// Delete all state under `data_dir` that must not survive a backup restore: the SQLite DB
+/// (including its WAL sidecars), raft snapshots, lock file, both raft WALs and the cache data
+/// (+ its WAL, only present with the `cache` feature). Only these known paths are removed -
+/// never `data_dir` itself, which may be a direct container mount that cannot be deleted, and
+/// never anything unknown (e.g. the staged backup in `state_machine/backups`). Missing paths
+/// are fine; any other error is propagated, so a failed cleanup can never silently leave stale
+/// state behind.
+async fn cleanup_restore_data_dirs(data_dir: &str) -> Result<(), Error> {
+    let sqlite_paths = [
+        StateMachineSqlite::path_db(data_dir),
+        StateMachineSqlite::path_snapshots(data_dir),
+        StateMachineSqlite::path_lock_file(data_dir),
+        logs::logs_dir_db(data_dir),
+    ];
+    #[cfg(feature = "cache")]
+    let cache_paths = [
+        StateMachineMemory::path_sm(data_dir),
+        logs::logs_dir_cache(data_dir),
+    ];
+
+    for path in &sqlite_paths {
+        match fs::remove_dir_all(path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(Error::Sqlite(
+                    format!("Cannot remove old data dir {path}: {err}").into(),
+                ));
+            }
+        }
+    }
+
+    #[cfg(feature = "cache")]
+    for path in &cache_paths {
+        match fs::remove_dir_all(path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(Error::Cache(
+                    format!("Cannot remove old data dir {path}: {err}").into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Apply the given backup from S3 storage.
+///
+/// **CAUTION: This function MUST BE CALLED when the Raft is not running!**
+///
+/// You only need to invoke this manually if you want to apply a backup in another
+/// way than with the `HQL_BACKUP_RESTORE` env var, which is being done automatically.
+pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Result<(), Error> {
+    info!("Starting database restore from backup {:?}", src);
+
+    if let BackupSource::S3(_) = &src
+        && node_config.s3_config.is_none()
+    {
+        return Err(Error::S3(
+            "No `S3Config` given, cannot restore backup".to_string(),
+        ));
+    }
+
+    let path_db = StateMachineSqlite::path_db(&node_config.data_dir);
+    let path_backups = StateMachineSqlite::path_backups(&node_config.data_dir);
+
+    fs::create_dir_all(&path_backups).await?;
+    set_path_access(&path_backups, 0o700).await?;
+
+    let path_backup = match src {
+        BackupSource::S3(s3_obj) => {
+            let s3_config = match &node_config.s3_config {
+                None => {
+                    return Err(Error::S3(
+                        "No `S3Config` given, cannot restore backup".to_string(),
+                    ));
+                }
+                Some(c) => c,
+            };
+            let path_backup = format!("{path_backups}/{BACKUP_DB_NAME}");
+            s3_config.pull(&s3_obj, &path_backup).await?;
+            path_backup
+        }
+        BackupSource::File(path_src) => {
+            let (path, filename) = path_src.rsplit_once('/').unwrap_or(("", &path_src));
+            debug!("Given backup path full: '{path_src}', after parsing: '{path}' / '{filename}'");
+            let path_backup = format!("{path_backups}/{filename}");
+
+            fs::copy(path_src, &path_backup).await?;
+            path_backup
+        }
+    };
+    fs::File::open(&path_backup).await?.sync_data().await?;
+
+    validate_backup_db(path_backup.clone()).await?;
+    debug!("Database backup validation passed (metadata + integrity check)");
+
+    debug!("Removing old data");
+    // Removing old dirs even before the backup is in its final place. Important to never end up
+    // in an inconsistent state with a partly applied backups and maybe still existing old WAL data.
+    // You apply the backup for a reason -> the current data is broken anyway. If anything fails
+    // between here and getting the backup into place, you start fresh anyway. The staged backup
+    // in `state_machine/backups` has been validated already and is intentionally kept.
+    cleanup_restore_data_dirs(&node_config.data_dir).await?;
+
+    fs::create_dir_all(&path_db).await?;
+    set_path_access(&path_db, 0o700).await?;
+
+    let path_db_full = format!("{}/{}", path_db, node_config.filename_db);
+    info!(
+        "Given backup check ok - moving into its final place: {} -> {}",
+        path_backup, path_db_full
+    );
+    atomic_file_switch(path_backup, &path_db_full).await?;
+    set_path_access(&path_db_full, 0o700).await?;
+
+    Ok(())
+}
+
+pub(crate) async fn validate_backup_db(path_db: String) -> Result<(), Error> {
+    if env::var("HQL_BACKUP_SKIP_VALIDATION").as_deref() == Ok("true") {
+        return Ok(());
+    }
+    validate_db_backup_snapshot(path_db).await
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+#[cfg(feature = "backup")]
+pub async fn restore_backup_finish(state: &Arc<AppState>) {
+    loop {
+        match state.raft_db.raft.is_initialized().await {
+            Ok(res) => {
+                if res {
+                    break;
+                }
+            }
+            Err(err) => {
+                error!("{}", err);
+            }
+        }
+        debug!("Waiting for Raft init");
+        time::sleep(Duration::from_millis(50)).await;
+    }
+
+    while state.raft_db.raft.current_leader().await.is_none() {
+        time::sleep(Duration::from_millis(50)).await;
+    }
+
+    debug_assert!(
+        state.raft_db.raft.current_leader().await == Some(state.id),
+        "It should never happen that node 1 is not the raft leader during backup restore"
+    );
+
+    let reqs = 10;
+    for _ in 0..reqs {
+        let start = Instant::now();
+        match state.raft_db.raft.client_write(QueryWrite::RTT).await {
+            Ok(_) => {
+                info!("Raft RTT: {} micros", start.elapsed().as_micros());
+            }
+            Err(err) => {
+                error!("Raft RTT request error: {}", err);
+            }
+        }
+    }
+
+    let last_log;
+    loop {
+        let metrics = state.raft_db.raft.metrics().borrow().clone();
+        if let Some(last_applied) = metrics.last_applied
+            && last_applied.index >= reqs
+        {
+            debug!("Found high enough last_applied log id");
+            last_log = last_applied.index;
+            break;
+        }
+        time::sleep(Duration::from_millis(50)).await;
+    }
+
+    debug!("Taking snapshot now");
+    if let Err(err) = state.raft_db.raft.trigger().snapshot().await {
+        // e.g. the raft is shutting down: do not panic the task, just bail out - the
+        // wait-for-snapshot loop below would never finish anyway
+        error!("Error triggering snapshot: {err}");
+        return;
+    }
+
+    // wait until snapshot has been built
+    while state.raft_db.raft.metrics().borrow().snapshot.is_none() {
+        info!("Waiting for snapshot build to finish");
+        time::sleep(Duration::from_millis(100)).await;
+    }
+
+    debug!("Purging logs");
+    while let Err(err) = state.raft_db.raft.trigger().purge_log(last_log).await {
+        // It's very important to retry until success. If we had an upper limit and exit early,
+        // the only thing we could do is actually panic. This is important because the first
+        // WAL logs entry MUST NOT start fresh. Otherwise, it would screw up the backup logic.
+        // -> retry until success, which will usually succeed instantly
+        error!("Error during logs purge: {}", err);
+        time::sleep(Duration::from_millis(100)).await;
+    }
+
+    info!("restore_backup_finish task successful");
+}

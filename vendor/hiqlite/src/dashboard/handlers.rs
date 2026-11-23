@@ -1,0 +1,168 @@
+use crate::dashboard::session::{INSECURE_COOKIES, Session};
+use crate::dashboard::table::Table;
+use crate::dashboard::{query, session};
+use crate::network::AppStateExt;
+use crate::query::rows::RowOwned;
+use crate::{Error, Node};
+use axum::body::Body;
+use axum::extract::Path;
+use axum::http::header::LOCATION;
+use axum::http::{HeaderMap, Method};
+use axum::response::Response;
+use axum::{Form, Json, body};
+use hyper::StatusCode;
+use openraft::RaftMetrics;
+use serde::Deserialize;
+use spow::pow::Pow;
+
+pub async fn redirect_to_index() -> Response {
+    Response::builder()
+        .status(StatusCode::MOVED_PERMANENTLY)
+        .header(LOCATION, "/dashboard/index.html")
+        .body(Body::empty())
+        .unwrap()
+}
+
+pub async fn get_session(s: Session) -> Result<Json<Session>, Error> {
+    Ok(Json(s))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    password: String,
+    // PoW proof against the per-node secret initialized in `dashboard::init`. Optional
+    // (`#[serde(default)]`): the login form only sends it in a secure context, so plain
+    // HTTP submissions carry no `pow` field and must not fail deserialization.
+    #[serde(default)]
+    pow: String,
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn post_session(
+    state: AppStateExt,
+    headers: HeaderMap,
+    Form(login): Form<LoginRequest>,
+) -> Result<Response, Error> {
+    // Require a PoW proof only when the dashboard is served over TLS (auto-TLS via
+    // `tls_api` / `tls_auto_certificates`); over plain HTTP the WASM client cannot run
+    // in a secure context, so the proof is ignored there. The browser mirrors this
+    // check via `window.isSecureContext`.
+    validate_pow_if_tls(&login.pow, crate::dashboard::is_api_tls_enabled())?;
+    session::set_session_verify(&state, Method::POST, &headers, login.password).await
+}
+
+/// Reject a missing or invalid PoW proof only when the dashboard is served over TLS
+/// (auto-TLS via `tls_api` / `tls_auto_certificates`); over plain HTTP the proof is
+/// ignored, mirroring the browser's `window.isSecureContext` check.
+fn validate_pow_if_tls(pow: &str, is_tls: bool) -> Result<(), Error> {
+    if is_tls {
+        Pow::validate(pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
+    }
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn get_pow() -> Result<String, Error> {
+    let difficulty = if *INSECURE_COOKIES { 10 } else { 20 };
+    let pow =
+        Pow::with_difficulty(difficulty, 5).map_err(|err| Error::Config(err.to_string().into()))?;
+    Ok(pow.to_string())
+}
+
+pub async fn get_tables(state: AppStateExt, _: Session) -> Result<Json<Vec<Table>>, Error> {
+    let tables = Table::find_all(&state).await?;
+    Ok(Json(tables))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TableFilterRequest {
+    Table,
+    Index,
+    View,
+    Trigger,
+}
+
+impl TableFilterRequest {
+    pub fn as_str(&self) -> &str {
+        match self {
+            TableFilterRequest::Table => "table",
+            TableFilterRequest::Index => "index",
+            TableFilterRequest::View => "view",
+            TableFilterRequest::Trigger => "trigger",
+        }
+    }
+}
+
+pub async fn get_tables_filtered(
+    state: AppStateExt,
+    _: Session,
+    Path(filter): Path<TableFilterRequest>,
+) -> Result<Json<Vec<Table>>, Error> {
+    let tables = Table::find_all_filtered(&state, filter).await?;
+    Ok(Json(tables))
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn post_query(
+    state: AppStateExt,
+    _: Session,
+    body: body::Bytes,
+) -> Result<Json<Vec<RowOwned>>, Error> {
+    let binding = String::from_utf8_lossy(body.as_ref());
+    let sql = binding.trim().to_string();
+    let res = query::dashboard_query_dynamic(state, sql).await?;
+    Ok(Json(res))
+}
+
+pub async fn get_metrics(state: AppStateExt, _: Session) -> Json<RaftMetrics<u64, Node>> {
+    let metrics = state.raft_db.raft.metrics().borrow().clone();
+    Json(metrics)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pow_challenge_work_validate_roundtrip() {
+        // The per-node spow secret is initialized at startup from the active encryption key;
+        // a fixed one is fine for this unit test (and an already-set secret stays consistent
+        // because the challenge and validation share it).
+        Pow::init_bytes(b"test-secret-key-for-pow-0123456789ab");
+
+        let pow = Pow::with_difficulty(10, 5).expect("challenge generation");
+        let challenge = pow.to_string();
+        let solution = Pow::work(&challenge).expect("client-side solve");
+
+        assert!(solution.starts_with(&challenge));
+        assert_eq!(
+            Pow::validate(&solution).expect("server-side validate"),
+            pow.challenge.as_str(),
+        );
+        assert!(Pow::validate("bogus").is_err());
+    }
+
+    #[test]
+    fn login_request_pow_defaults_when_missing() {
+        // plain-HTTP submissions carry no `pow` field; it must default to empty
+        let req: LoginRequest = serde_json::from_str(r#"{"password":"secret"}"#).unwrap();
+        assert_eq!(req.pow, "");
+        let req: LoginRequest =
+            serde_json::from_str(r#"{"password":"secret","pow":"abc"}"#).unwrap();
+        assert_eq!(req.pow, "abc");
+    }
+
+    #[test]
+    fn pow_validated_only_when_tls_enabled() {
+        // no TLS: any proof is accepted (plain HTTP ignores the proof)
+        assert!(validate_pow_if_tls("bogus", false).is_ok());
+
+        Pow::init_bytes(b"test-secret-key-for-pow-0123456789ab");
+        let pow = Pow::with_difficulty(10, 5).expect("challenge generation");
+        let solution = Pow::work(&pow.to_string()).expect("client-side solve");
+        // TLS: a valid proof passes, an invalid one is rejected
+        assert!(validate_pow_if_tls(&solution, true).is_ok());
+        assert!(validate_pow_if_tls("bogus", true).is_err());
+    }
+}
