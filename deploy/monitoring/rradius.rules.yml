@@ -1,5 +1,5 @@
-# Prometheus alerting rules for rradius-server. Chapter 21 of the manual,
-# docs/manual/21-monitoring.md, says what each alert means and what to do about it.
+# Prometheus alerting rules for rradius-server. The manual,
+# docs/manual/17-monitoring.md (the alert rules section), says what each alert means and what to do about it.
 #
 # They assume the scrape job is named "rradius" (see README.md). The rules for the external
 # databases, the accounting log and the named queries only match when that feature is
@@ -162,4 +162,4 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "802.1X conversations ({{ $labels.method }}) on {{ $labels.instance }} are pushed out or refused"
-          description: "More conversations are open at once than the node keeps; see chapter 12."
+          description: "More conversations are open at once than the node keeps; see docs/manual/21-troubleshooting.md."

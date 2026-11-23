@@ -833,7 +833,7 @@ fn remove_by_hand(api: u16, node: u64) -> Result<String, String> {
 }
 
 /// Grows a running three-node cluster to four and shrinks it to two with `cluster members` and
-/// `cluster remove`, as chapter 7 of the manual says: a node joins on its own, and is removed
+/// `cluster remove`, as chapter 16 of the manual says: a node joins on its own, and is removed
 /// only once it is stopped.
 #[test]
 fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {

@@ -1,5 +1,5 @@
 # 用戶資源控制：每個用戶有方案，限制同時連線數和一段時間的流量。單機。
-# 說明：docs/manual/15-usage-control.md
+# 說明：docs/manual/14-isp-recipes.md〈方案與用量控制：usage-control〉
 #
 #   cd rradius-server
 #   cargo run --release -- server --config examples/scenarios/usage-control/rradius.toml
@@ -53,7 +53,7 @@ list = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE
 show = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY slot"
 
 # 監控：每個狀態的連線位數，成為指標 rradius_query_slot_usage{state}（free 是空的、reserved 是預留、
-# active 是在線）。每個節點每 30 秒對自己的副本查一次；說明見手冊第 15 章「監控」。
+# active 是在線）。每個節點每 30 秒對自己的副本查一次；說明見手冊第 14 章〈方案與用量控制〉的「監控」。
 # 這個查詢走 session_slots_expiry 索引，不掃整個表。
 [queries.slot_usage]
 sql = "SELECT state, count(*) AS slots FROM session_slots GROUP BY state"

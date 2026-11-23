@@ -2,7 +2,7 @@
 
 rradius-server 是一個 AAA（認證、授權、計費）伺服器，支援 RADIUS 與 TACACS+。認證可以交給設定檔中的認證串接（SQL、LDAP、Lua），授權與計費由 Lua 腳本處理。資料存放在內嵌的 hiqlite（SQLite 加 Raft 複寫）叢集，可以單機執行，也可以組成多節點高可用叢集。
 
-這份是參考文件，列出每個設定和行為。依部署情境的逐步說明和可以直接啟動的範例設定，見[使用手冊](manual/README.md)。
+這份是參考文件，列出每個設定和行為。依主題的說明、部署情境和可以直接啟動的範例設定，見[使用手冊](manual/README.md)。
 
 ## 1. 建置與啟動
 
@@ -420,7 +420,7 @@ api = "10.0.0.3:8200"
   - 有 `migrations_dir` 時，啟動節點本身也受 `migrations_wait_ms` 限制，所以它要大於約 6 秒（預設 60 秒），否則在 hiqlite 返回前就逾時結束。
   - 代價：停機很久的節點在網路分割時重新啟動，會用停機前的資料服務，例如這段期間停用的帳號還能登入。在意這點時設 `stop_without_leader_ms`。
 - **落後太多的 follower 會壞掉，要重新啟動。** follower 停住或斷線期間，叢集寫入超過 `snapshot_every`（預設 10 萬筆）、leader 做了快照並丟掉舊日誌時，follower 回來後 hiqlite 0.16 讀不到自己的日誌，Raft 核心停止（記錄 `quit RaftCore ... Integrity: Attempt to read non-existent data`）。2026-11-10 在三節點上用預設設定、暫停一台時寫入 13 萬筆重現；`snapshot_every = 50` 時每次都重現。這時節點會用不再跟隨叢集的副本回答，所以 rradius 偵測到後會乾淨關閉並以狀態碼 1 結束（見 1. 節〈停止〉），重新啟動後它會追上、恢復正常。沒有自動重啟時，要手動啟動它。
-- **停掉 leader 時不會先交出 leader。** hiqlite 0.16 在關閉前先等 9.5 秒（仍是 leader），之後其他節點要 1.5 到 3 秒選出新的，選舉期間寫入逾時；用戶端重連還會拖長中斷（強制停掉 leader 時量到約 15 秒，見[手冊第 7 章](manual/07-ha-cluster.md#跨機房)；正常停止的情形沒有量）。所以升級時最後才停 leader（`rradius_cluster_is_leader` 為 1 的那台）。
+- **停掉 leader 時不會先交出 leader。** hiqlite 0.16 在關閉前先等 9.5 秒（仍是 leader），之後其他節點要 1.5 到 3 秒選出新的，選舉期間寫入逾時；用戶端重連還會拖長中斷（強制停掉 leader 時量到約 15 秒，見[手冊第 16 章](manual/16-cluster.md#跨機房)；正常停止的情形沒有量）。所以升級時最後才停 leader（`rradius_cluster_is_leader` 為 1 的那台）。
 - **錯誤怎麼分類。** 逾時、找不到 leader、連不到節點、內部通道關閉、快照失敗都算資料庫不能用；SQL 寫錯、違反限制（例如 UNIQUE）算語句的錯，照樣拒絕或回錯誤。管理指令 `user` 遇到前者以狀態碼 3 結束。
 - **可用的 leader：** follower 知道 leader 是誰；leader 在 5 秒內得到多數節點確認（被隔開的 leader 仍自認是 leader，用這個分辨）。
 
@@ -436,11 +436,11 @@ api = "10.0.0.3:8200"
 | `rradius_cluster_seconds_without_leader` | 沒有可用 leader 的秒數，有時是 0 |
 | `rradius_cluster_caught_up` | 啟動後本機副本已追上叢集時 1；沒有 leader 而先用本機副本服務、還沒追上時 0 |
 
-升級時最後才停 `rradius_cluster_is_leader` 為 1 的那台：停掉 leader 要重新選舉，約 15 秒內的寫入會逾時（見[手冊第 7 章](manual/07-ha-cluster.md#跨機房)）。
+升級時最後才停 `rradius_cluster_is_leader` 為 1 的那台：停掉 leader 要重新選舉，約 15 秒內的寫入會逾時（見[手冊第 16 章](manual/16-cluster.md#跨機房)）。
 
 #### 增減節點：`cluster` 指令
 
-執行中加節點不需要指令：新節點的 `[[cluster.nodes]]` 列出目前所有成員（包含自己）、`data/` 是空的，啟動後會自己加入。清單裡一定要有現在的 leader，否則加不進去（見手冊第 7 章）。移除節點和查看成員用 `cluster` 指令，步驟和注意事項見[手冊第 7 章](manual/07-ha-cluster.md#增加節點)。
+執行中加節點不需要指令：新節點的 `[[cluster.nodes]]` 列出目前所有成員（包含自己）、`data/` 是空的，啟動後會自己加入。清單裡一定要有現在的 leader，否則加不進去（見[手冊第 16 章](manual/16-cluster.md#加入節點)）。移除節點和查看成員用 `cluster` 指令，步驟和注意事項見[手冊第 16 章](manual/16-cluster.md#加入節點)。
 
 ```sh
 rradius-server cluster members --config /etc/rradius/rradius.toml
@@ -659,7 +659,7 @@ TACACS+ over TLS（`[tacacs.tls]`）需要 rradius-enterprise。
 
   寫資料庫這兩列是同時寫入合併提交（見下一項）之後重量的；以前每次寫入各自提交時，計費吞吐約 21,000 次/秒，登入 p50 0.41–0.76 ms、最大值 7.1–17 ms。現在計費多了一倍，伺服器也比較忙，所以登入稍慢。純運算這兩列在 6 次中有 5 次出現 `rate_not_met` 警告，所以登入的數字只能當參考。併發 4096 在 3 次中有 2 次丟掉 1 個請求（`server_discarded_overload`），那個請求逾時，所以這兩次的結束碼是 2。
 
-- **同時的寫入會一起提交。** 各個請求同時等著的 `sql_execute`，只要是不回傳資料列的 INSERT、UPDATE、DELETE 或 REPLACE，就會合成一批，在一個交易、一筆 Raft 紀錄裡提交，每批最多 256 個，同時最多 4 批在路上。資料庫套用寫入只用一個執行緒，每次提交都有固定成本，所以各自提交時，計費寫入在上表的 macOS 機器上約每秒 21,000 次就到頂，合併後約 41,000 次（Linux 上高得多，見下一項），併發 256 時 p99 從 47–74 ms 降到 12–15 ms；每秒 1,000 次的輕負載下延遲和以前相同（p50 0.18 ms）。每個呼叫照樣拿到自己的受影響列數。同一批有一個陳述式失敗時，這批會對半拆開、各自再提交，直到出錯的那個單獨提交，所以只有它的呼叫失敗，次數記在 `rradius_db_split_batches_total`。這個數字一直增加，代表有陳述式常常失敗（例如重送的計費撞到 UNIQUE），可以改成 `INSERT OR IGNORE` 這類不會失敗的寫法。其他陳述式（帶 `RETURNING`、`SELECT`、`COMMIT`、`ROLLBACK` 等）照舊各自提交。叢集無法使用時，整批的呼叫都回同一個錯誤，不會再試。呼叫已經逾時的寫入，還沒交給叢集的就不寫入，因為呼叫端已經被告知失敗，計費請求也可能已經進了暫存；**已經交給叢集的，會等到叢集回覆結果才回報**（見 2.2 節〈資料庫不能用時〉）。代價是**同一批裡很慢的陳述式（例如大量 DELETE）會讓其他寫入一起等**，這種工作要分小批做（見[使用手冊第 11 章](manual/11-operations.md#清除舊資料)）。一個腳本的多個 `sql_execute` 不會在同一批，因為腳本會等每次寫入完成。
+- **同時的寫入會一起提交。** 各個請求同時等著的 `sql_execute`，只要是不回傳資料列的 INSERT、UPDATE、DELETE 或 REPLACE，就會合成一批，在一個交易、一筆 Raft 紀錄裡提交，每批最多 256 個，同時最多 4 批在路上。資料庫套用寫入只用一個執行緒，每次提交都有固定成本，所以各自提交時，計費寫入在上表的 macOS 機器上約每秒 21,000 次就到頂，合併後約 41,000 次（Linux 上高得多，見下一項），併發 256 時 p99 從 47–74 ms 降到 12–15 ms；每秒 1,000 次的輕負載下延遲和以前相同（p50 0.18 ms）。每個呼叫照樣拿到自己的受影響列數。同一批有一個陳述式失敗時，這批會對半拆開、各自再提交，直到出錯的那個單獨提交，所以只有它的呼叫失敗，次數記在 `rradius_db_split_batches_total`。這個數字一直增加，代表有陳述式常常失敗（例如重送的計費撞到 UNIQUE），可以改成 `INSERT OR IGNORE` 這類不會失敗的寫法。其他陳述式（帶 `RETURNING`、`SELECT`、`COMMIT`、`ROLLBACK` 等）照舊各自提交。叢集無法使用時，整批的呼叫都回同一個錯誤，不會再試。呼叫已經逾時的寫入，還沒交給叢集的就不寫入，因為呼叫端已經被告知失敗，計費請求也可能已經進了暫存；**已經交給叢集的，會等到叢集回覆結果才回報**（見 2.2 節〈資料庫不能用時〉）。代價是**同一批裡很慢的陳述式（例如大量 DELETE）會讓其他寫入一起等**，這種工作要分小批做（見[使用手冊第 18 章](manual/18-operations.md#清除舊資料)）。一個腳本的多個 `sql_execute` 不會在同一批，因為腳本會等每次寫入完成。
 - **Linux 上的計費寫入上限。** 2026-11-08 在同一台 Apple M4 Max 上 Docker 的 Linux（arm64）量測，伺服器限定 CPU 0–6、`rradius-bench` 限定 7–13，`acct-sql.toml`（每筆 Accounting-Start 寫一次資料庫），各兩次：
 
   | 情況 | 併發 256（次/秒） | 併發 1024（次/秒） |
@@ -780,7 +780,7 @@ port = 9812         # 預設
 
 埠被別的程式佔用時，伺服器不結束：日誌記一行 `ERROR … metrics: cannot listen on <位址>: …`，RADIUS 與 TACACS+ 照常服務，但沒有 `/metrics`、`/livez`、`/readyz`。TACACS+ 的埠被佔用則和 RADIUS 一樣，啟動以結束碼 1 結束（`TACACS+ server error: …`）。
 
-同一個埠也回答兩個健康檢查，給 Kubernetes 的探針或負載平衡器用（範例見 `deploy/kubernetes/` 與手冊第 13 章）：
+同一個埠也回答兩個健康檢查，給 Kubernetes 的探針或負載平衡器用（範例見 `deploy/kubernetes/` 與手冊第 16 章）：
 
 | 路徑 | 回應 |
 | --- | --- |
@@ -1571,7 +1571,7 @@ script = "vpn_rules.lua"
 
 兩種模式下，全部略過都視為拒絕。
 
-`all_accept` 也適合「先驗密碼、再做一件事」：例如 `sql` 處理器之後接一個 `lua` 處理器，替通過驗證的用戶從資料表的池分配 IP 位址（`Framed-IP-Address`）。密碼錯的人不會執行到後面的處理器。範例與說明見[手冊第 14 章](manual/14-ip-pool.md)。同樣的做法也用來限制每個用戶的同時連線數與流量上限（[第 15 章](manual/15-usage-control.md)）。用戶沒有密碼、依 BNG 轉送的 DHCP Option 82 線路身分認證的情境，見[第 16 章](manual/16-line-identity.md)；依用戶回固定的位址、路由網段與 IPv6 前綴，見[第 17 章](manual/17-static-ip.md)；同一個速率方案依 BNG 的廠商送不同的屬性，見[第 18 章](manual/18-rate-limit.md)；IPv6 用戶的委派前綴從池動態分配，見[第 19 章](manual/19-prefix-pool.md)。
+`all_accept` 也適合「先驗密碼、再做一件事」：例如 `sql` 處理器之後接一個 `lua` 處理器，替通過驗證的用戶從資料表的池分配 IP 位址（`Framed-IP-Address`）。密碼錯的人不會執行到後面的處理器。範例與說明見[手冊第 14 章](manual/14-isp-recipes.md#ipv4-位址池ip-pool)。同樣的做法也用來限制每個用戶的同時連線數與流量上限（[第 14 章〈方案與用量控制〉](manual/14-isp-recipes.md#方案與用量控制usage-control)）。用戶沒有密碼、依 BNG 轉送的 DHCP Option 82 線路身分認證的情境，見[第 14 章〈依線路身分認證〉](manual/14-isp-recipes.md#依線路身分認證line-identity)；依用戶回固定的位址、路由網段與 IPv6 前綴，見[第 14 章〈固定位址與前綴〉](manual/14-isp-recipes.md#固定位址與前綴static-ip)；同一個速率方案依 BNG 的廠商送不同的屬性，見[第 14 章〈依 BNG 回速率〉](manual/14-isp-recipes.md#依-bng-回速率rate-limit)；IPv6 用戶的委派前綴從池動態分配，見[第 14 章〈IPv6 前綴池〉](manual/14-isp-recipes.md#ipv6-前綴池prefix-pool)。
 
 **`first_match` 不會替你檢查密碼：** `sql`、`ldap` 或 `netlogon` 查不到名稱時回「略過」，交給下一個處理器。後面接只檢查政策的腳本時，不存在的使用者不用密碼就能通過，所以政策腳本要放進 `all_accept`，或設定 `verifies_password` 並自己比對。
 
@@ -1735,7 +1735,7 @@ attributes = { "Filter-Id" = "staff" }
 | `required_groups` | 無 | SID 清單，使用者至少屬於其中一個才接受，否則拒絕 |
 | `group_reply` | 無 | 屬於某 SID 的群組時加上的回應屬性，依設定順序，可同時符合多個 |
 
-**每台節點一個電腦帳號。** DC 對每個電腦帳號只保留一組 secure channel，兩台節點共用帳號會互相弄斷對方的 channel。叢集裡每台節點的設定要有自己的 `computer_name` 和密碼檔，建立方式見手冊第 3 章〈用 AD 帳號登入〉。
+**每台節點一個電腦帳號。** DC 對每個電腦帳號只保留一組 secure channel，兩台節點共用帳號會互相弄斷對方的 channel。叢集裡每台節點的設定要有自己的 `computer_name` 和密碼檔，建立方式見手冊第 08 章〈準備電腦帳號〉。
 
 DC 回覆的對應：
 
@@ -1767,7 +1767,7 @@ DC 回覆的對應：
 | `rradius_netlogon_open_connections` | 目前開著的 Netlogon 連線 |
 
 **限制：**
-- 不會自動加入網域，也不會輪替電腦帳號密碼。電腦帳號要事先建立並設定密碼（手冊第 3 章），之後若在 AD 重設密碼，要同時更新密碼檔並重新載入。
+- 不會自動加入網域，也不會輪替電腦帳號密碼。電腦帳號要事先建立並設定密碼（手冊第 08 章〈準備電腦帳號〉），之後若在 AD 重設密碼，要同時更新密碼檔並重新載入。
 - 只支援 AES secure channel。停用 AES 的舊 DC（Windows Server 2008 以前）不支援。
 - 在 Samba 4.17 AD DC 上以 `docker/interop-netlogon/run.sh` 實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、各種拒絕、群組、DC 重啟後重建 channel、電腦帳號密碼錯誤），也在 Windows Server 2022 的 DC 上實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、群組、錯誤密碼、停用帳號、不在群組、不存在的使用者）。
 
@@ -2168,7 +2168,7 @@ ORDER BY accounts DESC, scheme;
 
 這個查詢在 SQLite 跑過：沒有前綴的值（包含少了 `}` 的 `{broken`）算 `none`，前綴不分大小寫，`{SSHA}` 與 `{ssha}` 算在一起。其他資料庫的函式名稱可能不同。
 
-**淘汰的做法：** 先盤點，再看統計：某個偏弱格式盤點是 0 之前還不算淘汰，盤點有帳號、統計卻長期沒有成功登入的，是沒在用的帳號，可以請他們改密碼、或依期限清掉。有人還在用的帳號，用 `user passwd` 換成新格式（見手冊第 9 章）；rradius 不會在登入時自動換，也沒有停用格式的設定。
+**淘汰的做法：** 先盤點，再看統計：某個偏弱格式盤點是 0 之前還不算淘汰，盤點有帳號、統計卻長期沒有成功登入的，是沒在用的帳號，可以請他們改密碼、或依期限清掉。有人還在用的帳號，用 `user passwd` 換成新格式（見[手冊第 07 章](manual/07-users-and-chains.md#搬入舊系統的密碼雜湊)）；rradius 不會在登入時自動換，也沒有停用格式的設定。
 
 ### 5.1 MS-CHAPv2
 

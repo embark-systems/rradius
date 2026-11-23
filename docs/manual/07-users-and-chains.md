@@ -350,6 +350,71 @@ origin=rradius
 
 > **注意：** 舊格式只能驗證 PAP（`{nthash}` 與明文除外）。舊系統的 NAS 如果用 CHAP 或 MS-CHAPv2 登入這些帳號，搬過來之後會被拒絕，要讓使用者改一次密碼，並把 `scheme` 設成合適的格式。
 
+### 能搬與不能搬的
+
+**雜湊只能用在會把明文密碼送到伺服器的登入方式。** 搬之前先看你的設備用哪一種：
+
+| 登入方式 | 能用雜湊嗎 |
+| --- | --- |
+| PAP（VPN、多數網頁登入、TACACS+ 的 PAP 與 ASCII） | 全部格式都可以 |
+| EAP-TTLS 內層 PAP（Wi-Fi，見[第 11 章](11-eap.md)） | 全部格式都可以 |
+| CHAP（PPPoE 常用） | 只能明文（`{clear}` 或沒有前綴） |
+| MS-CHAPv2、PEAP（Wi-Fi 最常見的帳號密碼方式） | 只能明文或 `{nthash}` |
+| MS-CHAPv1（PPTP 與舊撥接設備；預設拒絕，要 `[auth] allow_mschapv1 = true` 才開） | 只能明文或 `{nthash}` |
+
+（這些對應來自上面「選擇密碼格式」與[認證協定與 MS-CHAPv1 開關](#認證協定與-ms-chapv1-開關)的規則；TACACS+ 見[第 12 章](12-tacacs.md#認證方式asciipapchapms-chap)。）所以：
+
+- **舊系統有存 NT hash：** 搬過來的帳號可以直接用 PEAP（範例的 `win1`）。
+- **舊系統只有其他雜湊，而 Wi-Fi 要用帳號密碼：** 兩條路。Wi-Fi 改用 EAP-TTLS 內層 PAP（各作業系統的支援程度不同，要先確認，本章未驗證）；或要求使用者改一次密碼，改的時候 `scheme` 設成 `nthash`。
+- **PPPoE 的 CHAP：** 沒有明文就沒辦法，只能重設密碼。
+- **加鹽的雜湊，鹽要在後面。** `{SSHA}` 這一類是「摘要接著鹽」一起做 Base64，摘要算的是密碼接鹽。舊系統是「鹽接密碼」，或用別的方式混合時，沒有對應的格式，這些帳號只能重設。
+- **不確定對不對時，先拿一個知道密碼的測試帳號試。** 格式不對的值比對不過，不會放行任何人。
+
+**已驗證**（`migrate-users` 的情境測試，見範例目錄）：八個示範帳號用 PAP 登入都接受，`{SSHA}` 的帳號用 CHAP 被拒絕。
+
+### 匯入 SQL
+
+把舊系統匯出的資料轉成一個新編號的 migration 檔（範例是 `migrations/2_imported_users.sql`）：
+
+```sql
+-- 2_imported_users.sql
+INSERT INTO users (username, password, origin) VALUES
+  ('ldap1', '{SSHA}ZvqZAfdyjd1PQiq8rurmdodN8ihkZW1vc2FsdA==', 'ldap'),
+  ('shell1', '{crypt}$1$demosalt$EhA8qeu4qSun8gh9DajmS1', 'shadow'),
+  ('o''brien', '{nthash}9d232eea31049319fc8ab84300855a34', 'nt');
+```
+
+- **第一次啟動前就把檔案準備好。** 套用過的 migration 檔不能再改（改了會 `migration file '…' changed after it was applied`，見[第 18 章](18-operations.md)）；之後要補帳號就新增下一個編號的檔案。
+- **帳號名稱先轉成小寫、去掉網域，** 和[統一使用者名稱與 realm](#統一使用者名稱與-realm) 的設定一致。資料表裡留著大小寫不同的名稱，登入時查不到：`lowercase = true` 時，`Alice` 這一列永遠不會被比對到。
+- **只差大小寫的兩個帳號，** 轉成小寫後是同一個名稱。範例的 `users.username` 是 `PRIMARY KEY`，轉成小寫後重複的那列，`INSERT` 會失敗（`UNIQUE constraint failed`），整個 migration 檔跟著失敗。匯入前先找出來，決定留哪一個。
+- **SQL 字串裡的單引號要寫兩個**（上面 `o''brien`）。用程式產生檔案時，帳號和雜湊裡的引號都要處理。
+- **`origin` 欄不是必要的。** 範例用它記下每個帳號的密碼來自哪裡，之後好統計還剩多少舊格式。
+- **檔案很大時**（幾十萬列），匯入要一些時間：把 `[cluster] migrations_wait_ms`（預設 `60000`）調高到比匯入時間長。啟動時等不到會失敗，訊息是 `cluster was not ready to apply migrations: … (the limit is migrations_wait_ms; raise it if a migration file takes longer)`。注意叢集節點對一個 migration 檔的寫入只等 30 秒：超過時訊息會改成 `the cluster node gives one migration file 30 s to be answered, whatever migrations_wait_ms is`，檔案仍在叢集裡繼續跑，等它做完後用更長的 `migrations_wait_ms` 再啟動一次。匯入幾十萬列的實際耗時本章沒有量。
+- **匯出的檔案是所有人的密碼雜湊。** 弱的雜湊可以被離線破解。傳輸和存放都要保護，匯入後刪掉暫存的副本；已經套用的 migration 檔也一樣，它留在 `migrations_dir` 裡。
+- **`user add` 不能用來搬現成的雜湊。** 它只收明文密碼（從標準輸入），自己依 `scheme` 雜湊。
+
+### 沒有前綴的明文：MySQL 與 `CONCAT`
+
+舊系統把明文存在資料欄裡時，沒有前綴的值直接當明文用。例外是明文本身以 `{` 開頭（會被誤認成格式前綴），或以 `$2a$`、`$1$`、`$argon2` 這類開頭（會被當成漏了前綴的雜湊，見[沒有前綴的雜湊不是密碼](#沒有前綴的雜湊不是密碼)）。這時在 SQL 裡補上 `{clear}`：
+
+```sql
+-- SQLite、PostgreSQL：用 || 串接
+SELECT '{clear}' || value FROM radcheck WHERE username = ?
+-- MySQL：用 CONCAT
+SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?
+```
+
+（MySQL 的 `||` 預設是邏輯 OR，不是串接，所以要寫 `CONCAT`。上面兩行取自舊版手冊，未在真實資料庫上重新執行。）
+
+### 上線前
+
+- **先平行跑一陣子。** 挑幾台 NAS 指到 rradius，其他的留在舊系統，確認登入結果一致再全部切換。
+- **舊系統給的回覆屬性**（VLAN、速率、權限）也要搬，放進 `user_reply`（範例的資料表，`reply_query` 讀它）。屬性名稱要是 rradius 字典裡的名稱（[第 06 章](06-dictionary.md)）；搬完用真的登入試幾個帳號，不要只靠 `check`。
+- **舊系統的共用密碼** 可以沿用，NAS 那邊只要改伺服器位址；趁這次換成每台不同、夠長的更好。
+- **慢雜湊會排隊。** `{crypt}`、`{argon2}` 與 PBKDF2 故意算得慢，同時登入很多時會排隊，尖峰時變慢。成本過高的值會被 `[auth.password_limits]` 擋下（見[限制雜湊的計算成本](#限制雜湊的計算成本)）；遷移來的雜湊成本本來就高時，先調高上限。
+- **訂一個期限。** 期限到了還沒改密碼的帳號，用新的 migration 檔把密碼設成 `NULL`（例如 `UPDATE users SET password = NULL WHERE origin <> 'rradius'`）。密碼欄是 `NULL` 的帳號一律登不進來（日誌 `no stored password; rejecting`），請他們找管理者重設。這句 `UPDATE` 是依範例資料表寫的，未實際執行。
+- **沒有測過的：** 從任何一套特定的舊系統實際匯出再匯入的流程。範例的雜湊是依各格式的定義算出來的，再由情境測試確認 rradius 驗證得過。
+
 帳號想留在原本的 PostgreSQL 或 MySQL、由舊系統繼續維護時，sql 處理器可以用 `database` 直接查外部資料庫，情境裡的 `external-db.toml` 是這種寫法，見[第 09 章](09-external-databases.md)。
 
 > **警告：** `2_imported_users.sql` 的帳號與密碼是公開的示範值。拿這個情境改成正式環境時，刪掉這個檔案，換成你自己匯出的資料。
@@ -777,6 +842,18 @@ rradius_auth_lockout_untracked_total 0
 **症狀：** PAP 可以登入，CHAP 或 MS-CHAPv2（含 PEAP）被拒絕，MS-CHAPv2 的 Access-Reject 帶 `MS-CHAP-Error`。
 **原因：** 存的是單向雜湊（bcrypt、SHA-512 crypt、`{SSHA}` 等）。CHAP 只能比對明文，MS-CHAP 只能比對明文或 `{nthash}`。
 **解法：** 把 `accounts.scheme` 改成 `nthash`（MS-CHAP）或 `clear`（CHAP），讓使用者用 `user passwd` 重設一次密碼。
+
+**症狀：** 搬過來的帳號密碼正確卻被拒絕。
+**原因：** 前綴不對（例如十六進位的 MD5 直接加了 `{MD5}`，沒有轉 Base64）；鹽的位置和格式定義不同；或匯入時雜湊被截斷、多了空白。
+**解法：** 拿一個知道密碼的帳號，對照[伺服器看得懂的全部格式](#伺服器看得懂的全部格式)逐項檢查。
+
+**症狀：** 只有名稱有大寫的帳號登不進來。
+**原因：** 開了 `lowercase`，但資料表裡的名稱沒有轉小寫。
+**解法：** 資料表統一成小寫（見[匯入 SQL](#匯入-sql)）。
+
+**症狀：** PAP 可以，Wi-Fi 的 PEAP 或 PPPoE 的 CHAP 不行。
+**原因：** PEAP 要明文或 `{nthash}`，CHAP 要明文，其他雜湊做不到。
+**解法：** 見[能搬與不能搬的](#能搬與不能搬的)。
 
 **症狀：** `user disable` 印出 `disabled erin`，`erin` 卻還能登入。
 **原因：** `user_query` 沒有略過停用的帳號。

@@ -114,6 +114,9 @@ $ chmod 600 ldap.secret
 - 代入的是驗證鏈整理後的帳號名稱。上面的 `[auth.username]` 讓 `CORP\Alice`、`alice@example.com` 都用 `alice` 搜尋（[第 07 章](07-users-and-chains.md)）。
 - `reply_attributes` 的值有好幾個時，每個值各加一個屬性，順序照目錄傳回的順序。
 - 服務帳號的密碼不能是空的：空密碼的 bind 是匿名 bind，`check` 直接拒絕。
+- **用 `filter` 排除停用的帳號。** 搜尋不到的使用者視同不存在，所以停用的帳號可以直接在條件裡排除。AD 的寫法是 `(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))`（`userAccountControl` 的第 2 位元是停用）；OpenLDAP 若啟用了密碼政策（ppolicy），可以用 `(&(uid={user})(!(pwdAccountLockedTime=*)))` 排除被鎖定的帳號。`check` 只檢查 `{user}` 的個數，條件本身有沒有用要先在你的目錄上試過。
+
+> **未實機驗證：** 兩種排除寫法的目錄端行為（`userAccountControl` 位元、ppolicy 的 `pwdAccountLockedTime`）沒有在真正的 AD 或啟用 ppolicy 的 OpenLDAP 上測過；程式碼只負責把條件原樣送出，`check` 確認過 OpenLDAP 的那一條能通過。
 
 ### 驗證
 
@@ -220,6 +223,9 @@ required_groups = ["cn=vpn-users,ou=groups,dc=example,dc=com"]
 - `group_filter` 剛好一個 `{dn}`，換成使用者那筆的 DN（跳脫過）。搜尋以服務帳號執行，結果的 DN 拿去比對。
 - `group_attribute` 與 `group_filter` 只能選一個；`group_filter` 一定要配 `group_base_dn`。
 - 這些鍵只在有 `required_groups` 或 `group_reply` 時才有意義。只寫了它們，`check` 會失敗，因為看起來像限制、其實什麼都沒限制。
+- **巢狀群組：** `memberOf` 與 `(member={dn})` 都只算直接的成員關係，使用者透過子群組加入的不算。AD 要把巢狀群組算進去，改用搜尋群組的方式，`group_filter = "(member:1.2.840.113556.1.4.1941:={dn})"`（AD 的 `LDAP_MATCHING_RULE_IN_CHAIN`），並配上 `group_base_dn`。這是 AD 專有的比對規則，由網域控制站展開巢狀群組。
+
+> **未實機驗證：** 這個 `group_filter` 的寫法 `check` 接受（剛好一個 `{dn}`），但沒有在 AD 上跑過。
 
 ### 驗證
 
@@ -407,6 +413,30 @@ $ samba-tool computer create RRADIUS1
 $ samba-tool user setpassword 'RRADIUS1$' --newpassword='…'
 ```
 
+在 Windows 網域（需要 RSAT 的 ActiveDirectory 模組）可以用 PowerShell 建立。名稱最多 15 個字元，每台節點用自己的帳號：
+
+```powershell
+$pw = Read-Host -AsSecureString "RRADIUS1 的密碼"
+New-ADComputer -Name RRADIUS1 -SamAccountName 'RRADIUS1$' -AccountPassword $pw -Enabled $true
+```
+
+> **未實機驗證：** 這段 `New-ADComputer` 沿用舊版手冊，沒有在 Windows Server 上跑過。
+
+Samba AD 網域控制站預設不接受 MS-CHAPv2。在每台網域控制站的 `/etc/samba/smb.conf` 的 `[global]` 加上下面這行，再重新啟動 samba：
+
+```ini
+ntlm auth = mschapv2-and-ntlmv2-only
+```
+
+本章的測試映像（`docker/interop-netlogon/dc-start.sh`）建網域時就帶這個選項。沒有它時，Samba 對正確的密碼也可能回 `STATUS_WRONG_PASSWORD`（見[常見錯誤](#常見錯誤)）。
+
+電腦帳號的密碼存到節點上，只給執行 rradius 的帳號讀：
+
+```console
+$ install -m 600 -o rradius /dev/null /etc/rradius/netlogon-rradius1.secret
+$ read -rs pw && printf '%s' "$pw" > /etc/rradius/netlogon-rradius1.secret
+```
+
 > **警告：** 電腦帳號的密碼就是這台伺服器在網域裡的身分。檔案權限設成 0600；`check` 與 `server` 發現檔案別人讀得到時會警告。
 
 ### 設定
@@ -442,8 +472,8 @@ attributes = { "Filter-Id" = "staff" }
 每個鍵都可以 reload。
 
 - `servers` **不能寫 IP 位址**：登入請求裡要帶網域控制站的名稱，Windows 網域控制站會拒絕以位址稱呼它的請求。`check` 遇到位址直接報錯。
-- 沒有 `port` 時，先連網域控制站的 135 埠問端點對應器，Netlogon 在哪個埠；網域控制站換了埠，處理器會重新問。中間有防火牆時，要開 135 埠和它回答的那個埠，或在網域控制站固定 Netlogon 的埠，再寫在 `port`。
-- 群組用 SID 寫，形如 `S-1-5-21-…`。寫群組名稱（例如 `Domain Users`），`check` 會失敗。群組的 SID 可以在網域管理工具查到；測試時用的是 `samba-tool group show wifi-staff --attributes=objectSid`。
+- 沒有 `port` 時，先連網域控制站的 135 埠問端點對應器，Netlogon 在哪個埠；網域控制站換了埠，處理器會重新問。中間有防火牆時，要開 135 埠和它回答的那個埠，或在網域控制站固定 Netlogon 的埠，再寫在 `port`。Windows 網域控制站的動態 RPC 埠預設是 TCP 49152 到 65535，沒有固定埠時整段都要開（未實機驗證；Samba 測試映像固定在 49200）。
+- 群組用 SID 寫，形如 `S-1-5-21-…`。寫群組名稱（例如 `Domain Users`），`check` 會失敗。群組的 SID 可以在網域管理工具查到：Windows 用 `Get-ADGroup wifi-staff | Select SID`（未實機驗證），測試時用的是 `samba-tool group show wifi-staff --attributes=objectSid`。
 - `check` 只檢查設定、讀密碼檔，**不會**連到網域控制站。第一筆請求進來時才建立 secure channel。
 - secure channel 一定用 AES。網域控制站不同意 AES，或回來的伺服器憑證驗不過，就當它不能用，不會退回 RC4 或 DES。
 
@@ -646,6 +676,26 @@ filter = "(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:
 **症狀：** MS-CHAPv2 登入沒有回應，日誌有 `cannot set up the secure channel as RRADIUS1$: the domain controller refused the computer account's password (STATUS_ACCESS_DENIED)`。
 **原因：** `machine_password_file` 的密碼和網域裡電腦帳號的密碼不同。
 **解法：** 在網域重設電腦帳號的密碼，更新檔案，reload。
+
+**症狀：** 日誌有 `cannot set up the secure channel as RRADIUS1$: the domain controller has no such computer account (STATUS_NO_TRUST_SAM_ACCOUNT)`。
+**原因：** 網域裡沒有這個電腦帳號，或 `computer_name` 打錯。
+**解法：** 在網域建立電腦帳號（[準備電腦帳號](#準備電腦帳號)），或改正 `computer_name`。
+
+**症狀：** 日誌有 `no Netlogon endpoint registered yet; the domain controller may still be starting`。
+**原因：** 網域控制站的 135 埠已經回應，但 Netlogon 服務還沒註冊，常見於網域控制站剛開機。
+**解法：** 等它起來，通常會自行恢復。一直出現就檢查網域控制站上的 Netlogon 服務。
+
+**症狀：** 兩台節點輪流出現 `STATUS_ACCESS_DENIED`。
+**原因：** 兩台節點共用了同一個電腦帳號。
+**解法：** 每台節點用自己的電腦帳號。（沿用舊版手冊的說法，未實機驗證；原理見[準備電腦帳號](#準備電腦帳號)。）
+
+**症狀：** Samba 網域控制站，密碼正確仍被拒絕，日誌有 `STATUS_WRONG_PASSWORD`。
+**原因：** `smb.conf` 沒有 `ntlm auth = mschapv2-and-ntlmv2-only`，Samba 不接受 MS-CHAPv2。
+**解法：** 加上這一行，重新啟動 samba。（未實機驗證：測試映像一開始就帶這個選項，沒有試過少了它的結果。）
+
+**症狀：** 日誌有 `not in any of required_groups`，密碼明明正確。
+**原因：** 使用者不在 `required_groups` 列出的群組，或 SID 抄錯。
+**解法：** 對照使用者的群組 SID。
 
 ## 相關章節
 

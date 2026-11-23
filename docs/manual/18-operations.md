@@ -18,11 +18,15 @@
 - [升級程式](#升級程式)
 - [新增 migration](#新增-migration)
 - [帳號、session 與查詢](#帳號session-與查詢)
+- [更換密碼](#更換密碼)
+- [清除舊資料](#清除舊資料)
 - [資料目錄與資料保護](#資料目錄與資料保護)
 - [日誌與 logrotate](#日誌與-logrotate)
 - [用 systemd 管理](#用-systemd-管理)
 - [在 Docker Compose 與 Synology 上](#在-docker-compose-與-synology-上)
 - [在 Kubernetes 上](#在-kubernetes-上)
+- [監控：先看這幾個指標](#監控先看這幾個指標)
+- [上線前的檢查清單](#上線前的檢查清單)
 - [哪些事情必須停機](#哪些事情必須停機)
 - [常見錯誤](#常見錯誤)
 - [相關章節](#相關章節)
@@ -208,7 +212,7 @@ WARN hiqlite::store::state_machine::sqlite::writer: SQL writer is shutting down
 4. 用 `cluster members` 確認三個節點都是 voter、有 leader。
 5. 再做下一個節點。
 
-一次只停一個，三個節點的叢集始終有過半數，寫入不中斷；停到 leader 時，會有一段寫入變慢的時間（約 7 到 8 秒：選舉 6 到 7 秒，加上約 1 秒的用戶端重連；2026-11-23 在一台主機的三節點 Docker 上量，核心版與企業版都是）。如果你知道哪個是 leader，把它留到最後，選舉只會發生一次。
+一次只停一個，三個節點的叢集始終有過半數，寫入不中斷；停到 leader 時，會有一段寫入變慢的時間（約 7 到 8 秒：選舉 6 到 7 秒，加上約 1 秒的用戶端重連；2026-11-23 在一台主機的三節點 Docker 上量，核心版與企業版都是）。如果你知道哪個是 leader，把它留到最後，選舉只會發生一次。跨機房、延遲較高時的滾動升級量測，見[第 16 章〈跨機房〉](16-cluster.md#跨機房)。
 
 > **注意：** 改 `[cluster]` 的 `secret_raft` 或 `secret_api` 時，新舊密碼的節點互相不認得。這種改動沒辦法一個一個來，要整個叢集一起停、一起改、一起啟動。這是依程式行為推論的，本書沒有實測。
 
@@ -289,6 +293,72 @@ $ echo $?
 - 在叢集裡，用哪個節點的設定都可以；寫入會交給 leader。
 
 各指令的用法：`user` 在[第 07 章](07-users-and-chains.md)，`session` 在[第 13 章](13-accounting.md)，`query` 在[第 09 章](09-external-databases.md)。
+
+## 更換密碼
+
+每一種密碼換的方式不同。重點是：哪些 reload 就生效，哪些要重新啟動，以及換的過程中誰的請求會失敗。
+
+| 密碼 | 怎麼換 | 換的時候 |
+| --- | --- | --- |
+| RADIUS 用戶端的共用密碼（`secret_file`） | 改檔案，送 SIGHUP。NAS 那邊也要換，兩邊越接近越好 | 兩邊不同步的那一段，這台 NAS 的請求會被丟棄（`Discarded: invalid`）。每台 NAS 用不同的密碼，一次只影響一台。步驟與實測見[第 05 章](05-radius-clients.md) |
+| TACACS+ 用戶端的共用密碼 | 同上 | 用戶端清單可以 reload；開著的連線也照新清單比對（[第 12 章](12-tacacs.md)） |
+| LDAP 服務帳號（`bind_password_file`） | 先在目錄改服務帳號的密碼，再改檔案並送 SIGHUP | 目錄改了、rradius 還沒 reload 的那一段，LDAP 驗證會失敗（[第 08 章](08-ldap-and-ad.md)） |
+| 外部資料庫（`[databases.<名稱>]` 的 `password_file`） | 先在資料庫改密碼，再改檔案，**重新啟動** | `[databases]` 不能 reload（見上面的表）。叢集用滾動重啟（[第 09 章](09-external-databases.md)） |
+| `secret_raft`、`secret_api`（或 `_file`） | 每個節點都要相同，整個叢集一起換 | `[cluster]` 要重新啟動。各節點密碼不同就連不起來，所以這是要排維護時間的事（依程式行為推論，未實機驗證） |
+| EAP 的憑證與私鑰 | 換檔案，送 SIGHUP | 新的對話用新的，進行中的不受影響；新檔案有錯時 reload 失敗，繼續用舊的（[第 11 章](11-eap.md)） |
+
+產生新的密碼：
+
+```console
+$ (umask 077; openssl rand -hex 32 > nas.secret)
+```
+
+- 祕密檔的權限只給執行 rradius 的帳號讀（0600 或 0640）。權限太寬時 `check`、啟動與 reload 都有警告，細節見[第 20 章](20-security.md)。
+- 共用密碼短於 16 個位元組，或含有 `change-me`（範例附的公開值）時也有警告，不會擋下啟動。有些舊設備限制密碼的長度或字元，換之前先確認設備接受。
+
+## 清除舊資料
+
+`accounting`、`tacacs_log` 這類表會一直變大，rradius 不會自動清除。可以在計費腳本裡定期刪除：每小時最多一次，整個叢集只有一個請求會真的去做。
+
+先用 migration 建一張記錄上次執行時間的表。下面接在 quick-start 的 `1_schema.sql`（[第 03 章](03-quick-start.md)）後面，作為下一個編號的 migration：
+
+```sql
+-- 3_housekeeping.sql
+CREATE TABLE housekeeping (name TEXT PRIMARY KEY, last_run INTEGER NOT NULL);
+INSERT INTO housekeeping VALUES ('purge-accounting', 0);
+```
+
+> **注意：** 檔名的編號要接在你現有的 migration 後面，不能跳號（見上面的〈新增 migration〉）。quick-start 有 `1_schema.sql`、`2_demo_users.sql`，所以這一個是 `3_`；已經刪掉示範檔的環境，編號依你的情況。
+
+然後在計費腳本 `return 'accept'` 之前加上：
+
+```lua
+-- 每小時最多一次：先讀本機副本，不必每個請求都寫入叢集。
+local now = math.floor(now_unix())
+local due = sql_query("SELECT 1 FROM housekeeping WHERE name = 'purge-accounting' AND last_run < ?", {now - 3600})
+-- 寫入經過叢集，只有一個請求能把 last_run 改成功，它負責刪除。
+if #due > 0 and sql_execute("UPDATE housekeeping SET last_run = ? WHERE name = 'purge-accounting' AND last_run < ?",
+    {now, now - 3600}) == 1 then
+  -- 一次最多刪 10000 列，太多就留到下一個小時，避免一次寫入太久。
+  -- ORDER BY 讓每個節點刪到同樣的列。
+  sql_execute([[DELETE FROM accounting WHERE rowid IN
+    (SELECT rowid FROM accounting WHERE stopped IS NOT NULL AND stopped < ? ORDER BY rowid LIMIT 10000)]], {now - 180 * 86400})
+end
+```
+
+怎麼運作：
+
+- `sql_query` 讀本機副本，大部分請求在這一步就結束，不會寫入叢集。
+- `sql_execute` 回傳受影響的列數。同一個小時裡許多請求同時看到「到期了」，但只有一個能把 `last_run` 更新成功（回傳 1），其他的回傳 0，不刪。
+- `stopped IS NOT NULL` 只刪已經結束的 session，還開著的不動；`stopped < ?` 保留最近 180 天。
+- `LIMIT 10000` 限制一次的量，`ORDER BY rowid` 讓叢集各節點刪到同樣的列。積壓很多時要好幾個小時才清完。
+- 同樣的寫法可以清 `tacacs_log`（[第 12 章](12-tacacs.md)）：條件改成 `logged < ?`，另加一列 `housekeeping` 記錄它的 `name`。
+
+注意事項：
+
+- 保存多久（範例 180 天）依法規和公司政策決定。業者可能有最短保存期限，**刪除前請先確認**。
+- 刪除在處理一個計費請求時執行，那個請求會晚一點回覆。刪除的量要能在 `[lua] query_timeout_ms` 內完成，否則 `sql_execute` 逾時。
+- 要保留歷史資料時，先由外部的匯出流程把資料搬走，再刪除；計費記錄檔見[第 13 章](13-accounting.md)。
 
 ## 資料目錄與資料保護
 
@@ -423,6 +493,18 @@ SIGHUP 之後的計費寫進新的 `acct.jsonl`，舊檔不再增加。
 
 Synology 上的專案目錄是 `/volume1/docker/rradius/`：`compose.yaml`、`config/`（從原始碼的 `docker/config/` 複製來，改 `rradius.toml`）、`secrets/`（三個密碼檔）。設定是唯讀掛載的，所以改設定要在 NAS 上改 `config/` 裡的檔案，再對容器送 SIGHUP 或重啟專案。資料放在 Docker 的具名 volume `data`，不是 `config/` 旁邊的資料夾；刪除專案時注意不要連 volume 一起刪。
 
+Synology 上的日常工作：
+
+| 工作 | 做法 |
+| --- | --- |
+| 看日誌 | Container Manager 專案頁的「記錄」，或 SSH 上去 `sudo docker compose -p rradius logs` |
+| 改設定 | 改 `config/` 的檔案後，重新啟動專案。設定錯誤時容器會馬上結束，日誌寫明原因；先在別的電腦上用 `rradius-server check` 檢查更保險 |
+| 更新版本 | 在別的電腦上建新 image、匯入 NAS、重新啟動專案（建置與匯入見[第 02 章](02-install.md#synology-nas)）。資料在 `data` volume，不會因為更新而不見 |
+| 停止 | 專案頁「停止」。`stop_grace_period` 是 30 秒，給資料庫完成關閉的時間；不要用強制停止，否則下次啟動要重建本機資料庫 |
+| 備份 | 備份 `config/` 與 `secrets/` 資料夾。資料在 Docker 管理的 volume，名稱是 `<專案名稱>_data`（專案叫 `rradius` 時是 `rradius_data`）：先停專案，再用 Hyper Backup 備份那個 volume 所在的資料夾，或用 `docker run --rm -v rradius_data:/d -v $PWD:/b alpine tar czf /b/data.tgz -C /d .` |
+
+備份的方式與限制見[資料目錄與資料保護](#資料目錄與資料保護)。DSM 上 volume 資料夾的位置、Hyper Backup 的操作，本書沒有驗證。
+
 > **未實機驗證：** 本書沒有建置 image，也沒有在 Docker 或 Synology 上實際執行。上表的指令是 Docker Compose 的一般用法，對應到本章在本機實測的訊號行為。
 
 ## 在 Kubernetes 上
@@ -435,8 +517,59 @@ Synology 上的專案目錄是 `/volume1/docker/rradius/`：`compose.yaml`、`co
 - **下指令：** `kubectl exec -i rradius-0 -- rradius-server user add --config /etc/rradius/rradius-0.toml alice`。
 - **看日誌：** `kubectl logs rradius-0`。
 - **資料：** 每個 pod 一個 PVC（`data-rradius-N`）。重建一個節點的做法（[第 16 章](16-cluster.md)）在這裡就是刪掉那個 pod 的 PVC 與 pod，讓 StatefulSet 用空的 volume 重建它。
+- **升級：** 換 image 版本後再 `kubectl apply -k deploy/kubernetes`，一樣一次換一個 pod。StatefulSet 從 `rradius-2` 換到 `rradius-0`，不會替你挑 leader 最後換；換到 leader 時有一段選舉的寫入空檔（秒數見[第 16 章](16-cluster.md#跨機房)），計費進 spool。
+- **節點維護：** PodDisruptionBudget 讓 `kubectl drain` 這類自願中斷一次只停一個 pod。**不要 `kubectl delete pod --all`：** 三個同時重啟，叢集會暫時失去過半數。
+- **不能自動擴充，`replicas` 也不能當成節點數的旋鈕。** 叢集成員寫在每個 pod 的設定檔裡，pod 數量要等於 `[[cluster.nodes]]` 的數量，也等於 `kustomization.yaml` 與 `items` 裡 `rradius-N.toml` 的份數（沒有那份檔案的 pod 讀不到設定）。所以不要設 HPA。
+  - `kubectl scale --replicas=1` 等於停掉兩個節點，剩下那台的行為就是[第 16 章](16-cluster.md)說的停兩台。再擴回 3 時，回來的 pod 可能各重啟一次才就緒：設了 `stop_without_leader_ms` 的節點，啟動時等不到 leader 會以結束碼 1 結束（訊息 `cluster was not ready to apply migrations`），由 Kubernetes 重啟，第二次就會歸隊。
+  - 要改節點數，每份設定、`kustomization.yaml` 與 `items` 都要跟著改；叢集本身增減節點的做法見[加入節點](16-cluster.md#加入節點)與[移除節點](16-cluster.md#移除節點)。這個組合本書沒有在 Kubernetes 上試過。
+- **限制誰能讀指標：** 指標埠沒有認證也沒有 TLS，綁 `0.0.0.0` 時叢集裡的人都讀得到。`networkpolicy.yaml` 只讓 RADIUS 埠對外、叢集埠只給其他 rradius pod、指標埠只給 `monitoring` namespace（改成 Prometheus 所在的 namespace）。要用時把它加進 `kustomization.yaml` 的 `resources`。kubelet 的探針從節點本身來，大部分網路外掛都會放行，**套用後確認 pod 還是就緒的。** 用 `hostNetwork` 的 pod 不受 NetworkPolicy 管（[第 16 章](16-cluster.md#沒有合適的負載平衡器時hostnetwork)）。
 
 > **未實機驗證：** 以上在 Kubernetes 上的操作都沒有實際跑過。本書只用 `kubectl kustomize` 確認範例能產生資源，並對三份設定跑過 `check`。
+
+## 監控：先看這幾個指標
+
+完整的指標清單與告警規則在[第 17 章](17-monitoring.md)。日常維運先把下面這幾個接上，它們各自對應到一個要動手的情況：
+
+| 指標 | 代表 | 增加或不正常時 |
+| --- | --- | --- |
+| `rradius_radius_responses_total{code="access_reject"}` 的增加速度 | 登入被拒絕 | 突然增加：有人在試密碼、目錄故障或設定錯誤。看認證紀錄的 `handler` |
+| `rradius_radius_discarded_total{reason="unknown_client"}` | 來源不在用戶端清單 | 新設備還沒加，或有人在掃描 |
+| `rradius_radius_discarded_total{reason="invalid"}` | 簽章或格式不對 | 通常是某台設備的共用密碼設錯 |
+| `rradius_radius_discarded_total{reason="overload"}` | 同時處理的請求到了上限 | 大於 0 就要查：資料庫、目錄或腳本變慢，見[第 21 章](21-troubleshooting.md) |
+| `rradius_radius_duplicates_total` 的增加速度 | NAS 在重送 | 處理比 NAS 的重送間隔慢 |
+| `rradius_cluster_leader` | 這個節點有沒有 leader 可以寫入 | 0 持續幾秒以上：節點被隔開，或叢集沒有過半數（[第 16 章](16-cluster.md)） |
+| `rradius_acct_spool_bytes` | spool 裡還沒寫進資料庫的計費 | 持續大於 0：資料庫或叢集有問題 |
+| `rradius_acct_spool_rejected_total` | 重放時被放棄的計費 | 大於 0 就去看 spool 目錄的 `rejected.log` |
+| `rradius_accounting_log_dropped_total`、`rradius_accounting_log_failures_total` | 計費記錄檔沒寫進去的 | 磁碟太慢、滿了或不能寫 |
+| `rradius_reload_total{result="error"}` | reload 失敗的次數 | 大於 0 就看日誌，修好再送一次 SIGHUP |
+| `rradius_log_dropped_lines_total` | 日誌來不及寫而丟掉的行 | 日誌的去處太慢（[第 17 章](17-monitoring.md)） |
+| `rradius_radius_response_seconds`、`rradius_tacacs_response_seconds` 的 p99 | 回應花多久 | 變大：資料庫、目錄或腳本變慢 |
+| `rradius_tacacs_connections_total{result="refused"}` | 因連線數上限被拒絕的 TACACS+ 連線 | 增加：到了 `max_connections` 或 `max_connections_per_source`（[第 12 章](12-tacacs.md)） |
+
+- 計數器從啟動開始累計，每個節點各算各的，reload 不歸零。告警看增加的速度，不看絕對值。
+- 設了外部資料庫、具名查詢或 EAP 的環境，再加上 `rradius_external_db_*`、`rradius_query_*`、`rradius_eap_sessions_total` 這幾組，說明在第 09、11、17 章。
+- 沒有 Prometheus 時，在節點上跑 `rradius-server status --config rradius.toml --watch`，每秒列一次同樣的資料（[第 17 章](17-monitoring.md)）。
+- 「活著與否」用 Status-Server 最準，它走和認證相同的路徑：`rradius-bench run --load status-auth` 或帶 Message-Authenticator 的 `radclient`（[第 05 章](05-radius-clients.md#status-server)）。
+- 指標埠沒有認證也沒有 TLS，只綁內部位址。
+
+## 上線前的檢查清單
+
+這是營運面的整合清單。安全相關的項目逐項寫在[第 20 章〈檢查清單〉](20-security.md#檢查清單)，這裡只指到它，不重複。
+
+- [ ] `rradius-server check --config …` 通過，而且沒有警告（祕密檔權限、共用密碼太短或含 `change-me`、`unencrypted` 等，見第 20 章）。
+- [ ] 所有 `*.secret` 是新產生的隨機值，不是範例附的（見上面的〈更換密碼〉）。
+- [ ] 憑證不是示範用的；伺服器憑證、NAS 與設備憑證的到期日有人盯。
+- [ ] `migrations/` 裡的示範資料檔（例如 `2_demo_users.sql`）已刪掉或換成正式資料，要在第一次啟動之前做，因為套用過的檔案不能改。
+- [ ] `[[radius.clients]]`、`[[tacacs.clients]]` 只列真的會來問的設備，不用 `0.0.0.0/0`。
+- [ ] `[metrics]` 只綁內部位址；多節點時 `[cluster] listen` 綁內部網路或 WireGuard 的位址。
+- [ ] 防火牆只開用到的埠，並限制來源：1812、1813（UDP）、49（TACACS+），叢集埠只在節點之間開。
+- [ ] 跑過 `rradius-server tuning --config …`，照建議調好接收緩衝與檔案描述元上限（[第 19 章](19-performance.md)）。
+- [ ] 用 systemd、Compose 或 Kubernetes 管理，停止時送 SIGTERM（不要 SIGKILL），等待時間給夠；`data_dir` 與計費 spool 放在持久的本機磁碟（見上面〈關機要多久〉與〈用 systemd 管理〉）。
+- [ ] 設好自動重新啟動（systemd `Restart=on-failure`、Compose `restart: unless-stopped`）：節點的資料庫壞掉時，伺服器以結束碼 1 結束，等重啟來恢復。
+- [ ] 啟動後看日誌，每個要開的埠都有一行 `listening`：`RADIUS Server listening on …`、`TACACS+ Server listening on …`、`Metrics listening on …`。RADIUS 或 TACACS+ 的埠綁不了時伺服器以結束碼 1 結束；只有指標埠綁不了時只記一行錯誤、程序照常跑，所以一定要看到 `Metrics listening on …`。
+- [ ] 用實際的設備（不只是測試工具）各試一次登入與計費。
+- [ ] 計費表有清除舊資料的做法（上面〈清除舊資料〉），並確認保存期限。
+- [ ] 監控至少接上「活著」（Status-Server 或 `/livez`）和上面〈先看這幾個指標〉；log 輪替已設（〈日誌與 logrotate〉）。
 
 ## 哪些事情必須停機
 

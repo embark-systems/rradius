@@ -1,11 +1,11 @@
-# One node on a Synology NAS (Container Manager project). Chapter 20 of the manual,
-# docs/manual/20-synology.md, says how to get the image and the two folders onto the NAS.
+# One node on a Synology NAS (Container Manager project). The manual,
+# docs/manual/02-install.md (the Synology NAS section), says how to get the image and the two folders onto the NAS.
 #
 #   /volume1/docker/rradius/compose.yaml   this file
 #   /volume1/docker/rradius/config/        a copy of docker/config (edit rradius.toml)
 #   /volume1/docker/rradius/secrets/       raft.secret, api.secret, radius.secret
 #
-# The image is not on a registry: it is built on another machine and imported (chapter 20).
+# The image is not on a registry: it is built on another machine and imported (see the manual).
 services:
   rradius:
     image: rradius-server:latest

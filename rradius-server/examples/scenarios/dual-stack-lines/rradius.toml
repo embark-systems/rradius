@@ -1,6 +1,6 @@
 # 雙堆疊線路（固網寬頻 IPoE）：用戶沒有密碼，BNG 轉送的 DHCP Option 82 說這是哪一條線。
 # 線路有固定位址就回固定的，沒有就從 IPv4 位址池與 IPv6 前綴池各拿一個，計費確認與釋放。
-# 說明：docs/manual/22-dual-stack-lines.md
+# 說明：docs/manual/14-isp-recipes.md〈雙堆疊線路：dual-stack-lines〉
 #
 #   cd rradius-server
 #   cargo run --release -- server --config examples/scenarios/dual-stack-lines/rradius.toml
@@ -43,7 +43,7 @@ secret_file = "bng.secret"
 bind = "127.0.0.1"
 port = 9812
 
-# 監控：每個池、每個狀態的數量（說明見手冊第 14、19 章「監控」）。
+# 監控：每個池、每個狀態的數量（說明見手冊第 14 章〈IPv4 位址池〉與〈IPv6 前綴池〉的「監控」）。
 [queries.pool_usage]
 sql = "SELECT pool, state, count(*) AS addresses FROM ip_pool GROUP BY pool, state"
 help = "Addresses of each IPv4 pool by state: free, reserved or active."

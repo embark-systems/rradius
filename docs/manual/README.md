@@ -1,101 +1,53 @@
 # rradius 使用手冊
 
-這份手冊依常見的部署情境，一步一步說明怎麼設定 rradius。每個情境都附一組可以直接啟動的設定檔、資料表和 Lua 腳本，放在 [`rradius-server/examples/scenarios/`](../../rradius-server/examples/scenarios/)。所有欄位的完整說明在[參考文件 `docs/usage.md`](../usage.md)，手冊只講情境需要的部分，並標出對應的章節。
+這份手冊依主題寫：先認識程式、安裝、第一次登入，再依功能一章一章往下，最後是設定、命令與指標的參考附錄。常見的部署情境（企業 Wi-Fi、有線 MAC 認證、遠端存取、寬頻與 ISP）寫成「情境實作」章，每個情境都有可以直接啟動的設定檔，放在 [`rradius-server/examples/scenarios/`](../../rradius-server/examples/scenarios/)，並有自動測試（`rradius-server/tests/scenarios_test.rs`）照手冊的方式啟動它們。
 
-範例都有自動測試（`rradius-server/tests/scenarios_test.rs`）：測試會照手冊的方式啟動每個情境，送出登入、計費和 TACACS+ 請求，確認結果和手冊寫的一樣。所以範例改壞了，測試會失敗。測試做不到的部分（實體設備、真的漫遊聯盟、外部的服務），各章的「上線前」會寫明沒有測過什麼。
+指令的用法也可以直接問程式：`rradius-server help`、`rradius-server schema` 與 `rradius-server config show`。
 
-## 先讀這兩章
+## 第一次使用
 
 | 章 | 內容 |
 | --- | --- |
-| [1. 基本概念](01-concepts.md) | rradius 怎麼處理一個請求、設定檔的結構、資料放在哪裡、怎麼測試 |
-| [2. 快速開始](02-quick-start.md) | 單機、帳號存在資料表，十分鐘內收到第一個 Access-Accept |
+| [01 認識 rradius](01-overview.md) | 它是什麼、一個請求怎麼走、設定檔的結構、資料放在哪裡、怎麼用外部工具測試 |
+| [02 安裝](02-install.md) | 套件、容器、Kubernetes、Synology NAS，以及從原始碼建置 |
+| [03 第一次啟動與登入](03-quick-start.md) | 單機、帳號存在資料表，十分鐘內收到第一個 Access-Accept |
 
 ## 我要做什麼，看哪一章
 
 | 我要… | 章 |
 | --- | --- |
-| 讓員工用帳號密碼或憑證連公司 Wi-Fi | [3](03-enterprise-wifi.md)，撤銷憑證在 [8](08-wifi-certs.md) |
-| 讓印表機、IP 電話這類設備上有線網路 | [4](04-wired-mab.md) |
-| 讓 VPN 用公司的目錄登入，或加上驗證碼 | [5](05-remote-access.md) |
-| 管理誰能登入路由器、能下哪些指令 | [6](06-device-admin.md) |
-| 任何一台停機都不中斷服務 | [7](07-ha-cluster.md) |
-| 把叢集放在 Kubernetes 上 | [13](13-kubernetes.md) |
-| 由認證伺服器從池裡分配 IP 位址給用戶 | [14](14-ip-pool.md) |
-| 限制每個用戶同時幾個連線、一段時間的流量（降速或拒絕） | [15](15-usage-control.md) |
-| 光纖、DSL 用戶不輸入密碼，依 BNG 轉送的 Option 82（哪個設備的哪個埠）認證 | [16](16-line-identity.md) |
-| 商業用戶固定的 IPv4 位址、路由網段、IPv6 前綴 | [17](17-static-ip.md) |
-| 同一個速率方案，依 BNG 的廠商送不同的速率屬性 | [18](18-rate-limit.md) |
-| IPv6 用戶（DHCPv6-PD）的委派前綴，從池動態分配、計費確認與釋放 | [19](19-prefix-pool.md) |
-| 只有一台 Synology NAS，用 Docker 當 RADIUS 伺服器 | [20](20-synology.md) |
-| 節點掛了、沒有 leader、計費沒寫進去時要被通知；NOC 只收 SNMP trap | [21](21-monitoring.md) |
-| 線路身分的 IPoE 用戶要完整的雙堆疊：固定的 IPv4 與前綴，或從 IPv4 池與前綴池各拿一個 | [22](22-dual-stack-lines.md) |
-| 帳號已經在別的系統裡，不想複製 | 目錄（LDAP／AD）看 [5](05-remote-access.md)，HTTP API 看 [10](10-external-api.md)，MySQL／PostgreSQL 看 [9](09-migrate-users.md#帳號留在原本的資料庫) |
-| 從舊的認證系統搬過來，不想讓大家重設密碼 | [9](09-migrate-users.md) |
-| 上線之後的日常工作 | [11](11-operations.md) |
-| 出了問題，從現象找原因 | [12](12-troubleshooting.md) |
+| 設定檔怎麼寫、哪些改動要重啟 | [04](04-configuration.md)，每個鍵的說明在[附錄 A](90-config-reference.md) |
+| 登記 NAS（RADIUS 用戶端），或換掉共用密碼 | [05](05-radius-clients.md)、[18](18-operations.md#更換密碼) |
+| 加屬性、改字典 | [06](06-dictionary.md)，Lua 用到的函式在[附錄 D](93-lua-reference.md) |
+| 帳號放在資料表、密碼雜湊、驗證鏈；從舊系統搬帳號 | [07](07-users-and-chains.md) |
+| 帳號在公司目錄（LDAP、Active Directory） | [08](08-ldap-and-ad.md) |
+| 帳號在別的資料庫或 HTTP API，用具名查詢看指標 | [09](09-external-databases.md) |
+| 用 Lua 寫政策 | [10](10-lua-policies.md) |
+| 企業 Wi-Fi：802.1X、憑證、撤銷 | [11](11-eap.md)、[15](15-access-recipes.md) |
+| 讓印表機、IP 電話這類設備上有線網路（MAB） | [15](15-access-recipes.md) |
+| VPN 用公司目錄登入，或加驗證碼 | [15](15-access-recipes.md) |
+| 管理誰能登入路由器、能下哪些指令（TACACS+） | [12](12-tacacs.md) |
+| 計費與 session | [13](13-accounting.md) |
+| 寬頻與 ISP：位址池、前綴池、用量控制、線路身分、固定位址、速率屬性、雙堆疊 | [14](14-isp-recipes.md) |
+| 任何一台停機都不中斷服務；跨機房；Kubernetes | [16](16-cluster.md) |
+| 看狀態、指標、日誌，被告警通知（含 SNMP trap） | [17](17-monitoring.md)，指標清單在[附錄 C](92-metrics-reference.md) |
+| 上線之後的日常工作：變更、備份、升級、清除舊資料 | [18](18-operations.md) |
+| 效能調校與壓測 | [19](19-performance.md) |
+| 安全強化與上線前檢查 | [20](20-security.md) |
+| 出了問題，從現象找原因 | [21](21-troubleshooting.md) |
 
-寬頻業者的方案和踢人、依 realm 轉送和漫遊聯盟、RadSec、每人一把 Wi-Fi 密碼、用 SIM 卡登入、從資料表管理幾百台 NAS、OCSP 和快速重新連線、TACACS+ over TLS 需要 rradius-enterprise，見企業版手冊。
+## 參考附錄
 
-## 依情境
-
-| 章 | 情境 | 用到的功能 | 範例目錄 |
-| --- | --- | --- | --- |
-| [3. 企業 Wi-Fi](03-enterprise-wifi.md) | 802.1X：公司電腦用憑證，員工手機用帳號密碼，依群組分 VLAN | EAP-TLS、PEAP、`certificate_query`、動態 VLAN | `enterprise-wifi/` |
-| [4. 有線網路 MAC 認證](04-wired-mab.md) | 印表機、IP 電話這類不會 802.1X 的設備 | Lua 腳本、網段 client | `wired-mab/` |
-| [5. 遠端存取](05-remote-access.md) | VPN 用公司目錄（LDAP／AD）登入，跳板機加 TOTP 驗證碼 | LDAP、群組、具名串接、Access-Challenge | `remote-access/` |
-| [6. 網路設備管理](06-device-admin.md) | 管理員登入路由器，依角色限制指令並記錄 | TACACS+ 認證、授權、計費、授權群組 | `device-admin/` |
-| [7. 高可用叢集](07-ha-cluster.md) | 三個節點，任一台停掉都能繼續服務 | hiqlite 叢集、WireGuard、migration | `ha-cluster/` |
-| [8. 憑證的撤銷](08-wifi-certs.md) | 遺失的筆電要撤銷 | CRL | `wifi-certs/` |
-| [9. 從舊系統搬帳號](09-migrate-users.md) | 舊的密碼雜湊原樣搬過來，之後逐步換成新格式 | 各種密碼格式、名稱正規化、`[accounts]` | `migrate-users/` |
-| [10. 帳號在別的系統](10-external-api.md) | 每次登入用 HTTPS 問會員系統的 API | `[lua.http]`、`http_request`、`verifies_password` | `external-api/` |
-| [13. Kubernetes](13-kubernetes.md) | 三個節點跑成 StatefulSet，NAS 經負載平衡器連入 | StatefulSet、headless Service、`/livez`、`/readyz` | `deploy/kubernetes/`（不在 scenarios 裡） |
-| [14. 位址池](14-ip-pool.md) | 登入時從資料表的池分配 IP，計費確認與釋放，黏著，過期回收，使用率指標 | `all_accept` 串接、`lua` 處理器、`sql_execute` 比較後更新、請求觸發的回收 | `ip-pool/` |
-| [15. 用戶資源控制](15-usage-control.md) | 方案：同時連線數與一段時間的流量上限，超過降速或拒絕，連線位使用率指標 | `all_accept` 串接、連線位的比較後更新、`Acct-*-Gigawords` 流量加總、請求觸發的回收 | `usage-control/` |
-| [16. 線路身分認證](16-line-identity.md) | 依 BNG 轉送的 Option 82（circuit-id、remote-id）認證，回方案；可選的 MAC 鎖 | 沒有 `[auth]` 的最上層腳本、RFC 4679 屬性、正規化、比較後更新綁定 | `line-identity/` |
-| [17. 固定位址與前綴](17-static-ip.md) | 依用戶回固定的 IPv4、路由網段（`Framed-Route`）、IPv6 的 /64 與委派前綴，沒有的回池名稱；唯一索引防重複 | `all_accept` 串接、`set_attr` 的字典檢查、唯一索引 | `static-ip/` |
-| [18. 速率屬性](18-rate-limit.md) | 同一個方案，依 BNG 的廠商送設定檔名稱或速率數值（五種風格） | `all_accept` 串接、`lua` 處理器的風格表、依 client 名稱選風格 | `rate-limit/` |
-| [19. IPv6 前綴池](19-prefix-pool.md) | 委派前綴（/56、/60、/64）從池分配，表只放在線與剛離線的前綴，雜湊起點，離線後暫時保留（released），計費確認與釋放，池很滿時的行為 | `all_accept` 串接、SQL 算 64 位元前綴與文字、`INSERT OR IGNORE` 搶佔、請求觸發的回收、命名查詢監控 | `prefix-pool/` |
-| [20. Synology NAS](20-synology.md) | 一台 NAS 用 Container Manager 跑單一節點：自己建映像再匯入、設定與密鑰的資料夾、防火牆、更新與備份 | Docker、`compose.yaml`、`/run/secrets` | `deploy/synology/`（不在 scenarios 裡） |
-| [21. 監控與告警](21-monitoring.md) | 19 條 Prometheus 告警規則（附 promtool 測試）、用 Alertmanager 加 `snmp_notifier` 發 SNMP trap；沒有 SNMP 輪詢 | Prometheus、Alertmanager、`snmp_notifier` | `deploy/monitoring/`（不在 scenarios 裡） |
-| [22. 雙堆疊線路](22-dual-stack-lines.md) | 線路身分（Option 82）加固定 IPv4、路由網段、WAN 與委派前綴，沒有固定資料的線路從 IPv4 位址池與前綴池各拿一個，計費同時確認與釋放，前綴用盡時放回剛預留的 IPv4 | 單一 `lua` 處理器（處理器之間不傳值）、`Class` 帶回計費、條件 `UPDATE` 搶位址、`INSERT OR IGNORE` 搶前綴 | `dual-stack-lines/` |
-
-## 上線之後
-
-| 章 | 內容 |
+| 附錄 | 內容 |
 | --- | --- |
-| [11. 日常維運](11-operations.md) | 帳號和設定的變更、重新載入、更換密碼和金鑰、監控指標、過載、計費暫存、升級、備份 |
-| [12. 依症狀排查](12-troubleshooting.md) | 沒有回應、被拒絕、很慢、計費不見、啟動失敗，各從哪裡看起 |
+| [A 設定參考](90-config-reference.md) | 每個設定鍵的預設值、能不能 reload |
+| [B 命令參考](91-command-reference.md) | 每個命令與旗標、結束碼 |
+| [C 指標參考](92-metrics-reference.md) | 每個 Prometheus 指標與標籤 |
+| [D Lua API 參考](93-lua-reference.md) | 腳本裡能呼叫的函式 |
+| [E 術語與 RFC 對照](94-glossary.md) | 名詞與對應的 RFC |
 
 ## 範例的共同約定
 
-- **設定檔裡的相對路徑以設定檔所在目錄為準，** 所以每個情境都能直接在 repo 裡啟動：
+範例的做法（相對路徑、一次只跑一個情境、用發行檔時的執行檔路徑、示範密碼）寫在[第 14 章的開頭](14-isp-recipes.md#這些情境共同的做法)和[第 03 章](03-quick-start.md#準備工作目錄)。
 
-  ```bash
-  cd rradius-server
-  cargo build --release
-  ./target/release/rradius-server server --config examples/scenarios/quick-start/rradius.toml
-  ```
-
-- **用發行檔時，** 解開 `rradius-<版本>-<平台>.tar.gz`，裡面的目錄結構和 repo 相同。進到其中的 `rradius-server/` 目錄，把各章的 `./target/release/rradius-server` 換成 `../bin/rradius-server`，其他指令和路徑都一樣，也不用 `cargo build`：
-
-  ```bash
-  cd rradius-0.1.0-linux-x86_64/rradius-server
-  ../bin/rradius-server server --config examples/scenarios/quick-start/rradius.toml
-  ```
-
-- **有些情境要先執行一個腳本才能啟動，** 因為憑證和金鑰不該放在 repo 裡：
-
-  | 腳本 | 情境 | 產生什麼 |
-  | --- | --- | --- |
-  | `make-certs.sh` | `enterprise-wifi/` | `certs/` 裡示範用的 CA 和憑證 |
-  | `setup.sh` | `wifi-certs/` | 示範用的 CA、憑證和撤銷清單 |
-
-  這些都只供測試。`setup.sh` 不會覆蓋已經有的檔案；要從頭再來，停止伺服器後刪掉它產生的檔案和 `data/`。
-
-- **密碼檔（`*.secret`）都是示範值，** 內容寫明 `change-me`。正式環境一定要換掉，見[第 11 章](11-operations.md#更換密碼)。
-- **示範資料放在 `migrations/2_demo_*.sql`**（搬帳號的情境是 `2_imported_users.sql`），結構放在 `1_schema.sql`。正式環境請刪掉示範資料的檔案，或在第一次啟動前換成自己的資料。檔案一旦套用就不能再改，見[第 1 章](01-concepts.md#資料表和-migration)。
-- **埠號用標準值**（1812、1813、49）。在同一台機器上同時啟動兩個情境會衝突，一次啟動一個，或改埠。
-- **啟動後產生的 `data/`、`spool/`、`certs/` 和金鑰檔不進 git。** 要從頭再來一次，停止伺服器後刪掉 `data/`。
-- **NAS 的位址都是示範用的私有網段。** 本機測試時要把 client 的 `address` 改成 `127.0.0.1`（快速開始已經是），否則請求會被當成不認得的來源而沒有回應。
-- **每個情境自成一套：** 設定、腳本和資料表都在情境自己的目錄裡（幾個情境的 `accounting.lua` 內容相同，各放一份），整個目錄複製到別處就能用。唯一指到目錄外的是字典（`dictionary = "../../../../share/dictionary"`），複製到別處時改成字典實際的位置。
+企業版的功能（RadSec、代理轉送、CoA 轉送、DPSK、動態用戶端等）不在這本手冊裡，見企業版手冊。

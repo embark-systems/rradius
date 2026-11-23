@@ -1,6 +1,6 @@
 # 從舊系統搬帳號：把舊目錄、舊 RADIUS 伺服器或 /etc/shadow 匯出的密碼雜湊原樣放進資料表，
 # 使用者不必重設密碼。之後改密碼時改存新的格式。
-# 說明：docs/manual/09-migrate-users.md
+# 說明：docs/manual/07-users-and-chains.md〈搬入舊系統的密碼雜湊〉
 
 dictionary = "../../../../share/dictionary"
 

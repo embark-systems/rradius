@@ -1,6 +1,6 @@
 # 企業 Wi-Fi（WPA2／WPA3-Enterprise，802.1X）：公司配發的電腦用憑證（EAP-TLS），
 # 員工自己的手機用帳號密碼（PEAP-MSCHAPv2），依群組放進不同 VLAN。
-# 說明：docs/manual/03-enterprise-wifi.md
+# 說明：docs/manual/11-eap.md
 #
 # 憑證不在 repo 裡，先執行 ./make-certs.sh 產生示範用的 CA 和伺服器憑證。
 

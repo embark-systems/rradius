@@ -24,7 +24,7 @@ cd rradius-server
 
 ## 文件
 
-- [使用手冊](docs/manual/README.md)：依部署情境一步一步說明，每個情境都有可以直接啟動的設定檔，放在 [`rradius-server/examples/scenarios/`](rradius-server/examples/scenarios/)，並有自動測試。
+- [使用手冊](docs/manual/README.md)：依主題說明，包含部署情境，並附設定、命令與指標的參考附錄，每個情境都有可以直接啟動的設定檔，放在 [`rradius-server/examples/scenarios/`](rradius-server/examples/scenarios/)，並有自動測試。
 - [使用文件](docs/usage.md)：所有設定與功能的參考。
 
 ## 專案結構

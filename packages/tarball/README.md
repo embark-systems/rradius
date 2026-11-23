@@ -26,7 +26,7 @@ cd rradius-server
 ../bin/rradius-server server --config examples/scenarios/quick-start/rradius.toml
 ```
 
-使用手冊的指令以原始碼 repo 的 `rradius-server/` 目錄為準，寫成 `./target/release/rradius-server`；用這個壓縮檔時，在 `rradius-server/` 目錄下改成 `../bin/rradius-server`，其他部分都一樣。見 `docs/manual/02-quick-start.md`。
+使用手冊假設執行檔在 `PATH` 上，第一步寫成 `export PATH="$PWD/target/release:$PATH"`（在原始碼 repo 的根目錄）；用這個壓縮檔時，在解開後的根目錄改成 `export PATH="$PWD/bin:$PATH"`，其他部分都一樣。見 `docs/manual/03-quick-start.md`。
 
 - 範例的密碼檔（`*.secret`）都是示範值，正式環境一定要換掉。
 - 範例啟動後會在範例目錄產生 `data/` 等目錄，要從頭再來就停止伺服器後刪掉。

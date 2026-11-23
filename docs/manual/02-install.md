@@ -386,6 +386,76 @@ NAS 上的目錄這樣放：
 
 資料用的是 named volume `data`，Docker 會讓容器的用戶（uid 10001）能寫入。如果改用在 File Station 建立的資料夾，容器的用戶通常沒有寫入權限。
 
+### 事前檢查
+
+| 項目 | 說明 |
+| --- | --- |
+| 機型 | 要能裝 Container Manager（DSM 6 到 7.1 叫 Docker）。Synology 的「套件中心」搜尋得到才行；有些入門的機型沒有。到 Synology 的網站查你的型號 |
+| CPU 架構 | x86_64 機型建 `linux/amd64` 的 image，ARM 機型建 `linux/arm64`；image 要和 NAS 的架構相同 |
+| 記憶體 | 單節點的記憶體用量沒有在 DSM 上量過。同一台 NAS 上其他服務多時，先看可用記憶體 |
+| 網路 | NAS 要有固定位址（DHCP 保留或手動設定），設備的 RADIUS 伺服器位址指向它 |
+| 單點故障 | RADIUS 是網路的入口：NAS 重開機或更新 DSM 時，所有人都連不上。有條件就用[第 16 章](16-cluster.md)分在不同機器上的三個節點，不要只靠一台。同一台 NAS 上跑三個容器不會比一個更可靠 |
+
+### 在別的電腦上建置 image
+
+NAS 的 CPU 慢，Rust 編譯很久，所以在另一台有 Docker 的電腦上建好再搬過去。`--platform` 要和 NAS 的架構一致：
+
+```console
+$ docker buildx build --platform linux/amd64 -t rradius-server:latest --load .
+$ docker save rradius-server:latest | gzip > rradius-server.tar.gz
+```
+
+ARM 的 NAS 把 `linux/amd64` 換成 `linux/arm64`。`Dockerfile` 在 arm64 上建置時，把 jemalloc 的頁大小固定成 64 KiB，所以同一個 arm64 image 也能在 4 KiB、16 KiB 頁的核心上跑。在 Apple Silicon 的電腦上建 `linux/amd64` 會用模擬，很慢。
+
+### 在 DSM 上操作
+
+1. **放資料夾：** 用 File Station 或 SSH 建 `/volume1/docker/rradius/`（`docker` 共用資料夾的位置依你的設定），放進 `compose.yaml`、`config/`、`secrets/`。
+2. **匯入 image：** Container Manager →「映像」→「新增」→「從檔案新增」，選 `rradius-server.tar.gz`（上一節用 `docker save` 不加 gzip 的 `.tar` 也可以）。匯入後名稱是 `rradius-server:latest`，和 `compose.yaml` 的 `image` 相同。
+3. **改設定：** 編輯 `config/rradius.toml`。
+   - `[[radius.clients]]` 預設接受 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` 三個私有網段（見[Docker Compose](#docker-compose)的警告），把它縮成你的設備位址或網段；每個用戶端給一個 `name`，日誌與指標才分得出是哪一台。
+   - 要有帳號的話，**第一次啟動前**在 `config/migrations/` 加 `2_users.sql`（見[加入帳號](#加入帳號)）；套用過的 migration 檔不能再改。
+   - `[metrics]` 保持只綁 `127.0.0.1`，不要改成對外位址（它沒有認證）。
+4. **建立專案並啟動：** Container Manager →「專案」→「建立」，專案名稱 `rradius`，路徑選 `/volume1/docker/rradius`，來源選「使用現有的 docker-compose.yml」，完成後啟動。第一次啟動時，伺服器在資料 volume 建資料庫並套用 migration；專案的「記錄」頁看到 `RADIUS Server listening on` 就可以接受請求。
+5. **開放防火牆：** DSM 的「控制台」→「安全性」→「防火牆」若有啟用，允許設備的位址連到 UDP 1812 與 1813。
+6. **在設備上設定：** RADIUS 伺服器填 NAS 的位址，認證埠 1812、計費埠 1813，共用密碼是 `secrets/radius.secret` 的內容。
+7. **試一次：** 從區網內另一台裝了 `rradius-bench` 的電腦（[從原始碼建置](#從原始碼建置)）：
+
+   ```console
+   $ rradius-bench run --server <NAS 的位址> --auth-port 1812 --secret "$(cat radius.secret)" \
+       --user <帳號> --password <密碼> --load pap,concurrency=1 --requests 1 | grep 'pap:'
+   ```
+
+   `accept 1` 表示通了；`reject 1` 表示伺服器有回應、只是帳號或密碼不對。沒有回應時看下面的疑難排解。
+
+> **未實機驗證：** 上面 DSM 的畫面名稱與操作順序依 Synology 文件與 Docker 的一般行為寫成，沒有在實機上跑過。
+
+### Synology 上的疑難排解
+
+| 現象 | 原因與做法 |
+| --- | --- |
+| 設備沒有收到回應，日誌也沒有請求 | 防火牆擋住，或設備填錯 NAS 位址。在 NAS 上用 `sudo tcpdump -ni any udp port 1812`（若有這個工具）看封包有沒有到 |
+| 日誌有 `RADIUS packet from unknown client <位址> discarded` | 來源位址不在 `[[radius.clients]]`。看日誌裡的位址：橋接網路下 Docker 對外部來的封包做位址轉換，是否保留原來的來源位址，在 DSM 上沒有驗證；若顯示的都是 Docker 的內部位址（例如 `172.17.0.1`），見下一列 |
+| 所有設備的來源位址都一樣 | 把 `compose.yaml` 的 `ports:` 拿掉，改成 `network_mode: host`，容器直接用 NAS 的網路。這時 NAS 自己的服務不能佔用 1812、1813 |
+| 啟動就結束，權限錯誤 | 資料目錄換成了 File Station 建立的資料夾，uid 10001 寫不進去；用範例的具名 volume，或把那個資料夾的擁有者改成 uid 10001 |
+| 日誌寫 `Read-only file system` | 範例 `compose.yaml` 把根檔案系統設成唯讀（`read_only: true`），只有資料 volume 與 `/tmp` 可寫；設定裡有路徑指到別處（例如計費 spool、計費記錄檔）時，掛一個 volume 給它，或改成指向 `/var/lib/rradius` 底下 |
+| NAS 重開機後專案沒有起來 | `restart: unless-stopped` 在 Docker 啟動後會帶起容器；若 NAS 重開機後套件還沒啟動完成，等一下再看，仍然沒起來就手動啟動專案 |
+
+設定錯誤（例如 `migration file … changed after it was applied`）時容器會馬上結束，原因寫在專案的記錄裡，見[第 18 章](18-operations.md)。
+
+### 為什麼不做成 Synology 套件
+
+repo 裡只有 `deploy/synology/compose.yaml`，沒有 Synology 套件（SPK）的定義，也沒有發行 image 的 registry。理由：
+
+- 套件格式要為每個架構與 DSM 版本各做一份，也沒有簽章與發行管道。
+- 套件用的使用者權限能不能綁 TACACS+ 的 49 埠這種低埠，還沒驗證。
+- Docker 的 image 是單一個，行為和其他平台相同。原生套件還要先驗證 DSM 的 glibc 版本、非 root 綁埠與 ARM 的頁大小。
+- 沒有公開的 registry，所以用 `docker save` 搬過去。以後有 registry 時，把 `compose.yaml` 的 `image` 改成它的位址，NAS 就會自己拉。
+- 祕密檔用 bind mount 而不是 Compose 的 `secrets`，因為 NAS 上的 Docker Compose 版本不一定支援。
+
+### 驗證了什麼、沒驗證什麼
+
+`deploy/synology/compose.yaml` 帶 `read_only`、`tmpfs`、`cap_drop`、`no-new-privileges`，同樣的設定在根目錄的 `compose.yaml` 也有；本書沒有用 `deploy/synology/compose.yaml` 實際啟動過。DSM 的 Container Manager 與舊版 Docker 套件的畫面與行為、各型號的支援、DSM 防火牆、位址轉換是否保留來源位址、Hyper Backup、NAS 重開機後的自動啟動，全都沒有驗證。
+
 ## 套件安裝後的第一次啟動
 
 deb、rpm 與 FreeBSD port 裝好之後，都要自己建立設定檔。以下是 Linux 的步驟。FreeBSD 把 `/etc/rradius` 換成 `/usr/local/etc/rradius`，字典換成 `/usr/local/share/rradius/dictionary`，資料目錄換成 `/var/db/rradius`，啟動改用上面 rc.d 那一節的指令。

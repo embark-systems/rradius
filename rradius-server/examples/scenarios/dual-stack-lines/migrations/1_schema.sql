@@ -1,5 +1,5 @@
 -- 線路、方案、IPv4 位址池、IPv6 前綴池。套用過的檔案不能再改，要改結構就新增下一個編號的檔案。
--- 池的表取自手冊第 14 章（ip_pool）與第 19 章（prefix_pools、prefix_leases），用 subscriber 當用戶名稱。
+-- 池的表取自手冊第 14 章〈IPv4 位址池〉（ip_pool）與〈IPv6 前綴池〉（prefix_pools、prefix_leases），用 subscriber 當用戶名稱。
 
 -- 每個方案：回給 BNG 的設定檔名稱（速率等由 BNG 上同名的設定檔決定）、Interim 間隔，以及動態線路
 -- 從哪個 IPv4 池（pool，ip_pool 的池名稱）與哪個前綴池（pool6，prefix_pools 的池名稱）拿位址。
@@ -68,7 +68,7 @@ CREATE INDEX ip_pool_state ON ip_pool (pool, state, n);
 CREATE INDEX ip_pool_last_user ON ip_pool (last_user, pool, state, released);
 CREATE INDEX ip_pool_expiry ON ip_pool (state, expires);
 
--- IPv6 前綴池：每個池只由三個常數決定，不存每個前綴（說明見手冊第 19 章）。
+-- IPv6 前綴池：每個池只由三個常數決定，不存每個前綴（說明見手冊第 14 章〈IPv6 前綴池〉）。
 --   base  前綴的高 64 位元，整數；plen 池的長度；dlen 委派給每個用戶的長度，不超過 64。
 CREATE TABLE prefix_pools (
   pool TEXT PRIMARY KEY,
@@ -103,6 +103,6 @@ CREATE INDEX prefix_leases_nas ON prefix_leases (nas, state);
 CREATE INDEX prefix_leases_released ON prefix_leases (pool, updated) WHERE state = 'released';
 CREATE INDEX prefix_leases_pool_state ON prefix_leases (pool, state);
 
--- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual/11-operations.md）。
+-- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual/18-operations.md〈清除舊資料〉）。
 CREATE TABLE housekeeping (name TEXT PRIMARY KEY, last_run INTEGER NOT NULL);
 INSERT INTO housekeeping VALUES ('reap-ip-pool', 0), ('reap-prefix-pool', 0);

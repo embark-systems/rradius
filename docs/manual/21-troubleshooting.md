@@ -136,6 +136,36 @@ RADIUS
 | `timeouts 1`（伺服器沒回應，或回應的簽章對不上） | 2 |
 | `timeouts 1, … socket errors 1`（伺服器根本沒在跑） | 2 |
 
+### 分開「網路與共用密碼」和「帳號」
+
+NAS 逾時，但不知道是封包沒到、共用密碼不對，還是帳號的問題時，先送一個 Status-Server。它不查帳號、不跑腳本，所以回不回應只取決於前面幾關：
+
+```console
+$ rradius-bench run --server <位址> --secret "$(cat <共用密碼檔>)" \
+    --load status-auth,concurrency=1 --requests 1
+```
+
+有 FreeRADIUS 的 `radclient` 時，也可以用它（Status-Server 一定要有正確的 Message-Authenticator，所以輸入要加上 `Message-Authenticator=0x00`，讓 `radclient` 算出值）：
+
+```console
+$ echo 'Message-Authenticator=0x00' | radclient -t 2 -r 1 <位址>:1812 status "$(cat <共用密碼檔>)"
+```
+
+| 結果 | 代表 | 下一步 |
+| --- | --- | --- |
+| 有回應 | 封包到得了、來源位址在用戶端清單、共用密碼正確、`radius.status_server` 開著 | 問題在請求本身：看認證紀錄的 `handler`（[一直被拒絕](#一直被拒絕)） |
+| 逾時 | 前面其中一關擋掉了：封包沒到、來源不認得、共用密碼不對、`radius.status_server = false`，或節點設了 `stop_without_leader_ms` 而沒有 leader（認證埠的 Status-Server 不回答） | 看 `status` 的 `Discarded` 幾行，往下一步抓封包 |
+
+這個測試要從用戶端清單內的主機送：從別的主機送，結果只是「來源不認得」。不認得的來源丟棄時，`Discarded: unknown client` 增加；簽章對不上時 `Discarded: invalid` 增加。
+
+確認封包有沒有到伺服器，在伺服器上抓：
+
+```console
+$ tcpdump -ni any udp port 1812
+```
+
+看得到 NAS 的請求，就代表網路通，問題在伺服器這一側（來源位址、共用密碼）。完全看不到，查防火牆、路由、NAS 的伺服器位址與埠，以及 `radius.bind` 是不是只聽了 `127.0.0.1`。計費埠是 1813。
+
 ## 設定讀不進來
 
 `check` 失敗時印一行原因，結束碼 2。訊息開頭是出錯的檔案，有行號時會寫出來。實測的訊息：
@@ -312,7 +342,7 @@ cluster was not ready: no usable leader within 53.980820917s, and stop_without_l
 - 一個網段的 NAS 可以用 CIDR 寫成一個用戶端，例如 `address = "10.0.0.0/24"`。
 - 確認改了之後 reload 成功（看日誌的 `configuration reloaded`）。
 
-這行警告同一段時間內只記一次，避免被大量的陌生封包灌爆日誌。用戶端的設定見[第 05 章](05-radius-clients.md)。
+這行警告每秒最多記一行，避免被大量的陌生封包灌爆日誌；期間內不只一個時，行尾加上 `(N since the last line)`，N 是這段時間的總數。用戶端的設定見[第 05 章](05-radius-clients.md)。
 
 ## 共用密碼不一致
 
@@ -610,6 +640,18 @@ EAP 的設定與憑證見[第 11 章](11-eap.md)。
 
 > **未實機驗證：** 沒有用真的網路設備連過 TACACS+，只用 `rradius-bench` 的 `tacacs-pap`、`tacacs-chap` 負載。
 
+### 連線被關掉：上限
+
+TACACS+ 用連線數當上限，到了上限，新連線立刻關閉（不是不回應）：
+
+| 日誌 | 原因 | 處置 |
+| --- | --- | --- |
+| `TACACS+ overloaded: closed N connections` | 同時開著的連線到了 `tacacs.max_connections`（預設 1024），N 是上一行之後被關掉的新連線數 | 設備開了連線不關，就調低 `idle_timeout_ms`；連線數本來就多，才調高 `max_connections`。兩者都要重啟才生效 |
+| `TACACS+ connection from <位址> closed: it already holds max_connections_per_source = N connections` | 這個來源位址開著的連線到了 `tacacs.max_connections_per_source`（預設 64） | 位址後面是 NAT 或跳板、連線數本來就多時，調高 `max_connections_per_source`，要重啟 |
+| `TACACS+ connection from unknown client <位址> closed` | 來源不在 `[[tacacs.clients]]` | 把位址加進去，reload |
+
+這幾行同樣每秒最多一行，行尾可能有 `(N since the last line)`。`rradius_tacacs_connections_total{result="refused"}` 在每一次被拒絕的連線都加 1。上限的說明見[第 12 章](12-tacacs.md)。
+
 ## 腳本錯誤
 
 腳本執行失敗時，請求當作拒絕（計費則是不回應），日誌是 `Lua script error (<協定>/<階段>)` 加上原因與行號：
@@ -739,6 +781,7 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `metrics: cannot listen on …: Address already in use`（伺服器繼續跑） | 指標埠被佔用 | 停掉佔用的程式後重啟 rradius |
 | `LockFile data/logs is locked and in use by another process` | 舊的行程還沒停完 | 等它結束再啟動 |
 | `cluster was not ready: no usable leader within …, and stop_without_leader_ms is set`（結束碼 1） | 啟動時叢集沒有過半數 | 先讓其他節點起來 |
+| `cluster was not ready to apply migrations: …`（結束碼 1） | 啟動時在 `migrations_wait_ms` 內等不到 leader、套用不完 migration，或本機副本追不上；訊息後半有時寫「the cluster node gives one migration file 30 s」：單一個檔案跑超過 30 秒 | 先讓過半數的節點起來；檔案本身很慢時加長 `migrations_wait_ms`，再啟動一次（[第 18 章](18-operations.md#常見錯誤)） |
 
 ### 執行中
 
@@ -762,9 +805,12 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `EAP conversation with client X failed: the chain did not accept the inner name` | EAP 內層的密碼錯或帳號不存在 | 同一般的拒絕 |
 | `EAP conversation with client X failed: the peer asked only for methods this server does not offer` | 裝置要的 EAP 方法沒有開 | 調整 `radius.eap.methods` 或裝置設定 |
 | `TACACS+ connection from X closed: a body did not decode, so the shared secret may be wrong` | TACACS+ 共用密碼不一致 | 重設兩邊的共用密碼 |
+| `TACACS+ overloaded: closed N connections` | 連線數到了 `tacacs.max_connections` | [連線被關掉：上限](#連線被關掉上限) |
+| `TACACS+ connection from X closed: it already holds max_connections_per_source = N connections` | 這個來源位址的連線數到了上限 | 同上 |
 | `TACACS+ authentication for client X answered ERROR: the authentication backend could not be used` | 驗證用的資料庫不能用 | 查資料庫 |
 | `script exceeded the execution limit of N ms` | 腳本跑太久 | 修正腳本，或調整 `lua.max_execution_ms` |
 | `script http_request refused: … is not in lua.http.allowed_hosts` | 腳本呼叫的主機不在白名單 | 加進 `allowed_hosts` |
+| `stopping: after N ms, M RADIUS requests were still being handled and K TACACS+ connections open; they are cut off` | 停止時等了 `[shutdown] drain_ms` 還有請求沒做完（腳本、LDAP 或資料庫太慢），那些請求沒有回應，設備會重送到別台 | 找出變慢的原因，或加長 `drain_ms`（[第 18 章](18-operations.md#關機要多久)） |
 | `reload failed, keeping the running configuration: …` | 新設定有錯 | 先 `check`，修正後再 reload |
 | `configuration reloaded from …; these need a restart to apply: …` | 有些設定要重啟才生效 | 安排重啟 |
 
@@ -775,6 +821,8 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `cannot reach the metrics port at 127.0.0.1:9812: Connection refused (os error 61)`（`status`，結束碼 3） | 伺服器沒在跑，或伺服器用的 `[metrics]` 位址與指令讀的設定不同 | 啟動伺服器，或用 `--config` 指向伺服器用的設定 |
 | `the cluster did not answer within 30 s`（`user` 等指令，結束碼 3） | 伺服器沒在跑 | 啟動伺服器（[第 03 章](03-quick-start.md)） |
 | `rradius-bench` 的 `timeouts 1, … socket errors 1`（結束碼 2） | 伺服器沒在跑或埠不對 | 確認位址與埠 |
+
+日誌裡結尾是 `(N since the last line)` 的行，是任何人都能觸發的訊息（陌生來源、被拒絕的連線等）：每種每秒最多記一行，N 是這一行與上一行之間發生的總數，所以 N 大不代表只有一次。
 
 `user` 那一列實測時，等待的 30 秒裡還有好幾行 `ERROR hiqlite::client::helpers: Error looking up DB metrics: …`。
 
