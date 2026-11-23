@@ -56,5 +56,6 @@ fn check_configuration(config_path: &str) -> Result<(), String> {
     crate::reload::warn_about_short_secrets(&config);
     crate::reload::warn_about_radsec_networks(&config);
     crate::reload::warn_about_plain_ldap(&config);
+    crate::external_db::warn_about_plain(&config.databases);
     Ok(())
 }
