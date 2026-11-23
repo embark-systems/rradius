@@ -541,7 +541,7 @@ p50、p99 是從這一秒內 histogram 各區間的增量內插出來的，單�
 
 和 `--cluster` 一起用時，上方有成員表（節點、角色、`/readyz`、每秒登入與計費、處理中的請求）。連不上的成員在表裡標 `unreachable` 並附原因，畫面繼續更新；選到它時，下方說明它沒有回答。
 
-`tui` 是編譯時的 Cargo feature，預設不編進，用 `cargo build --features tui` 或 `-p rradius-server --features tui`。沒編進的版本執行 `--tui`，會以結束碼 2 結束並指出缺少 `tui` feature；標準輸出不是終端機（導到檔案或管線）時也以 2 結束，且不寫任何東西。
+`tui` 是編譯時的 Cargo feature。發行的套件（deb、rpm、tarball 與 Docker 映像）都已編進；從原始碼建置預設不編進，要用 `cargo build --features tui` 或 `-p rradius-server --features tui`。沒編進的版本執行 `--tui`，會以結束碼 2 結束並指出缺少 `tui` feature；標準輸出不是終端機（導到檔案或管線）時也以 2 結束，且不寫任何東西。
 
 ### JSON 輸出
 
