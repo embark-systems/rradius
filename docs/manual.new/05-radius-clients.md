@@ -83,7 +83,7 @@ acct_port = 1813
 | 鍵 | 預設 | 說明 |
 | --- | --- | --- |
 | `address` | 必填 | IP 位址或 CIDR 網段，例如 `192.0.2.10`、`198.51.100.0/24`、`2001:db8::/32` |
-| `name` | `address` 的值 | 日誌、指標與 `[log.trace]` 用的名稱 |
+| `name` | `address` 的值 | 日誌、指標與 `[log.trace]` 用的名稱；同一張清單（RADIUS 或 TACACS+）內不能重複，沒寫 `name` 時 `address` 也算，載入時重複會失敗（見〈常見錯誤〉） |
 | `secret`、`secret_file` | 剛好設一個 | 共用密碼，或存放它的檔案（[第 04 章](04-configuration.md)） |
 | `auth` | 預設的驗證鏈 | 這個用戶端的登入改用哪一條 `[auth.chains.<name>]`（[第 07 章](07-users-and-chains.md)） |
 | `eap_methods` | `radius.eap.methods` | 這個用戶端可以用的 EAP 方法，需要 `[radius.eap]`（[第 11 章](11-eap.md)） |
@@ -431,6 +431,10 @@ NAS 端常見的設定項目，各家名稱不同，意思大致如下：
 **症狀：** `rradius.toml: radius client '127.0.0.1': eap_methods needs [radius.eap]`。
 **原因：** 沒有設定 EAP 就寫了 `eap_methods`。
 **解法：** 先設定 `[radius.eap]`（[第 11 章](11-eap.md)），或刪掉 `eap_methods`。
+
+**症狀：** `radius clients: duplicate client name 'core'`（TACACS+ 清單是 `tacacs clients: …`）。
+**原因：** 同一張清單裡有兩個用戶端的名稱相同；沒寫 `name` 的用戶端，名稱就是它的 `address`，所以一個沒寫名稱的 `10.0.0.5` 與另一個 `name = "10.0.0.5"` 也算同名。名稱用來分指標、日誌，以及計費 spool 重放時找用戶端，所以不能重複。大小寫不同算不同名稱，RADIUS 與 TACACS+ 兩張清單之間可以同名。
+**解法：** 改掉其中一個的 `name`。改名後兩個用戶端的指標計數器會分開。**升級前要檢查：** 舊版接受重名的設定，升級後啟動與 `check` 會以結束碼 2 失敗。
 
 **症狀：** `radius clients: duplicate client network '10.0.0.0/24'`。
 **原因：** 兩個項目正規化後是同一個網段，例如 `10.0.0.5/24` 與 `10.0.0.0/24`。

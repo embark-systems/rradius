@@ -3176,6 +3176,20 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_client_name() {
+        let two = |table: &str, second: &str| format!("\n[radius]\n[[radius.clients]]\naddress = \"10.0.0.5\"\nname = \"core\"\nsecret = \"a\"\n[tacacs]\n[[{table}]]\naddress = \"10.0.0.6\"\nname = \"{second}\"\nsecret = \"b\"\n");
+        // The same name on the RADIUS list twice.
+        let err = error(&base("\n[radius]\n[[radius.clients]]\naddress = \"10.0.0.5\"\nname = \"core\"\nsecret = \"a\"\n[[radius.clients]]\naddress = \"10.0.0.6\"\nname = \"core\"\nsecret = \"b\"\n"));
+        assert!(err.contains("radius clients") && err.contains("duplicate client name 'core'"), "unexpected error: {err}");
+        // And on the TACACS+ list twice.
+        let err = error(&base("\n[tacacs]\n[[tacacs.clients]]\naddress = \"10.0.0.5\"\nname = \"core\"\nsecret = \"a\"\n[[tacacs.clients]]\naddress = \"10.0.0.6\"\nname = \"core\"\nsecret = \"b\"\n"));
+        assert!(err.contains("tacacs clients") && err.contains("duplicate client name 'core'"), "unexpected error: {err}");
+        // One name on each list is two clients of two protocols.
+        let (_, loaded) = load_str(&base(&two("tacacs.clients", "core")));
+        assert!(loaded.is_ok(), "the lists do not share names: {:?}", loaded.err());
+    }
+
+    #[test]
     fn test_enabled_protocol_without_clients() {
         let err = error(&base("\n[tacacs]\nport = 4949\n"));
         assert!(err.contains("[tacacs]"), "unexpected error: {err}");

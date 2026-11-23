@@ -477,7 +477,7 @@ max_acct_inflight = 4096  # 預設 4096，同時處理的計費請求數
 # recv_buffer_bytes = 4194304  # 每個 socket 的接收緩衝（SO_RCVBUF）；省略時用系統預設值
 
 [[radius.clients]]
-name = "core-switches"          # 選填；沒有時以 address 當名稱
+name = "core-switches"          # 選填；沒有時以 address 當名稱；同一張清單內不能重複
 address = "192.168.2.0/24"      # IP 或 CIDR 網段
 secret_file = "core.secret"     # 或 secret = "..."，二擇一
 auth = "vpn"                    # 選填；指定具名認證串接
@@ -524,6 +524,7 @@ secret_file = "router-1.secret"
 - 改了要重新啟動，SIGHUP 時會記錄需要重啟的設定。
 
 - 用戶端以「最長前綴」比對來源位址，與列出順序無關；同一網段重複列出會啟動失敗。
+- 同一張清單（`[[radius.clients]]` 或 `[[tacacs.clients]]`）內的 `name` 不能重複，沒寫 `name` 時 `address` 也算；重複時啟動與 `check` 以結束碼 2 失敗，訊息是 `duplicate client name '…'`。名稱用來分指標與日誌，以及計費 spool 重放時找用戶端。舊版接受重名的設定，升級前要先改名。大小寫不同算不同名稱，RADIUS 與 TACACS+ 兩張清單之間可以同名。
 - 不在任何用戶端網段內的來源會被忽略（RADIUS 不回應，TACACS+ 直接關閉連線）。
 - 密碼檔去掉結尾換行後不可為空。
 - 區段存在但沒有用戶端時啟動失敗。
