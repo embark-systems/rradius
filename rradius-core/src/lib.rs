@@ -37,6 +37,8 @@ pub mod script_http;
 pub mod session_resumption;
 pub mod spool;
 pub mod status;
+#[cfg(feature = "tui")]
+mod status_screen;
 pub mod stopping;
 pub mod mschap;
 pub mod netlogon;

@@ -74,6 +74,9 @@ rcgen = { version = "0.14", optional = true }
 tempfile = { version = "3", optional = true }
 # For the `backup` feature only: the key hiqlite encrypts backups with.
 cryptr = { version = "0.12", default-features = false, optional = true }
+# For the `tui` feature only: the full-screen `status --tui`.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
+crossterm = { version = "0.29", default-features = false, features = ["events"], optional = true }
 
 [features]
 # The helpers of the core's tests, for the tests of crates built on it.
@@ -82,6 +85,8 @@ test-support = ["dep:rcgen", "dep:tempfile"]
 # `ClusterBackup` an extension makes of `[cluster.backup]`. Its `toml` feature is the only way to
 # give hiqlite a backup schedule of our own.
 backup = ["hiqlite/backup", "hiqlite/toml", "dep:cryptr"]
+# `rradius-server status --tui`: a full-screen view of what `status` prints. Off by default.
+tui = ["dep:ratatui", "dep:crossterm"]
 
 [dev-dependencies]
 rcgen = "0.14"
