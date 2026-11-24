@@ -19,6 +19,55 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONNECTIONS: usize = 16;
 
 /// A value that only goes up, or with `dec` a gauge.
+/// The type and the status of each TACACS+ reply that is counted, as the labels of
+/// `rradius_tacacs_responses_total`. `tacacs_reply_slot` gives the place of a reply in this list.
+pub const TACACS_REPLIES: [(&str, &str); 12] = [
+    ("authen", "pass"),
+    ("authen", "fail"),
+    ("authen", "getdata"),
+    ("authen", "getuser"),
+    ("authen", "getpass"),
+    ("authen", "restart"),
+    ("authen", "error"),
+    ("author", "pass"),
+    ("author", "fail"),
+    ("author", "error"),
+    ("acct", "success"),
+    ("acct", "error"),
+];
+
+/// Where a TACACS+ reply to a request of `type_` with this body is counted, or `None` for a type or
+/// a status that is not in `TACACS_REPLIES`. The status is the first byte of an authentication or
+/// authorization reply and the fifth of an accounting reply (RFC 8907 sections 5.2, 6.2 and 7.2).
+pub fn tacacs_reply_slot(type_: u8, body: &[u8]) -> Option<usize> {
+    use crate::tacacs::*;
+    let slot = match type_ {
+        TYPE_AUTHEN => match *body.first()? {
+            AUTHEN_STATUS_PASS => 0,
+            AUTHEN_STATUS_FAIL => 1,
+            AUTHEN_STATUS_GETDATA => 2,
+            AUTHEN_STATUS_GETUSER => 3,
+            AUTHEN_STATUS_GETPASS => 4,
+            AUTHEN_STATUS_RESTART => 5,
+            AUTHEN_STATUS_ERROR => 6,
+            _ => return None,
+        },
+        TYPE_AUTHOR => match *body.first()? {
+            AUTHOR_STATUS_PASS_ADD => 7,
+            AUTHOR_STATUS_FAIL => 8,
+            AUTHOR_STATUS_ERROR => 9,
+            _ => return None,
+        },
+        TYPE_ACCT => match *body.get(4)? {
+            ACCT_STATUS_SUCCESS => 10,
+            ACCT_STATUS_ERROR => 11,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(slot)
+}
+
 #[derive(Debug, Default)]
 pub struct Counter(AtomicU64);
 
@@ -322,6 +371,8 @@ pub struct Metrics {
     pub tacacs_author: Counter,
     pub tacacs_acct: Counter,
     pub tacacs_malformed: Counter,
+    /// TACACS+ replies written, by type and status, in the order of `TACACS_REPLIES`.
+    pub tacacs_responses: [Counter; TACACS_REPLIES.len()],
     pub radius_response_auth: Histogram,
     pub radius_response_acct: Histogram,
     pub tacacs_response_authen: Histogram,
@@ -500,6 +551,9 @@ impl Metrics {
             ("{type=\"acct\"}", self.tacacs_acct.get()),
         ]);
         write_family(&mut out, "rradius_tacacs_malformed_total", "counter", "TACACS+ requests whose decrypted body makes no sense, as with the wrong secret.", &[("", self.tacacs_malformed.get())]);
+        let replies: Vec<(String, u64)> = TACACS_REPLIES.iter().zip(&self.tacacs_responses).map(|((kind, status), counter)| (format!("{{type=\"{kind}\",status=\"{status}\"}}"), counter.get())).collect();
+        let replies: Vec<(&str, u64)> = replies.iter().map(|(labels, value)| (labels.as_str(), *value)).collect();
+        write_family(&mut out, "rradius_tacacs_responses_total", "counter", "TACACS+ replies written, by the type of the request and the status in the reply.", &replies);
         write_histograms(&mut out, "rradius_tacacs_response_seconds", "How long TACACS+ requests took to answer, from reading the packet to writing the reply; each authentication packet on its own.", &[
             ("type=\"authen\"", &self.tacacs_response_authen),
             ("type=\"author\"", &self.tacacs_response_author),
@@ -1134,6 +1188,8 @@ mod tests {
             "rradius_tacacs_connections_open 0",
             "rradius_tacacs_requests_total{type=\"author\"} 0",
             "rradius_tacacs_malformed_total 0",
+            "rradius_tacacs_responses_total{type=\"authen\",status=\"pass\"} 0",
+            "rradius_tacacs_responses_total{type=\"acct\",status=\"error\"} 0",
             "rradius_acct_spool_bytes 0",
             "rradius_log_dropped_lines_total 0",
             "rradius_script_http_requests_total{result=\"denied\"} 0",

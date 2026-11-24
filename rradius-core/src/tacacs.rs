@@ -1151,6 +1151,7 @@ impl TacacsServer {
                 },
             };
             let seq_num = packet.seq_num.wrapping_add(1);
+            let counted = crate::metrics::tacacs_reply_slot(packet.type_, &response_body);
             let response = TacacsPacket {
                 version: packet.version,
                 type_: packet.type_,
@@ -1165,6 +1166,10 @@ impl TacacsServer {
             tokio::time::timeout(timeouts.write, socket.write_all(&response.encode()))
                 .await
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, format!("a response could not be written within {:?}", timeouts.write)))??;
+            // Counted once the reply is written: a reply that could not be written was not sent.
+            if let Some(slot) = counted {
+                metrics.tacacs_responses[slot].inc();
+            }
             let timed = match packet.type_ {
                 TYPE_AUTHEN => Some(&metrics.tacacs_response_authen),
                 TYPE_AUTHOR => Some(&metrics.tacacs_response_author),
@@ -2418,6 +2423,63 @@ pub(crate) mod tests {
     async fn read_end(stream: &mut tokio::net::TcpStream) -> Result<usize, String> {
         let mut buffer = [0u8; 16];
         tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer)).await.map_err(|_| "not closed".to_string())?.map_err(|e| e.to_string())
+    }
+
+    /// A request of `type_` with its own session, encrypted with `SECRET`.
+    fn typed_request(type_: u8, session_id: u32, body: &[u8]) -> Vec<u8> {
+        TacacsPacket { version: VERSION, type_, seq_num: 1, flags: 0, session_id, body: TacacsPacket::encrypt_decrypt(body, SECRET, session_id, VERSION, 1) }.encode()
+    }
+
+    fn replies(metrics: &Metrics) -> Vec<(String, String, u64)> {
+        crate::metrics::TACACS_REPLIES.iter().zip(&metrics.tacacs_responses).map(|((kind, status), counter)| (kind.to_string(), status.to_string(), counter.get())).filter(|(_, _, count)| *count > 0).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_replies_are_counted_by_type_and_status() -> Result<(), String> {
+        let engine = script_engine("if get_attr('user') == 'alice' then return 'accept' end return 'reject'").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        let metrics = Arc::new(Metrics::default());
+        assert!(replies(&metrics).is_empty(), "nothing is counted before a reply");
+        let server = Arc::new(TacacsServer::from_state(addr, state_with_secret(Some(SECRET), &engine), MAX_BODY_LEN).with_metrics(metrics.clone()));
+        tokio::spawn({
+            let server = server.clone();
+            async move { server.serve(listener).await }
+        });
+        let mut stream = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        // One pass and one fail of an authentication, one accounting success.
+        for (session, user, secret) in [(11u32, &b"alice"[..], &b"secret"[..]), (12, b"bob", b"secret")] {
+            stream.write_all(&typed_request(TYPE_AUTHEN, session, &start_body(user, secret))).await.map_err(|e| e.to_string())?;
+            read_packet(&mut stream, MAX_BODY_LEN).await.map_err(|e| e.to_string())?.ok_or("closed before the reply")?;
+        }
+        stream.write_all(&typed_request(TYPE_ACCT, 13, &acct_body(b"alice", &[b"service=shell"]))).await.map_err(|e| e.to_string())?;
+        read_packet(&mut stream, MAX_BODY_LEN).await.map_err(|e| e.to_string())?.ok_or("closed before the reply")?;
+        assert_eq!(replies(&metrics), vec![("authen".to_string(), "pass".to_string(), 1), ("authen".to_string(), "fail".to_string(), 1), ("acct".to_string(), "success".to_string(), 1)]);
+        // A packet with an even sequence number ends the connection without a reply.
+        let even = TacacsPacket { version: VERSION, type_: TYPE_AUTHEN, seq_num: 2, flags: 0, session_id: 14, body: TacacsPacket::encrypt_decrypt(&start_body(b"alice", b"secret"), SECRET, 14, VERSION, 2) }.encode();
+        stream.write_all(&even).await.map_err(|e| e.to_string())?;
+        assert!(read_packet(&mut stream, MAX_BODY_LEN).await.map_err(|e| e.to_string()).ok().flatten().is_none(), "no reply to an even sequence number");
+        assert_eq!(replies(&metrics).iter().map(|(_, _, count)| count).sum::<u64>(), 3, "the packet without a reply changed no counter");
+        Ok(())
+    }
+
+    #[test]
+    fn test_reply_slots_match_the_labels() {
+        use crate::metrics::{tacacs_reply_slot, TACACS_REPLIES};
+        for (type_, status_at, body_len, kind) in [(TYPE_AUTHEN, 0, 6, "authen"), (TYPE_AUTHOR, 0, 6, "author"), (TYPE_ACCT, 4, 5, "acct")] {
+            for status in 0..=0xffu8 {
+                let mut body = vec![0u8; body_len];
+                body[status_at] = status;
+                if let Some(slot) = tacacs_reply_slot(type_, &body) {
+                    assert_eq!(TACACS_REPLIES[slot].0, kind, "type {type_} status {status:#x}");
+                }
+            }
+        }
+        assert_eq!(tacacs_reply_slot(TYPE_AUTHEN, &[AUTHEN_STATUS_GETDATA]).map(|slot| TACACS_REPLIES[slot]), Some(("authen", "getdata")));
+        assert_eq!(tacacs_reply_slot(TYPE_AUTHOR, &[AUTHOR_STATUS_FAIL]).map(|slot| TACACS_REPLIES[slot]), Some(("author", "fail")));
+        assert_eq!(tacacs_reply_slot(TYPE_ACCT, &[0, 0, 0, 0, ACCT_STATUS_ERROR]).map(|slot| TACACS_REPLIES[slot]), Some(("acct", "error")));
+        assert_eq!(tacacs_reply_slot(TYPE_ACCT, &[ACCT_STATUS_ERROR]), None, "a body too short for a status");
+        assert_eq!(tacacs_reply_slot(0x09, &[1, 0, 0, 0, 1]), None, "an unknown type");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

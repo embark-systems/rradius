@@ -91,6 +91,7 @@ $ curl -s http://127.0.0.1:9812/metrics | grep '^# TYPE' | wc -l
 | `rradius_tacacs_connections_total` | counter | 一直都有 | 17 |
 | `rradius_tacacs_connections_open` | gauge | 一直都有 | 17 |
 | `rradius_tacacs_requests_total` | counter | 一直都有 | 17 |
+| `rradius_tacacs_responses_total` | counter | 一直都有 | 17 |
 | `rradius_tacacs_malformed_total` | counter | 一直都有 | 17 |
 | `rradius_tacacs_response_seconds` | histogram | 一直都有 | 17 |
 | `rradius_eap_sessions_open` | gauge | 一直都有 | 17 |
@@ -226,6 +227,12 @@ TACACS+ 連線的結果。`refused` 是讀任何資料之前就關掉的連線�
 型別：counter。標籤：`type`（`authen`、`author`、`acct`）。出現條件：一直都有。告警：—。
 
 TACACS+ 請求數，依認證、授權、計費分。一次登入算一筆，不管 ASCII 登入來回用了幾個封包。
+
+#### `rradius_tacacs_responses_total`
+
+型別：counter。標籤：`type`（`authen`、`author`、`acct`）、`status`。出現條件：一直都有（啟動時各組標籤都是 0）。告警：—。
+
+寫給用戶端的 TACACS+ 回覆數，依回覆內容的狀態分：認證有 `pass`、`fail`、`getdata`、`getuser`、`getpass`、`restart`、`error`，授權有 `pass`、`fail`、`error`，計費有 `success`、`error`。只算已經寫出去的回覆；`status` 的 TACACS+ 區段把它們加總成 `Replies` 一行。
 
 #### `rradius_tacacs_malformed_total`
 
