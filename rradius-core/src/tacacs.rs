@@ -2459,7 +2459,16 @@ pub(crate) mod tests {
         }
         stream.write_all(&typed_request(TYPE_ACCT, 13, &acct_body(b"alice", &[b"service=shell"]))).await.map_err(|e| e.to_string())?;
         read_packet(&mut stream, MAX_BODY_LEN).await.map_err(|e| e.to_string())?.ok_or("closed before the reply")?;
-        assert_eq!(replies(&metrics), vec![("authen".to_string(), "pass".to_string(), 1), ("authen".to_string(), "fail".to_string(), 1), ("acct".to_string(), "success".to_string(), 1)]);
+        // The counter is raised once the reply is written, so the client can read the reply
+        // before it is counted: wait for the last one.
+        let expected = vec![("authen".to_string(), "pass".to_string(), 1), ("authen".to_string(), "fail".to_string(), 1), ("acct".to_string(), "success".to_string(), 1)];
+        for _ in 0..200 {
+            if replies(&metrics) == expected {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(replies(&metrics), expected);
         // A packet with an even sequence number ends the connection without a reply.
         let even = TacacsPacket { version: VERSION, type_: TYPE_AUTHEN, seq_num: 2, flags: 0, session_id: 14, body: TacacsPacket::encrypt_decrypt(&start_body(b"alice", b"secret"), SECRET, 14, VERSION, 2) }.encode();
         stream.write_all(&even).await.map_err(|e| e.to_string())?;
