@@ -259,7 +259,7 @@ repo 根目錄的 `Dockerfile` 分兩個階段：在 Rust image 裡用 `cargo bu
 ```console
 $ docker build -t rradius-server .
 …
-$ docker run --rm rradiusd --version
+$ docker run --rm rradius-server --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
 ```
@@ -276,7 +276,7 @@ image 的內容：
 | EXPOSE | `1812/udp`、`1813/udp`、`49/tcp`、`8100/tcp`、`8200/tcp` |
 | 其他 | 裝了 `ca-certificates`，LDAP over TLS 會用到系統的 CA 憑證 |
 
-因為 `ENTRYPOINT` 是 `rradiusd`，`docker run` 後面接的就是子指令，例如 `docker run --rm rradiusd --version`。
+因為 `ENTRYPOINT` 是 `rradiusd`，`docker run` 後面接的就是子指令，例如 `docker run --rm rradius-server --version`。
 
 image 裡沒有設定檔。`/etc/rradius/rradius.toml` 要從外面掛進去，最簡單的做法是用下一節的 Compose。
 
