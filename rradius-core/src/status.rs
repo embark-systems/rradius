@@ -203,6 +203,8 @@ pub enum Value {
 pub enum Reading {
     Value(Value),
     Rate { rate: f64, total: f64 },
+    /// The same of bytes, which people read in KiB and the like; `--json` has the plain numbers.
+    Bytes { rate: f64, total: f64 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -272,8 +274,8 @@ fn core_sections_first() -> Vec<StatusSection> {
                 item("Discarded: invalid", "discarded_invalid", "rradius_radius_discarded_total", &[("reason", "invalid")], Show::Rate),
                 item("Discarded: database", "discarded_database", "rradius_radius_discarded_total", &[("reason", "database")], Show::Rate),
                 item("Discarded: no leader", "discarded_no_leader", "rradius_radius_discarded_total", &[("reason", "no_leader")], Show::Rate),
-                item("In bytes", "bytes_in", "rradius_traffic_bytes_total", &[("protocol", "radius"), ("direction", "in")], Show::Rate),
-                item("Out bytes", "bytes_out", "rradius_traffic_bytes_total", &[("protocol", "radius"), ("direction", "out")], Show::Rate),
+                item("In bytes", "bytes_in", "rradius_traffic_bytes_total", &[("protocol", "radius"), ("direction", "in")], Show::Bytes),
+                item("Out bytes", "bytes_out", "rradius_traffic_bytes_total", &[("protocol", "radius"), ("direction", "out")], Show::Bytes),
                 item("Auth in progress", "auth_in_progress", "rradius_radius_requests_in_progress", &[("kind", "auth")], Show::Value),
                 item("Auth limit", "auth_limit", "rradius_radius_requests_limit", &[("kind", "auth")], Show::Value),
                 item("Acct in progress", "acct_in_progress", "rradius_radius_requests_in_progress", &[("kind", "acct")], Show::Value),
@@ -300,8 +302,8 @@ fn core_sections_last() -> Vec<StatusSection> {
                 item("Accounting", "acct", "rradius_tacacs_requests_total", &[("type", "acct")], Show::Rate),
                 item("Replies", "replies", "rradius_tacacs_responses_total", &[], Show::Rate),
                 item("Malformed", "malformed", "rradius_tacacs_malformed_total", &[], Show::Rate),
-                item("In bytes", "bytes_in", "rradius_traffic_bytes_total", &[("protocol", "tacacs"), ("direction", "in")], Show::Rate),
-                item("Out bytes", "bytes_out", "rradius_traffic_bytes_total", &[("protocol", "tacacs"), ("direction", "out")], Show::Rate),
+                item("In bytes", "bytes_in", "rradius_traffic_bytes_total", &[("protocol", "tacacs"), ("direction", "in")], Show::Bytes),
+                item("Out bytes", "bytes_out", "rradius_traffic_bytes_total", &[("protocol", "tacacs"), ("direction", "out")], Show::Bytes),
                 item("Authentication p50 (ms)", "authen_p50_ms", "rradius_tacacs_response_seconds", &[("type", "authen")], Show::Quantile(0.5)),
                 item("Authentication p99 (ms)", "authen_p99_ms", "rradius_tacacs_response_seconds", &[("type", "authen")], Show::Quantile(0.99)),
                 item("Authorization p50 (ms)", "author_p50_ms", "rradius_tacacs_response_seconds", &[("type", "author")], Show::Quantile(0.5)),
@@ -431,10 +433,10 @@ fn show_section(section: &StatusSection, before: &Scrape, after: &Scrape, second
             let now = after.value(item.metric, item.labels)?;
             let reading = match item.show {
                 Show::Value | Show::Total | Show::Quantile(_) => Reading::Value(Value::Number(now)),
-                Show::Rate => {
+                Show::Rate | Show::Bytes => {
                     let (rate, went_down) = before.value(item.metric, item.labels).map_or((0.0, false), |then| rate(then, now, seconds));
                     *reset |= went_down;
-                    Reading::Rate { rate, total: now }
+                    if item.show == Show::Bytes { Reading::Bytes { rate, total: now } } else { Reading::Rate { rate, total: now } }
                 }
             };
             Some(ShownItem { key: item.key.to_string(), label: item.label.to_string(), reading })
@@ -602,6 +604,28 @@ pub(crate) fn reading_text(reading: &Reading) -> String {
         Reading::Value(Value::Number(value)) => number(*value),
         Reading::Value(Value::Text(text)) => text.clone(),
         Reading::Rate { rate, total } => format!("{rate:.1}/s ({})", number(*total)),
+        Reading::Bytes { rate, total } => format!("{} ({})", bytes_text(*rate, true), bytes_text(*total, false)),
+    }
+}
+
+/// Bytes as people read them: B, KiB, MiB, GiB and TiB, each 1024 of the one before. The unit is
+/// chosen after rounding to one decimal, so that 1023.95 KiB is 1.0 MiB and not 1024.0 KiB. A rate
+/// has one decimal and `/s`; a total is whole in B and has one decimal in the others.
+pub(crate) fn bytes_text(value: f64, rate: bool) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    if !value.is_finite() || value < 0.0 {
+        return number(value);
+    }
+    let (mut scaled, mut unit) = (value, 0);
+    while unit + 1 < UNITS.len() && (scaled * 10.0).round() / 10.0 >= 1024.0 {
+        scaled /= 1024.0;
+        unit += 1;
+    }
+    let suffix = if rate { "/s" } else { "" };
+    if unit == 0 && !rate {
+        format!("{} B", scaled.round() as u64)
+    } else {
+        format!("{scaled:.1} {}{suffix}", UNITS[unit])
     }
 }
 
@@ -651,7 +675,7 @@ pub fn json(view: &View) -> serde_json::Value {
                         Reading::Value(Value::Text(text)) => {
                             object.insert("value".to_string(), text.clone().into());
                         }
-                        Reading::Rate { rate, total } => {
+                        Reading::Rate { rate, total } | Reading::Bytes { rate, total } => {
                             object.insert("rate".to_string(), serde_json::Value::from(*rate));
                             object.insert("total".to_string(), json_number(*total));
                         }
@@ -736,7 +760,7 @@ pub(crate) struct Total {
 /// What a reading of the RADIUS section counts: a rate per second, or a value.
 fn radius_readings(view: &View) -> impl Iterator<Item = (&str, f64)> {
     view.sections.iter().filter(|section| section.key == "radius").flat_map(|section| section.items.iter()).filter_map(|item| match &item.reading {
-        Reading::Rate { rate, .. } => Some((item.key.as_str(), *rate)),
+        Reading::Rate { rate, .. } | Reading::Bytes { rate, .. } => Some((item.key.as_str(), *rate)),
         Reading::Value(Value::Number(value)) => Some((item.key.as_str(), *value)),
         Reading::Value(Value::Text(_)) => None,
     })
@@ -1411,6 +1435,36 @@ mod tests {
         let after = "rradius_tacacs_connections_open 1\nrradius_tacacs_responses_total{type=\"authen\",status=\"pass\"} 230\nrradius_tacacs_responses_total{type=\"authen\",status=\"fail\"} 65\nrradius_tacacs_responses_total{type=\"acct\",status=\"success\"} 45\n";
         assert_eq!(reply_items(before, after)?, [serde_json::json!({"key": "replies", "label": "Replies", "rate": 40.0, "total": 340})]);
         assert!(reply_items("rradius_tacacs_connections_open 1\n", "rradius_tacacs_connections_open 1\n")?.is_empty(), "no item without the metric");
+        Ok(())
+    }
+
+    /// Bytes as people read them: the unit after rounding, B whole and the rest with a decimal.
+    #[test]
+    fn test_bytes_text() {
+        let rates = [(0.0, "0.0 B/s"), (512.0, "512.0 B/s"), (1023.0, "1023.0 B/s"), (1024.0, "1.0 KiB/s"), (60_000.0, "58.6 KiB/s"), (1_048_524.0, "1023.9 KiB/s"), (1_048_575.0, "1.0 MiB/s"), (52_428_800.0, "50.0 MiB/s"), (1_099_511_627_776.0, "1.0 TiB/s"), (2_251_799_813_685_248.0, "2048.0 TiB/s")];
+        for (value, text) in rates {
+            assert_eq!(bytes_text(value, true), text, "{value}");
+        }
+        let totals = [(0.0, "0 B"), (396.0, "396 B"), (1023.0, "1023 B"), (1024.0, "1.0 KiB"), (1_060_000.0, "1.0 MiB"), (6_442_450_944.0, "6.0 GiB")];
+        for (value, text) in totals {
+            assert_eq!(bytes_text(value, false), text, "{value}");
+        }
+        assert_eq!(bytes_text(f64::NAN, true), "NaN");
+    }
+
+    /// `status` prints a bytes item in units, and `--json` has the plain numbers.
+    #[test]
+    fn test_bytes_in_text_and_json() -> Result<(), String> {
+        let start = Instant::now();
+        let text_of = |before: &str, after: &str| -> Result<String, String> {
+            let shown = view(address(), &sample_of(before, start)?, &sample_of(after, start + Duration::from_secs(1))?, &[], 0.0);
+            Ok(text(&shown))
+        };
+        let metrics = |inn: u64| format!("rradius_traffic_bytes_total{{protocol=\"radius\",direction=\"in\"}} {inn}\nrradius_radius_packets_total{{kind=\"auth\"}} 1\n");
+        let printed = text_of(&metrics(1_000_000), &metrics(1_060_000))?;
+        assert!(printed.contains("In bytes") && printed.contains("58.6 KiB/s (1.0 MiB)"), "{printed}");
+        let printed = text_of(&metrics(0), &metrics(396))?;
+        assert!(printed.contains("396.0 B/s (396 B)"), "{printed}");
         Ok(())
     }
 

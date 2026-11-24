@@ -469,8 +469,8 @@ RADIUS
   Discarded: invalid         0.0/s (1)
   Discarded: database        0.0/s (0)
   Discarded: no leader       0.0/s (0)
-  In bytes                   0.0/s (396)
-  Out bytes                  0.0/s (128)
+  In bytes                   0.0 B/s (396 B)
+  Out bytes                  0.0 B/s (128 B)
   Auth in progress           0
   Auth limit                 4096
   Acct in progress           0
@@ -488,12 +488,13 @@ TACACS+
   Accounting        0.0/s (0)
   Replies           0.0/s (1)
   Malformed         0.0/s (0)
-  In bytes          0.0/s (46)
-  Out bytes         0.0/s (28)
+  In bytes          0.0 B/s (46 B)
+  Out bytes         0.0 B/s (28 B)
 …
 ```
 
 - `0.0/s (8)`：前面是這一秒的速率，括號裡是啟動以來的總數。
+- `In bytes`、`Out bytes` 這類位元組項目顯示成 `58.6 KiB/s (1.0 MiB)`：單位是 B、KiB、MiB、GiB、TiB，每級是前一級的 1024 倍（和網路介面或雲端帳單常用的 1000 進位不同），速率一位小數、總數在 B 時是整數。`--json` 和 `/metrics` 不換算，`rate` 是每秒位元組、`total` 是位元組，給程式讀。
 - 這一秒沒有流量時，RADIUS 與 TACACS+ 的 p50、p99 兩行不會出現。
 
 一邊送流量一邊看，就會出現回應時間：
