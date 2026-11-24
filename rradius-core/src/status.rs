@@ -296,6 +296,7 @@ fn core_sections_last() -> Vec<StatusSection> {
                 item("Authentication", "authen", "rradius_tacacs_requests_total", &[("type", "authen")], Show::Rate),
                 item("Authorization", "author", "rradius_tacacs_requests_total", &[("type", "author")], Show::Rate),
                 item("Accounting", "acct", "rradius_tacacs_requests_total", &[("type", "acct")], Show::Rate),
+                item("Replies", "replies", "rradius_tacacs_responses_total", &[], Show::Rate),
                 item("Malformed", "malformed", "rradius_tacacs_malformed_total", &[], Show::Rate),
                 item("Authentication p50 (ms)", "authen_p50_ms", "rradius_tacacs_response_seconds", &[("type", "authen")], Show::Quantile(0.5)),
                 item("Authentication p99 (ms)", "authen_p99_ms", "rradius_tacacs_response_seconds", &[("type", "authen")], Show::Quantile(0.99)),
@@ -1385,6 +1386,27 @@ mod tests {
         let section = shown.sections.iter().find(|section| section.key == "acct_log").ok_or("no section")?;
         let items: Vec<&str> = section.items.iter().map(|item| item.key.as_str()).collect();
         assert_eq!(items, ["written", "dropped", "failures_open", "failures_write"]);
+        Ok(())
+    }
+
+    /// The replies of the TACACS+ section: the rate and the total of all types and statuses added,
+    /// and no item when the node does not report the metric.
+    #[test]
+    fn test_tacacs_replies() -> Result<(), String> {
+        let start = Instant::now();
+        let reply_items = |before: &str, after: &str| -> Result<Vec<serde_json::Value>, String> {
+            let before = sample_of(before, start)?;
+            let after = sample_of(after, start + Duration::from_secs(1))?;
+            let shown = view(address(), &before, &after, &[], 0.0);
+            let json = json(&shown);
+            let sections = json["sections"].as_array().ok_or("no sections")?;
+            let tacacs = sections.iter().find(|section| section["key"] == "tacacs").ok_or("no tacacs")?;
+            Ok(tacacs["items"].as_array().ok_or("items")?.iter().filter(|item| item["key"] == "replies").cloned().collect())
+        };
+        let before = "rradius_tacacs_connections_open 1\nrradius_tacacs_responses_total{type=\"authen\",status=\"pass\"} 200\nrradius_tacacs_responses_total{type=\"authen\",status=\"fail\"} 60\nrradius_tacacs_responses_total{type=\"acct\",status=\"success\"} 40\n";
+        let after = "rradius_tacacs_connections_open 1\nrradius_tacacs_responses_total{type=\"authen\",status=\"pass\"} 230\nrradius_tacacs_responses_total{type=\"authen\",status=\"fail\"} 65\nrradius_tacacs_responses_total{type=\"acct\",status=\"success\"} 45\n";
+        assert_eq!(reply_items(before, after)?, [serde_json::json!({"key": "replies", "label": "Replies", "rate": 40.0, "total": 340})]);
+        assert!(reply_items("rradius_tacacs_connections_open 1\n", "rradius_tacacs_connections_open 1\n")?.is_empty(), "no item without the metric");
         Ok(())
     }
 
