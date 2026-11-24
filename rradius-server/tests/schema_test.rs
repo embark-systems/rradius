@@ -21,7 +21,15 @@ fn test_printing_the_schema() -> Result<(), String> {
     let schema = printed_schema()?;
     assert_eq!(schema.get("$schema").and_then(Value::as_str), Some("https://json-schema.org/draft/2020-12/schema"));
     assert_eq!(schema.get("title").and_then(Value::as_str), Some("rradiusd configuration"));
-    assert_eq!(schema.get("required"), Some(&serde_json::json!(["dictionary"])));
+    Ok(())
+}
+
+/// `dictionary` has a default, so the schema does not require it.
+#[test]
+fn test_dictionary_is_not_required() -> Result<(), String> {
+    let schema = printed_schema()?;
+    let required = schema.get("required").and_then(Value::as_array).cloned().unwrap_or_default();
+    assert!(!required.iter().any(|name| name == "dictionary"), "required: {required:?}");
     Ok(())
 }
 

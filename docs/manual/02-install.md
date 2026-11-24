@@ -65,7 +65,7 @@ repo 提供的是各種安裝方式的建置腳本與定義檔，本書的每一
 
 幾點說明：
 
-- **預設設定檔路徑在建置時就決定了。** 建置時設了環境變數 `RRADIUS_PREFIX=<prefix>`，預設路徑就是 `<prefix>/etc/rradius/rradius.toml`；沒設、設成空字串或 `/` 時是 `/etc/rradius/rradius.toml`。執行時的環境變數改變不了它。FreeBSD port 建置時設了 `RRADIUS_PREFIX=/usr/local`，其他方式都沒設。用 `--version` 可以看到實際的值（見[確認版本](#確認版本與預設設定檔路徑)）。
+- **預設設定檔路徑在建置時就決定了。** 建置時設了環境變數 `RRADIUS_PREFIX=<prefix>`，預設路徑就是 `<prefix>/etc/rradius/rradius.toml`；沒設、設成空字串或 `/` 時是 `/etc/rradius/rradius.toml`。執行時的環境變數改變不了它。設定檔沒寫 `dictionary` 時讀的字典也跟著前綴：`<prefix>/share/rradius/dictionary`，沒設時是 `/usr/share/rradius/dictionary`。FreeBSD port 建置時設了 `RRADIUS_PREFIX=/usr/local`，其他方式都沒設。用 `--version` 可以看到實際的值（見[確認版本](#確認版本與預設設定檔路徑)）。
 - **套件不會建立設定檔，也不會啟用服務。** 裝好之後要自己產生設定檔、檢查、再啟用，步驟見[套件安裝後的第一次啟動](#套件安裝後的第一次啟動)。
 - **日誌寫到標準錯誤。** systemd 下由 journal 收走。`/var/log/rradius` 是給計費記錄檔（`[radius.accounting_log]`，第 13 章）用的。
 
@@ -532,10 +532,12 @@ logrotate 設定 `/etc/logrotate.d/rradius` 每天輪替 `/var/log/rradius/*.jso
 $ rradiusd --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 ```
 
 - 第一行是程式名稱與版本。
 - 第二行是沒有 `--config` 時讀的設定檔。FreeBSD port 建出來的程式這裡是 `/usr/local/etc/rradius/rradius.toml`。
+- 第三行是設定檔沒寫 `dictionary` 時讀的字典。FreeBSD port 建出來的程式這裡是 `/usr/local/share/rradius/dictionary`，套件把字典裝在這裡，所以不用寫。
 
 `--version` 不讀設定檔、不開任何埠、不建立任何目錄，隨時都可以安全地執行。
 
@@ -565,7 +567,7 @@ default config: /etc/rradius/rradius.toml
 
 **症狀：** `check` 印出 `/usr/share/rradius/dictionary: cannot read dictionary: No such file or directory (os error 2)`。
 **原因：** 你用的不是套件或 Docker，字典不在 `config init` 預設的位置。
-**解法：** 把 `dictionary` 改成字典實際的位置。原始碼與壓縮檔裡是 `share/dictionary`。
+**解法：** 把 `dictionary` 改成字典實際的位置（原始碼與壓縮檔裡是 `share/dictionary`），或把字典放到預設字典路徑，再刪掉 `dictionary` 這一行。
 
 **症狀：** `check` 印出 `cannot read script 'auth.lua': No such file or directory (os error 2)`。
 **原因：** `config init` 的底稿指向 `auth.lua`，這個檔案要自己建立。

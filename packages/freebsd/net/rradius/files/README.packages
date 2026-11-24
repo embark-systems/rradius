@@ -12,7 +12,8 @@ First start
 
        rradiusd config init > /usr/local/etc/rradius/rradius.toml
 
-  2. Point "dictionary" at /usr/local/share/rradius/dictionary, set the cluster data
+  2. Remove the "dictionary" line (the default is /usr/local/share/rradius/dictionary, where
+     the package installs it), set the cluster data
      directory (for example /var/db/rradius), add the [lua] script and your clients, and keep the
      file readable by the "rradius" user only:
 

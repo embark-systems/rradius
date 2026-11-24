@@ -1284,6 +1284,24 @@ fn test_check_passes_without_touching_anything() {
     assert!(!dir.path().join("data").exists(), "the data directory was created");
 }
 
+/// Without `dictionary` the check reads the default dictionary path, and names it when it cannot.
+#[test]
+fn test_check_without_dictionary_reads_the_default_path() {
+    let default = rradius_core::config::default_dictionary_path();
+    if std::path::Path::new(default).exists() {
+        return; // a dictionary is installed there: nothing to see
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (config, _) = write_config(dir.path(), "return 'accept'", Some("return 'accept'"));
+    let text = std::fs::read_to_string(&config).unwrap();
+    let without: String = text.lines().filter(|line| !line.starts_with("dictionary")).map(|line| format!("{line}\n")).collect();
+    assert_ne!(text, without, "the test configuration has a dictionary line");
+    std::fs::write(&config, without).unwrap();
+    let (code, _, stderr) = check_command(PROGRAM, &config);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains(default), "the error names the default path: {stderr}");
+}
+
 /// A valid LDAP handler passes without its server hearing anything: a listener on the
 /// handler's URL still has nothing to accept afterwards.
 #[test]
@@ -2184,7 +2202,12 @@ fn test_version() {
     let dir = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).arg("--version").current_dir(dir.path()).output().unwrap();
     assert_eq!(output.status.code(), Some(0));
-    let expected = format!("rradiusd {} (community)\ndefault config: {}\n", env!("CARGO_PKG_VERSION"), rradius_core::config::default_config_path());
+    let expected = format!(
+        "rradiusd {} (community)\ndefault config: {}\ndefault dictionary: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        rradius_core::config::default_config_path(),
+        rradius_core::config::default_dictionary_path()
+    );
     assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was created");
     let (code, stderr) = run(&["--version", "extra"]);

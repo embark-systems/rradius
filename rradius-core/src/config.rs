@@ -596,7 +596,9 @@ impl std::error::Error for ConfigError {}
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
-    dictionary: PathBuf,
+    /// The RADIUS dictionary; relative to the configuration file's directory. Without it, the
+    /// default dictionary path fixed when the program was built (`default_dictionary_path`).
+    dictionary: Option<PathBuf>,
     /// Files read with this one, as if their text followed it (`conf.d/*.toml`). Read before the
     /// rest, by `with_includes`; it is only here so that the file is not refused for it.
     #[allow(dead_code)]
@@ -1445,9 +1447,35 @@ pub fn default_config_path() -> &'static str {
 /// The configuration file under `prefix`, whose trailing `/` are dropped; none, an empty one or
 /// `/` alone mean no prefix.
 fn with_prefix(prefix: Option<&str>) -> String {
+    under_prefix(prefix, DEFAULT_CONFIG_FILE)
+}
+
+/// `file` (an absolute path) under `prefix`, whose trailing `/` are dropped; none, an empty one or
+/// `/` alone mean no prefix.
+fn under_prefix(prefix: Option<&str>, file: &str) -> String {
     match prefix.map(|prefix| prefix.trim_end_matches('/')).filter(|prefix| !prefix.is_empty()) {
-        Some(prefix) => format!("{prefix}{DEFAULT_CONFIG_FILE}"),
-        None => DEFAULT_CONFIG_FILE.to_string(),
+        Some(prefix) => format!("{prefix}{file}"),
+        None => file.to_string(),
+    }
+}
+
+/// The dictionary read when the configuration has no `dictionary`.
+const DEFAULT_DICTIONARY_FILE: &str = "/usr/share/rradius/dictionary";
+
+/// Where the dictionary is read without `dictionary` in the configuration: under the
+/// `RRADIUS_PREFIX` set when rradius-core was built, else `/usr/share/rradius/dictionary`. Fixed
+/// at build time, like the default configuration path.
+pub fn default_dictionary_path() -> &'static str {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| dictionary_with_prefix(option_env!("RRADIUS_PREFIX")))
+}
+
+/// The default dictionary under `prefix`: `<prefix>/share/rradius/dictionary`, or
+/// `/usr/share/rradius/dictionary` without a prefix.
+fn dictionary_with_prefix(prefix: Option<&str>) -> String {
+    match prefix.map(|prefix| prefix.trim_end_matches('/')).filter(|prefix| !prefix.is_empty()) {
+        Some(_) => under_prefix(prefix, "/share/rradius/dictionary"),
+        None => DEFAULT_DICTIONARY_FILE.to_string(),
     }
 }
 
@@ -1639,7 +1667,10 @@ fn load_text(path: &Path, text: &str, extensions: &crate::extension::Extensions)
     }
     let cluster_nodes = cluster.nodes.len();
     let mut config = ServerConfig {
-        dictionary: base.join(raw.dictionary),
+        dictionary: match raw.dictionary {
+            Some(path) => base.join(path),
+            None => PathBuf::from(default_dictionary_path()),
+        },
         lua,
         cluster,
         auth,
@@ -5076,6 +5107,38 @@ mod tests {
             assert_eq!(with_prefix(prefix), path, "{prefix:?}");
         }
         assert_eq!(default_config_path(), with_prefix(option_env!("RRADIUS_PREFIX")));
+    }
+
+    /// The prefixes example of the Default Dictionary Path requirement.
+    #[test]
+    fn test_default_dictionary_path_prefixes() {
+        for (prefix, path) in [
+            (None, "/usr/share/rradius/dictionary"),
+            (Some(""), "/usr/share/rradius/dictionary"),
+            (Some("/"), "/usr/share/rradius/dictionary"),
+            (Some("/usr/local"), "/usr/local/share/rradius/dictionary"),
+            (Some("/opt/rradius/"), "/opt/rradius/share/rradius/dictionary"),
+        ] {
+            assert_eq!(dictionary_with_prefix(prefix), path, "{prefix:?}");
+        }
+        assert_eq!(default_dictionary_path(), dictionary_with_prefix(option_env!("RRADIUS_PREFIX")));
+    }
+
+    /// Dictionary left out: the default path, not one next to the configuration file. Given:
+    /// relative to the configuration file, or absolute as it is.
+    #[test]
+    fn test_dictionary_default_and_given() -> Result<(), Box<dyn std::error::Error>> {
+        let body = base(RADIUS_CLIENT).replace("dictionary = \"dict/dictionary\"\n", "");
+        let (_dir, result) = load_str(&body);
+        assert_eq!(result?.dictionary, PathBuf::from(default_dictionary_path()));
+
+        let (dir, result) = load_str(&base(RADIUS_CLIENT));
+        assert_eq!(result?.dictionary, dir.path().join("dict/dictionary"));
+
+        let absolute = base(RADIUS_CLIENT).replace("dict/dictionary", "/srv/rradius/dictionary");
+        let (_dir, result) = load_str(&absolute);
+        assert_eq!(result?.dictionary, PathBuf::from("/srv/rradius/dictionary"));
+        Ok(())
     }
 
     // ---- `include` ----

@@ -37,7 +37,7 @@ RADIUS 封包裡的屬性只是「編號 + 長度 + 值」。**字典**把編號
 
 | 鍵 | 預設 | reload | 說明 |
 | --- | --- | --- | --- |
-| `dictionary` | 無，必填 | 重啟 | 字典主檔的路徑；相對路徑以主設定檔的目錄為準 |
+| `dictionary` | 建置時決定的預設字典路徑（`/usr/share/rradius/dictionary`；建置時設了 `RRADIUS_PREFIX=<prefix>` 就是 `<prefix>/share/rradius/dictionary`） | 重啟 | 字典主檔的路徑；相對路徑以主設定檔的目錄為準；可以不寫 |
 
 ```toml
 # rradius.toml（節錄）

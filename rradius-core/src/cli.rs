@@ -211,6 +211,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() == 2 && args[1] == "--version" {
         println!("{} {} ({})", program.name, program.version, program.edition);
         println!("default config: {}", config::default_config_path());
+        println!("default dictionary: {}", config::default_dictionary_path());
         return Ok(());
     }
     if args.get(1).is_some_and(|command| command == "schema") {

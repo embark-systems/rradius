@@ -34,7 +34,7 @@ TOML 用 `[表名]` 開一個表，用 `[[表名]]` 在表陣列裡加一項，�
 
 | 鍵或表 | 一定要有 | 用途 | 主章 |
 | --- | --- | --- | --- |
-| `dictionary` | 是 | 字典主檔的路徑 | [06](06-dictionary.md) |
+| `dictionary` | 否 | 字典主檔的路徑；沒寫時用預設字典路徑（套件是 `/usr/share/rradius/dictionary`） | [06](06-dictionary.md) |
 | `include` | | 一起讀進來的其他設定檔 | 本章 |
 | `[lua]` | 是 | 最上層的 Lua 腳本與它的資源上限 | [10](10-lua-policies.md) |
 | `[cluster]` | 是 | 內建的叢集資料庫；單機也要有 | [16](16-cluster.md) |
