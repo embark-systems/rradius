@@ -46,7 +46,7 @@ secret_file = "localhost.secret"
 bind = "127.0.0.1"
 port = 9812
 
-# 現在在線的 session：rradius-server session list。連線位本身就記著誰在線，直接查它：
+# 現在在線的 session：rradiusd session list。連線位本身就記著誰在線，直接查它：
 # 狀態是 active 而且還沒到期的列。
 [sessions]
 list = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE state = 'active' AND expires > strftime('%s', 'now') ORDER BY username, slot"

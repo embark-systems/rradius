@@ -30,7 +30,7 @@ command=/usr/sbin/daemon
 # daemon(8) restarts the program when it exits: a node whose database cannot be recovered
 # exits with status 1 and a restart recovers it.
 command_args="-P ${pidfile} -p ${child_pidfile} -r -R 2 -S -T rradius -u ${rradius_user} \
-    %%PREFIX%%/bin/rradius-server serve --config ${rradius_config}"
+    %%PREFIX%%/bin/rradiusd serve --config ${rradius_config}"
 
 extra_commands=reload
 reload_cmd=rradius_reload

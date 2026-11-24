@@ -1,4 +1,4 @@
-//! `rradius-server session list|show`: the sessions online, with the statements `[sessions]`
+//! `rradiusd session list|show`: the sessions online, with the statements `[sessions]`
 //! gives. They read through the cluster's api port, so that the command starts no node, and
 //! print what the statement selects as it is: the server keeps no table of sessions of its own.
 //! `find` is what a command of the enterprise program uses to reach a user's sessions.
@@ -7,7 +7,7 @@ use crate::accounts::{self, query_rows, row_text, Cell, Row, CLUSTER_WAIT, STATU
 use crate::config::{self, ServerConfig};
 use std::path::Path;
 
-pub const USAGE: &str = "usage: rradius-server session list [--config <path>] [--json]\nusage: rradius-server session show [--config <path>] [--json] <name>";
+pub const USAGE: &str = "usage: rradiusd session list [--config <path>] [--json]\nusage: rradiusd session show [--config <path>] [--json] <name>";
 
 /// Why a command could not give the rows: the exit status, and what to say.
 #[derive(Debug, PartialEq)]

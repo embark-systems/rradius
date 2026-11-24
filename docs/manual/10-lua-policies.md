@@ -117,9 +117,9 @@ return 'accept'
 存成 `policy.lua`，檢查設定，再啟動伺服器（同第 03 章）：
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
-$ rradius-server serve --config rradius.toml
+$ rradiusd serve --config rradius.toml
 ```
 
 `check` 會編譯腳本，語法錯誤在這裡就會看到。在另一個終端機登入：
@@ -556,7 +556,7 @@ $ kill -HUP <伺服器的 PID>
 
 - 新腳本有語法錯誤時，reload 失敗，伺服器繼續用舊的：`reload failed, keeping the running configuration: cannot compile script 'policy.lua': syntax error: 1: Malformed string; did you forget to finish it?`
 - 改 `lua.max_memory_mb` 要重啟，reload 時日誌寫 `these need a restart to apply: lua.max_memory_mb`。
-- 先跑 `rradius-server check`，它編譯全部腳本（最上層與每個 `lua` 處理器），語法錯誤在這裡就看得到。
+- 先跑 `rradiusd check`，它編譯全部腳本（最上層與每個 `lua` 處理器），語法錯誤在這裡就看得到。
 
 ## 常見錯誤
 

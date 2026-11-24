@@ -6,7 +6,7 @@ RADIUS、TACACS+ 的 AAA 伺服器，認證和計費邏輯用 Luau 腳本與 SQL
 
 | 路徑 | 內容 |
 | --- | --- |
-| `bin/rradius-server` | 伺服器，也是管理指令（`check`、`user`） |
+| `bin/rradiusd` | 伺服器，也是管理指令（`check`、`user`） |
 | `share/` | RADIUS 字典，設定檔的 `dictionary` 指向 `share/dictionary` |
 | `rradius-server/examples/scenarios/` | 使用手冊各情境的設定、資料表 migration 和 Lua 腳本，可以直接啟動 |
 | `rradius-server/examples/` | 其他範例設定和腳本 |
@@ -22,8 +22,8 @@ RadSec、依 realm 轉送、中斷連線與變更權限（CoA）、動態 client
 
 ```bash
 cd rradius-server
-../bin/rradius-server check --config examples/scenarios/quick-start/rradius.toml
-../bin/rradius-server serve --config examples/scenarios/quick-start/rradius.toml
+../bin/rradiusd check --config examples/scenarios/quick-start/rradius.toml
+../bin/rradiusd serve --config examples/scenarios/quick-start/rradius.toml
 ```
 
 使用手冊假設執行檔在 `PATH` 上，第一步寫成 `export PATH="$PWD/target/release:$PATH"`（在原始碼 repo 的根目錄）；用這個壓縮檔時，在解開後的根目錄改成 `export PATH="$PWD/bin:$PATH"`，其他部分都一樣。見 `docs/manual/03-quick-start.md`。

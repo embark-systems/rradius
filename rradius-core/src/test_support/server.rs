@@ -314,7 +314,7 @@ pub fn write_tls_config(dir: &Path, section: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// What the two programs say of a configuration: the message `rradius-server` exits with, and
+/// What the two programs say of a configuration: the message `rradiusd` exits with, and
 /// the one `rradius-enterprise` exits with; `None` loads.
 pub struct Said {
     pub in_core: Option<&'static str>,

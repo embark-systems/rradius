@@ -13,7 +13,7 @@
 
 | | Linux（deb、rpm） | FreeBSD |
 | --- | --- | --- |
-| 執行檔 | `/usr/bin/rradius-server` | `/usr/local/bin/rradius-server` |
+| 執行檔 | `/usr/bin/rradiusd` | `/usr/local/bin/rradiusd` |
 | 字典 | `/usr/share/rradius/` | `/usr/local/share/rradius/` |
 | 設定 | `/etc/rradius/`（預設 `rradius.toml`） | `/usr/local/etc/rradius/` |
 | 資料 | `/var/lib/rradius` | `/var/db/rradius` |
@@ -22,9 +22,11 @@
 | 服務 | systemd 的 `rradius.service` | `rc.d/rradius` |
 | 用戶 | 系統用戶 `rradius` | 用戶 `rradius` |
 
+核心與企業版的執行檔同名（`rradiusd`），共用同一份設定、資料目錄、服務與用戶，所以一台機器只裝其中一個。用 `rradiusd --version` 看是哪一版：核心是 `(community)`，企業版是 `(enterprise)`。企業版日後如果也出 deb 或 rpm，兩個套件都安裝 `/usr/bin/rradiusd`，企業版套件必須宣告與核心互斥（deb 用 `Conflicts` 與 `Replaces`，rpm 用 `Conflicts` 與 `Obsoletes`），不然套件管理員會報檔案衝突。
+
 預設設定檔路徑在建置時決定（`RRADIUS_PREFIX`，見[使用手冊參考](../docs/usage.md)第 1 節）：Linux 套件不設，是 `/etc/rradius/rradius.toml`；FreeBSD 設成 `/usr/local`。
 
-套件**不建立設定檔，也不啟用服務**：deb 不啟用也不啟動；rpm 依發行版的預設（Rocky 等通常不啟用）；設定檔不存在時服務也不會啟動（`ConditionPathExists`）。裝好後照 [`common/README.packages`](common/README.packages)（裝在主機上的是 `/usr/share/doc/rradius/README.packages`）做：`rradius-server config init` 產生起始設定、改字典路徑、`check`、啟動。移除套件時，資料、記錄和用戶都保留。
+套件**不建立設定檔，也不啟用服務**：deb 不啟用也不啟動；rpm 依發行版的預設（Rocky 等通常不啟用）；設定檔不存在時服務也不會啟動（`ConditionPathExists`）。裝好後照 [`common/README.packages`](common/README.packages)（裝在主機上的是 `/usr/share/doc/rradius/README.packages`）做：`rradiusd config init` 產生起始設定、改字典路徑、`check`、啟動。移除套件時，資料、記錄和用戶都保留。
 
 ## 建置
 

@@ -1,4 +1,4 @@
-//! `rradius-server session list|show` against a running single-node cluster whose accounting
+//! `rradiusd session list|show` against a running single-node cluster whose accounting
 //! script keeps a table of sessions: the Session Commands and Session Command Results
 //! requirements.
 
@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 const SCHEMA: &str = "CREATE TABLE accounting (client TEXT NOT NULL, nas TEXT NOT NULL, session_id TEXT NOT NULL, username TEXT, started INTEGER NOT NULL, stopped INTEGER, PRIMARY KEY (client, nas, session_id));";
 
@@ -66,7 +66,7 @@ fn account(server: &Server, status: u32, user: &str, session: &str, nas: [u8; 4]
     }
 }
 
-/// Runs `rradius-server session ...` on `config`: the status, standard output and error.
+/// Runs `rradiusd session ...` on `config`: the status, standard output and error.
 fn session(config: &Path, args: &[&str]) -> Result<(Option<i32>, String, String), String> {
     let output = Command::new(PROGRAM).arg("session").args(args).args(["--config", &config.display().to_string()]).output().map_err(|e| e.to_string())?;
     Ok((output.status.code(), String::from_utf8_lossy(&output.stdout).trim_end().to_string(), String::from_utf8_lossy(&output.stderr).into_owned()))

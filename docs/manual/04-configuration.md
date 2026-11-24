@@ -7,7 +7,7 @@
 > - 用 SIGHUP 重新載入（reload）設定，分得出哪些變更要重新啟動
 > - 用 `[shutdown]` 決定伺服器怎麼停止
 
-前置條件：做過[第 03 章](03-quick-start.md)，手上有能啟動的 `rradius-server`。本章的指令都在一個工作目錄裡做，不需要真的 NAS。
+前置條件：做過[第 03 章](03-quick-start.md)，手上有能啟動的 `rradiusd`。本章的指令都在一個工作目錄裡做，不需要真的 NAS。
 
 本章小節：
 
@@ -28,9 +28,9 @@
 
 ## 設定檔的結構
 
-rradius 只有一份主設定檔，格式是 TOML。指令用 `--config <路徑>` 指定它；不寫 `--config` 時讀 `/etc/rradius/rradius.toml`（`rradius-server --version` 的第二行會印出這個預設路徑）。
+rradius 只有一份主設定檔，格式是 TOML。指令用 `--config <路徑>` 指定它；不寫 `--config` 時讀 `/etc/rradius/rradius.toml`（`rradiusd --version` 的第二行會印出這個預設路徑）。
 
-TOML 用 `[表名]` 開一個表，用 `[[表名]]` 在表陣列裡加一項，表裡是 `鍵 = 值`。rradius 的設定分成下面這些頂層的鍵與表，清單和 `rradius-server schema` 輸出的頂層 `properties` 一致：
+TOML 用 `[表名]` 開一個表，用 `[[表名]]` 在表陣列裡加一項，表裡是 `鍵 = 值`。rradius 的設定分成下面這些頂層的鍵與表，清單和 `rradiusd schema` 輸出的頂層 `properties` 一致：
 
 | 鍵或表 | 一定要有 | 用途 | 主章 |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ TOML 用 `[表名]` 開一個表，用 `[[表名]]` 在表陣列裡加一項，�
 
 **目標：** 做出一份單機、能啟動、祕密都放在檔案裡的設定，本章其他小節都拿它來示範。
 
-`rradius-server config init --lang zh-TW` 會印出一份每一節都附中文說明的底稿（被註解掉的設定列出預設值），密碼是隨機產生的。它很適合拿來查有哪些鍵，但有兩點要自己改：底稿把叢集密碼和範例用戶端的共用密碼直接寫在檔案裡，本書的做法是放進 `*_file` 指向的檔案（見[把祕密放進檔案](#把祕密放進檔案)）；底稿還列了一個 `[[cluster.nodes]]`，卻沒寫 `cluster.listen`，所以會出現 `cluster.listen is not set` 的警告。
+`rradiusd config init --lang zh-TW` 會印出一份每一節都附中文說明的底稿（被註解掉的設定列出預設值），密碼是隨機產生的。它很適合拿來查有哪些鍵，但有兩點要自己改：底稿把叢集密碼和範例用戶端的共用密碼直接寫在檔案裡，本書的做法是放進 `*_file` 指向的檔案（見[把祕密放進檔案](#把祕密放進檔案)）；底稿還列了一個 `[[cluster.nodes]]`，卻沒寫 `cluster.listen`，所以會出現 `cluster.listen is not set` 的警告。
 
 下面這份是整理過的版本。建一個工作目錄，在裡面放這幾個檔案：
 
@@ -117,7 +117,7 @@ return 'reject'
 ```console
 $ for f in raft api localhost; do openssl rand -hex 32 > $f.secret; done
 $ chmod 600 *.secret
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
@@ -164,9 +164,9 @@ secret_file = "lab.secret"   # openssl rand -hex 32 > lab.secret
 
 ```console
 $ openssl rand -hex 32 > lab.secret && chmod 600 lab.secret
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
-$ rradius-server config show --config rradius.toml | grep -A3 'radius.clients'
+$ rradiusd config show --config rradius.toml | grep -A3 'radius.clients'
 [[radius.clients]]
 name = "localhost"
 address = "127.0.0.1"
@@ -241,7 +241,7 @@ $ chmod 600 nas1.secret
 ## 檢查設定：check
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 $ echo $?
 0
@@ -251,7 +251,7 @@ $ echo $?
 
 - 全部通過：stdout 印 `configuration ok`，結束碼 0。警告（權限、密碼太短等）印在 stderr，不影響結束碼。
 - 有錯：stderr 印出原因，結束碼 2。訊息的開頭是出錯的檔案，能定位時再加上行號。
-- 參數錯誤（例如 `check --config a.toml extra`）：印 `usage: rradius-server check [--config <path>]`，結束碼 2。
+- 參數錯誤（例如 `check --config a.toml extra`）：印 `usage: rradiusd check [--config <path>]`，結束碼 2。
 
 `check` 不會發現的事：埠已經被別的程式占用、叢集的其他節點連不上、外部資料庫或 LDAP 伺服器的帳密錯誤。這些要啟動後看日誌。
 
@@ -262,7 +262,7 @@ $ echo $?
 `config show` 依伺服器讀設定的方式讀一次，把沒寫的鍵填上預設值後整份印出。下面是[一份從零開始的設定](#一份從零開始的設定)加上 `conf.d/20-lab.toml` 的結果（`…` 是省略的兩行在核心沒有作用的設定，見[附錄 A](90-config-reference.md)）：
 
 ```console
-$ rradius-server config show --config rradius.toml
+$ rradiusd config show --config rradius.toml
 # computed on this machine: radius.sockets = 1, cluster.read_connections = 28
 dictionary = "/usr/share/rradius/dictionary"
 include = ["conf.d/*.toml"]
@@ -328,7 +328,7 @@ drain_ms = 5000
 下面把整份設定（含 `conf.d/` 與祕密檔）複製到 `new/` 目錄，再改四個地方：`auth_port` 改成 1822、加上 `[shutdown]` 的 `drain_ms = 10000`、`[cluster]` 加上 `listen = "127.0.0.2"`，以及把 `localhost` 的 `secret_file` 換成直接寫的 `secret`。
 
 ```console
-$ rradius-server config diff rradius.toml new/rradius.toml
+$ rradiusd config diff rradius.toml new/rradius.toml
 radius.auth_port: 1812 | 1822
 radius.clients[localhost].secret: differs (hidden)
 radius.clients[localhost].secret_file: "localhost.secret" | (absent)
@@ -337,7 +337,7 @@ node-specific:
   cluster.listen: (absent) | "127.0.0.2"
 $ echo $?
 1
-$ rradius-server config diff rradius.toml rradius.toml
+$ rradiusd config diff rradius.toml rradius.toml
 no differences
 $ echo $?
 0
@@ -355,7 +355,7 @@ $ echo $?
 `schema` 印出設定檔的 JSON Schema：每個表與鍵的型別、預設值與說明。`--lang zh-TW` 印中文說明，不寫或 `--lang en` 印英文：
 
 ```console
-$ rradius-server schema --lang zh-TW > schema.json
+$ rradiusd schema --lang zh-TW > schema.json
 $ jq -r '.properties | keys | join(" ")' schema.json
 accounts auth cluster databases dictionary include log lua metrics queries radius runtime sessions shutdown tacacs
 $ jq '.properties.shutdown.anyOf[0].properties.drain_ms' schema.json
@@ -374,7 +374,7 @@ $ jq '.properties.shutdown.anyOf[0].properties.drain_ms' schema.json
 - 這份 schema 就是從讀設定的程式產生的，所以程式更新後它也跟著更新。手冊和它不一致時，以你手上那一版的輸出為準。
 - 支援 JSON Schema 的編輯器可以拿它來補全鍵名、檢查拼字。
 - 依機器而定的預設值（`radius.sockets` 等）在 schema 裡是建置那台機器的值，實際值看 `config show`。
-- 語言寫錯時印 `usage: rradius-server schema [--lang en|zh-TW]`，結束碼 2。
+- 語言寫錯時印 `usage: rradiusd schema [--lang en|zh-TW]`，結束碼 2。
 
 ## 不停機套用變更：reload
 
@@ -398,7 +398,7 @@ $ service rradius reload        # FreeBSD 的 rc 腳本
 **驗證：** 在[一份從零開始的設定](#一份從零開始的設定)的伺服器跑著時，加入 `conf.d/20-lab.toml`（見[把設定拆成多個檔案](#把設定拆成多個檔案)）再送 SIGHUP：
 
 ```console
-$ kill -HUP $(pgrep -f 'rradius-server serve')
+$ kill -HUP $(pgrep -f 'rradiusd serve')
 $ curl -s http://127.0.0.1:9812/metrics | grep '^rradius_reload'
 rradius_reload_total{result="ok"} 1
 rradius_reload_total{result="error"} 0

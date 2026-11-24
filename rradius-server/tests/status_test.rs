@@ -1,4 +1,4 @@
-//! `rradius-server status` against a serving server: what it reads from `/metrics` and
+//! `rradiusd status` against a serving server: what it reads from `/metrics` and
 //! `/readyz`, `--watch`, `--json`, and its exit statuses.
 
 use rradius_core::radius::RadiusPacket;
@@ -8,7 +8,7 @@ use std::net::UdpSocket;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 /// A serving server with `/metrics` on the returned port, `[shutdown]` set to `shutdown`.
 fn server(shutdown: &str) -> Result<(Server, u16), String> {
@@ -181,7 +181,7 @@ fn test_wrong_arguments() -> Result<(), String> {
     for args in [&["--bogus"][..], &["--config"], &["--json", "--json"], &["--cluster", "--cluster"]] {
         let (code, _, stderr) = status(args)?;
         assert_eq!(code, Some(2), "{args:?}");
-        assert!(stderr.contains("usage: rradius-server status"), "{args:?}: {stderr}");
+        assert!(stderr.contains("usage: rradiusd status"), "{args:?}: {stderr}");
     }
     Ok(())
 }
@@ -192,7 +192,7 @@ fn test_tui_with_other_outputs() -> Result<(), String> {
     for args in [&["--tui", "--json"][..], &["--watch", "--tui"], &["--tui", "--tui"]] {
         let (code, stdout, stderr) = status(args)?;
         assert_eq!(code, Some(2), "{args:?}");
-        assert!(stdout.is_empty() && stderr.contains("usage: rradius-server status"), "{args:?}: {stdout} {stderr}");
+        assert!(stdout.is_empty() && stderr.contains("usage: rradiusd status"), "{args:?}: {stdout} {stderr}");
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! `rradius-server user ...`: adds, changes, enables, disables, deletes and shows accounts in
+//! `rradiusd user ...`: adds, changes, enables, disables, deletes and shows accounts in
 //! the cluster's tables, with the statements `[accounts]` gives. Writes go through the cluster's
 //! api port, so they reach every node, and the next login sees them.
 
@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 use zeroize::Zeroizing;
 
-pub const USAGE: &str = "usage: rradius-server user add|passwd|enable|disable|delete|show [--config <path>] <name>\n  add and passwd read the password from standard input";
+pub const USAGE: &str = "usage: rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>\n  add and passwd read the password from standard input";
 
 pub(crate) const STATUS_NO_MATCH: i32 = 1;
 pub(crate) const STATUS_MISTAKE: i32 = 2;

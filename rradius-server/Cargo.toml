@@ -7,7 +7,7 @@ publish = false
 license = "BSD-2-Clause"
 
 [[bin]]
-name = "rradius-server"
+name = "rradiusd"
 path = "src/main.rs"
 
 [dependencies]

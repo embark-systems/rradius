@@ -21,7 +21,7 @@ override_dh_auto_build:
 override_dh_auto_test:
 
 override_dh_auto_install:
-	install -D -m 0755 target/release/rradius-server debian/rradius/usr/bin/rradius-server
+	install -D -m 0755 target/release/rradiusd debian/rradius/usr/bin/rradiusd
 	install -d debian/rradius/usr/share/rradius
 	cp -a share/. debian/rradius/usr/share/rradius/
 	install -d debian/rradius/usr/share/doc/rradius

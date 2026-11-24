@@ -202,7 +202,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
     --user bob --load acct-start,concurrency=1 --requests 1
 …
-$ rradius-server session list --config rradius.toml
+$ rradiusd session list --config rradius.toml
 username=bob
 nas=192.0.2.1
 session_id=1138000000000000
@@ -219,7 +219,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 …
   acct-on: 2954/s, sent 1, accept 0, reject 0, challenge 0, accounting 1, timeouts 0, invalid 0, late 0, socket errors 0, retransmits 0
 …
-$ rradius-server session list --config rradius.toml
+$ rradiusd session list --config rradius.toml
 no sessions
 ```
 
@@ -233,7 +233,7 @@ $ date +%s
 $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
     --user grace --attr 41=int:600 --load acct-start,concurrency=1 --requests 1
 …
-$ rradius-server session show --config rradius.toml grace
+$ rradiusd session show --config rradius.toml grace
 username=grace
 nas=192.0.2.1
 session_id=2868000000000000
@@ -299,11 +299,11 @@ show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE
 指令的用法：
 
 ```console
-$ rradius-server session show --config rradius.toml --json bob
+$ rradiusd session show --config rradius.toml --json bob
 [{"username":"bob","nas":"192.0.2.1","session_id":"1138000000000000","started":1795384997,"updated":1795384997}]
-$ rradius-server session show --config rradius.toml nobody
+$ rradiusd session show --config rradius.toml nobody
 no sessions for nobody
-$ rradius-server session show --config rradius.toml --json nobody
+$ rradiusd session show --config rradius.toml --json nobody
 []
 ```
 
@@ -352,10 +352,10 @@ file = "log/accounting.log"
 檔案所在的目錄要先建好，不然 `check` 會失敗：
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 rradius.toml: radius.accounting_log.file: directory log does not exist
 $ mkdir log
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
@@ -416,7 +416,7 @@ $ ls -l log
 `status` 在計費 spool 那段後面多一段：
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
 Accounting log
   Written        0.0/s (5)
@@ -493,7 +493,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat nas.secret)" \
 …
   acct-start: 166/s, sent 1, accept 0, reject 0, challenge 0, accounting 1, timeouts 0, invalid 0, late 0, socket errors 0, retransmits 0
 …
-$ rradius-server status --config node1.toml
+$ rradiusd status --config node1.toml
 …
 Accounting spool
   Bytes waiting  223

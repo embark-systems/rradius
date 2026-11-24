@@ -41,7 +41,7 @@ export JEMALLOC_SYS_WITH_LG_PAGE=16
 cargo build --release --locked -p rradius-server
 
 %install
-install -D -m 0755 target/release/rradius-server %{buildroot}%{_bindir}/rradius-server
+install -D -m 0755 target/release/rradiusd %{buildroot}%{_bindir}/rradiusd
 install -d %{buildroot}%{_datadir}/rradius
 cp -a share/. %{buildroot}%{_datadir}/rradius/
 install -d %{buildroot}%{_docdir}/%{name}
@@ -72,7 +72,7 @@ exit 0
 
 %files
 %license LICENSE
-%{_bindir}/rradius-server
+%{_bindir}/rradiusd
 %{_datadir}/rradius
 %{_docdir}/%{name}
 %{_unitdir}/rradius.service

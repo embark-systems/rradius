@@ -1,7 +1,7 @@
 # 90 附錄 A：設定參考
 
 > 本章讓你做到：
-> - 查到 `rradius-server` 每一個設定鍵的型別、預設值、是否必填與意思
+> - 查到 `rradiusd` 每一個設定鍵的型別、預設值、是否必填與意思
 > - 知道改了哪個鍵之後 reload 就生效，哪些要重新啟動
 > - 知道省略整個區段時伺服器會怎麼做
 > - 認出核心不支援、或在核心沒有作用的鍵與區段
@@ -34,11 +34,11 @@
 
 ## 怎麼讀這份參考
 
-這份附錄的內容來自 `rradius-server schema --lang zh-TW`（JSON Schema）與 `rradius-server config show` 的輸出，再對照 `rradius-core/src/config.rs` 與 `reload.rs` 補上 schema 沒寫出來的預設值與條件。程式更新後，以你手上那一版的這兩個指令為準：
+這份附錄的內容來自 `rradiusd schema --lang zh-TW`（JSON Schema）與 `rradiusd config show` 的輸出，再對照 `rradius-core/src/config.rs` 與 `reload.rs` 補上 schema 沒寫出來的預設值與條件。程式更新後，以你手上那一版的這兩個指令為準：
 
 ```console
-$ rradius-server schema --lang zh-TW > schema.json
-$ rradius-server config show --config rradius.toml
+$ rradiusd schema --lang zh-TW > schema.json
+$ rradiusd config show --config rradius.toml
 # computed on this machine: radius.sockets = 1, cluster.read_connections = 28
 …
 ```
@@ -115,7 +115,7 @@ address = "127.0.0.1"
 secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 ```
 
-這份設定監聽所有位址的 1812 與 1813 埠、沒有 `[metrics]`（所以沒有 `/metrics` 與 `status`）、沒有 `[auth]`（登入完全由 `auth.lua` 決定）。`rradius-server config init --lang zh-TW` 會產生一份註解完整、密碼隨機的底稿，比從這裡開始更方便。
+這份設定監聽所有位址的 1812 與 1813 埠、沒有 `[metrics]`（所以沒有 `/metrics` 與 `status`）、沒有 `[auth]`（登入完全由 `auth.lua` 決定）。`rradiusd config init --lang zh-TW` 會產生一份註解完整、密碼隨機的底稿，比從這裡開始更方便。
 
 ---
 
@@ -275,7 +275,7 @@ secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 
 ### `[accounts]`
 
-`rradius-server user …` 指令執行的 SQL。`?1` 是帳號名稱，`?2` 是要存放的密碼值。沒寫某一句，對應的子指令就不能用。
+`rradiusd user …` 指令執行的 SQL。`?1` 是帳號名稱，`?2` 是要存放的密碼值。沒寫某一句，對應的子指令就不能用。
 
 | 鍵 | 型別 | 預設 | 必填 | reload | 說明 |
 | --- | --- | --- | --- | --- | --- |
@@ -295,7 +295,7 @@ secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 
 ### `[sessions]`
 
-`rradius-server session …` 指令執行並原樣印出的 SQL。兩句都只能讀：開頭要是 `SELECT` 或 `WITH`。
+`rradiusd session …` 指令執行並原樣印出的 SQL。兩句都只能讀：開頭要是 `SELECT` 或 `WITH`。
 
 | 鍵 | 型別 | 預設 | 必填 | reload | 說明 |
 | --- | --- | --- | --- | --- | --- |
@@ -476,7 +476,7 @@ secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 
 ### `[queries.<name>]`
 
-每個節點在背景定期執行的唯讀 SQL，結果成為指標 `rradius_query_<name>`（gauge）的樣本；`rradius-server query <name>` 也執行它。
+每個節點在背景定期執行的唯讀 SQL，結果成為指標 `rradius_query_<name>`（gauge）的樣本；`rradiusd query <name>` 也執行它。
 
 | 鍵 | 型別 | 預設 | 必填 | reload | 說明 |
 | --- | --- | --- | --- | --- | --- |
@@ -641,7 +641,7 @@ TACACS+ 用戶端的欄位與 `[[radius.clients]]` 共用同一份定義，所�
 
 ## 核心不支援或沒有作用的設定
 
-`rradius-server` 與企業版共用同一個設定的讀取程式，所以有些鍵出現在核心的 `schema` 裡，但在核心不是被拒絕，就是沒有作用。下面是以 `rradius-server check` 逐一實測的結果。
+`rradiusd` 與企業版共用同一個設定的讀取程式，所以有些鍵出現在核心的 `schema` 裡，但在核心不是被拒絕，就是沒有作用。下面是以 `rradiusd check` 逐一實測的結果。
 
 ### 寫了會被拒絕的鍵
 
@@ -676,7 +676,7 @@ EAP 方法也一樣。`radius.eap.methods` 寫 `aka-prime` 時，訊息是 `radi
 
 ### 核心拒絕的區段（不在核心 schema 裡）
 
-下面這些區段與鍵不在 `rradius-server schema` 的輸出裡，是企業版的。核心讀到時 `check` 結束碼 2，訊息格式是 `<區段>: not supported by this program (<功能> needs rradius-enterprise)`：
+下面這些區段與鍵不在 `rradiusd schema` 的輸出裡，是企業版的。核心讀到時 `check` 結束碼 2，訊息格式是 `<區段>: not supported by this program (<功能> needs rradius-enterprise)`：
 
 | 區段或鍵 | 括號裡的說明 |
 | --- | --- |
@@ -699,7 +699,7 @@ EAP 方法也一樣。`radius.eap.methods` 寫 `aka-prime` 時，訊息是 `radi
 實際的一行例如：
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 rradius.toml: proxy: not supported by this program (proxying needs rradius-enterprise)
 $ echo $?
 2
@@ -714,7 +714,7 @@ $ echo $?
 - 症狀：`check` 結束碼 2，例如（`[metrics]` 裡把 `port` 打成 `prot`）：
 
   ```console
-  $ rradius-server check --config rradius.toml
+  $ rradiusd check --config rradius.toml
   rradius.toml: line 15: `prot`: unknown field `prot`, expected `bind` or `port`
   ```
 
@@ -726,7 +726,7 @@ $ echo $?
 - 症狀：例如 `auth.policy = "any"`：
 
   ```console
-  $ rradius-server check --config rradius.toml
+  $ rradiusd check --config rradius.toml
   rradius.toml: line 31: `policy`: unknown variant, expected `first_match` or `all_accept`
   ```
 

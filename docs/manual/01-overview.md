@@ -30,7 +30,7 @@ rradius 是一套 AAA 伺服器：它替 NAS（網路存取設備，例如 AP �
 
 1. **登入規則寫在設定檔、SQL 與 Lua 腳本裡。** 簡單的情況只要在設定檔寫一段 SQL 查詢；要判斷時段、配額、群組這類規則時，寫一個 Lua 腳本（實際上是 Luau 方言）。
 2. **資料放在內建的叢集資料庫。** 帳號、計費、session 都存在程式自己帶的資料庫裡，單機就能跑，要高可用時把幾台組成叢集，不必另外架資料庫伺服器。
-3. **只有一個執行檔。** 伺服器和管理指令都是 `rradius-server`：`rradius-server serve` 啟動服務，`rradius-server user add` 新增帳號，`rradius-server status` 看狀態。
+3. **只有一個執行檔。** 伺服器和管理指令都是 `rradiusd`：`rradiusd serve` 啟動服務，`rradiusd user add` 新增帳號，`rradiusd status` 看狀態。
 
 rradius **不做**的事：
 
@@ -41,7 +41,7 @@ rradius **不做**的事：
 
 ## 支援的協定
 
-核心版 `rradius-server` 支援：
+核心版 `rradiusd` 支援：
 
 | 協定 | 用途 | 預設埠 | 說明在 |
 | --- | --- | --- | --- |
@@ -128,26 +128,26 @@ rradius 跑起來需要三樣東西，各自的角色不同：
 
 ## 指令一覽
 
-不帶參數執行 `rradius-server`，或執行 `rradius-server help`，會印出全部指令：
+不帶參數執行 `rradiusd`，或執行 `rradiusd help`，會印出全部指令：
 
 ```console
-$ rradius-server help
-usage: rradius-server serve [--config <path>]
-usage: rradius-server check [--config <path>]
-usage: rradius-server status [--config <path>] [--watch] [--json] [--cluster]
-usage: rradius-server --version
-usage: rradius-server schema [--lang en|zh-TW]
-usage: rradius-server config show [--config <path>]
-usage: rradius-server config diff <a.toml> <b.toml>
-usage: rradius-server config init [--lang en|zh-TW]
-usage: rradius-server tuning [--config <path>]
-usage: rradius-server user add|passwd|enable|disable|delete|show [--config <path>] <name>
+$ rradiusd help
+usage: rradiusd serve [--config <path>]
+usage: rradiusd check [--config <path>]
+usage: rradiusd status [--config <path>] [--watch] [--json] [--cluster]
+usage: rradiusd --version
+usage: rradiusd schema [--lang en|zh-TW]
+usage: rradiusd config show [--config <path>]
+usage: rradiusd config diff <a.toml> <b.toml>
+usage: rradiusd config init [--lang en|zh-TW]
+usage: rradiusd tuning [--config <path>]
+usage: rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>
   add and passwd read the password from standard input
-usage: rradius-server session list [--config <path>] [--json]
-usage: rradius-server session show [--config <path>] [--json] <name>
-usage: rradius-server query list [--config <path>] [--json]
-usage: rradius-server query <name> [--config <path>] [--json]
-usage: rradius-server cluster members|remove [--config <path>] [--force] [<node_id>]
+usage: rradiusd session list [--config <path>] [--json]
+usage: rradiusd session show [--config <path>] [--json] <name>
+usage: rradiusd query list [--config <path>] [--json]
+usage: rradiusd query <name> [--config <path>] [--json]
+usage: rradiusd cluster members|remove [--config <path>] [--force] [<node_id>]
   remove takes a node id, and --force to leave one or two voters
 without --config, the configuration is /etc/rradius/rradius.toml
 ```
@@ -198,15 +198,15 @@ $ echo 'Message-Authenticator=0x00' | radclient 127.0.0.1:1812 status "$(cat loc
 
 rradius 有兩個程式：
 
-- **`rradius-server`（核心版）：** 本書的主角。原始碼公開，授權是 BSD-2-Clause。
+- **`rradiusd`（核心版）：** 本書的主角。原始碼公開，授權是 BSD-2-Clause。
 - **`rradius-enterprise`（企業版）：** 包含核心版的全部功能，另外加上一些企業功能。它有自己的一本手冊。
 
 兩個程式讀同一種設定檔格式。核心版遇到企業版才有的設定或指令時，**不會默默忽略**，而是明確拒絕並說明原因，結束碼是 2：
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 rradius.toml: proxy: not supported by this program (proxying needs rradius-enterprise)
-$ rradius-server dpsk show alice
+$ rradiusd dpsk show alice
 dpsk: not supported by this program (DPSK needs rradius-enterprise)
 ```
 
@@ -228,7 +228,7 @@ dpsk: not supported by this program (DPSK needs rradius-enterprise)
 
 上表之外，`[radius.eap]` 與 `[[radius.clients]]` 裡也有幾個只有企業版才能用的設定鍵，例如 EAP 的 OCSP 撤銷檢查與 session 恢復。核心版遇到其中大多數同樣會拒絕，訊息也以 `needs rradius-enterprise` 結尾；少數幾個會被接受，但在核心沒有作用。這些鍵列在[附錄 A](90-config-reference.md)，標「核心不支援」，本書正文不說明。
 
-判斷原則很簡單：用 `rradius-server check` 檢查你的設定，通過就代表核心版能跑；出現 `needs rradius-enterprise` 就代表那一項要企業版。
+判斷原則很簡單：用 `rradiusd check` 檢查你的設定，通過就代表核心版能跑；出現 `needs rradius-enterprise` 就代表那一項要企業版。
 
 ## 本書的讀法
 

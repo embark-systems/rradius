@@ -12,7 +12,7 @@ Use GitHub's private vulnerability reporting: open the repository's **Security**
 
 A useful report has:
 
-- the version (`rradius-server --version`) and how it was built or installed;
+- the version (`rradiusd --version`) and how it was built or installed;
 - the relevant part of the configuration, with secrets removed;
 - the steps or the packets that reproduce the problem, and what you expected instead;
 - what an attacker gains, if you have worked that out.

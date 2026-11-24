@@ -1,4 +1,4 @@
-//! Three `rradius-server` processes forming one hiqlite cluster. Nodes run as
+//! Three `rradiusd` processes forming one hiqlite cluster. Nodes run as
 //! separate processes because stopping one in-process node does not behave like
 //! a node failure (see spikes/hiqlite/FINDINGS.md).
 use rradius_core::test_support::server::free_port;
@@ -19,7 +19,7 @@ impl Nodes {
     fn start(&mut self, index: usize, dir: &Path) -> std::io::Result<()> {
         let path = dir.join(format!("node{}.toml", index + 1));
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&self.1[index])?;
-        let child = Command::new(env!("CARGO_BIN_EXE_rradius-server")).arg("serve").arg("--config").arg(path).stdout(Stdio::null()).stderr(log).spawn()?;
+        let child = Command::new(env!("CARGO_BIN_EXE_rradiusd")).arg("serve").arg("--config").arg(path).stdout(Stdio::null()).stderr(log).spawn()?;
         self.0[index] = Some(child);
         Ok(())
     }
@@ -369,7 +369,7 @@ impl MigratingCluster {
         let log = self.dir.path().join(format!("node{}-{}.log", index + 1, self.nodes.1.len()));
         let log_file = std::fs::File::create(&log).unwrap();
         self.nodes.1.push(log);
-        let child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
+        let child = Command::new(env!("CARGO_BIN_EXE_rradiusd"))
             .args(["serve", "--config", self.configs[index].to_str().unwrap()])
             .envs(self.env.iter().map(|(name, value)| (*name, value)))
             .stdout(Stdio::null())
@@ -561,7 +561,7 @@ fn test_spool_across_a_lost_quorum() {
     let spawn = |i: usize, nodes: &mut Nodes| {
         let path = dir.path().join(format!("node{}.toml", i + 1));
         let log_file = std::fs::OpenOptions::new().create(true).append(true).open(dir.path().join(format!("node{}.log", i + 1))).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
+        let child = Command::new(env!("CARGO_BIN_EXE_rradiusd"))
             .args(["serve", "--config", path.to_str().unwrap()])
             .stdout(Stdio::null())
             .stderr(log_file)
@@ -757,9 +757,9 @@ fn test_restart_without_majority_and_migrations() {
     assert!(log.contains("stop_without_leader_ms") && !log.contains("apply migrations"), "{log}");
 }
 
-/// Runs `rradius-server cluster` with `args`: its exit status, standard output and standard error.
+/// Runs `rradiusd cluster` with `args`: its exit status, standard output and standard error.
 fn cluster_command(args: &[&str]) -> Result<(Option<i32>, String, String), String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).arg("cluster").args(args).output().map_err(|e| format!("cluster {args:?}: {e}"))?;
+    let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).arg("cluster").args(args).output().map_err(|e| format!("cluster {args:?}: {e}"))?;
     Ok((output.status.code(), String::from_utf8_lossy(&output.stdout).trim_end().to_string(), String::from_utf8_lossy(&output.stderr).trim_end().to_string()))
 }
 

@@ -413,8 +413,8 @@ zh-TW = "這個資料庫連不上時 /readyz 是否回 503。每 5 秒用一條�
 # queries
 
 [fields."queries"]
-en = "Named read-only queries, by name (lower-case letters, digits and _, starting with a letter). Each node runs each one in the background and reports its rows as the gauge rradius_query_<name>; `rradius-server query <name>` runs it once. A change needs a restart. The names list, failures_total, dropped_rows_total and last_success_timestamp_seconds are taken."
-zh-TW = "命名的唯讀查詢，以名稱區分（小寫英文字母、數字與底線，以字母開頭）。每個節點在背景執行每一個，把結果的列報成 gauge rradius_query_<名稱>；`rradius-server query <名稱>` 執行一次。修改後要重啟才套用。名稱 list、failures_total、dropped_rows_total、last_success_timestamp_seconds 不能用。"
+en = "Named read-only queries, by name (lower-case letters, digits and _, starting with a letter). Each node runs each one in the background and reports its rows as the gauge rradius_query_<name>; `rradiusd query <name>` runs it once. A change needs a restart. The names list, failures_total, dropped_rows_total and last_success_timestamp_seconds are taken."
+zh-TW = "命名的唯讀查詢，以名稱區分（小寫英文字母、數字與底線，以字母開頭）。每個節點在背景執行每一個，把結果的列報成 gauge rradius_query_<名稱>；`rradiusd query <名稱>` 執行一次。修改後要重啟才套用。名稱 list、failures_total、dropped_rows_total、last_success_timestamp_seconds 不能用。"
 
 [fields."queries.*.sql"]
 en = "The statement. It reads (SELECT or WITH) and takes no parameter."

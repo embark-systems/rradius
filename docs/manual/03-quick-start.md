@@ -7,7 +7,7 @@
 > - 送一筆計費，用 `session list` 看到它寫進資料表
 > - 用 `status` 看伺服器狀態，再乾淨地停止它
 
-前置條件：照[第 02 章](02-install.md)的「從原始碼建置」建好 `rradius-server` 與 `rradius-bench`。本章全部在一台機器上做，不需要真的 NAS。
+前置條件：照[第 02 章](02-install.md)的「從原始碼建置」建好 `rradiusd` 與 `rradius-bench`。本章全部在一台機器上做，不需要真的 NAS。
 
 本章小節：
 
@@ -40,7 +40,7 @@ $ sed -i.bak "s#^dictionary = .*#dictionary = \"$PWD/share/dictionary\"#" ~/rrad
 $ cd ~/rradius-lab/quick-start
 ```
 
-- 第一行讓本章的 `rradius-server`、`rradius-bench` 指令直接可用。
+- 第一行讓本章的 `rradiusd`、`rradius-bench` 指令直接可用。
 - 情境原本的 `dictionary = "../../../../share/dictionary"` 是相對於 repo 裡的位置。複製出來之後這個相對路徑不成立，所以 `sed` 把它改成字典的絕對路徑。
 - 用 deb 或 rpm 安裝的話，範例在 `/usr/share/doc/rradius/examples/scenarios/quick-start/`，字典改成 `/usr/share/rradius/dictionary`。不過套件裡沒有 `rradius-bench`，登入測試還是要用原始碼建出來的那一個。
 
@@ -146,7 +146,7 @@ show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE
 情境附的三個 `.secret` 檔是公開的示範值，權限也太寬。先看看 `check` 怎麼說：
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 … WARN rradius_core::common::seal: cluster.secret_raft_file: 'raft.secret' has mode 644, which others can reach or its group can write; make it 0600 or 0640
 … WARN rradius_core::config: cluster.secret_raft is the public value shipped with the examples; replace it with a random one, for example from `openssl rand -hex 32`
 …
@@ -188,7 +188,7 @@ show = "SELECT username, enabled FROM users WHERE username = ?1"
 ## 檢查設定
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
@@ -199,7 +199,7 @@ configuration ok
 開一個終端機，在前景啟動：
 
 ```console
-$ rradius-server serve --config rradius.toml
+$ rradiusd serve --config rradius.toml
 … WARN hiqlite::store::state_machine::sqlite::writer: No metadata exists inside the DB yet
 … WARN hiqlite::store::state_machine::sqlite::writer: No metadata exists inside the DB yet
 … INFO rradius_core::cli: cluster node 1 started
@@ -300,9 +300,9 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 `user add` 從標準輸入讀密碼。在終端機上直接執行時，它會關掉回顯、問兩次；用管線餵進去時只讀第一行：
 
 ```console
-$ printf 'dave-password\n' | rradius-server user add --config rradius.toml dave
+$ printf 'dave-password\n' | rradiusd user add --config rradius.toml dave
 added dave
-$ rradius-server user show --config rradius.toml dave
+$ rradiusd user show --config rradius.toml dave
 username=dave
 enabled=1
 ```
@@ -320,14 +320,14 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 停用再啟用：
 
 ```console
-$ rradius-server user disable --config rradius.toml dave
+$ rradiusd user disable --config rradius.toml dave
 disabled dave
 $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
     --user dave --password dave-password --load pap,concurrency=1 --requests 1
 …
   pap: 4187/s, sent 1, accept 0, reject 1, challenge 0, accounting 0, timeouts 0, invalid 0, late 0, socket errors 0, retransmits 0
 …
-$ rradius-server user enable --config rradius.toml dave
+$ rradiusd user enable --config rradius.toml dave
 enabled dave
 ```
 
@@ -352,7 +352,7 @@ acct-start (fixed-concurrency): concurrency 1, 1 threads, 1 sockets, busiest wor
 用 `session list` 看在線的 session：
 
 ```console
-$ rradius-server session list --config rradius.toml
+$ rradiusd session list --config rradius.toml
 username=alice
 nas=192.0.2.1
 session_id=2110000000000000
@@ -379,7 +379,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 …
   acct-stop: 26/s, sent 1, accept 0, reject 0, challenge 0, accounting 1, timeouts 0, invalid 0, late 0, socket errors 0, retransmits 0
 …
-$ rradius-server session show --config rradius.toml dave
+$ rradiusd session show --config rradius.toml dave
 no sessions for dave
 ```
 
@@ -394,7 +394,7 @@ Stop 之後這個 session 就不在清單上了，`session show` 的結束碼是
 `status` 讀指標埠，整理成一頁：
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 rradius status of 127.0.0.1:9812 over 1.0 s
 
 Node
@@ -462,7 +462,7 @@ quick-start 是一份寫好的情境。如果你想從空白開始，用 `config
 
 ```console
 $ mkdir ~/rradius-lab/blank && cd ~/rradius-lab/blank
-$ rradius-server config init --lang zh-TW > rradius.toml
+$ rradiusd config init --lang zh-TW > rradius.toml
 ```
 
 這份底稿的內容：

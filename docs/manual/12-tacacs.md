@@ -127,7 +127,7 @@ secret_file = "tacacs.secret"
 - `rradius-bench` 從 `127.0.0.1` 連過來，所以用戶端的位址改成它。
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
@@ -233,7 +233,7 @@ authorize_group = "noc"            # 要先有 tacacs.authorize_groups.noc
 ## 啟動並登入
 
 ```console
-$ rradius-server serve --config rradius.toml
+$ rradiusd serve --config rradius.toml
 … INFO rradius_core::cli: cluster node 1 started
 … INFO rradius_core::cli: cluster node 1 has caught up with the cluster
 … INFO rradius_core::cli: Servers started. Press Ctrl+C to stop.
@@ -791,7 +791,7 @@ aaa accounting commands 15 default stop-only group RRADIUS
 `status` 有一段 TACACS+：
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
 TACACS+
   Open connections  0

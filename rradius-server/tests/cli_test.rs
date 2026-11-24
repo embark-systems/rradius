@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use rradius_core::test_support::server::*;
 
 /// The program these tests start.
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 fn run(args: &[&str]) -> (Option<i32>, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(args).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).args(args).output().unwrap();
     (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
@@ -36,7 +36,7 @@ fn test_missing_config_argument() {
     assert!(stderr.contains(default), "unexpected stderr: {stderr}");
     let (code, stderr) = run(&["--confg", "x"]);
     assert_eq!(code, Some(2));
-    assert!(stderr.contains("usage: rradius-server serve [--config <path>]") && stderr.contains(&format!("without --config, the configuration is {default}")), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("usage: rradiusd serve [--config <path>]") && stderr.contains(&format!("without --config, the configuration is {default}")), "unexpected stderr: {stderr}");
 }
 
 /// The exit status, standard output and standard error of the program run with `args`.
@@ -52,7 +52,7 @@ fn test_help_prints_the_usage() -> Result<(), String> {
     for help in ["help", "--help", "-h"] {
         let (code, stdout, stderr) = output_of(&[help])?;
         assert_eq!(code, Some(0), "{help}: {stderr}");
-        for line in ["usage: rradius-server serve [--config <path>]", "usage: rradius-server check [--config <path>]", "usage: rradius-server --version", "usage: rradius-server config show", "usage: rradius-server tuning", "usage: rradius-server user"] {
+        for line in ["usage: rradiusd serve [--config <path>]", "usage: rradiusd check [--config <path>]", "usage: rradiusd --version", "usage: rradiusd config show", "usage: rradiusd tuning", "usage: rradiusd user"] {
             assert!(stdout.contains(line), "{help}: {line} missing from {stdout}");
         }
         assert!(stdout.ends_with(&format!("without --config, the configuration is {default}\n")), "{help}: {stdout}");
@@ -68,7 +68,7 @@ fn test_no_arguments_print_the_usage() -> Result<(), String> {
     let output = Command::new(PROGRAM).current_dir(dir.path()).output().map_err(|e| e.to_string())?;
     let (stdout, stderr) = (String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     assert_eq!(output.status.code(), Some(0), "{stderr}");
-    assert!(stdout.starts_with("usage: rradius-server serve [--config <path>]\nusage: rradius-server check [--config <path>]\n"), "{stdout}");
+    assert!(stdout.starts_with("usage: rradiusd serve [--config <path>]\nusage: rradiusd check [--config <path>]\n"), "{stdout}");
     assert!(stderr.is_empty(), "{stderr}");
     let (_, help, _) = output_of(&["--help"])?;
     assert_eq!(stdout, help);
@@ -83,8 +83,8 @@ fn test_old_flags_name_the_subcommands() -> Result<(), String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let (config, _) = write_config(dir.path(), "return 'accept'", None);
     let config = config.to_str().ok_or("path not UTF-8")?;
-    let start = "to start the server: rradius-server serve --config <path>";
-    let check = "to check a configuration: rradius-server check [--config <path>]";
+    let start = "to start the server: rradiusd serve --config <path>";
+    let check = "to check a configuration: rradiusd check [--config <path>]";
     for (args, hint) in [
         (&["--config", config][..], Some(start)),
         (&["--config", config, "--check"], Some(check)),
@@ -94,7 +94,7 @@ fn test_old_flags_name_the_subcommands() -> Result<(), String> {
     ] {
         let (code, stdout, stderr) = output_of(args)?;
         assert_eq!(code, Some(2), "{args:?}");
-        assert!(stdout.is_empty() && stderr.contains("usage: rradius-server serve [--config <path>]"), "{args:?}: {stderr}");
+        assert!(stdout.is_empty() && stderr.contains("usage: rradiusd serve [--config <path>]"), "{args:?}: {stderr}");
         match hint {
             Some(hint) => {
                 assert!(stderr.trim_end().ends_with(hint), "{args:?}: {stderr}");
@@ -112,11 +112,11 @@ fn test_old_flags_name_the_subcommands() -> Result<(), String> {
 #[test]
 fn test_server_and_check_arguments() -> Result<(), String> {
     for (args, usage) in [
-        (&["serve", "extra"][..], "usage: rradius-server serve [--config <path>]"),
-        (&["serve", "--config"], "usage: rradius-server serve [--config <path>]"),
-        (&["serve", "--config", "a.toml", "extra"], "usage: rradius-server serve [--config <path>]"),
-        (&["check", "extra"], "usage: rradius-server check [--config <path>]"),
-        (&["check", "--config", "a.toml", "extra"], "usage: rradius-server check [--config <path>]"),
+        (&["serve", "extra"][..], "usage: rradiusd serve [--config <path>]"),
+        (&["serve", "--config"], "usage: rradiusd serve [--config <path>]"),
+        (&["serve", "--config", "a.toml", "extra"], "usage: rradiusd serve [--config <path>]"),
+        (&["check", "extra"], "usage: rradiusd check [--config <path>]"),
+        (&["check", "--config", "a.toml", "extra"], "usage: rradiusd check [--config <path>]"),
     ] {
         let (code, stdout, stderr) = output_of(args)?;
         assert_eq!(code, Some(2), "{args:?}");
@@ -131,8 +131,8 @@ fn test_server_subcommand_removed() -> Result<(), String> {
     let (code, stdout, stderr) = output_of(&["server", "--config", "a.toml"])?;
     assert_eq!(code, Some(2));
     assert!(stdout.is_empty(), "{stdout}");
-    assert!(stderr.contains("usage: rradius-server serve [--config <path>]"), "{stderr}");
-    assert!(!stderr.contains("usage: rradius-server server") && !stderr.contains("to start the server:"), "{stderr}");
+    assert!(stderr.contains("usage: rradiusd serve [--config <path>]"), "{stderr}");
+    assert!(!stderr.contains("usage: rradiusd server") && !stderr.contains("to start the server:"), "{stderr}");
     Ok(())
 }
 
@@ -378,7 +378,7 @@ fn lone_node_config(dir: &Path) -> PathBuf {
 /// than hanging it.
 fn run_within(limit: Duration, config: &Path) -> (Option<i32>, String) {
     let stderr_path = config.with_extension("stderr");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rradiusd"))
         .args(["serve", "--config", config.to_str().unwrap()])
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&stderr_path).unwrap())
@@ -944,7 +944,7 @@ fn piped_server(script: &str) -> (Server, u16) {
     let text = std::fs::read_to_string(&config).unwrap().replace("script = \"top.lua\"", "script = \"top.lua\"\nmax_execution_ms = 120000");
     std::fs::write(&config, format!("{text}[metrics]\nport = {port}\n")).unwrap();
     let stdout = std::fs::File::create(dir.path().join("stdout.log")).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
+    let child = Command::new(env!("CARGO_BIN_EXE_rradiusd"))
         .args(["serve", "--config", config.to_str().unwrap()])
         .current_dir(dir.path())
         .stdout(stdout)
@@ -1486,7 +1486,7 @@ fn check_spool(dir: &Path, spool: &Path) -> (Option<i32>, String) {
     let (config, _) = write_config(dir, "return 'accept'", None);
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(&config, format!("{text}\n[radius.accounting_spool]\ndir = \"{}\"\n", spool.display())).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(["check", "--config", config.to_str().unwrap()]).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).args(["check", "--config", config.to_str().unwrap()]).output().unwrap();
     (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
@@ -1660,7 +1660,7 @@ fn test_out_of_file_descriptors() {
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(&config, format!("{text}[metrics]\nport = {metrics_port}\n[tacacs]\nport = {tacacs_port}\n# All the test's connections come from one address, and must reach the file descriptor limit.\nmax_connections_per_source = 1024\n[[tacacs.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n")).unwrap();
     let child = Command::new("sh")
-        .args(["-c", "ulimit -n 128 && exec \"$0\" serve --config \"$1\"", env!("CARGO_BIN_EXE_rradius-server"), config.to_str().unwrap()])
+        .args(["-c", "ulimit -n 128 && exec \"$0\" serve --config \"$1\"", env!("CARGO_BIN_EXE_rradiusd"), config.to_str().unwrap()])
         .current_dir(dir.path())
         .stdout(std::fs::File::create(dir.path().join("stdout.log")).unwrap())
         .stderr(std::fs::File::create(dir.path().join("stderr.log")).unwrap())
@@ -2027,14 +2027,14 @@ impl Accounts for Server {
         RadiusPacket::parse(&buf[..size]).unwrap().code
     }
 
-    /// `rradius-server user <args> --config <this server's>`, with `stdin` as its input.
+    /// `rradiusd user <args> --config <this server's>`, with `stdin` as its input.
     fn user(&self, args: &[&str], stdin: &str) -> (Option<i32>, String, String) {
         user_command(&self.config, args, stdin)
     }
 }
 
 fn user_command(config: &Path, args: &[&str], stdin: &str) -> (Option<i32>, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rradiusd"))
         .arg("user")
         .args(args)
         .args(["--config", config.to_str().unwrap()])
@@ -2061,7 +2061,7 @@ fn test_user_commands_change_what_logins_see() {
     assert_eq!((code, stdout.as_str()), (Some(0), "username=alice\nenabled=1"));
     assert_eq!(server.user(&["show", "nobody"], ""), (Some(1), "no account nobody".to_string(), String::new()));
     // The configuration may come before the name too.
-    let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(["user", "show", "--config", server.config.to_str().unwrap(), "alice"]).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).args(["user", "show", "--config", server.config.to_str().unwrap(), "alice"]).output().unwrap();
     assert_eq!((output.status.code(), String::from_utf8_lossy(&output.stdout).trim()), (Some(0), "username=alice\nenabled=1"));
 
     assert_eq!(server.user(&["passwd", "alice"], "n3w\n").1, "password changed for alice");
@@ -2155,7 +2155,7 @@ fn test_interrupted_prompt_puts_the_echo_back() {
     assert!(echoes());
     // SAFETY: a fresh duplicate, owned by the child's standard input from here on.
     let input = unsafe { Stdio::from_raw_fd(libc::dup(follower)) };
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rradius-server"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rradiusd"))
         .args(["user", "add", "alice", "--config", config.to_str().unwrap()])
         .stdin(input)
         .stdout(Stdio::null())
@@ -2182,13 +2182,14 @@ fn test_interrupted_prompt_puts_the_echo_back() {
 #[test]
 fn test_version() {
     let dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).arg("--version").current_dir(dir.path()).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).arg("--version").current_dir(dir.path()).output().unwrap();
     assert_eq!(output.status.code(), Some(0));
-    let expected = format!("rradius-server {}\ndefault config: {}\n", env!("CARGO_PKG_VERSION"), rradius_core::config::default_config_path());
+    let expected = format!("rradiusd {} (community)\ndefault config: {}\n", env!("CARGO_PKG_VERSION"), rradius_core::config::default_config_path());
     assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was created");
     let (code, stderr) = run(&["--version", "extra"]);
     assert_eq!(code, Some(2), "{stderr}");
+    assert!(!stderr.contains("rradius-server"), "the usage names no old program name: {stderr}");
 }
 
 /// With `pin_threads`, each worker thread has one CPU of its own, and every other thread,
@@ -2477,7 +2478,7 @@ fn test_ocsp_needs_the_enterprise_program() -> Result<(), String> {
         let config = write_tls_config(dir.path(), &section)?;
         let config = config.to_str().ok_or("a path that is not UTF-8")?;
         for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
-            let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
+            let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).args(&args).output().map_err(|e| e.to_string())?;
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
             assert!(stderr.contains(expected), "{args:?}: {stderr}");
@@ -2497,7 +2498,7 @@ fn test_backups_need_the_enterprise_program() -> Result<(), String> {
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     let config = config.to_str().ok_or("a path that is not UTF-8")?;
     for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
+        let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).args(&args).output().map_err(|e| e.to_string())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains("cluster.backup: not supported by this program (backups need rradius-enterprise)"), "{args:?}: {stderr}");
@@ -2516,7 +2517,7 @@ fn test_accounting_export_needs_enterprise() -> Result<(), String> {
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     let config = config.to_str().ok_or("a path that is not UTF-8")?;
     for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
+        let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).args(&args).output().map_err(|e| e.to_string())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains("accounting_export: not supported by this program (accounting export needs rradius-enterprise)"), "{args:?}: {stderr}");
@@ -2551,7 +2552,7 @@ fn test_diameter_needs_enterprise() -> Result<(), String> {
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     let config = config.to_str().ok_or("a path that is not UTF-8")?;
     for args in [vec!["serve", "--config", config], vec!["check", "--config", config]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_rradius-server")).args(&args).output().map_err(|e| e.to_string())?;
+        let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).args(&args).output().map_err(|e| e.to_string())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains(REFUSED), "{args:?}: {stderr}");
@@ -2647,7 +2648,7 @@ fn test_dpsk_needs_the_enterprise_program() -> Result<(), String> {
         assert!(stderr.contains(&format!("{}: not supported by this program (DPSK needs rradius-enterprise)", args[0])) && !stderr.contains("nonexistent"), "{args:?}: {stderr}");
     }
     let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stdout).into_owned();
-    assert!(usage.contains("usage: rradius-server user") && !usage.contains("dpsk"), "{usage}");
+    assert!(usage.contains("usage: rradiusd user") && !usage.contains("dpsk"), "{usage}");
     Ok(())
 }
 
@@ -2676,7 +2677,7 @@ fn test_aka_needs_the_enterprise_program() -> Result<(), String> {
         assert!(stderr.contains(&format!("{}: not supported by this program (EAP-AKA' needs rradius-enterprise)", args[0])) && !stderr.contains("nonexistent"), "{args:?}: {stderr}");
     }
     let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stdout).into_owned();
-    assert!(usage.contains("usage: rradius-server user") && !usage.contains("aka"), "{usage}");
+    assert!(usage.contains("usage: rradiusd user") && !usage.contains("aka"), "{usage}");
     Ok(())
 }
 
@@ -2709,10 +2710,10 @@ fn test_client_command_needs_the_enterprise_program() -> Result<(), String> {
     assert!(stderr.contains("client: not supported by this program (dynamic clients need rradius-enterprise)") && !stderr.contains("nonexistent"), "{stderr}");
     // Nor does its usage list it.
     let usage = String::from_utf8_lossy(&Command::new(PROGRAM).arg("--help").output().map_err(|e| e.to_string())?.stdout).into_owned();
-    assert!(usage.contains("usage: rradius-server user") && !usage.contains("client add"), "{usage}");
+    assert!(usage.contains("usage: rradiusd user") && !usage.contains("client add"), "{usage}");
     // A section that needs it is no command: the usage, not its message.
     let section = String::from_utf8_lossy(&Command::new(PROGRAM).arg("radius.tls").output().map_err(|e| e.to_string())?.stderr).into_owned();
-    assert!(section.contains("usage: rradius-server user") && !section.contains("not supported"), "{section}");
+    assert!(section.contains("usage: rradiusd user") && !section.contains("not supported"), "{section}");
     Ok(())
 }
 
@@ -2745,10 +2746,10 @@ fn test_cluster_command_usage() -> Result<(), String> {
     for args in [&["cluster"][..], &["cluster", "join"], &["cluster", "remove"], &["cluster", "remove", "abc"]] {
         let (code, stdout, stderr) = output_of(args)?;
         assert_eq!((code, stdout.as_str()), (Some(2), ""), "{args:?}: {stderr}");
-        assert!(stderr.contains("usage: rradius-server cluster members|remove") || stderr.contains("positive integer"), "{args:?}: {stderr}");
+        assert!(stderr.contains("usage: rradiusd cluster members|remove") || stderr.contains("positive integer"), "{args:?}: {stderr}");
     }
     let (_, stdout, _) = output_of(&["help"])?;
-    assert!(stdout.contains("usage: rradius-server cluster members|remove"), "{stdout}");
+    assert!(stdout.contains("usage: rradiusd cluster members|remove"), "{stdout}");
     Ok(())
 }
 

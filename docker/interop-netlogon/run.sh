@@ -9,7 +9,7 @@ set -u
 
 cd "$(dirname "$0")"
 root=$(cd ../.. && pwd)
-server=$root/target/release/rradius-server
+server=$root/target/release/rradiusd
 bench=$root/target/release/rradius-bench
 image=rradius-netlogon-interop
 dc=rradius-netlogon-dc

@@ -102,10 +102,10 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 
 ## 用 user 指令管理帳號
 
-`rradius-server user` 有六個子指令：
+`rradiusd user` 有六個子指令：
 
 ```text
-rradius-server user add|passwd|enable|disable|delete|show [--config <path>] <name>
+rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>
 ```
 
 它們不直接碰資料表的結構，只執行你在 `[accounts]` 寫好的 SQL。所以帳號表長什麼樣子由你決定，`user` 指令照你的表去寫。
@@ -142,17 +142,17 @@ show = "SELECT username, enabled FROM users WHERE username = ?1"
 ### 目標：新增帳號、改密碼、停用、刪除
 
 ```console
-$ printf 'erin-password\n' | rradius-server user add --config rradius.toml erin
+$ printf 'erin-password\n' | rradiusd user add --config rradius.toml erin
 added erin
-$ printf 'erin-new-password\n' | rradius-server user passwd --config rradius.toml erin
+$ printf 'erin-new-password\n' | rradiusd user passwd --config rradius.toml erin
 password changed for erin
-$ rradius-server user disable --config rradius.toml erin
+$ rradiusd user disable --config rradius.toml erin
 disabled erin
-$ rradius-server user enable --config rradius.toml erin
+$ rradiusd user enable --config rradius.toml erin
 enabled erin
-$ rradius-server user delete --config rradius.toml erin
+$ rradiusd user delete --config rradius.toml erin
 deleted erin
-$ rradius-server user show --config rradius.toml erin
+$ rradiusd user show --config rradius.toml erin
 no account erin
 ```
 
@@ -321,13 +321,13 @@ $ rradius-bench run … --user ldap3 --password ldap3-password --load pap,concur
 改一次密碼，看 `origin` 跟著變：
 
 ```console
-$ rradius-server user show --config rradius.toml ldap1
+$ rradiusd user show --config rradius.toml ldap1
 username=ldap1
 enabled=1
 origin=ldap
-$ printf 'new-pass\n' | rradius-server user passwd --config rradius.toml ldap1
+$ printf 'new-pass\n' | rradiusd user passwd --config rradius.toml ldap1
 password changed for ldap1
-$ rradius-server user show --config rradius.toml ldap1
+$ rradiusd user show --config rradius.toml ldap1
 username=ldap1
 enabled=1
 origin=rradius

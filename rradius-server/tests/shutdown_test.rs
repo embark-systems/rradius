@@ -8,7 +8,7 @@ use std::net::UdpSocket;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 /// A script that takes a second or more: a query the database has to count through.
 const SLOW: &str = "sql_query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 3000000) SELECT count(*) AS n FROM c') return 'accept'";

@@ -2,7 +2,7 @@
 
 這份手冊依主題寫：先認識程式、安裝、第一次登入，再依功能一章一章往下，最後是設定、命令與指標的參考附錄。常見的部署情境（企業 Wi-Fi、有線 MAC 認證、遠端存取、寬頻與 ISP）寫成「情境實作」章，每個情境都有可以直接啟動的設定檔，放在 [`rradius-server/examples/scenarios/`](../../rradius-server/examples/scenarios/)，並有自動測試（`rradius-server/tests/scenarios_test.rs`）照手冊的方式啟動它們。
 
-指令的用法也可以直接問程式：`rradius-server help`、`rradius-server schema` 與 `rradius-server config show`。
+指令的用法也可以直接問程式：`rradiusd help`、`rradiusd schema` 與 `rradiusd config show`。
 
 ## 第一次使用
 

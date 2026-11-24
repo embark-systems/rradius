@@ -9,6 +9,7 @@ The first release.
 ### Added
 
 - **RADIUS:** authentication, accounting and Status-Server; PAP, CHAP, MS-CHAPv2, EAP-TLS, PEAP-MSCHAPv2 and EAP-TTLS; extended and vendor-specific attributes; the dictionaries in `share/`.
+- **Executable name:** the program is `rradiusd`, in this edition and in the enterprise edition, so that moving from one to the other replaces one file. `rradiusd --version` prints `(community)` or `(enterprise)` after the version. The crates, the container image and the release archives keep their names.
 - **Traffic bytes:** `rradius_traffic_bytes_total{protocol,direction}` counts the bytes of RADIUS (UDP) and TACACS+ packets received and written, and `status` shows them as `In bytes` and `Out bytes`. They are protocol packets, without the headers of IP, UDP, TCP and TLS, and without RadSec and proxy traffic. `status` shows them in B, KiB, MiB, GiB and TiB (1024 each); `--json` and the metrics keep plain bytes.
 - **TACACS+:** authentication, authorization (permit and deny rules by device group) and accounting.
 - **Account sources:** built-in tables with many password hash formats, LDAP and Active Directory, HTTP APIs and other databases, which can be chained.

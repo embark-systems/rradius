@@ -16,7 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::signal::unix::{signal, SignalKind};
 
-pub const USAGE: &str = "usage: rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]";
+pub const USAGE: &str = "usage: rradiusd status [--config <path>] [--cluster] [--watch | --json | --tui]";
 
 /// How long one exchange with the metrics port may take.
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(2);

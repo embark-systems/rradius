@@ -1,4 +1,4 @@
-//! `rradius-server cluster ...`: lists the cluster's members and removes a node, through the
+//! `rradiusd cluster ...`: lists the cluster's members and removes a node, through the
 //! management API every node serves on its api port. A node joins on its own (a configuration
 //! listing it, an empty data directory), so there is nothing to add.
 //!
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub const USAGE: &str = "usage: rradius-server cluster members|remove [--config <path>] [--force] [<node_id>]\n  remove takes a node id, and --force to leave one or two voters";
+pub const USAGE: &str = "usage: rradiusd cluster members|remove [--config <path>] [--force] [<node_id>]\n  remove takes a node id, and --force to leave one or two voters";
 
 /// How long one node has to answer one request. The cluster's own clients give up connecting
 /// after the same time.
@@ -296,7 +296,7 @@ pub(crate) async fn check_node_id_free(own: &ClusterNode, configured: &[ClusterN
                 }
                 return Err(format!(
                     "node id {} is in use: the cluster has it at api {} (raft {}), and that node answers, but this node's configuration gives it api {} (raft {}); \
-                     use an id no node has (see `rradius-server cluster members`), or stop the running node first",
+                     use an id no node has (see `rradiusd cluster members`), or stop the running node first",
                     own.id, taken.api, taken.raft, own.api, own.raft
                 ));
             }

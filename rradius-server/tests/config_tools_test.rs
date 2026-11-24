@@ -1,11 +1,11 @@
-//! `rradius-server config show|diff|init`: the effective configuration, the differences between
+//! `rradiusd config show|diff|init`: the effective configuration, the differences between
 //! two, and a starting one. None of them starts anything or writes a file.
 
 use rradius_core::test_support::server::write_config;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 fn config(args: &[&str]) -> Result<(Option<i32>, String, String), String> {
     let output = Command::new(PROGRAM).arg("config").args(args).output().map_err(|e| e.to_string())?;
@@ -150,7 +150,7 @@ fn test_wrong_arguments() -> Result<(), String> {
     for args in [&[][..], &["show", "extra"], &["diff", "a.toml"], &["init", "--lang", "fr"], &["unknown"]] {
         let (code, _, stderr) = config(args)?;
         assert_eq!(code, Some(2), "{args:?}");
-        assert!(stderr.contains("usage: rradius-server config show"), "{args:?}: {stderr}");
+        assert!(stderr.contains("usage: rradiusd config show"), "{args:?}: {stderr}");
     }
     Ok(())
 }
