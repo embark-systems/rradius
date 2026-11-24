@@ -267,7 +267,7 @@ image 的內容：
 | 項目 | 值 |
 | --- | --- |
 | 執行檔 | `/usr/local/bin/rradius-server`，是 `ENTRYPOINT` |
-| 預設指令 | `CMD ["server", "--config", "/etc/rradius/rradius.toml"]` |
+| 預設指令 | `CMD ["serve", "--config", "/etc/rradius/rradius.toml"]` |
 | 字典 | `/usr/share/rradius/` |
 | 執行身分 | `rradius`（uid 10001），不是 root |
 | 資料 | `VOLUME /var/lib/rradius`，擁有者是 `rradius` |
@@ -514,7 +514,7 @@ configuration ok
 
 `rradius.service`（來源是 `packages/common/rradius.service`）：
 
-- `ExecStart=/usr/bin/rradius-server server`：讀預設設定檔。
+- `ExecStart=/usr/bin/rradius-server serve`：讀預設設定檔。
 - `ConditionPathExists=/etc/rradius/rradius.toml`：設定檔不存在時，服務不會啟動。
 - 以 `rradius` 用戶執行，`AmbientCapabilities=CAP_NET_BIND_SERVICE` 讓它能綁 TACACS+ 的埠 49。
 - `Restart=on-failure`、`RestartSec=2`：程式異常結束時兩秒後重啟。
@@ -555,7 +555,7 @@ default config: /etc/rradius/rradius.toml
 ```
 
 **原因：** 預設設定檔不存在。套件不會幫你建立它。
-**解法：** 照[套件安裝後的第一次啟動](#套件安裝後的第一次啟動)用 `config init` 產生，或用 `--config` 指定別的檔案。用 `server` 啟動時，錯誤訊息下面會多一行 `(the default configuration; give --config <path> for another)`。
+**解法：** 照[套件安裝後的第一次啟動](#套件安裝後的第一次啟動)用 `config init` 產生，或用 `--config` 指定別的檔案。用 `serve` 啟動時，錯誤訊息下面會多一行 `(the default configuration; give --config <path> for another)`。
 
 **症狀：** `systemctl start rradius` 沒有任何錯誤，服務卻沒有在跑。
 **原因：** `/etc/rradius/rradius.toml` 不存在，unit 的 `ConditionPathExists` 不成立，服務被略過。
@@ -569,7 +569,7 @@ default config: /etc/rradius/rradius.toml
 **原因：** `config init` 的底稿指向 `auth.lua`，這個檔案要自己建立。
 **解法：** 在設定檔旁邊建立 `auth.lua`（第 10 章）。
 
-**症狀：** `check` 通過，`server` 卻印出 `cannot start cluster node 1: …` 並結束，結束碼 2。
+**症狀：** `check` 通過，`serve` 卻印出 `cannot start cluster node 1: …` 並結束，結束碼 2。
 **原因：** 資料目錄不能寫入。最常見的是沿用了底稿的 `data_dir = "data"`，在套件安裝的環境裡它變成 `/etc/rradius/data`。`check` 不會試著寫資料目錄，所以檢查不出來。
 **解法：** 把 `data_dir` 改成 `/var/lib/rradius`（FreeBSD 是 `/var/db/rradius`），確認擁有者是 `rradius`。
 

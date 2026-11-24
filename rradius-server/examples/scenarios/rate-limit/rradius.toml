@@ -3,7 +3,7 @@
 # 說明：docs/manual/14-isp-recipes.md〈依 BNG 回速率：rate-limit〉
 #
 #   cd rradius-server
-#   cargo run --release -- server --config examples/scenarios/rate-limit/rradius.toml
+#   cargo run --release -- serve --config examples/scenarios/rate-limit/rradius.toml
 #
 # 相對路徑都以這個檔案所在的目錄為準。
 

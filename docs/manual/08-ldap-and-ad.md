@@ -437,7 +437,7 @@ $ install -m 600 -o rradius /dev/null /etc/rradius/netlogon-rradius1.secret
 $ read -rs pw && printf '%s' "$pw" > /etc/rradius/netlogon-rradius1.secret
 ```
 
-> **警告：** 電腦帳號的密碼就是這台伺服器在網域裡的身分。檔案權限設成 0600；`check` 與 `server` 發現檔案別人讀得到時會警告。
+> **警告：** 電腦帳號的密碼就是這台伺服器在網域裡的身分。檔案權限設成 0600；`check` 與 `serve` 發現檔案別人讀得到時會警告。
 
 ### 設定
 

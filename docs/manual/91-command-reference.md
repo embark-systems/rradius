@@ -15,7 +15,7 @@
 - [驗證用的環境](#驗證用的環境)
 - [命令總覽](#命令總覽)
 - [結束碼總表](#結束碼總表)
-- [server](#server)
+- [serve](#serve)
 - [check](#check)
 - [help、--version](#help--version)
 - [schema](#schema)
@@ -125,7 +125,7 @@ interval_ms = 60000
 
 | 命令 | 做什麼 | 要伺服器在執行中 | 主章 |
 | --- | --- | --- | --- |
-| `server` | 啟動伺服器，直到收到停止訊號 | — | [03](03-quick-start.md) |
+| `serve` | 啟動伺服器，直到收到停止訊號 | — | [03](03-quick-start.md) |
 | `check` | 檢查設定，不開任何埠 | 否 | [04](04-configuration.md) |
 | `status` | 讀指標埠，整理成一頁 | 是（讀 `[metrics]`） | [17](17-monitoring.md) |
 | `--version` | 印出版本與預設設定檔路徑 | 否 | 本章 |
@@ -154,7 +154,7 @@ interval_ms = 60000
 
 | 命令 | 0 | 1 | 2 | 3 |
 | --- | --- | --- | --- | --- |
-| `server` | 收到 SIGTERM 或 SIGINT 後正常停止，包括啟動途中被要求停止 | 啟動後無法服務：RADIUS 埠無法監聽、叢集錯誤中斷 migration、沒有 leader 而設了 `stop_without_leader_ms`、Raft 核心停止 | 設定、字典、腳本有錯，migration 檔不合規則或 SQL 失敗，叢集節點無法啟動（`cannot start cluster node …`），參數不對 | — |
+| `serve` | 收到 SIGTERM 或 SIGINT 後正常停止，包括啟動途中被要求停止 | 啟動後無法服務：RADIUS 埠無法監聽、叢集錯誤中斷 migration、沒有 leader 而設了 `stop_without_leader_ms`、Raft 核心停止 | 設定、字典、腳本有錯，migration 檔不合規則或 SQL 失敗，叢集節點無法啟動（`cannot start cluster node …`），參數不對 | — |
 | `check` | `configuration ok` | — | 設定有錯 | — |
 | `help`、`--version`、不帶參數 | 印出結果 | — | 不認得的命令 | — |
 | `schema` | 印出 schema | 寫出失敗，例如管線被關掉 | 參數不對 | — |
@@ -168,7 +168,7 @@ interval_ms = 60000
 | `cluster` | 成功 | `remove`：叢集裡沒有這個節點、leader 拒絕、leader 連續換了兩次 | 參數或設定有錯、API 密碼不對、要移除的節點還在回應、移除後只剩一或兩個 voter 而沒有 `--force`、最後一個 voter | 30 秒內沒有回答；`remove` 送出後沒有回應 |
 | 企業版的命令 | — | — | 一律 2 | — |
 
-> **未實機驗證：** 表中這幾格只對照了程式碼，沒有實際重現：`server` 啟動途中被要求停止的 0；`server` 因叢集錯誤中斷 migration、`stop_without_leader_ms`、Raft 核心停止的 1；`server` 叢集節點無法啟動的 2；`tuning` 在沒有建議的平台上的 0；`status --cluster` 問不到成員的 2；`query` 的 SQL 失敗的 2、沒有任何查詢時 `query list` 的 0；`user` 兩次密碼不同的 2；`cluster` 需要多節點的各格（見 [cluster](#cluster)）。其他各格都實測過。
+> **未實機驗證：** 表中這幾格只對照了程式碼，沒有實際重現：`serve` 啟動途中被要求停止的 0；`serve` 因叢集錯誤中斷 migration、`stop_without_leader_ms`、Raft 核心停止的 1；`serve` 叢集節點無法啟動的 2；`tuning` 在沒有建議的平台上的 0；`status --cluster` 問不到成員的 2；`query` 的 SQL 失敗的 2、沒有任何查詢時 `query list` 的 0；`user` 兩次密碼不同的 2；`cluster` 需要多節點的各格（見 [cluster](#cluster)）。其他各格都實測過。
 
 `rradius-bench` 另有一套，見 [run 的輸出與結束碼](#run-的輸出與結束碼)：0 全部 Accept，1 有 Reject 或 Challenge，2 有逾時、無效回應或 socket 錯誤，3 參數錯誤或沒能開始。
 
@@ -176,10 +176,10 @@ interval_ms = 60000
 
 ---
 
-## server
+## serve
 
 ```text
-rradius-server server [--config <path>]
+rradius-server serve [--config <path>]
 ```
 
 啟動伺服器：讀設定、啟動叢集節點、套用 migrations、開 RADIUS／TACACS+／指標埠，然後一直執行。啟動的過程與日誌見 [03 第一次啟動與登入](03-quick-start.md)。
@@ -193,7 +193,7 @@ rradius-server server [--config <path>]
 | 停止途中再一次 SIGTERM 或 SIGINT | 不再等處理中的請求 |
 
 ```console
-$ rradius-server server --config rradius.toml
+$ rradius-server serve --config rradius.toml
 …
 … INFO rradius_core::cli: Servers started. Press Ctrl+C to stop.
 … INFO rradius_core::radius: RADIUS Server listening on 127.0.0.1:1812 and 127.0.0.1:1813
@@ -204,18 +204,18 @@ $ rradius-server server --config rradius.toml
 結束碼的例子（都實測過）：
 
 ```console
-$ rradius-server server --config bindfail.toml      # RADIUS 埠被別的行程占用
+$ rradius-server serve --config bindfail.toml      # RADIUS 埠被別的行程占用
 …
 RADIUS server error: cannot listen on 127.0.0.1:1812: Address already in use (os error 48)
 $ echo $?
 1
-$ rradius-server server --config badmig.toml        # migration 檔的 SQL 有錯
+$ rradius-server serve --config badmig.toml        # migration 檔的 SQL 有錯
 migration file '1_bad.sql' could not be applied: Sqlite: near "TABL": syntax error in CREATE TABL oops (x);
  at offset 7
 $ echo $?
 2
-$ rradius-server server --config rradius.toml extra
-usage: rradius-server server [--config <path>]
+$ rradius-server serve --config rradius.toml extra
+usage: rradius-server serve [--config <path>]
 $ echo $?
 2
 ```
@@ -242,7 +242,7 @@ $ echo $?
 ```
 
 - 成功時印 `configuration ok`（標準輸出），結束碼 0；有錯時印出原因（標準錯誤），結束碼 2。
-- `check` 只檢查 migration 檔的**檔名**，不執行 SQL。上一節 `1_bad.sql` 的語法錯誤，`check` 會通過，`server` 才會發現。
+- `check` 只檢查 migration 檔的**檔名**，不執行 SQL。上一節 `1_bad.sql` 的語法錯誤，`check` 會通過，`serve` 才會發現。
 - `check` 後面多一個參數，例如 `check --config a.toml extra`，印出 `usage: rradius-server check [--config <path>]`，結束碼 2。
 
 ## help、--version
@@ -252,7 +252,7 @@ $ rradius-server --version
 rradius-server 0.1.0
 default config: /etc/rradius/rradius.toml
 $ rradius-server help
-usage: rradius-server server [--config <path>]
+usage: rradius-server serve [--config <path>]
 usage: rradius-server check [--config <path>]
 usage: rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]
 usage: rradius-server --version
@@ -594,7 +594,7 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 
 | 舊的寫法 | 最後一行的提示 |
 | --- | --- |
-| `rradius-server --config <path>` | `to start the server: rradius-server server --config <path>` |
+| `rradius-server --config <path>` | `to start the server: rradius-server serve --config <path>` |
 | 任何位置有 `--check`，例如 `rradius-server --check --config <path>` | `to check a configuration: rradius-server check [--config <path>]` |
 
 ## 只有企業版才有的命令
@@ -875,7 +875,7 @@ $ while read k; do grep -qF "\`$k\`" 91-command-reference.md || echo "missing: $
 
 **症狀：** `rradius-server --config rradius.toml` 沒有啟動，印出整份用法與 `to start the server: …`。
 **原因：** 舊的寫法，現在啟動是子命令。
-**解法：** 寫成 `rradius-server server --config rradius.toml`。
+**解法：** 寫成 `rradius-server serve --config rradius.toml`。
 
 **症狀：** `rradius-server config show --config a.toml --lang zh-TW` 印出 `config` 的用法，結束碼 2。
 **原因：** 只有 `config init` 接受 `--lang`。
@@ -903,7 +903,7 @@ $ while read k; do grep -qF "\`$k\`" 91-command-reference.md || echo "missing: $
 
 ## 相關章節
 
-- [03 第一次啟動與登入](03-quick-start.md)：`server`、`user`、`session`、`status` 的第一次使用
+- [03 第一次啟動與登入](03-quick-start.md)：`serve`、`user`、`session`、`status` 的第一次使用
 - [04 設定檔的基本功](04-configuration.md)：`check`、`config`、`schema`、reload
 - [07 使用者帳號與驗證鏈](07-users-and-chains.md)：`user` 與 `[accounts]`
 - [09 外部資料庫與具名查詢](09-external-databases.md)：`query` 與 `[queries]`

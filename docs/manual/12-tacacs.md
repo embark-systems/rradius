@@ -233,7 +233,7 @@ authorize_group = "noc"            # 要先有 tacacs.authorize_groups.noc
 ## 啟動並登入
 
 ```console
-$ rradius-server server --config rradius.toml
+$ rradius-server serve --config rradius.toml
 … INFO rradius_core::cli: cluster node 1 started
 … INFO rradius_core::cli: cluster node 1 has caught up with the cluster
 … INFO rradius_core::cli: Servers started. Press Ctrl+C to stop.

@@ -359,7 +359,7 @@ $ cd y/benchmarks
 `<repo>` 換成原始碼 repo 的路徑。下面的指令都用預設埠（RADIUS 1812、1813，指標 9812）；`--auth-port`、`--acct-port` 寫出來只是讓你看清楚對的是哪個埠，用預設埠時可以拿掉。
 
 ```console
-$ rradius-server server --config accept.toml
+$ rradius-server serve --config accept.toml
 ```
 
 另一個終端機：

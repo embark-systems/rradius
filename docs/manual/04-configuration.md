@@ -398,7 +398,7 @@ $ service rradius reload        # FreeBSD 的 rc 腳本
 **驗證：** 在[一份從零開始的設定](#一份從零開始的設定)的伺服器跑著時，加入 `conf.d/20-lab.toml`（見[把設定拆成多個檔案](#把設定拆成多個檔案)）再送 SIGHUP：
 
 ```console
-$ kill -HUP $(pgrep -f 'rradius-server server')
+$ kill -HUP $(pgrep -f 'rradius-server serve')
 $ curl -s http://127.0.0.1:9812/metrics | grep '^rradius_reload'
 rradius_reload_total{result="ok"} 1
 rradius_reload_total{result="error"} 0
@@ -566,7 +566,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 **解法：** 用 `config show` 看讀進來了什麼；確認檔案的副檔名、所在目錄，以及相對路徑是以主檔的目錄為準。
 
 **症狀：** `nonexist.toml: cannot read configuration: No such file or directory (os error 2)`；或沒寫 `--config` 時是 `/etc/rradius/rradius.toml: cannot read configuration: …`。
-**原因：** 設定檔路徑錯誤，或忘了 `--config`。`server` 指令在這種情況下還會加一行 `(the default configuration; give --config <path> for another)`。
+**原因：** 設定檔路徑錯誤，或忘了 `--config`。`serve` 指令在這種情況下還會加一行 `(the default configuration; give --config <path> for another)`。
 **解法：** 寫上正確的 `--config`。
 
 **症狀：** reload 之後日誌出現 `these need a restart to apply: …`，改的東西沒生效。

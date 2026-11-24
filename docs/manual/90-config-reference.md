@@ -756,7 +756,7 @@ $ echo $?
 
 **叢集埠監聽在所有介面上的警告。**
 
-- 症狀：`check` 與 `server` 印出 `WARN rradius_core::config: cluster.listen is not set, so the cluster's Raft and API ports are on all interfaces, with nothing but their shared secrets to protect them; …`。
+- 症狀：`check` 與 `serve` 印出 `WARN rradius_core::config: cluster.listen is not set, so the cluster's Raft and API ports are on all interfaces, with nothing but their shared secrets to protect them; …`。
 - 原因：有 `[[cluster.nodes]]` 而沒寫 `cluster.listen` 時，預設監聽 `0.0.0.0`。
 - 解法：把 `cluster.listen` 設成這個節點的私有位址；確定要所有介面時寫 `"0.0.0.0"`，警告就會消失。見 [16](16-cluster.md) 與 [20](20-security.md)。
 

@@ -4749,7 +4749,7 @@ mod tests {
             let err = result.err().ok_or_else(|| format!("{lines}: loaded"))?.to_string();
             assert!(err.contains(expected), "{lines}: {err}");
         }
-        // A config path with no directory part, as in `server --config rradius.toml`.
+        // A config path with no directory part, as in `serve --config rradius.toml`.
         let raw = RawAccountingLog { file: PathBuf::from("not-written.jsonl"), queue: 1 };
         assert_eq!(accounting_log_settings(raw, Path::new(""))?.file, PathBuf::from("not-written.jsonl"));
         Ok(())

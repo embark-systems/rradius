@@ -3,7 +3,7 @@
 # 說明：docs/manual/14-isp-recipes.md〈雙堆疊線路：dual-stack-lines〉
 #
 #   cd rradius-server
-#   cargo run --release -- server --config examples/scenarios/dual-stack-lines/rradius.toml
+#   cargo run --release -- serve --config examples/scenarios/dual-stack-lines/rradius.toml
 #
 # 相對路徑都以這個檔案所在的目錄為準。
 

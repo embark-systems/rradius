@@ -158,7 +158,7 @@ impl Server {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(self.dir.path().join("data"));
         let Ok(stderr) = std::fs::File::create(self.dir.path().join("stderr.log")) else { return false };
-        let Ok(child) = Command::new(scenarios.program).args(["server", "--config", &config.to_string_lossy()]).current_dir(self.dir.path()).stdout(Stdio::null()).stderr(stderr).spawn() else { return false };
+        let Ok(child) = Command::new(scenarios.program).args(["serve", "--config", &config.to_string_lossy()]).current_dir(self.dir.path()).stdout(Stdio::null()).stderr(stderr).spawn() else { return false };
         self.child = child;
         true
     }
@@ -174,7 +174,7 @@ impl Server {
         assert!(check.status.success(), "{name}/{file}: {}", String::from_utf8_lossy(&check.stderr));
         let stderr = std::fs::File::create(dir.path().join("stderr.log")).unwrap();
         let child = Command::new(scenarios.program)
-            .args(["server", "--config", config.to_str().unwrap()])
+            .args(["serve", "--config", config.to_str().unwrap()])
             .current_dir(dir.path())
             .stdout(Stdio::null())
             .stderr(stderr)

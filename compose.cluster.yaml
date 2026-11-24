@@ -6,7 +6,7 @@ services:
     build: .
     restart: unless-stopped
     stop_grace_period: 30s
-    command: ["server", "--config", "/etc/rradius/cluster/node1.toml"]
+    command: ["serve", "--config", "/etc/rradius/cluster/node1.toml"]
     # The server only writes to the data volume and /tmp, and runs as an ordinary user, so the
     # root file system can be read-only and no capability is needed.
     read_only: true
@@ -32,7 +32,7 @@ services:
     build: .
     restart: unless-stopped
     stop_grace_period: 30s
-    command: ["server", "--config", "/etc/rradius/cluster/node2.toml"]
+    command: ["serve", "--config", "/etc/rradius/cluster/node2.toml"]
     # The server only writes to the data volume and /tmp, and runs as an ordinary user, so the
     # root file system can be read-only and no capability is needed.
     read_only: true
@@ -58,7 +58,7 @@ services:
     build: .
     restart: unless-stopped
     stop_grace_period: 30s
-    command: ["server", "--config", "/etc/rradius/cluster/node3.toml"]
+    command: ["serve", "--config", "/etc/rradius/cluster/node3.toml"]
     # The server only writes to the data volume and /tmp, and runs as an ordinary user, so the
     # root file system can be read-only and no capability is needed.
     read_only: true

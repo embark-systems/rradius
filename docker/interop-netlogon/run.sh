@@ -134,7 +134,7 @@ EOF
 start_rradius() {
     write_config "$1"
     rm -rf "$work/data"
-    (cd "$work" && exec "$server" server --config rradius.toml >"$work/rradius.log" 2>&1) &
+    (cd "$work" && exec "$server" serve --config rradius.toml >"$work/rradius.log" 2>&1) &
     pid=$!
     for _ in $(seq 1 60); do
         curl -sf "http://127.0.0.1:$metrics_port/metrics" >/dev/null && return 0
