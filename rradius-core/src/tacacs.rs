@@ -1046,6 +1046,7 @@ impl TacacsServer {
                 return Ok(());
             };
             let Some(packet) = read? else { return Ok(()) };
+            metrics.traffic_bytes[crate::metrics::TACACS_IN].add((HEADER_LEN + packet.body.len()) as u64);
             let started = Instant::now();
             if stopping.is_cancelled() && !logins.continues(&packet, Instant::now()) {
                 tracing::debug!("TACACS+ connection from {source} closed: the server is stopping");
@@ -1100,7 +1101,9 @@ impl TacacsServer {
                     _ => vec![AUTHEN_STATUS_ERROR, 0, 0, 0, 0, 0],
                 };
                 let error = TacacsPacket { version: packet.version, type_: packet.type_, seq_num: packet.seq_num.wrapping_add(1), flags: UNENCRYPTED_FLAG, session_id: packet.session_id, body };
-                tokio::time::timeout(timeouts.write, socket.write_all(&error.encode())).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "an ERROR could not be written"))??;
+                let encoded = error.encode();
+                tokio::time::timeout(timeouts.write, socket.write_all(&encoded)).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "an ERROR could not be written"))??;
+                metrics.traffic_bytes[crate::metrics::TACACS_OUT].add(encoded.len() as u64);
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "an obfuscated TACACS+ packet over TLS"));
             }
             let body = match tls {
@@ -1163,9 +1166,11 @@ impl TacacsServer {
                     false => TacacsPacket::encrypt_decrypt(&response_body, secret, packet.session_id, packet.version, seq_num),
                 },
             };
-            tokio::time::timeout(timeouts.write, socket.write_all(&response.encode()))
+            let encoded = response.encode();
+            tokio::time::timeout(timeouts.write, socket.write_all(&encoded))
                 .await
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, format!("a response could not be written within {:?}", timeouts.write)))??;
+            metrics.traffic_bytes[crate::metrics::TACACS_OUT].add(encoded.len() as u64);
             // Counted once the reply is written: a reply that could not be written was not sent.
             if let Some(slot) = counted {
                 metrics.tacacs_responses[slot].inc();
@@ -2460,6 +2465,58 @@ pub(crate) mod tests {
         stream.write_all(&even).await.map_err(|e| e.to_string())?;
         assert!(read_packet(&mut stream, MAX_BODY_LEN).await.map_err(|e| e.to_string()).ok().flatten().is_none(), "no reply to an even sequence number");
         assert_eq!(replies(&metrics).iter().map(|(_, _, count)| count).sum::<u64>(), 3, "the packet without a reply changed no counter");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_traffic_bytes_of_a_packet_and_its_reply() -> Result<(), String> {
+        let engine = script_engine("return 'accept'").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        let metrics = Arc::new(Metrics::default());
+        let server = Arc::new(TacacsServer::from_state(addr, state_with_secret(Some(SECRET), &engine), MAX_BODY_LEN).with_metrics(metrics.clone()));
+        tokio::spawn({
+            let server = server.clone();
+            async move { server.serve(listener).await }
+        });
+        let mut stream = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        let request = typed_request(TYPE_AUTHEN, 21, &start_body(b"alice", b"secret"));
+        stream.write_all(&request).await.map_err(|e| e.to_string())?;
+        let reply = read_packet(&mut stream, MAX_BODY_LEN).await.map_err(|e| e.to_string())?.ok_or("closed before the reply")?;
+        let bytes = |slot: usize| metrics.traffic_bytes[slot].get();
+        // The reply is counted after it is written, which can be after the client has it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while bytes(crate::metrics::TACACS_OUT) == 0 {
+            if Instant::now() > deadline {
+                return Err("the reply was not counted".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(bytes(crate::metrics::TACACS_IN), request.len() as u64, "the header and the body of the packet");
+        assert_eq!(bytes(crate::metrics::TACACS_OUT), (HEADER_LEN + reply.body.len()) as u64);
+        assert_eq!((bytes(crate::metrics::RADIUS_IN), bytes(crate::metrics::RADIUS_OUT)), (0, 0));
+        Ok(())
+    }
+
+    /// A reply that cannot be written is not counted: the client is gone before the reply is made.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_a_reply_that_is_not_written_is_not_counted() -> Result<(), String> {
+        let engine = script_engine("return 'accept'").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        let metrics = Arc::new(Metrics::default());
+        let server = Arc::new(TacacsServer::from_state(addr, state_with_secret(Some(SECRET), &engine), MAX_BODY_LEN).with_metrics(metrics.clone()));
+        tokio::spawn({
+            let server = server.clone();
+            async move { server.serve(listener).await }
+        });
+        // An even sequence number ends the connection without a reply, as a connection that broke would.
+        let mut stream = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        let even = TacacsPacket { version: VERSION, type_: TYPE_AUTHEN, seq_num: 2, flags: 0, session_id: 22, body: TacacsPacket::encrypt_decrypt(&start_body(b"alice", b"secret"), SECRET, 22, VERSION, 2) }.encode();
+        stream.write_all(&even).await.map_err(|e| e.to_string())?;
+        assert!(read_packet(&mut stream, MAX_BODY_LEN).await.map_err(|e| e.to_string()).ok().flatten().is_none());
+        assert_eq!(metrics.traffic_bytes[crate::metrics::TACACS_IN].get(), even.len() as u64, "it was received");
+        assert_eq!(metrics.traffic_bytes[crate::metrics::TACACS_OUT].get(), 0, "and nothing was written");
         Ok(())
     }
 

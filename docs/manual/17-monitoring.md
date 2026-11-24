@@ -236,6 +236,7 @@ rradius_radius_responses_total{code="accounting_response"} 1
 | --- | --- |
 | `rradius_radius_*` | RADIUS 收了幾筆、回了什麼、丟了幾筆、為什麼丟、花多久、現在有幾筆在處理 |
 | `rradius_tacacs_*` | TACACS+ 連線、各類請求、解不開的請求、回應時間 |
+| `rradius_traffic_bytes_total` | RADIUS（UDP）與 TACACS+ 收到與寫出的協定封包位元組 |
 | `rradius_eap_*` | 進行中的 EAP 對話、對話怎麼結束 |
 | `rradius_reload_*` | reload 成功與失敗的次數、最後一次成功的時間 |
 | `rradius_build_info`、`rradius_start_time_seconds` | 版本、啟動時間 |
@@ -468,6 +469,8 @@ RADIUS
   Discarded: invalid         0.0/s (1)
   Discarded: database        0.0/s (0)
   Discarded: no leader       0.0/s (0)
+  In bytes                   0.0/s (396)
+  Out bytes                  0.0/s (128)
   Auth in progress           0
   Auth limit                 4096
   Acct in progress           0
@@ -485,6 +488,8 @@ TACACS+
   Accounting        0.0/s (0)
   Replies           0.0/s (1)
   Malformed         0.0/s (0)
+  In bytes          0.0/s (46)
+  Out bytes         0.0/s (28)
 …
 ```
 
