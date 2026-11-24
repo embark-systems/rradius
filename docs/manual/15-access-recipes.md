@@ -27,7 +27,7 @@ $ cp -R rradius-server/examples/scenarios/wired-mab ~/rradius-lab/
 $ sed -i.bak "s#^dictionary = .*#dictionary = \"$PWD/share/dictionary\"#" ~/rradius-lab/wired-mab/rradius.toml
 $ cd ~/rradius-lab/wired-mab
 $ for f in *.secret; do openssl rand -hex 32 > $f; done; chmod 600 *.secret
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 

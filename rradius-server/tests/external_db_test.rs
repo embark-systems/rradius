@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 const PASSWORD: &str = "test-db-password";
 /// `{SSHA}` of `secret` with the salt `rr-salt1`.
 const ALICE_SSHA: &str = "{SSHA}78cdSUfS/6uxGK+hBLB0UWTNMtdyci1zYWx0MQ==";

@@ -48,7 +48,7 @@ pub fn dictionary() -> PathBuf {
 
 /// A file of the core's examples, `rradius-server/examples/<name>`.
 pub fn core_example(name: &str) -> PathBuf {
-    core_root().join("rradius-server").join("examples").join(name)
+    core_root().join("rradiusd").join("examples").join(name)
 }
 
 /// A single-node cluster shared by every test in this test binary. Each

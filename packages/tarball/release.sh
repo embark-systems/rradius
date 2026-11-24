@@ -31,6 +31,8 @@ out="$root/dist"
 commit=HEAD
 targets=()
 program=rradius-server
+# The name of the executable the crate builds; the crate and the executable are not named alike.
+binary=rradiusd
 while [ $# -gt 0 ]; do
     case "$1" in
         --target) [ $# -ge 2 ] || usage; targets+=("$2"); shift 2 ;;
@@ -137,14 +139,14 @@ build() {
             # flag is the one .cargo/config.toml sets, given here too because the configuration
             # does not override a value already in the environment.
             (cd "$work/src/rradius-server" && LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG CARGO_TARGET_DIR="$root/dist/.target/$target" cargo build --release --locked -p "$program")
-            cp "$root/dist/.target/$target/release/$program" "$dest"
+            cp "$root/dist/.target/$target/release/$binary" "$dest"
             ;;
         linux-x86_64 | linux-aarch64)
             local platform=linux/amd64 image="rradius-release-build:$program-$target" container
             [ "$target" = linux-aarch64 ] && platform=linux/arm64
             docker buildx build --platform "$platform" --target build --load -t "$image" "$work/src"
             container=$(docker create --platform "$platform" "$image")
-            docker cp "$container:/usr/local/bin/$program" "$dest"
+            docker cp "$container:/usr/local/bin/$binary" "$dest"
             docker rm "$container" >/dev/null
             ;;
     esac
@@ -166,7 +168,7 @@ test ! -e rradius-enterprise"
     local script="set -e
 cd \"\$1\"
 # The first line is the name and the version; the second is the default configuration path.
-test \"\$(bin/$program --version | head -n 1)\" = \"$program $version\"
+test \"\$(bin/$binary --version | head -n 1)\" = \"$binary $version (community)\"
 checked=0
 for root in $roots; do
     seen=0
@@ -175,7 +177,7 @@ for root in $roots; do
         seen=1
         scenario=\$(dirname \"\$config\")
         if [ -e \"\$scenario/make-certs.sh\" ] || [ -e \"\$scenario/setup.sh\" ]; then continue; fi
-        bin/$program check --config \"\$config\" >/dev/null || { echo \"\$config failed check\" >&2; exit 1; }
+        bin/$binary check --config \"\$config\" >/dev/null || { echo \"\$config failed check\" >&2; exit 1; }
         checked=\$((checked + 1))
     done
     test \$seen = 1 || { echo \"no scenarios in \$root\" >&2; exit 1; }
@@ -213,7 +215,7 @@ package() {
     name="rradius-$version-$target"
     local stage="$work/stage-$program-$target/$name"
     mkdir -p "$stage/bin"
-    cp "$(binary_of "$program" "$target")" "$stage/bin/$program"
+    cp "$(binary_of "$program" "$target")" "$stage/bin/$binary"
     local docs='rradius-server/examples docs/usage.md docs/manual share/dictionary* share/LICENSE share/NOTICE'
     # $docs holds a glob, expanded inside $work/src.
     # shellcheck disable=SC2086
@@ -225,7 +227,7 @@ package() {
     if [ "${target#linux-}" != "$target" ]; then
         # The newest glibc symbol version the binary asks for is the oldest glibc it runs on.
         local glibc
-        glibc=$(strings "$stage/bin/$program" | grep -o '^GLIBC_[0-9][0-9.]*$' | sed 's/^GLIBC_//' | sort -t . -k 1,1n -k 2,2n -k 3,3n | tail -n 1)
+        glibc=$(strings "$stage/bin/$binary" | grep -o '^GLIBC_[0-9][0-9.]*$' | sed 's/^GLIBC_//' | sort -t . -k 1,1n -k 2,2n -k 3,3n | tail -n 1)
         [ -n "$glibc" ] || fail "cannot find which glibc the $target binary needs"
         printf 'glibc %s\n' "$glibc" >>"$stage/VERSION"
         printf '\n## 系統需求\n\n這個 Linux 版需要 glibc %s 以上。\n' "$glibc" >>"$stage/README.md"
@@ -233,7 +235,7 @@ package() {
 
     # SQLite keeps its compile options as strings in the binary; without this one some queries
     # are planned again on every read (see docs/usage.md section 1).
-    strings "$stage/bin/$program" | grep -x ENABLE_QPSG >/dev/null || fail "the $target binary's SQLite was built without SQLITE_ENABLE_QPSG"
+    strings "$stage/bin/$binary" | grep -x ENABLE_QPSG >/dev/null || fail "the $target binary's SQLite was built without SQLITE_ENABLE_QPSG"
 
     local archive="$out/$name.tar.gz"
     rm -f "$archive" "$archive.sha256"

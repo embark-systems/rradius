@@ -27,7 +27,7 @@ reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 strip_realm = "both"
 lowercase = true
 
-# rradius-server user passwd 之後存成 bcrypt，舊格式的帳號就這樣一個一個換掉。
+# rradiusd user passwd 之後存成 bcrypt，舊格式的帳號就這樣一個一個換掉。
 # origin 改成 rradius，方便統計還有多少帳號留在舊格式。
 [accounts]
 scheme = "bcrypt"

@@ -1,6 +1,6 @@
 //! Named queries: the `[queries.<name>]` of the configuration. Each node runs every query in the
 //! background against its own copy of the database and keeps the rows of the last successful run;
-//! `/metrics` and `status` read what is kept and never query. `rradius-server query` runs the same
+//! `/metrics` and `status` read what is kept and never query. `rradiusd query` runs the same
 //! statements once, through the cluster's API port, and does not come here.
 
 use crate::config::QuerySettings;

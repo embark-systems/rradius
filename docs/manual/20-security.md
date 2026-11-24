@@ -31,7 +31,7 @@
 - [常見錯誤](#常見錯誤)
 - [相關章節](#相關章節)
 
-本章的輸出都在一台 macOS 上用 `rradius-server` 0.1.0 實際跑過。日誌行開頭的時間戳記用 `…` 代替；路徑出現在訊息裡的地方，是設定檔裡寫的相對路徑。
+本章的輸出都在一台 macOS 上用 `rradiusd` 0.1.0 實際跑過。日誌行開頭的時間戳記用 `…` 代替；路徑出現在訊息裡的地方，是設定檔裡寫的相對路徑。
 
 ## 警告與錯誤
 
@@ -72,7 +72,7 @@ rradius 對安全問題有兩種反應：
 `check` 讀設定、字典、腳本與祕密檔，不開任何埠，可以在正式機上隨時跑。拿沒有改過的 quick-start 情境試試：
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 … WARN rradius_core::common::seal: cluster.secret_raft_file: 'raft.secret' has mode 644, which others can reach or its group can write; make it 0600 or 0640
 … WARN rradius_core::config: cluster.secret_raft is the public value shipped with the examples; replace it with a random one, for example from `openssl rand -hex 32`
 … WARN rradius_core::common::seal: cluster.secret_api_file: 'api.secret' has mode 644, which others can reach or its group can write; make it 0600 or 0640
@@ -89,7 +89,7 @@ $ echo $?
 要在部署腳本裡擋住帶警告的設定，可以把標準錯誤裡的 `WARN` 當成失敗：
 
 ```console
-$ rradius-server check --config rradius.toml 2>&1 | grep WARN && echo "有警告，先處理"
+$ rradiusd check --config rradius.toml 2>&1 | grep WARN && echo "有警告，先處理"
 ```
 
 ## 祕密檔的權限
@@ -111,7 +111,7 @@ rradius 讀下列檔案時，會檢查它的權限。只要「其他人」有任
 
 ```console
 $ chmod 644 localhost.secret
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 … WARN rradius_core::common::seal: secret_file: 'localhost.secret' has mode 644, which others can reach or its group can write; make it 0600 or 0640
 configuration ok
 ```
@@ -150,11 +150,11 @@ $ sudo chmod 640 /etc/rradius/*.secret
 
 ```console
 $ chmod 666 conf.d/log.toml
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 … WARN rradius_core::config: included configuration file conf.d/log.toml can be written by its group or by others, which lets them change who may log in
 configuration ok
 $ chmod 644 conf.d/log.toml; chmod 777 conf.d
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 … WARN rradius_core::config: the directory of included configuration file conf.d/log.toml can be written by its group or by others, which lets them change who may log in
 configuration ok
 ```
@@ -175,7 +175,7 @@ RADIUS 或 TACACS+ 用戶端的共用密碼短於 16 個位元組，會有警告
 
 ```console
 $ printf 'short-secret\n' > localhost.secret
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 … WARN rradius_core::reload: RADIUS client 'localhost' has a shared secret shorter than 16 octets; use at least 24 random octets
 configuration ok
 ```
@@ -192,7 +192,7 @@ TACACS+ 的封包內容只靠共用密碼保護，太短的密碼對它影響更
 
 ```console
 $ printf 'abc\n' > raft.secret
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 rradius.toml: cluster.secret_raft must be at least 16 characters
 $ echo $?
 2
@@ -291,7 +291,7 @@ require_message_authenticator = "no"
 `auto` 也只能用在單一位址的用戶端。用在網段上，`check` 會拒絕：
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 rradius.toml: radius clients: client '127.0.0.0/24': require_message_authenticator = "auto" needs a single host, not a network
 ```
 

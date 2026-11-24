@@ -31,7 +31,7 @@
 - [常見錯誤：訊息對照表](#常見錯誤訊息對照表)
 - [相關章節](#相關章節)
 
-本章的訊息都是在一台 macOS 上故意製造問題、實際跑出來的，`rradius-server` 0.1.0；少數只對照了程式碼的，會在旁邊註明。日誌行開頭的時間戳記用 `…` 代替。`os error` 後面的數字依作業系統而不同，本章的 48（位址已被使用）、61（連線被拒）是 macOS 的值，在你的系統上可能是別的數字。
+本章的訊息都是在一台 macOS 上故意製造問題、實際跑出來的，`rradiusd` 0.1.0；少數只對照了程式碼的，會在旁邊註明。日誌行開頭的時間戳記用 `…` 代替。`os error` 後面的數字依作業系統而不同，本章的 48（位址已被使用）、61（連線被拒）是 macOS 的值，在你的系統上可能是別的數字。
 
 ## 排錯的順序
 
@@ -39,12 +39,12 @@
 
 | 步驟 | 指令或位置 | 看什麼 |
 | --- | --- | --- |
-| 1 | `rradius-server check --config <檔>` | 設定本身有沒有錯、有沒有警告 |
+| 1 | `rradiusd check --config <檔>` | 設定本身有沒有錯、有沒有警告 |
 | 2 | 伺服器的日誌 | `WARN`、`ERROR`；每次認證一行 `rradius_auth` 認證紀錄 |
 | 3 | `[log.trace]` | 指定的使用者或用戶端的完整請求與回應 |
-| 4 | `rradius-server status --config <檔>` | 哪一類請求被丟棄、資料庫與叢集的狀態 |
+| 4 | `rradiusd status --config <檔>` | 哪一類請求被丟棄、資料庫與叢集的狀態 |
 | 5 | `curl -s http://127.0.0.1:9812/metrics` | `status` 沒有列出的細節，例如每個用戶端的計數 |
-| 6 | `rradius-server tuning --config <檔>` | 作業系統有沒有丟掉 UDP 封包 |
+| 6 | `rradiusd tuning --config <檔>` | 作業系統有沒有丟掉 UDP 封包 |
 
 ### 認證紀錄
 
@@ -171,9 +171,9 @@ $ tcpdump -ni any udp port 1812
 `check` 失敗時印一行原因，結束碼 2。訊息開頭是出錯的檔案，有行號時會寫出來。實測的訊息：
 
 ```console
-$ rradius-server check --config nope.toml
+$ rradiusd check --config nope.toml
 nope.toml: cannot read configuration: No such file or directory (os error 2)
-$ rradius-server check
+$ rradiusd check
 /etc/rradius/rradius.toml: cannot read configuration: No such file or directory (os error 2)
 ```
 
@@ -268,7 +268,7 @@ rradius.toml: lua.http.allowed_hosts must list at least one host
 reload 失敗不會讓伺服器停下來，但下次重啟時會因為同一個錯誤起不來。所以先跑 `check` 再 reload，並用 `config diff` 確認改了什麼：
 
 ```console
-$ rradius-server config diff rradius.toml.orig rradius.toml
+$ rradiusd config diff rradius.toml.orig rradius.toml
 radius.clients[localhost].address: "127.0.0.1" | "127.0.0.2"
 $ echo $?
 1
@@ -311,7 +311,7 @@ LockFile data/logs is locked and in use by another process
 … ERROR rradius_core::cli: cluster node: a panic in its database (…/hiqlite-wal-0.16.0/src/log_store.rs:47); exiting so that a restart recovers it
 ```
 
-處置：等舊的行程結束（`pgrep -f rradius-server`），再啟動。套件附的 systemd unit 停止時最多等 `TimeoutStopSec=60` 秒。
+處置：等舊的行程結束（`pgrep -f rradiusd`），再啟動。套件附的 systemd unit 停止時最多等 `TimeoutStopSec=60` 秒。
 
 ### 沒有 leader 就不啟動
 
@@ -419,7 +419,7 @@ NAS 與伺服器的共用密碼不同時，結果依請求有沒有 Message-Auth
 ```console
 $ curl -s -w ' http=%{http_code}\n' http://127.0.0.1:9812/readyz
 database legacy unreachable http=503
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
 Node
   Ready                     database legacy unreachable
@@ -477,7 +477,7 @@ Node
 ```console
 $ curl -s -w ' http=%{http_code}\n' http://127.0.0.1:9812/readyz
 no leader http=503
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
 Node
   Ready                     no leader
@@ -567,7 +567,7 @@ spool 的設定、重送規則與腳本的寫法見[第 13 章](13-accounting.md
 封包在到達 rradius 之前，就可能因為 socket 的接收緩衝區滿了被作業系統丟掉。這種丟棄 rradius 看不到，要問作業系統：
 
 ```console
-$ rradius-server tuning --config rradius.toml
+$ rradiusd tuning --config rradius.toml
 rradius tuning advice for macOS
 
 UDP packets dropped because a receive buffer was full, since the system started: 137296
@@ -675,7 +675,7 @@ TACACS+ 用連線數當上限，到了上限，新連線立刻關閉（不是不
 
 ## needs rradius-enterprise
 
-`rradius-server` 讀到只有企業版才有的設定時，明確拒絕，結束碼 2：
+`rradiusd` 讀到只有企業版才有的設定時，明確拒絕，結束碼 2：
 
 ```text
 rradius.toml: proxy: not supported by this program (proxying needs rradius-enterprise)
@@ -698,7 +698,7 @@ rradius.toml: radius client 'localhost': eap_methods: 'sim' is not a method this
 **第一步：設定沒問題嗎？**
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
@@ -715,7 +715,7 @@ NAS 用的來源位址不在用戶端清單。把它加進去（或改正 `addre
 **第三步：還是逾時。** 日誌這次什麼都沒有：沒有認證紀錄，也沒有 `unknown client`。看 `status`：
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
   Discarded: unknown client  0.0/s (1)
   Discarded: invalid         0.0/s (3)
@@ -738,12 +738,12 @@ $ rradius-server status --config rradius.toml
 
 自己查不出來、要請別人幫忙時，附上這些，可以省掉很多來回：
 
-- `rradius-server --version` 的輸出。
-- `rradius-server check --config <檔>` 的完整輸出與結束碼。
-- `rradius-server config show --config <檔>`：帶出預設值的完整設定，祕密顯示成 `<hidden>`，可以直接貼。不要貼原始的設定檔，裡面可能有寫明文的密碼。
+- `rradiusd --version` 的輸出。
+- `rradiusd check --config <檔>` 的完整輸出與結束碼。
+- `rradiusd config show --config <檔>`：帶出預設值的完整設定，祕密顯示成 `<hidden>`，可以直接貼。不要貼原始的設定檔，裡面可能有寫明文的密碼。
 - 出問題那段時間的日誌，包括前後的 `WARN`、`ERROR` 與認證紀錄。
-- `rradius-server status --config <檔>` 的輸出；要給程式讀的話加 `--json`。
-- UDP 丟包相關的問題，加上 `rradius-server tuning --config <檔>`。
+- `rradiusd status --config <檔>` 的輸出；要給程式讀的話加 `--json`。
+- UDP 丟包相關的問題，加上 `rradiusd tuning --config <檔>`。
 
 trace 的輸出含有個人資料，給別人之前先把使用者名稱、位址這類資料遮掉。
 

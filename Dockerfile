@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build \
     if [ "$(uname -m)" = aarch64 ]; then export JEMALLOC_SYS_WITH_LG_PAGE=16; fi \
     && CARGO_TARGET_DIR=/build cargo build --release --locked -p rradius-server \
-    && cp /build/release/rradius-server /usr/local/bin/rradius-server
+    && cp /build/release/rradiusd /usr/local/bin/rradiusd
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 # ca-certificates: LDAP over TLS trusts the system's certificates.
@@ -27,12 +27,12 @@ RUN apt-get update \
 RUN useradd --system --no-create-home --uid 10001 rradius \
     && mkdir -p /etc/rradius /var/lib/rradius \
     && chown rradius:rradius /var/lib/rradius
-COPY --from=build /usr/local/bin/rradius-server /usr/local/bin/rradius-server
+COPY --from=build /usr/local/bin/rradiusd /usr/local/bin/rradiusd
 COPY share /usr/share/rradius
 USER rradius
 VOLUME /var/lib/rradius
 # RADIUS authentication and accounting, TACACS+, cluster Raft and API. Without
 # [[cluster.nodes]] or `listen` the cluster ports only bind 127.0.0.1.
 EXPOSE 1812/udp 1813/udp 49/tcp 8100/tcp 8200/tcp
-ENTRYPOINT ["/usr/local/bin/rradius-server"]
+ENTRYPOINT ["/usr/local/bin/rradiusd"]
 CMD ["serve", "--config", "/etc/rradius/rradius.toml"]

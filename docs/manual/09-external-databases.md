@@ -85,7 +85,7 @@ $ chmod 600 billing.secret
 | `connect_timeout_ms` | `5000` | 建立一條連線的時限，毫秒 |
 | `required_for_ready` | `false` | 連不上時 `/readyz` 是否回 503，見[監看健康狀態](#監看健康狀態) |
 
-`rradius-server config show` 會印出補上預設值之後的設定，可以用來確認 `pool_size` 這類沒寫的值。
+`rradiusd config show` 會印出補上預設值之後的設定，可以用來確認 `pool_size` 這類沒寫的值。
 
 ### 連線數要算多少
 
@@ -389,10 +389,10 @@ rradius_external_db_reachable{database="billing"} 0
 
 `in_use` 一直等於 `max` 表示連線不夠用，請求在排隊等連線：先看資料庫那邊的查詢是不是太慢，再考慮調大 `pool_size`。
 
-`rradius-server status` 有一段 `External databases`：
+`rradiusd status` 有一段 `External databases`：
 
 ```console
-$ rradius-server status
+$ rradiusd status
 …
 External databases
   billing connections in use      0
@@ -484,7 +484,7 @@ rradius_query_sessions_by_nas{nas="192.0.2.1"} 1
 列出所有具名查詢：
 
 ```console
-$ rradius-server query list
+$ rradiusd query list
 name=open_sessions
 help=Sessions without a Stop
 interval_ms=30000
@@ -499,7 +499,7 @@ sql=SELECT CASE enabled WHEN 1 THEN 'enabled' ELSE 'disabled' END AS state, coun
 執行一個：
 
 ```console
-$ rradius-server query users_by_state
+$ rradiusd query users_by_state
 state     n
 disabled  1
 enabled   2
@@ -510,14 +510,14 @@ enabled   2
 加 `--json` 給程式讀：
 
 ```console
-$ rradius-server query open_sessions --json
+$ rradiusd query open_sessions --json
 [{"value":1}]
 ```
 
 不在設定裡的名稱，結束碼是 2：
 
 ```console
-$ rradius-server query nosuch
+$ rradiusd query nosuch
 queries.nosuch is not set in rradius.toml
 ```
 
@@ -557,12 +557,12 @@ rradius_query_failures_total{query="users_count",reason="shape"} 1
 rradius_query_last_success_timestamp_seconds{query="users_count"} 0
 ```
 
-`status` 寫 `users_count last success (seconds ago)     never`。但 `rradius-server query users_count` 照常印出 `n` 與 `3`，因為指令只執行 SQL，不檢查欄位。所以指令查得到、指標卻沒有時，先看日誌的 `shape`。改法：加上 `value = "n"`，或把 SQL 改成 `count(*) AS value`，然後重啟。
+`status` 寫 `users_count last success (seconds ago)     never`。但 `rradiusd query users_count` 照常印出 `n` 與 `3`，因為指令只執行 SQL，不檢查欄位。所以指令查得到、指標卻沒有時，先看日誌的 `shape`。改法：加上 `value = "n"`，或把 SQL 改成 `count(*) AS value`，然後重啟。
 
-`rradius-server status` 的 `Queries` 一段（實測）：
+`rradiusd status` 的 `Queries` 一段（實測）：
 
 ```console
-$ rradius-server status
+$ rradiusd status
 …
 Queries
   open_sessions last success (seconds ago)   1
@@ -583,7 +583,7 @@ Queries
 … WARN rradius_core::reload: configuration reloaded from rradius.toml; these need a restart to apply: [databases]
 ```
 
-`[queries]` 改了是 `these need a restart to apply: [queries]`。先用 `rradius-server check` 檢查，`[databases]` 與 `[queries]` 的大部分錯誤在這裡就看得到。
+`[queries]` 改了是 `these need a restart to apply: [queries]`。先用 `rradiusd check` 檢查，`[databases]` 與 `[queries]` 的大部分錯誤在這裡就看得到。
 
 ## 常見錯誤
 

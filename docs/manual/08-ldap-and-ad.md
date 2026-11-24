@@ -557,7 +557,7 @@ rradius_netlogon_open_connections 1
 上面七次登入只建了一次 secure channel，之後都重複使用。`status` 也有一段 `Netlogon`：
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
 Netlogon
   Open connections         1

@@ -1,10 +1,10 @@
-//! `rradius-server tuning`: reads the system and the configuration, prints advice, changes nothing.
+//! `rradiusd tuning`: reads the system and the configuration, prints advice, changes nothing.
 
 use rradius_core::test_support::server::write_config;
 use std::path::Path;
 use std::process::Command;
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 fn tuning(args: &[&str]) -> Result<(Option<i32>, String, String), String> {
     let output = Command::new(PROGRAM).arg("tuning").args(args).output().map_err(|e| e.to_string())?;
@@ -83,6 +83,6 @@ fn test_no_configuration_file() -> Result<(), String> {
 fn test_unknown_argument() -> Result<(), String> {
     let (code, _, stderr) = tuning(&["--apply"])?;
     assert_eq!(code, Some(2));
-    assert_eq!(stderr.trim_end(), "usage: rradius-server tuning [--config <path>]");
+    assert_eq!(stderr.trim_end(), "usage: rradiusd tuning [--config <path>]");
     Ok(())
 }

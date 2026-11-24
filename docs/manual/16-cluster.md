@@ -7,7 +7,7 @@
 > - 讓新節點加入叢集，安全地移除節點
 > - 用 Docker Compose 或 Kubernetes 部署三個節點的叢集
 
-前置條件：做過[第 03 章](03-quick-start.md)，知道怎麼啟動伺服器、用 `rradius-bench` 測登入；讀過[第 04 章](04-configuration.md)，知道 `check` 與 reload。本章的練習在一台機器上起三到四個節點，需要原始碼建出來的 `rradius-server` 與 `rradius-bench`，以及原始碼裡的 `rradius-server/examples/scenarios/ha-cluster/`。
+前置條件：做過[第 03 章](03-quick-start.md)，知道怎麼啟動伺服器、用 `rradius-bench` 測登入；讀過[第 04 章](04-configuration.md)，知道 `check` 與 reload。本章的練習在一台機器上起三到四個節點，需要原始碼建出來的 `rradiusd` 與 `rradius-bench`，以及原始碼裡的 `rradius-server/examples/scenarios/ha-cluster/`。
 
 本章小節：
 
@@ -306,7 +306,7 @@ port = 27041
 把 `node1.toml` 複製成 `node2.toml`、`node3.toml`，照上表改 `node_id`、`data_dir`、RADIUS、TACACS+、指標的埠，以及 `[radius.accounting_spool]` 的 `dir`（`spool2`、`spool3`）。三份的 `[[cluster.nodes]]` 完全相同。
 
 ```console
-$ for n in 1 2 3; do rradius-server check --config node$n.toml; done
+$ for n in 1 2 3; do rradiusd check --config node$n.toml; done
 configuration ok
 configuration ok
 configuration ok
@@ -317,7 +317,7 @@ configuration ok
 三個節點要一起啟動：第一個起來的節點要等到湊滿過半數才會開始服務。每個節點開一個終端機，或像這樣放到背景，日誌寫進檔案：
 
 ```console
-$ for n in 1 2 3; do rradius-server serve --config node$n.toml > node$n.log 2>&1 & done
+$ for n in 1 2 3; do rradiusd serve --config node$n.toml > node$n.log 2>&1 & done
 ```
 
 在這台機器上，從啟動到三個節點的 `/readyz` 都回 `ok`，大約 9 秒。節點 1 的日誌（拿掉時間）：
@@ -344,7 +344,7 @@ INFO rradius_core::metrics: Metrics listening on 127.0.0.1:27041
 `cluster members` 問設定裡的節點誰是 leader，再列出 leader 看到的成員：
 
 ```console
-$ rradius-server cluster members --config node1.toml
+$ rradiusd cluster members --config node1.toml
 node 1  voter    leader  raft 127.0.0.1:27001  api 127.0.0.1:27011
 node 2  voter            raft 127.0.0.1:27002  api 127.0.0.1:27012
 node 3  voter            raft 127.0.0.1:27003  api 127.0.0.1:27013
@@ -360,7 +360,7 @@ node 3  voter            raft 127.0.0.1:27003  api 127.0.0.1:27013
 `status` 讀一個節點的指標埠。`Node` 區段是這個節點眼中的叢集：
 
 ```console
-$ rradius-server status --config node2.toml
+$ rradiusd status --config node2.toml
 rradius status of 127.0.0.1:27042 over 1.0 s
 
 Node
@@ -393,9 +393,9 @@ Node
 透過節點 1 的設定新增帳號，再對三個節點各登入一次：
 
 ```console
-$ printf 'erin-password\n' | rradius-server user add --config node1.toml erin
+$ printf 'erin-password\n' | rradiusd user add --config node1.toml erin
 added erin
-$ rradius-server user show --config node3.toml erin
+$ rradiusd user show --config node3.toml erin
 username=erin
 enabled=1
 $ for n in 1 2 3; do rradius-bench run --server 127.0.0.1 --auth-port 2702$n --secret "$(cat nas.secret)" \
@@ -411,7 +411,7 @@ $ for n in 1 2 3; do rradius-bench run --server 127.0.0.1 --auth-port 2702$n --s
 $ rradius-bench run --server 127.0.0.1 --acct-port 27032 --secret "$(cat nas.secret)" \
     --user erin --load acct-start,concurrency=1 --requests 1 | grep 'acct-start:'
   acct-start: 729/s, sent 1, accept 0, reject 0, challenge 0, accounting 1, timeouts 0, invalid 0, late 0, socket errors 0, retransmits 0
-$ rradius-server session list --config node3.toml
+$ rradiusd session list --config node3.toml
 username=erin
 nas=192.0.2.1
 session_id=4220000000000000
@@ -442,7 +442,7 @@ updated=1795384786
 新 leader 選出後：
 
 ```console
-$ rradius-server cluster members --config node2.toml
+$ rradiusd cluster members --config node2.toml
 node 1  voter            raft 127.0.0.1:27001  api 127.0.0.1:27011
 node 2  voter            raft 127.0.0.1:27002  api 127.0.0.1:27012
 node 3  voter    leader  raft 127.0.0.1:27003  api 127.0.0.1:27013
@@ -488,7 +488,7 @@ stop_without_leader_ms = 10000
 `status` 的樣子：
 
 ```console
-$ rradius-server status --config node1.toml
+$ rradiusd status --config node1.toml
 rradius status of 127.0.0.1:27041 over 1.0 s
 
 Node
@@ -550,7 +550,7 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 
 ```console
 $ rm -rf data3
-$ rradius-server serve --config node3.toml > node3.log 2>&1 &
+$ rradiusd serve --config node3.toml > node3.log 2>&1 &
 ```
 
 ```text
@@ -606,7 +606,7 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 依照[節點 1 的設定](#節點-1-的設定)的表做 `node4.toml`，`[[cluster.nodes]]` 列出節點 1 到 4，然後啟動：
 
 ```console
-$ rradius-server serve --config node4.toml > node4.log 2>&1 &
+$ rradiusd serve --config node4.toml > node4.log 2>&1 &
 ```
 
 這台機器上大約 4 秒後就緒，日誌依序是 `cluster node 4 started`、`has caught up with the cluster`、`Servers started`。加入前建立的帳號馬上能在節點 4 登入：
@@ -615,7 +615,7 @@ $ rradius-server serve --config node4.toml > node4.log 2>&1 &
 $ rradius-bench run --server 127.0.0.1 --auth-port 27024 --secret "$(cat nas.secret)" \
     --user erin --password erin-password --load pap,concurrency=1 --requests 1 | grep 'pap:'
   pap: 22/s, sent 1, accept 1, reject 0, challenge 0, accounting 0, timeouts 0, invalid 0, late 0, socket errors 0, retransmits 0
-$ rradius-server cluster members --config node1.toml
+$ rradiusd cluster members --config node1.toml
 node 1  voter            raft 127.0.0.1:27001  api 127.0.0.1:27011
 node 2  voter            raft 127.0.0.1:27002  api 127.0.0.1:27012
 node 3  voter    leader  raft 127.0.0.1:27003  api 127.0.0.1:27013
@@ -638,7 +638,7 @@ node 4  voter            raft 127.0.0.1:27004  api 127.0.0.1:27014  (not in this
 如果新節點的 `node_id` 是某個還在運作的節點的 id，但位址不同，它會拒絕啟動，結束碼 2：
 
 ```text
-cannot start cluster node 2: node id 2 is in use: the cluster has it at api 127.0.0.1:27012 (raft 127.0.0.1:27002), and that node answers, but this node's configuration gives it api 127.0.0.1:27015 (raft 127.0.0.1:27005); use an id no node has (see `rradius-server cluster members`), or stop the running node first
+cannot start cluster node 2: node id 2 is in use: the cluster has it at api 127.0.0.1:27012 (raft 127.0.0.1:27002), and that node answers, but this node's configuration gives it api 127.0.0.1:27015 (raft 127.0.0.1:27005); use an id no node has (see `rradiusd cluster members`), or stop the running node first
 ```
 
 用同一個 id 加入會改寫叢集裡那個節點的位址，所以程式不允許。換掉一台主機時，要嘛用新的 id，要嘛先停掉舊的節點。
@@ -657,7 +657,7 @@ cannot start cluster node 2: node id 2 is in use: the cluster has it at api 127.
 先試著在節點 4 還在跑的時候移除：
 
 ```console
-$ rradius-server cluster remove --config node1.toml 4
+$ rradiusd cluster remove --config node1.toml 4
 node 4 still answers at 127.0.0.1:27014: stop it first, then remove it
 ```
 
@@ -666,9 +666,9 @@ node 4 still answers at 127.0.0.1:27014: stop it first, then remove it
 停掉節點 4（SIGTERM，這台機器上 15 秒後結束），再移除：
 
 ```console
-$ rradius-server cluster remove --config node1.toml 4
+$ rradiusd cluster remove --config node1.toml 4
 removed node 4
-$ rradius-server cluster members --config node1.toml
+$ rradiusd cluster members --config node1.toml
 node 1  voter            raft 127.0.0.1:27001  api 127.0.0.1:27011
 node 2  voter            raft 127.0.0.1:27002  api 127.0.0.1:27012
 node 3  voter    leader  raft 127.0.0.1:27003  api 127.0.0.1:27013
@@ -677,11 +677,11 @@ node 3  voter    leader  raft 127.0.0.1:27003  api 127.0.0.1:27013
 移除會讓叢集只剩兩個 voter 時：
 
 ```console
-$ rradius-server cluster remove --config node1.toml 3
+$ rradiusd cluster remove --config node1.toml 3
 removing node 3 leaves two voters, and the cluster stops writing when either stops; give --force to remove it anyway
-$ rradius-server cluster remove --force --config node1.toml 3
+$ rradiusd cluster remove --force --config node1.toml 3
 removed node 3
-$ rradius-server cluster members --config node1.toml
+$ rradiusd cluster members --config node1.toml
 node 1  voter    leader  raft 127.0.0.1:27001  api 127.0.0.1:27011
 node 2  voter            raft 127.0.0.1:27002  api 127.0.0.1:27012
 node 3  not in the cluster (listed in this configuration)
@@ -707,7 +707,7 @@ node 3  not in the cluster (listed in this configuration)
 - **維持奇數個節點（3 或 5）。** 3 個可以壞 1 個，5 個可以壞 2 個；4 個跟 3 個一樣只能壞 1 個。
 - **要移除的是 leader 也一樣，** 先停掉它：剩下的節點選出新 leader（選舉那段時間的寫入會逾時，見[跨機房](#跨機房)），再移除。
 - **停機的主機排在設定第一位時，** `cluster members` 與 `cluster remove` 要先等它逾時，才換下一台。程式裡每台最多等 2 秒（`PING_WAIT`）；2026-11-18 的實測曾量到多等約 5 秒，是改這個值之前的版本。把停機的節點從設定刪掉，或移到後面，就不會。
-- **失去多數時，`members` 看到的 leader 可能是過期的。** 三台只剩原來的 leader 時，它仍回報自己是 leader（結束碼 0），但它沒有多數，寫入不會成功；剩下的是 follower 時，`members` 約 30 秒後以結束碼 3 結束。要判斷能不能寫，看 `rradius-server status` 的 `Has a leader`，或直接試一次寫入（2026-11-18 實測）。
+- **失去多數時，`members` 看到的 leader 可能是過期的。** 三台只剩原來的 leader 時，它仍回報自己是 leader（結束碼 0），但它沒有多數，寫入不會成功；剩下的是 follower 時，`members` 約 30 秒後以結束碼 3 結束。要判斷能不能寫，看 `rradiusd status` 的 `Has a leader`，或直接試一次寫入（2026-11-18 實測）。
 - **只停一台不必移除。** 升級、重開機、換硬體後用同一個 `node_id` 回來，見[重開節點與重建資料](#重開節點與重建資料)；移除是給不會再回來的節點。
 - **測過的範圍：** 2026-11-13、2026-11-18，一台主機的 Docker，三到五個節點：移除 leader 約 5 秒完成，期間對剩下三台各每 0.05 秒登入一次，約 1,480 次都成功，最長空檔 0.1 秒（登入讀本機副本，不需要 leader）；加第 4 台 1 到 3 秒成為 voter、約 4 秒開始回應登入；寫入中加入與移除，394 次寫入沒有失敗。沒有在多台實體主機或經過 WireGuard 的環境測過，也沒有測真實 NAS 在選舉期間的行為。
 
@@ -716,7 +716,7 @@ node 3  not in the cluster (listed in this configuration)
 各節點的設定應該只差在本機的值。`config diff` 比較兩份設定（含預設值），列出不同之處；`cluster.node_id` 與 `cluster.listen` 這兩個本來就該不同的鍵，列在最後的 `node-specific:` 下面：
 
 ```console
-$ rradius-server config diff node1.toml node2.toml
+$ rradiusd config diff node1.toml node2.toml
 cluster.data_dir: "data1" | "data2"
 cluster.stop_without_leader_ms: 10000 | (absent)
 metrics.port: 27041 | 27042
@@ -731,7 +731,7 @@ node-specific:
 這是單機練習的結果，埠與目錄都不同。多台主機時差異會少很多，例如 ha-cluster 情境的兩個節點：
 
 ```console
-$ rradius-server config diff node1.toml node2.toml
+$ rradiusd config diff node1.toml node2.toml
 metrics.bind: "10.99.0.1" | "10.99.0.2"
 node-specific:
   cluster.listen: "10.99.0.1" | "10.99.0.2"
@@ -745,7 +745,7 @@ node-specific:
 `status --cluster` 向叢集要成員清單，同時讀每個成員的指標埠，一行一個節點：
 
 ```console
-$ rradius-server status --cluster --config node1.toml
+$ rradiusd status --cluster --config node1.toml
 rradius cluster status over 1.0 s, members from the cluster
 
 node   role    ready  auth/s  acct/s  discarded/s  in progress  address
@@ -788,7 +788,7 @@ total          3/3    0.0     0.0     0.0          0
 照[第 03 章](03-quick-start.md)的做法把情境複製到工作目錄、把 `dictionary` 改成字典的絕對路徑後，三份都能通過 `check`（會警告範例的公開密碼與檔案權限）：
 
 ```console
-$ for n in 1 2 3; do rradius-server check --config node$n.toml; done 2>&1 | grep -v WARN
+$ for n in 1 2 3; do rradiusd check --config node$n.toml; done 2>&1 | grep -v WARN
 configuration ok
 configuration ok
 configuration ok
@@ -814,7 +814,7 @@ configuration ok
 
 | 項目 | 內容 |
 | --- | --- |
-| 服務 | `node1`、`node2`、`node3`，image `rradius-server`，從原始碼的 `Dockerfile` 建置 |
+| 服務 | `node1`、`node2`、`node3`，image `rradiusd`，從原始碼的 `Dockerfile` 建置 |
 | RADIUS 埠 | 主機的 1812/1813、2812/2813、3812/3813 對應到各容器的 1812/1813（UDP） |
 | 設定 | `./docker/config` 唯讀掛到 `/etc/rradius` |
 | 資料 | 每個節點一個 volume：`data1`、`data2`、`data3`，掛到 `/var/lib/rradius` |
@@ -840,8 +840,8 @@ $ docker compose -f compose.cluster.yaml up --build
 `init-secrets.sh` 產生三個隨機的密碼檔，已經存在的不覆蓋。在容器裡看狀態：
 
 ```console
-$ docker compose -f compose.cluster.yaml exec node1 rradius-server status --config /etc/rradius/cluster/node1.toml
-$ docker compose -f compose.cluster.yaml exec node1 rradius-server cluster members --config /etc/rradius/cluster/node1.toml
+$ docker compose -f compose.cluster.yaml exec node1 rradiusd status --config /etc/rradius/cluster/node1.toml
+$ docker compose -f compose.cluster.yaml exec node1 rradiusd cluster members --config /etc/rradius/cluster/node1.toml
 ```
 
 停掉 leader 的練習，用 `docker compose -f compose.cluster.yaml stop node1`（送 SIGTERM，最多等 30 秒）。
@@ -882,7 +882,7 @@ $ docker build -t rradius-server:latest .
 
   ```yaml
   images:
-    - name: rradius-server
+    - name: rradiusd
       newName: registry.example.com/rradius-server
       newTag: "1.0"
   ```
@@ -990,9 +990,9 @@ patches:
 ### 在 pod 裡下指令
 
 ```console
-$ kubectl exec -i rradius-0 -- rradius-server user add --config /etc/rradius/rradius-0.toml alice
-$ kubectl exec rradius-0 -- rradius-server cluster members --config /etc/rradius/rradius-0.toml
-$ kubectl exec rradius-0 -- rradius-server status --cluster --config /etc/rradius/rradius-0.toml
+$ kubectl exec -i rradius-0 -- rradiusd user add --config /etc/rradius/rradius-0.toml alice
+$ kubectl exec rradius-0 -- rradiusd cluster members --config /etc/rradius/rradius-0.toml
+$ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rradius-0.toml
 ```
 
 `user add` 從標準輸入讀密碼，所以要 `-i`。設定改了之後怎麼套用（ConfigMap 換名字、pod 逐一重啟），以及新增 migration 要改哪裡，見[第 18 章](18-operations.md)。
@@ -1007,7 +1007,7 @@ $ kubectl exec rradius-0 -- rradius-server status --cluster --config /etc/rradiu
 
 ### 量測條件
 
-- **環境：** Apple M4 Max（14 核）的一台主機，OrbStack 上的 Docker，三個節點各一個容器；image 是核心的 `rradius-server` 加上 `iproute2`。節點設定是 `docker/config/auth.lua` 與 `sql` 處理器（登入讀本機副本，每個計費封包一次 `INSERT`）。
+- **環境：** Apple M4 Max（14 核）的一台主機，OrbStack 上的 Docker，三個節點各一個容器；image 是核心的 `rradiusd` 加上 `iproute2`。節點設定是 `docker/config/auth.lua` 與 `sql` 處理器（登入讀本機副本，每個計費封包一次 `INSERT`）。
 - **延遲怎麼加：** 在每個節點對另外兩個節點的 egress 用 `tc netem` 加單向延遲（來回時間 RTT 的一半），RADIUS 用戶端到節點的路徑不加。RTT 用節點之間的 `ping` 校正，下表一律用實測值。
 - **模擬的限制：** 只有固定的延遲，沒有抖動、沒有封包遺失、兩個方向相同；節點在同一台主機上，CPU 與記憶體不是瓶頸。
 - **負載：** `rradius-bench`，固定並行 64，暖機 2 秒、量測 10 秒，每個 RTT 點 3 次。讀取負載是 `pap` 登入（讀本機副本）；寫入負載是 `acct-start`（每個封包一次 `INSERT INTO accounting`，要經過 Raft）。用戶端打的是當時的 leader。
@@ -1070,6 +1070,7 @@ $ kubectl exec rradius-0 -- rradius-server status --cluster --config /etc/rradiu
 | 19.8 ms | 350／s | 17.1、17.1、21.5 秒（leader 最後） | 14.8 秒 | 每個節點 1,500–2,600 個，約 3.6–6.2% | 0.1–6.9 秒（停 leader 時 6.9） |
 
 - **一台一台升級，另外兩台一直有回應。** 逾時的請求大部分是送給正在停機那一台的（用戶端沒有改問別台）。
+- **核心版與企業版的執行檔同名（`rradiusd`），** 換版本時只換那個檔案，用 `rradiusd --version` 確認每台是哪一版。叢集裡同時有兩種版本的節點，這份手冊沒有測過，不保證可以；要換的話先在測試叢集上試。
 - **升級一台約 16 到 21 秒**（停止約 15 秒，加上啟動追上），leader 那台最久；停 leader 時其他節點的寫入空檔最長。
 - 沒有測：新舊版本混在一起（這次是同一個 image 重啟）、資料量大時追上的時間。
 

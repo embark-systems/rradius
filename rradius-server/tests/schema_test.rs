@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 /// The schema the program prints, run in an empty directory.
 fn printed_schema() -> Result<Value, String> {
@@ -20,7 +20,7 @@ fn printed_schema() -> Result<Value, String> {
 fn test_printing_the_schema() -> Result<(), String> {
     let schema = printed_schema()?;
     assert_eq!(schema.get("$schema").and_then(Value::as_str), Some("https://json-schema.org/draft/2020-12/schema"));
-    assert_eq!(schema.get("title").and_then(Value::as_str), Some("rradius-server configuration"));
+    assert_eq!(schema.get("title").and_then(Value::as_str), Some("rradiusd configuration"));
     assert_eq!(schema.get("required"), Some(&serde_json::json!(["dictionary"])));
     Ok(())
 }
@@ -29,7 +29,7 @@ fn test_printing_the_schema() -> Result<(), String> {
 fn test_an_extra_argument() -> Result<(), String> {
     let output = Command::new(PROGRAM).args(["schema", "extra"]).output().map_err(|e| e.to_string())?;
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage: rradius-server schema"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("usage: rradiusd schema"));
     assert!(output.stdout.is_empty());
     Ok(())
 }

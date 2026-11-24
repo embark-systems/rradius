@@ -14,7 +14,7 @@ use std::time::Duration;
 use rradius_core::test_support::scenario::*;
 
 /// The program these tests start.
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 /// The program with the directory of its scenarios.
 const SCENARIOS: Scenarios = Scenarios { program: PROGRAM, root: concat!(env!("CARGO_MANIFEST_DIR"), "/examples/scenarios") };

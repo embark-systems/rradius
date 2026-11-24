@@ -1,4 +1,4 @@
-//! `rradius-server query list|<name>`: the named queries of `[queries]`, listed, and one of them
+//! `rradiusd query list|<name>`: the named queries of `[queries]`, listed, and one of them
 //! run once through the cluster's API port, as `session` runs its statements, so that the command
 //! starts no node. It runs the statement itself and does not read what the node has kept for
 //! `/metrics`, and it is not held to `max_rows`.
@@ -7,7 +7,7 @@ use crate::accounts::{Cell, Row, STATUS_MISTAKE};
 use crate::config::{self, ServerConfig};
 use std::path::Path;
 
-pub const USAGE: &str = "usage: rradius-server query list [--config <path>] [--json]\nusage: rradius-server query <name> [--config <path>] [--json]";
+pub const USAGE: &str = "usage: rradiusd query list [--config <path>] [--json]\nusage: rradiusd query <name> [--config <path>] [--json]";
 
 /// What the arguments ask for.
 #[derive(Debug, PartialEq)]

@@ -500,7 +500,7 @@ mod tests {
         assert!(!schema.to_string().contains(r#""description":"again""#));
         assert_eq!(descriptions(&extensions)?.1, ["radius.auth_port"]);
         // Without the extension, the section is unknown.
-        let core = build("rradius-server", &crate::extensions::builtin())?;
+        let core = build("rradiusd", &crate::extensions::builtin())?;
         let unknown = validate(&core, &toml_text(&format!("{BASE}[radius.probe]\nname = \"x\"\n"))?);
         assert!(unknown.as_ref().is_err_and(|e| e.contains("unknown property `probe`")), "{unknown:?}");
         Ok(())
@@ -510,7 +510,7 @@ mod tests {
     /// which the core program then refuses as needing rradius-enterprise.
     #[test]
     fn test_mfa_in_the_core_schema() -> Result<(), String> {
-        let core = build("rradius-server", &crate::extensions::builtin())?;
+        let core = build("rradiusd", &crate::extensions::builtin())?;
         let client = "[radius]\n[[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"s\"\n";
         let section = validate(&core, &toml_text(&format!("{BASE}{client}[mfa]\nkey_file = \"mfa.key\"\n"))?);
         assert!(section.as_ref().is_err_and(|e| e.contains("unknown property `mfa`")), "{section:?}");
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn test_top_level_sections_link_the_usage_document() -> Result<(), String> {
-        let schema = build_in("rradius-server", &crate::extensions::builtin(), Lang::ZhTw)?;
+        let schema = build_in("rradiusd", &crate::extensions::builtin(), Lang::ZhTw)?;
         let properties = schema.get("properties").and_then(Value::as_object).ok_or("no properties")?;
         for (key, property) in properties {
             let description = property.get("description").and_then(Value::as_str).unwrap_or_default();
@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(table.text("tacacs.clients.address", Lang::En), Some("own"), "its own path wins");
         assert_eq!(table.text("tacacs.clientsx.secret", Lang::En), None, "a prefix ends at a dot");
         assert_eq!(table.text("radius.clients.name", Lang::En), None);
-        let mut schema = without_field_descriptions("rradius-server", &crate::extensions::builtin())?;
+        let mut schema = without_field_descriptions("rradiusd", &crate::extensions::builtin())?;
         expand(&mut schema)?;
         assert!(!schema.to_string().contains("$ref") && schema.get("$defs").is_none());
         describe(&mut schema, "", true, &table, Lang::ZhTw);
@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn test_secret_settings_are_marked() -> Result<(), String> {
         let extensions = crate::extensions::builtin();
-        let schema = build("rradius-server", &extensions)?;
+        let schema = build("rradiusd", &extensions)?;
         let (table, _) = descriptions(&extensions)?;
         assert_eq!(unmarked_secrets(&schema, &table), Vec::<String>::new());
         for path in ["radius.clients.secret", "tacacs.clients.secret", "cluster.secret_raft", "cluster.secret_api", "auth.handlers.bind_password"] {
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn test_every_core_field_is_described() -> Result<(), String> {
         for lang in [Lang::En, Lang::ZhTw] {
-            let schema = build_in("rradius-server", &crate::extensions::builtin(), lang)?;
+            let schema = build_in("rradiusd", &crate::extensions::builtin(), lang)?;
             assert_eq!(undescribed(&schema), Vec::<String>::new(), "{lang:?}");
             assert_eq!(core_descriptions()?.unknown_paths(&schema), Vec::<String>::new());
             assert_eq!(descriptions(&crate::extensions::builtin())?.1, Vec::<String>::new());

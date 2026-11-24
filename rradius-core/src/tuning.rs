@@ -1,4 +1,4 @@
-//! `rradius-server tuning`: which operating system limits to raise for this configuration, how
+//! `rradiusd tuning`: which operating system limits to raise for this configuration, how
 //! far, and how, on Linux, macOS and FreeBSD. It only reads: the system's values and the
 //! configuration file. Nothing is changed, no node is started and no port is opened.
 //!
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-pub const USAGE: &str = "usage: rradius-server tuning [--config <path>]";
+pub const USAGE: &str = "usage: rradiusd tuning [--config <path>]";
 
 /// What the open files need on top of the configured connections: database files, the log,
 /// the cluster's own connections, LDAP and HTTP pools. An estimate, not a measurement.

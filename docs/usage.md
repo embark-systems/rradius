@@ -1,6 +1,6 @@
-# rradius-server 使用文件
+# rradiusd 使用文件
 
-rradius-server 是一個 AAA（認證、授權、計費）伺服器，支援 RADIUS 與 TACACS+。認證可以交給設定檔中的認證串接（SQL、LDAP、Lua），授權與計費由 Lua 腳本處理。資料存放在內嵌的 hiqlite（SQLite 加 Raft 複寫）叢集，可以單機執行，也可以組成多節點高可用叢集。
+rradiusd 是一個 AAA（認證、授權、計費）伺服器，支援 RADIUS 與 TACACS+。認證可以交給設定檔中的認證串接（SQL、LDAP、Lua），授權與計費由 Lua 腳本處理。資料存放在內嵌的 hiqlite（SQLite 加 Raft 複寫）叢集，可以單機執行，也可以組成多節點高可用叢集。
 
 這份是參考文件，列出每個設定和行為。依主題的說明、部署情境和可以直接啟動的範例設定，見[使用手冊](manual/README.md)。
 
@@ -9,13 +9,13 @@ rradius-server 是一個 AAA（認證、授權、計費）伺服器，支援 RAD
 ```bash
 cd rradius-server
 cargo build --release
-./target/release/rradius-server serve --config /etc/rradius/rradius.toml
+./target/release/rradiusd serve --config /etc/rradius/rradius.toml
 ```
 
-`rradius-server --version` 印出版本和預設設定檔，例如：
+`rradiusd --version` 印出版本和預設設定檔，例如：
 
 ```
-rradius-server 0.1.0
+rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
 ```
 
@@ -23,7 +23,7 @@ default config: /etc/rradius/rradius.toml
 
 ```bash
 RRADIUS_PREFIX=/usr/local cargo build --release
-./target/release/rradius-server        # 讀 /usr/local/etc/rradius/rradius.toml
+./target/release/rradiusd        # 讀 /usr/local/etc/rradius/rradius.toml
 ```
 
 用 cargo 建置時，改了 `RRADIUS_PREFIX` 會自動重新編譯；企業版建置時設的值一樣有效。
@@ -32,7 +32,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 
 | 路徑 | 內容 |
 | --- | --- |
-| `bin/rradius-server` | 伺服器和管理指令 |
+| `bin/rradiusd` | 伺服器和管理指令 |
 | `share/dictionary*` | RADIUS 字典 |
 | `rradius-server/examples/` | 範例，含使用手冊的九個情境 |
 | `docs/usage.md`、`docs/manual/` | 這份文件和使用手冊 |
@@ -42,9 +42,9 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 - **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡；執行檔放到 `PATH` 裡。
 - **自己產生發行檔：** `packages/tarball/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
 
-- **啟動服務要用 `serve` 子命令：** `rradius-server serve [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`serve` 後面接其他參數時印出它的用法，狀態碼 2。
-- **不帶參數只印用法：** `rradius-server`、`rradius-server help`（或 `-h`、`--help`）把所有子命令的用法印到 stdout，最後一行寫出預設設定檔，狀態碼 0，不讀設定檔也不啟動任何東西。參數不對時印出同樣的用法到 stderr，狀態碼 2；第一個參數是 `--config` 或 `--check` 時（舊的寫法）多一行提示改用 `serve --config <path>` 或 `check --config <path>`，不會啟動也不會檢查。
-- `rradius-server check [--config <path>]` 只檢查設定，見下方。`[radius.accounting_spool] dir` 也會檢查：要是目錄且寫得進去，還不存在時最近的上層目錄要寫得進去。只寫一個暫時檔再刪除，不會建立目錄或動到暫存內容。這是用執行 `check` 的帳號判斷，和實際執行服務的帳號不同時結果可能不同。
+- **啟動服務要用 `serve` 子命令：** `rradiusd serve [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`serve` 後面接其他參數時印出它的用法，狀態碼 2。
+- **不帶參數只印用法：** `rradiusd`、`rradiusd help`（或 `-h`、`--help`）把所有子命令的用法印到 stdout，最後一行寫出預設設定檔，狀態碼 0，不讀設定檔也不啟動任何東西。參數不對時印出同樣的用法到 stderr，狀態碼 2；第一個參數是 `--config` 或 `--check` 時（舊的寫法）多一行提示改用 `serve --config <path>` 或 `check --config <path>`，不會啟動也不會檢查。
+- `rradiusd check [--config <path>]` 只檢查設定，見下方。`[radius.accounting_spool] dir` 也會檢查：要是目錄且寫得進去，還不存在時最近的上層目錄要寫得進去。只寫一個暫時檔再刪除，不會建立目錄或動到暫存內容。這是用執行 `check` 的帳號判斷，和實際執行服務的帳號不同時結果可能不同。
 - 設定檔錯誤（欄位拼錯、缺少必填項、腳本語法錯誤等）一律在啟動時失敗，狀態碼 2，錯誤訊息會指出設定檔路徑與出錯的欄位或檔案。
 - 設定檔中的相對路徑都以設定檔所在目錄為準，與啟動時的工作目錄無關。
 - 建置不需要另外安裝 Lua 或 LuaJIT：Luau 會隨程式一起編譯。
@@ -53,7 +53,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 **只檢查設定：**
 
 ```bash
-./target/release/rradius-server check --config /etc/rradius/rradius.toml
+./target/release/rradiusd check --config /etc/rradius/rradius.toml
 ```
 
 做和啟動相同的檢查：設定檔、字典、migration 目錄、腳本語法、LDAP 的 `ca_file`。全部通過時 stdout 印 `configuration ok`，狀態碼 0；有問題時錯誤寫到 stderr，狀態碼 2。不開埠、不建立資料目錄，也不連線到 LDAP 或其他節點，所以 LDAP 帳號密碼錯誤、SQL 查詢寫錯這類問題查不出來。
@@ -94,7 +94,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 - **client：** 範例允許三個私有網段，因為容器看到的來源位址由 Docker 決定。請改成你的設備位址。
 - **TACACS+：** 範例沒有啟用。要用時在設定加上 `[tacacs]`，並在 Compose 發布 `49/tcp`。
 - **統計：** 範例沒有啟用。要用時加上 `[metrics]`，並把 `bind` 改成容器可從外部連到的位址（見 2.8 節）。RadSec（`[radius.tls]`）需要 rradius-enterprise。
-- **看狀態：** 範例設定開了 `[metrics]`（容器內的 `127.0.0.1:9812`，沒有對外開埠），用 `docker compose exec rradius rradius-server status --config /etc/rradius/rradius.toml --watch` 看這個節點在做什麼（見 2.8 節）。
+- **看狀態：** 範例設定開了 `[metrics]`（容器內的 `127.0.0.1:9812`，沒有對外開埠），用 `docker compose exec rradius rradiusd status --config /etc/rradius/rradius.toml --watch` 看這個節點在做什麼（見 2.8 節）。
 - **重新載入：** 修改 `docker/config/` 的腳本或 client 後，執行 `docker compose kill -s HUP rradius` 就會套用，不必重啟（見 2.9 節）。
 - **資料：** 放在 Compose 的具名 volume。`docker compose down --volumes` 會刪除資料。
 - **容器的權限：** 範例 Compose 的每個服務都設了 `read_only: true`（根檔案系統唯讀）、`tmpfs: [/tmp]`、`cap_drop: [ALL]` 與 `no-new-privileges`。伺服器以一般使用者（uid 10001）執行，只寫資料 volume（`/var/lib/rradius`）和 `/tmp`，所以這些限制不影響運作；單節點與三節點的 smoke test 都在這些設定下通過。自己加的東西（例如記錄檔、計費暫存、憑證檔的輸出）若要寫別的路徑，要掛一個 volume 給它，否則會因為唯讀而失敗。已部署的容器要用 `docker compose up --detach` 重新建立才會套用。
@@ -124,14 +124,14 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | `[tacacs]` | 否 | 啟用 TACACS+ |
 | `[metrics]` | 否 | 啟用統計端點（2.8 節） |
 | `[log]` | 否 | 記錄的等級、格式與認證紀錄（2.10 節） |
-| `[accounts]` | 否 | `rradius-server user` 管理帳號時執行的 SQL（2.14 節） |
+| `[accounts]` | 否 | `rradiusd user` 管理帳號時執行的 SQL（2.14 節） |
 | `[shutdown]` | 否 | 收到 SIGTERM 後的兩段等待（2.16 節） |
 | `[databases.<name>]` | 否 | 外部的 MySQL、PostgreSQL，給 `sql` 處理器和 `db_query` 用（2.17 節） |
 | `[runtime]` | 否 | `pin_threads`：把工作執行緒各綁在一顆 CPU 上，只在 Linux（2.4 節） |
 
 `[radius]` 與 `[tacacs]` 至少要有一個。所有區段都拒絕不認得的欄位，拼錯的欄位會讓啟動失敗並指出欄位名稱。
 
-**企業版功能：** 下列功能需要 rradius-enterprise，說明在 rradius-enterprise 使用文件。設定檔用到這些區段或欄位時，rradius-server 啟動、SIGHUP 和 `check` 都會失敗，訊息寫明需要 rradius-enterprise。
+**企業版功能：** 下列功能需要 rradius-enterprise，說明在 rradius-enterprise 使用文件。設定檔用到這些區段或欄位時，rradiusd 啟動、SIGHUP 和 `check` 都會失敗，訊息寫明需要 rradius-enterprise。
 
 | 功能 | 設定或指令 | 用途 |
 | --- | --- | --- |
@@ -166,17 +166,17 @@ address = "127.0.0.1"
 secret_file = "local.secret"
 ```
 
-**在編輯器裡檢查設定檔：** `rradius-server schema` 把設定檔的 JSON Schema 印到標準輸出，不讀設定檔、不啟動任何東西。
+**在編輯器裡檢查設定檔：** `rradiusd schema` 把設定檔的 JSON Schema 印到標準輸出，不讀設定檔、不啟動任何東西。
 
 ```bash
-rradius-server schema > rradius.schema.json                  # 欄位說明用英文
-rradius-server schema --lang zh-TW > rradius.schema.json     # 欄位說明用繁體中文
+rradiusd schema > rradius.schema.json                  # 欄位說明用英文
+rradiusd schema --lang zh-TW > rradius.schema.json     # 欄位說明用繁體中文
 ```
 
 在 `rradius.toml` 第一行寫 `#:schema ./rradius.schema.json`，支援 TOML schema 的編輯器（例如 Taplo，以及 VS Code 的 Even Better TOML）就會在編輯時補全區段和欄位，並標出拼錯的欄位、型別錯誤和不在列舉裡的值。
 
 - **schema 由讀設定的程式產生，** 和程式的規則一致；換版本後重新產生一次。
-- **企業版的區段不在 rradius-server 的 schema 裡，** 寫了會標成不認得的欄位；`rradius-enterprise schema` 的 schema 包含它們。上表列的幾個欄位（例如 `[radius.eap]` 的 `resumption_ms`、`[[radius.clients]]` 的 `tls_name`）在兩邊的 schema 裡都有，用 rradius-server 時由 `check` 指出需要 rradius-enterprise。
+- **企業版的區段不在 rradiusd 的 schema 裡，** 寫了會標成不認得的欄位；企業版的 `rradiusd schema` 的 schema 包含它們。上表列的幾個欄位（例如 `[radius.eap]` 的 `resumption_ms`、`[[radius.clients]]` 的 `tls_name`）在兩邊的 schema 裡都有，用 rradiusd 時由 `check` 指出需要 rradius-enterprise。
 - **schema 不能取代 `check`。** 它只看結構和型別；SQL 的參數規則（2.14 節）、檔案是否存在和權限、欄位之間的條件（例如 `secret` 和 `secret_file` 只能有一個）、憑證和金鑰的內容、數值的上下限等，仍然只有 `check` 和啟動時檢查。
 - **每個欄位都有一句說明，** 編輯器在補全和滑過欄位時顯示。預設是英文，`--lang zh-TW` 改用繁體中文，其他值以狀態 2 結束。說明只講用途和單位，細節和限制仍以這份文件為準；每個最上層區段的說明是連到這份文件對應章節的網址。
 
@@ -202,9 +202,9 @@ dictionary = "/usr/share/rradius/dictionary"
 **看生效的設定、比較節點、產生起始設定：** `config` 的三個子指令都依同一份 schema 運作，不啟動任何東西、不寫檔案，rradius-enterprise 也有，並包含企業版的區段。
 
 ```bash
-rradius-server config show --config /etc/rradius/rradius.toml   # 補上預設值後的生效設定
-rradius-server config diff node1.toml node2.toml                 # 比較兩個節點的設定
-rradius-server config init --lang zh-TW > rradius.toml           # 起始設定檔，說明用繁體中文
+rradiusd config show --config /etc/rradius/rradius.toml   # 補上預設值後的生效設定
+rradiusd config diff node1.toml node2.toml                 # 比較兩個節點的設定
+rradiusd config init --lang zh-TW > rradius.toml           # 起始設定檔，說明用繁體中文
 ```
 
 - **`config show`：** 先和 `check` 一樣載入設定（有錯時印出相同訊息，狀態 2），再把檔案裡已有的區段中省略的欄位補上預設值，以 TOML 印出。檔案沒寫的區段（例如沒有 `[tacacs]`）不會加上。啟動時才算出的預設值（`[radius] sockets`、`[cluster] read_connections`）用執行這個指令的機器算出的值，並在第一行註明。沒有 `--config` 時讀預設的設定檔。
@@ -443,9 +443,9 @@ api = "10.0.0.3:8200"
 執行中加節點不需要指令：新節點的 `[[cluster.nodes]]` 列出目前所有成員（包含自己）、`data/` 是空的，啟動後會自己加入。清單裡一定要有現在的 leader，否則加不進去（見[手冊第 16 章](manual/16-cluster.md#加入節點)）。移除節點和查看成員用 `cluster` 指令，步驟和注意事項見[手冊第 16 章](manual/16-cluster.md#加入節點)。
 
 ```sh
-rradius-server cluster members --config /etc/rradius/rradius.toml
-rradius-server cluster remove --config /etc/rradius/rradius.toml 4
-rradius-server cluster remove --force --config /etc/rradius/rradius.toml 3
+rradiusd cluster members --config /etc/rradius/rradius.toml
+rradiusd cluster remove --config /etc/rradius/rradius.toml 4
+rradiusd cluster remove --force --config /etc/rradius/rradius.toml 3
 ```
 
 - **`members`** 依編號列出每個成員：`voter`（投票成員）或 `learner`（只複製資料，加入中的節點會短暫是這個）、`leader`、Raft 和 API 位址。這份設定沒列的成員標 `(not in this configuration)`；設定有列、叢集裡沒有的編號另列一行 `not in the cluster (listed in this configuration)`。有差異時結束碼仍是 0。
@@ -519,7 +519,7 @@ secret_file = "router-1.secret"
 - 省略時不設定 `SO_RCVBUF`，每個 socket 拿到系統預設值（Linux `net.core.rmem_default`，macOS、FreeBSD `net.inet.udp.recvspace`），和以前相同。
 - 設定後，每個位址的認證和計費 port、每一個 `sockets`，都以這個大小設定 `SO_RCVBUF`。系統只需允許這個上限（Linux `net.core.rmem_max`，macOS、FreeBSD `kern.ipc.maxsockbuf`），不必調高影響所有程式的系統預設值。範圍 4096 到 1073741824，超出時啟動失敗。
 - 啟動時記錄 `RADIUS: receive buffer <實際大小> bytes on each socket (asked <設定值>)`。Linux 讀回的是設定值的兩倍（核心把記帳空間算在內），這是正常的。
-- **拿不到時只記警告，伺服器照常服務。** Linux 會把它截到 `rmem_max`，macOS、FreeBSD 超過上限時拒絕、socket 維持系統預設值；兩者都記一行 WARN，寫出要調的 sysctl。同一份設定部署到上限較低的機器也能啟動，`rradius-server tuning`（8.1 節）會列出上限不足。
+- **拿不到時只記警告，伺服器照常服務。** Linux 會把它截到 `rmem_max`，macOS、FreeBSD 超過上限時拒絕、socket 維持系統預設值；兩者都記一行 WARN，寫出要調的 sysctl。同一份設定部署到上限較低的機器也能啟動，`rradiusd tuning`（8.1 節）會列出上限不足。
 - 記憶體用量的上限是 `recv_buffer_bytes` × `sockets` × 位址數 × 2 個 port，例如 14 個 socket、一個位址、8 MiB 是 224 MiB。緩衝區只在封包堆積時才實際占用。
 - 改了要重新啟動，SIGHUP 時會記錄需要重啟的設定。
 
@@ -845,7 +845,7 @@ port = 9812         # 預設
 沒有 Prometheus 時，`status` 直接讀這台節點自己的 `/readyz` 與 `/metrics`，相隔 1 秒取兩次，列出每秒的量和目前的值：
 
 ```bash
-rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]
+rradiusd status [--config <path>] [--cluster] [--watch | --json | --tui]
 ```
 
 - **要有 `[metrics]`。** 指令照設定檔的 `bind` 與 `port` 連線；`bind` 是 `0.0.0.0` 或 `::` 時改連 `127.0.0.1` 或 `::1`。所以要在節點本機執行，用同一個設定檔。
@@ -1222,7 +1222,7 @@ eap_methods = ["peap", "tls"]  # 先提供 peap，用戶端可以用 Nak 換 tls
 
 ### 2.14 帳號管理 `[accounts]`
 
-帳號存在叢集的資料表時，用 `rradius-server user` 新增、改密碼、啟用、停用、刪除和查看帳號。寫入經過叢集，所有節點立刻一致，下一次登入就看得到，不必寫 migration、重啟或 SIGHUP。
+帳號存在叢集的資料表時，用 `rradiusd user` 新增、改密碼、啟用、停用、刪除和查看帳號。寫入經過叢集，所有節點立刻一致，下一次登入就看得到，不必寫 migration、重啟或 SIGHUP。
 
 資料表的結構由你決定，所以每個動作執行哪一條 SQL 寫在 `[accounts]`：
 
@@ -1245,15 +1245,15 @@ show = "SELECT username, enabled FROM users WHERE username = ?1"
 **指令：**
 
 ```bash
-rradius-server user add --config /etc/rradius/rradius.toml alice
-rradius-server user passwd --config /etc/rradius/rradius.toml alice
-rradius-server user disable --config /etc/rradius/rradius.toml alice
-rradius-server user show --config /etc/rradius/rradius.toml alice
+rradiusd user add --config /etc/rradius/rradius.toml alice
+rradiusd user passwd --config /etc/rradius/rradius.toml alice
+rradiusd user disable --config /etc/rradius/rradius.toml alice
+rradiusd user show --config /etc/rradius/rradius.toml alice
 ```
 
-設定檔就是預設設定檔（第 1 節）時可以省略 `--config`，例如 `rradius-server user show alice`。
+設定檔就是預設設定檔（第 1 節）時可以省略 `--config`，例如 `rradiusd user show alice`。
 
-- **密碼只從標準輸入讀，** 不放在命令列（會留在 shell 歷史和程序列表）。在終端機上會問兩次、不顯示輸入；兩次不同或空的密碼都會拒絕，什麼都不寫。從管線讀時用第一行，例如批次匯入：`printf '%s\n' "$PW" | rradius-server user add --config c.toml alice`。
+- **密碼只從標準輸入讀，** 不放在命令列（會留在 shell 歷史和程序列表）。在終端機上會問兩次、不顯示輸入；兩次不同或空的密碼都會拒絕，什麼都不寫。從管線讀時用第一行，例如批次匯入：`printf '%s\n' "$PW" | rradiusd user add --config c.toml alice`。
 - **名稱和登入時一樣正規化：** 套用預設串接的 `[auth.username]`（去掉 realm、轉小寫、`allowed` 檢查），所以 `user add Alice@Corp` 在 `strip_realm = "suffix"`、`lowercase = true` 時存成 `alice`。具名串接自己的 `[auth.chains.<name>.username]` 不套用。
 - **經過叢集的 api 埠：** 用 `[cluster]` 的 `nodes` 位址和 `secret_api` 連線，所以叢集要在執行、多數節點要在線上，執行指令的主機要連得到 api 埠。指令不會啟動節點或建立資料目錄。
 - **`secret_api` 等於整個資料庫的鑰匙。** 能讀設定檔的人本來就能用它改任何資料表，請把設定檔和 `secret_api_file` 設成只有管理者能讀，並在節點上或經過 WireGuard（2.2 節）執行指令。
@@ -1345,7 +1345,7 @@ required_for_ready = false       # 預設；true 時連不上就讓 /readyz 回 
 ```
 
 - **名稱**只能有 ASCII 字母、數字和 `_`，例如 `billing`。不支援連線 URL。
-- **密碼。** `password_file` 去掉結尾的換行，不能是空的；相對路徑以設定檔所在目錄為準。`password` 和 `password_file` 都沒有時不送密碼。`rradius-server config show` 不顯示 `password`。PostgreSQL 不讀 `~/.pgpass`，但會讀 `PGPASSWORD` 這類環境變數：設定檔沒寫密碼而環境有 `PGPASSWORD` 時，會送出它。
+- **密碼。** `password_file` 去掉結尾的換行，不能是空的；相對路徑以設定檔所在目錄為準。`password` 和 `password_file` 都沒有時不送密碼。`rradiusd config show` 不顯示 `password`。PostgreSQL 不讀 `~/.pgpass`，但會讀 `PGPASSWORD` 這類環境變數：設定檔沒寫密碼而環境有 `PGPASSWORD` 時，會送出它。
 - **TLS。** `verify` 驗證憑證鏈和主機名稱（PostgreSQL 的 `verify-full`、MySQL 的 `VERIFY_IDENTITY`），憑證不是 `ca_file` 簽發的就連不上，算資料庫無法使用。`ca_file` 在 `check` 和啟動時就讀，讀不到或裡面沒有憑證時啟動失敗；`tls = "off"` 時不能設。`off` 不加密，`host` 不是本機時啟動會記 WARN，因為密碼和資料都以明文送出。
 - **MySQL 不用 TLS 時，帳號要用 `mysql_native_password`。** MySQL 8 預設的 `caching_sha2_password` 在沒有 TLS 時要用 RSA 交換密碼，rradius 沒有這部分。MySQL 8.4 預設關閉 `mysql_native_password`，要以 `--mysql-native-password=ON` 啟動，再用 `CREATE USER ... IDENTIFIED WITH mysql_native_password BY '...'` 建帳號。走 TLS 時沒有這個限制。
 - **連線池。** 啟動時只建立連線池、不連線，第一個用到的請求才連。所以資料庫沒開也能啟動，只有用到它的請求失敗。每個節點各有一個池，資料庫允許的連線數至少要是節點數 × `pool_size`。
@@ -1407,7 +1407,7 @@ queue = 65536                               # 預設；等著寫進檔案的筆�
 - **`nocreate`：** 新檔由 rradius 重新開檔時建立，權限是 0640。
 - **`delaycompress`：** 搬走之後、SIGHUP 之前寫的幾行會進入搬走的檔案，不會遺失；延到下一次才壓縮，就不會壓到還在寫的檔案。SIGHUP 的重新載入因為設定檔有別的錯誤而失敗時，也不會重新開檔，會繼續寫搬走的檔案，所以要留意 `rradius_reload_total{result="error"}`。
 - **不要用 `copytruncate`。** 複製之後、截斷之前寫進去的行會遺失。
-- 不是用 systemd 時，把 `postrotate` 換成對 rradius-server 程序送 SIGHUP 的指令（2.9 節）。
+- 不是用 systemd 時，把 `postrotate` 換成對 rradiusd 程序送 SIGHUP 的指令（2.9 節）。
 
 **和企業版流水帳的差別：** rradius-enterprise 的 `[accounting_export.packets]` 記的是同樣的請求，每行的欄位相同，另外多了 `node`。兩個可以同時開，同一筆在兩邊都會寫。
 
@@ -1423,7 +1423,7 @@ queue = 65536                               # 預設；等著寫進檔案的筆�
 
 ### 2.19 線上 session `[sessions]`
 
-要知道現在誰在線上，或某個使用者有哪些 session，用 `rradius-server session list` 與 `rradius-server session show`。rradius 本身沒有 session 表：session 是你的計費腳本寫進自己資料表的列，所以哪些列算「在線」、欄位叫什麼，都由你寫在查詢裡，和 `[accounts]`（2.14 節）一樣。**核心不內建 session 表，所以不會讓每一筆計費多寫一次。**
+要知道現在誰在線上，或某個使用者有哪些 session，用 `rradiusd session list` 與 `rradiusd session show`。rradius 本身沒有 session 表：session 是你的計費腳本寫進自己資料表的列，所以哪些列算「在線」、欄位叫什麼，都由你寫在查詢裡，和 `[accounts]`（2.14 節）一樣。**核心不內建 session 表，所以不會讓每一筆計費多寫一次。**
 
 ```toml
 [sessions]
@@ -1437,9 +1437,9 @@ show = "SELECT username, nas, session_id, started FROM accounting WHERE username
 - **經叢集的 api 埠執行，** 用 `[cluster]` 的 `nodes` 位址和 `secret_api` 連線，一致讀取（看得到剛寫進去的計費），不啟動節點、不建立資料目錄；叢集要在執行、多數節點要在線上，執行指令的主機要連得到 api 埠。`secret_api` 等於整個資料庫的鑰匙，請把設定檔設成只有管理者能讀（2.14 節）。
 
 ```bash
-rradius-server session list --config /etc/rradius/rradius.toml
-rradius-server session show --config /etc/rradius/rradius.toml alice
-rradius-server session list --json
+rradiusd session list --config /etc/rradius/rradius.toml
+rradiusd session show --config /etc/rradius/rradius.toml alice
+rradiusd session list --json
 ```
 
 設定檔就是預設設定檔（第 1 節）時可以省略 `--config`。
@@ -1488,7 +1488,7 @@ rradius-server session list --json
 
 ### 2.20 命名查詢 `[queries]`
 
-核心不知道你的資料表：位址池、連線位、方案這些是範例裡的表，營運商會改名或換掉。要監控它們（池還剩幾個位址、有幾個連線位被佔住），在設定檔寫唯讀的 SQL，每個節點在背景定期執行，結果成為 Prometheus 的 gauge；同一份定義也能用 `rradius-server query` 執行一次。
+核心不知道你的資料表：位址池、連線位、方案這些是範例裡的表，營運商會改名或換掉。要監控它們（池還剩幾個位址、有幾個連線位被佔住），在設定檔寫唯讀的 SQL，每個節點在背景定期執行，結果成為 Prometheus 的 gauge；同一份定義也能用 `rradiusd query` 執行一次。
 
 ```toml
 [queries.pool_usage]
@@ -1519,9 +1519,9 @@ value = "addresses"
 **指令：**
 
 ```bash
-rradius-server query list --config /etc/rradius/rradius.toml        # 有哪些查詢：名稱、說明、間隔、SQL（換行寫成 \n）
-rradius-server query pool_usage --config /etc/rradius/rradius.toml  # 執行一次，印成表格
-rradius-server query pool_usage --json                              # 同一份結果，JSON 陣列
+rradiusd query list --config /etc/rradius/rradius.toml        # 有哪些查詢：名稱、說明、間隔、SQL（換行寫成 \n）
+rradiusd query pool_usage --config /etc/rradius/rradius.toml  # 執行一次，印成表格
+rradiusd query pool_usage --json                              # 同一份結果，JSON 陣列
 ```
 
 `query <名稱>` 經叢集的 API 埠**即時**執行那個查詢，不讀快取，所以不受 `max_rows` 限制，也看得到 NULL；名稱不在設定檔、設定檔有誤、連不上叢集是非零的結束狀態和一行說明（和 `session` 指令相同）。`status` 有 Queries 段落（2.8 節）。
@@ -1836,7 +1836,7 @@ max_entries = 100000          # 每個節點最多記住幾個鍵，預設 10000
 | `password_verify(stored, given)` | 用驗證鏈比對 PAP 密碼的方式，檢查 `given` 是不是儲存值 `stored` 對應的密碼，回傳 `true` 或 `false`。支援所有儲存格式（明文、`{clear}`、`{crypt}`、`{argon2}`、`{SHA}`、`{nthash}` 等，見第 5 節），慢的雜湊在請求執行緒之外計算，並套用 `[auth.password_limits]` 的成本上限、沒有前綴的雜湊不當密碼、沒有前綴的摘要警告，也計入 `rradius_password_checks_total`。`stored` 要是文字；`stored` 或 `given` 是 `nil`、`stored` 去掉前綴後是空的、或被上述規則拒絕時回傳 `false`，不會讓腳本出錯。警告指名請求的 `User-Name`，不含儲存值與密碼。**不計失敗、不鎖定：** 直接由腳本驗證的登入不受 `[auth.lockout]` 保護，要限制猜測就改用 `[auth]` 驗證鏈 |
 | `random_token()` | 回傳 32 個十六進位字元的隨機值，可用來產生 `State` |
 | `wpa_pmk(passphrase, ssid)` | 回傳 WPA2 的 PMK（PBKDF2-HMAC-SHA1、4096 輪、32 octets）的 64 個小寫十六進位字元。`passphrase` 要是 8–63 個可列印 ASCII 字元（或 64 個十六進位字元的 PSK，原樣回傳），`ssid` 要是 1–32 octets，否則腳本出錯，訊息不含密碼。每次呼叫都要跑 4096 輪，約數毫秒，見 2.15 節 |
-| `send_disconnect`、`send_coa` | 要求 NAS 中斷連線或變更權限（RFC 5176），需要 rradius-enterprise；rradius-server 呼叫時腳本出錯 |
+| `send_disconnect`、`send_coa` | 要求 NAS 中斷連線或變更權限（RFC 5176），需要 rradius-enterprise；rradiusd 呼叫時腳本出錯 |
 | `log(...)` | 寫一行記錄，見 4.9 節 |
 | `http_request(options)` | 呼叫白名單上的 HTTP API，只有設定 `[lua.http]` 時才有，見 4.11 節 |
 | `url_encode(text)` | 把一個值編碼成 URL 的一段，只有設定 `[lua.http]` 時才有，見 4.11 節 |
@@ -2125,7 +2125,7 @@ return response.status == 200 and 'accept' or 'reject'
 
 CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固定時間比較。儲存值是空字串或 `{clear}` 後面沒有內容時，一律視為沒有密碼，任何密碼都不符。
 
-`{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradius-server user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
+`{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradiusd user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
 
 `{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時視為拒絕。`{argon2}` 的成本由雜湊本身的參數決定，所以有上限，見下面〈儲存雜湊的成本上限〉。
 
@@ -2321,7 +2321,7 @@ cd rradius-server/fuzz && mkdir -p corpus/radius_packet && cargo +nightly-2026-1
 | `reload failed, keeping the running configuration: ...` | 重新載入失敗，服務維持原狀；修正訊息指出的問題後再送一次 SIGHUP |
 | `these need a restart to apply: ...` | 列出的設定改了但沒有套用，見 2.9 節；重啟前每次重新載入都會列出 |
 | 結尾是 `(N since the last line)` | 未知來源的 RADIUS 封包和 TACACS+ 連線，這些任何人都能觸發，所以每種每秒最多一行。這行只寫當下那一筆的來源，N 是上一行以來的總數，其他來源要看指標或抓封包 |
-| `accepting a connection failed N times` | 通常是檔案描述元用完；程序會自動重試，不必重啟。`rradius-server tuning` 會依設定算出建議的上限和設定方式（8.1 節），或調低 `max_connections`（預設 1024） |
+| `accepting a connection failed N times` | 通常是檔案描述元用完；程序會自動重試，不必重啟。`rradiusd tuning` 會依設定算出建議的上限和設定方式（8.1 節），或調低 `max_connections`（預設 1024） |
 | `auth chain: rejecting a request from client ...` | 名稱處理後是空的，或不符合 `allowed`，見 3.6 節 |
 | `script ... : ...` | 腳本用 `log()` 寫的記錄，不是錯誤 |
 | `RADIUS response attribute error: ...` | 回應屬性的值不符合字典型別，例如 `reply_query` 查到 `2001:db8::1/64` 當前綴。該次認證會被拒絕，即使密碼正確；修正資料表的值 |
@@ -2336,11 +2336,11 @@ cd rradius-server/fuzz && mkdir -p corpus/radius_packet && cargo +nightly-2026-1
 
 ### 8.1 作業系統調校 `tuning`
 
-`rradius-server tuning` 依執行的作業系統（Linux、macOS、FreeBSD）和設定檔，列出該調高哪些系統上限、調到多少、怎麼設定。
+`rradiusd tuning` 依執行的作業系統（Linux、macOS、FreeBSD）和設定檔，列出該調高哪些系統上限、調到多少、怎麼設定。
 
 ```bash
-rradius-server tuning --config /etc/rradius/rradius.toml
-rradius-server tuning            # 讀預設的設定檔；沒有時用預設設定估算
+rradiusd tuning --config /etc/rradius/rradius.toml
+rradiusd tuning            # 讀預設的設定檔；沒有時用預設設定估算
 ```
 
 - **只讀取，不修改任何東西。** 不需要 root，不啟動叢集節點、不開任何埠。每一項列出目前值、建議值、原因、立即生效的指令（例如 `sysctl -w`）和重開機後仍保留要寫的檔案，由管理者自己執行。目前值已達建議時標 `ok`，不列指令；讀不到的值標 `unknown` 並寫出原因。
@@ -2394,7 +2394,7 @@ cargo build --release --locked --manifest-path rradius-server/Cargo.toml
 在 `rradius-server/benchmarks/` 目錄啟動伺服器，資料會放在該目錄的 `data/`（已被 gitignore）：
 
 ```bash
-cd rradius-server/benchmarks && ../../target/release/rradius-server serve --config accept.toml
+cd rradius-server/benchmarks && ../../target/release/rradiusd serve --config accept.toml
 ```
 
 換一組設定前請先停掉伺服器。下面的命令在專案根目錄的另一個終端機執行。

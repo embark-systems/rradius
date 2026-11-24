@@ -45,7 +45,7 @@ pub struct ServerConfig {
 }
 
 /// One `[queries.<name>]`: a read-only statement each node runs in the background, whose rows
-/// are the samples of the gauge `rradius_query_<name>`, and which `rradius-server query` runs.
+/// are the samples of the gauge `rradius_query_<name>`, and which `rradiusd query` runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuerySettings {
     pub sql: String,

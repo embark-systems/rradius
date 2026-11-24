@@ -23,24 +23,26 @@ pub struct Program {
     pub name: &'static str,
     /// Its version, as `--version` prints it.
     pub version: &'static str,
+    /// Which edition it is, as `--version` prints it in parentheses: `community` or `enterprise`.
+    pub edition: &'static str,
     /// What it adds to the server.
     pub extensions: crate::extension::Extensions,
 }
 
-const USAGE: &str = "usage: rradius-server serve [--config <path>]";
-const SCHEMA_USAGE: &str = "usage: rradius-server schema [--lang en|zh-TW]";
+const USAGE: &str = "usage: rradiusd serve [--config <path>]";
+const SCHEMA_USAGE: &str = "usage: rradiusd schema [--lang en|zh-TW]";
 
 /// The name of the program that runs, once `main` has it.
 static PROGRAM_NAME: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
-/// The name of the program that runs: `rradius-server` until `main` says otherwise.
+/// The name of the program that runs: `rradiusd` until `main` says otherwise.
 pub fn program_name() -> &'static str {
-    PROGRAM_NAME.get().copied().unwrap_or("rradius-server")
+    PROGRAM_NAME.get().copied().unwrap_or("rradiusd")
 }
 
-/// A usage text of the core, written for `rradius-server`, for the program that runs.
+/// A usage text of the core, written for `rradiusd`, for the program that runs.
 pub fn named(usage: &str) -> String {
-    usage.replace("rradius-server", program_name())
+    usage.replace("rradiusd", program_name())
 }
 
 /// The `schema` command: prints the JSON Schema of the configuration file; the exit status.
@@ -57,7 +59,7 @@ fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
         _ => None,
     };
     let Some(lang) = lang else {
-        let _ = writeln!(err, "{}", SCHEMA_USAGE.replace("rradius-server", program));
+        let _ = writeln!(err, "{}", SCHEMA_USAGE.replace("rradiusd", program));
         return 2;
     };
     let text = crate::schema::build_in(program, extensions, lang).and_then(|schema| serde_json::to_string_pretty(&schema).map_err(|e| e.to_string()));
@@ -78,7 +80,7 @@ fn write_schema(program: &str, extensions: &crate::extension::Extensions, rest: 
 /// `--config`: what no arguments and `help` print, and what a mistake prints.
 fn full_usage(extensions: &crate::extension::Extensions, default: &str) -> String {
     named(&format!(
-        "{USAGE}\n{}\n{}\nusage: rradius-server --version\n{SCHEMA_USAGE}\n{}\n{}\n{}\n{}\n{}\n{}",
+        "{USAGE}\n{}\n{}\nusage: rradiusd --version\n{SCHEMA_USAGE}\n{}\n{}\n{}\n{}\n{}\n{}",
         admin::CHECK_USAGE,
         crate::status::USAGE,
         crate::config_tools::USAGE,
@@ -207,7 +209,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 2 && args[1] == "--version" {
-        println!("{} {}", program.name, program.version);
+        println!("{} {} ({})", program.name, program.version, program.edition);
         println!("default config: {}", config::default_config_path());
         return Ok(());
     }
@@ -709,7 +711,7 @@ mod tests {
         for (args, status) in [(&["--lang", "en"][..], 0), (&["--lang", "zh-TW"][..], 0), (&["--lang", "fr"][..], 2), (&["--lang"][..], 2), (&["extra"][..], 2)] {
             let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
             let (mut out, mut err) = (Vec::new(), Vec::new());
-            assert_eq!(write_schema("rradius-server", &extensions, &args, &mut out, &mut err), status, "{args:?}");
+            assert_eq!(write_schema("rradiusd", &extensions, &args, &mut out, &mut err), status, "{args:?}");
             if status == 2 {
                 assert!(out.is_empty() && String::from_utf8_lossy(&err).contains(SCHEMA_USAGE), "{args:?}");
             }

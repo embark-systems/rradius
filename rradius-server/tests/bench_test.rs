@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 const DUPLICATES: &str = "rradius_radius_duplicates_total";
 const DISCARDED_INVALID: &str = "rradius_radius_discarded_total{reason=\"invalid\"}";

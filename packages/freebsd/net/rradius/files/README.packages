@@ -10,7 +10,7 @@ First start
 
   1. Print a starting configuration; it has random cluster and client secrets:
 
-       rradius-server config init > /usr/local/etc/rradius/rradius.toml
+       rradiusd config init > /usr/local/etc/rradius/rradius.toml
 
   2. Point "dictionary" at /usr/local/share/rradius/dictionary, set the cluster data
      directory (for example /var/db/rradius), add the [lua] script and your clients, and keep the
@@ -20,17 +20,17 @@ First start
 
   3. Check, enable and start:
 
-       rradius-server check
+       rradiusd check
        sysrc rradius_enable=YES
        service rradius start
 
 The directory /usr/local/etc/rradius/conf.d is created empty. The configuration that "config init"
 writes has include = ["conf.d/*.toml"], so every .toml file there is read with rradius.toml, as if
 its text followed it: a file begins with a table such as [[radius.clients]] and cannot set what
-another file sets. "rradius-server config show" prints the settings of all the files together.
+another file sets. "rradiusd config show" prints the settings of all the files together.
 Keep them readable by the "rradius" user only and writable by root only.
 
-The default configuration path is fixed when the program is built; "rradius-server --version"
+The default configuration path is fixed when the program is built; "rradiusd --version"
 shows it on the second line.
 
 The program runs as the "rradius" user, which cannot bind ports below 1024: TACACS+ on its

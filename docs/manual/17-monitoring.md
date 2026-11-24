@@ -7,7 +7,7 @@
 > - 調整日誌的等級與格式，讀懂每一筆認證紀錄
 > - 在不重啟的情況下，針對特定使用者或用戶端開一段時間的 trace
 
-前置條件：做完[第 03 章](03-quick-start.md)，手上有能跑的 quick-start 情境，以及 `rradius-server`、`rradius-bench` 兩個指令。每個指標的完整說明在[附錄 C](92-metrics-reference.md)。
+前置條件：做完[第 03 章](03-quick-start.md)，手上有能跑的 quick-start 情境，以及 `rradiusd`、`rradius-bench` 兩個指令。每個指標的完整說明在[附錄 C](92-metrics-reference.md)。
 
 本章小節：
 
@@ -87,9 +87,9 @@ interval_ms = 5000
 - TACACS+ 用戶端借用 `localhost.secret` 只是為了少建一個檔案，正式環境每個用戶端用自己的共用密碼。
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
-$ rradius-server serve --config rradius.toml
+$ rradiusd serve --config rradius.toml
 …
 … INFO rradius_core::tacacs: TACACS+ Server listening on 127.0.0.1:4949
 … INFO rradius_core::radius: RADIUS Server listening on 127.0.0.1:1812 and 127.0.0.1:1813
@@ -438,7 +438,7 @@ iso.3.6.1.4.1.98789.2.3 = STRING: "1/1 alerts are firing:
 `status` 讀設定檔的 `[metrics]`，連到這個節點的指標埠，相隔一秒取兩次樣本，算出每秒的速率：
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 rradius status of 127.0.0.1:9812 over 1.0 s
 
 Node
@@ -502,7 +502,7 @@ TACACS+
 ```console
 $ rradius-bench run --server 127.0.0.1 --auth-port 1812 --secret "$S" \
     --user alice --password alice-password --load pap,rate=200 --warmup 0 --duration 4 > /dev/null &
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
 RADIUS
   Auth requests              200.5/s (414)
@@ -518,7 +518,7 @@ p50、p99 是從這一秒內 histogram 各區間的增量內插出來的，單�
 
 ### 旗標與結束碼
 
-用法：`rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]`。
+用法：`rradiusd status [--config <path>] [--cluster] [--watch | --json | --tui]`。
 
 | 旗標 | 作用 |
 | --- | --- |
@@ -557,7 +557,7 @@ p50、p99 是從這一秒內 histogram 各區間的增量內插出來的，單�
 ### JSON 輸出
 
 ```console
-$ rradius-server status --config rradius.toml --json
+$ rradiusd status --config rradius.toml --json
 {"address":"127.0.0.1:9812","counter_reset":false,"interval_seconds":1.003252166,"ready":{"status":200,"text":"ok"},"sections":[{"items":[{"key":"ready","label":"Ready","value":"ok"},…
 ```
 
@@ -589,7 +589,7 @@ $ rradius-server status --config rradius.toml --json
 外部資料庫連不上時，Node 的 Ready 那一行直接顯示 `/readyz` 的文字：
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
 Node
   Ready                     database billing unreachable
@@ -611,7 +611,7 @@ External databases
 `status --cluster` 向叢集要成員名單，然後同時對每個成員取樣，一個成員一行：
 
 ```console
-$ rradius-server status --config rradius.toml --cluster
+$ rradiusd status --config rradius.toml --cluster
 rradius cluster status over 1.0 s, members from the cluster
 
 node   role    ready  auth/s  acct/s  discarded/s  in progress  address
@@ -720,7 +720,7 @@ minutes = 10
 然後 `check`、送 SIGHUP：
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 $ kill -HUP <pid>
 ```

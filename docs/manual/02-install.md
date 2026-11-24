@@ -53,7 +53,7 @@ repo 提供的是各種安裝方式的建置腳本與定義檔，本書的每一
 
 | | deb、rpm | FreeBSD port | Docker image |
 | --- | --- | --- | --- |
-| 執行檔 | `/usr/bin/rradius-server` | `/usr/local/bin/rradius-server` | `/usr/local/bin/rradius-server` |
+| 執行檔 | `/usr/bin/rradiusd` | `/usr/local/bin/rradiusd` | `/usr/local/bin/rradiusd` |
 | 字典 | `/usr/share/rradius/` | `/usr/local/share/rradius/` | `/usr/share/rradius/` |
 | 設定 | `/etc/rradius/`（`conf.d/` 是空的） | `/usr/local/etc/rradius/`（`conf.d/` 是空的） | `/etc/rradius/`，要自己掛進去 |
 | 預設設定檔 | `/etc/rradius/rradius.toml` | `/usr/local/etc/rradius/rradius.toml` | `/etc/rradius/rradius.toml` |
@@ -92,7 +92,7 @@ $ cargo build --locked --release -p rradius-server -p rradius-bench
 
 產出在：
 
-- `target/release/rradius-server`：伺服器與管理指令
+- `target/release/rradiusd`：伺服器與管理指令
 - `target/release/rradius-bench`：壓測與登入測試工具
 
 說明：
@@ -104,14 +104,16 @@ $ cargo build --locked --release -p rradius-server -p rradius-bench
 建好之後先確認程式能跑：
 
 ```console
-$ ./target/release/rradius-server --version
-rradius-server 0.1.0
+$ ./target/release/rradiusd --version
+rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
 ```
 
+`--version` 第一行括號裡寫的是版本類型：核心版是 `(community)`，企業版是 `(enterprise)`。兩個版本的執行檔都叫 `rradiusd`，共用同一份設定、資料目錄、服務與用戶，所以一台機器只裝其中一個；要並存做比對時，放在不同的目錄，用完整路徑執行。
+
 想直接用範例情境試跑，接著讀[第 03 章](03-quick-start.md)。
 
-要把原始碼建出來的程式當正式服務用，可以把 `target/release/rradius-server` 複製到 `/usr/local/bin`，字典目錄 `share/` 複製到固定的位置（例如 `/usr/share/rradius`），再自己寫服務檔。`packages/common/rradius.service` 是現成的 systemd unit，可以參考。不過比較省事的做法是建一個 deb 或 rpm。
+要把原始碼建出來的程式當正式服務用，可以把 `target/release/rradiusd` 複製到 `/usr/local/bin`，字典目錄 `share/` 複製到固定的位置（例如 `/usr/share/rradius`），再自己寫服務檔。`packages/common/rradius.service` 是現成的 systemd unit，可以參考。不過比較省事的做法是建一個 deb 或 rpm。
 
 ## deb 套件（Debian、Ubuntu）
 
@@ -147,7 +149,7 @@ $ sudo apt install ./dist/rradius_0.1.0_amd64.deb
 
 套件做的事：
 
-- 安裝 `/usr/bin/rradius-server`、字典 `/usr/share/rradius/`、文件與範例 `/usr/share/doc/rradius/`。
+- 安裝 `/usr/bin/rradiusd`、字典 `/usr/share/rradius/`、文件與範例 `/usr/share/doc/rradius/`。
 - 建立系統用戶與群組 `rradius`，建立 `/var/lib/rradius` 與 `/var/log/rradius`，擁有者是 `rradius`，權限 0750。
 - 建立空的 `/etc/rradius/` 與 `/etc/rradius/conf.d/`。
 - 安裝 systemd unit `rradius.service` 與 logrotate 設定 `/etc/logrotate.d/rradius`。
@@ -175,7 +177,7 @@ $ packages/rpm/build.sh --out dist
 $ sudo dnf install ./dist/rradius-0.1.0-1.el9.x86_64.rpm
 ```
 
-安裝的檔案與 deb 相同：`/usr/bin/rradius-server`、`/usr/share/rradius/`、`/usr/share/doc/rradius/`、`/etc/rradius/`（含空的 `conf.d/`）、`/var/lib/rradius` 與 `/var/log/rradius`（0750，擁有者 `rradius`）、systemd unit 與 logrotate 設定。
+安裝的檔案與 deb 相同：`/usr/bin/rradiusd`、`/usr/share/rradius/`、`/usr/share/doc/rradius/`、`/etc/rradius/`（含空的 `conf.d/`）、`/var/lib/rradius` 與 `/var/log/rradius`（0750，擁有者 `rradius`）、systemd unit 與 logrotate 設定。
 
 服務要不要自動啟用，依發行版的 systemd preset 而定（spec 用的是 `%systemd_post`）。RHEL 系列通常不啟用。不管有沒有啟用，設定檔不存在時服務都不會啟動，原因見下一節。
 
@@ -195,7 +197,7 @@ port 從 GitHub 抓 `v<版本>` 這個標籤的原始碼，所以那個版本要
 
 ### 安裝後
 
-- 執行檔 `/usr/local/bin/rradius-server`，字典 `/usr/local/share/rradius/`。
+- 執行檔 `/usr/local/bin/rradiusd`，字典 `/usr/local/share/rradius/`。
 - 資料目錄 `/var/db/rradius`、日誌目錄 `/var/log/rradius`，擁有者 `rradius`，0750。
 - 空的 `/usr/local/etc/rradius/` 與 `conf.d/`。
 - 預設設定檔是 `/usr/local/etc/rradius/rradius.toml`。
@@ -241,7 +243,7 @@ $ packages/tarball/release.sh --target linux-x86_64 --out dist
 
 | 路徑 | 內容 |
 | --- | --- |
-| `bin/rradius-server` | 伺服器與管理指令 |
+| `bin/rradiusd` | 伺服器與管理指令 |
 | `share/` | 字典，以及字典的 `LICENSE`、`NOTICE` |
 | `rradius-server/examples/` | 範例設定、腳本與情境 |
 | `docs/` | 文件 |
@@ -257,8 +259,8 @@ repo 根目錄的 `Dockerfile` 分兩個階段：在 Rust image 裡用 `cargo bu
 ```console
 $ docker build -t rradius-server .
 …
-$ docker run --rm rradius-server --version
-rradius-server 0.1.0
+$ docker run --rm rradiusd --version
+rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
 ```
 
@@ -266,7 +268,7 @@ image 的內容：
 
 | 項目 | 值 |
 | --- | --- |
-| 執行檔 | `/usr/local/bin/rradius-server`，是 `ENTRYPOINT` |
+| 執行檔 | `/usr/local/bin/rradiusd`，是 `ENTRYPOINT` |
 | 預設指令 | `CMD ["serve", "--config", "/etc/rradius/rradius.toml"]` |
 | 字典 | `/usr/share/rradius/` |
 | 執行身分 | `rradius`（uid 10001），不是 root |
@@ -274,7 +276,7 @@ image 的內容：
 | EXPOSE | `1812/udp`、`1813/udp`、`49/tcp`、`8100/tcp`、`8200/tcp` |
 | 其他 | 裝了 `ca-certificates`，LDAP over TLS 會用到系統的 CA 憑證 |
 
-因為 `ENTRYPOINT` 是 `rradius-server`，`docker run` 後面接的就是子指令，例如 `docker run --rm rradius-server --version`。
+因為 `ENTRYPOINT` 是 `rradiusd`，`docker run` 後面接的就是子指令，例如 `docker run --rm rradiusd --version`。
 
 image 裡沒有設定檔。`/etc/rradius/rradius.toml` 要從外面掛進去，最簡單的做法是用下一節的 Compose。
 
@@ -314,7 +316,7 @@ rradius-1  | … INFO rradius_core::metrics: Metrics listening on 127.0.0.1:9812
 在容器裡看狀態：
 
 ```console
-$ docker compose exec rradius rradius-server status --config /etc/rradius/rradius.toml
+$ docker compose exec rradius rradiusd status --config /etc/rradius/rradius.toml
 … WARN rradius_core::common::seal: cluster.secret_raft_file: '/run/secrets/raft' has mode 644, which others can reach or its group can write; make it 0600 or 0640
 …
 rradius status of 127.0.0.1:9812 over 1.0 s
@@ -361,7 +363,7 @@ $ docker compose down
 
 這份設定沒有 `[accounts]`，所以 `user add` 不能用。`1_schema.sql` 的註解建議的做法是新增一個編號更大的 migration 檔，例如 `docker/config/migrations/2_users.sql`，內容是 `INSERT INTO users …`。密碼欄位的格式見[第 07 章](07-users-and-chains.md)。
 
-也可以照第 07 章在 `rradius.toml` 加上 `[accounts]`，之後用 `docker compose exec rradius rradius-server user add …` 管理帳號。
+也可以照第 07 章在 `rradius.toml` 加上 `[accounts]`，之後用 `docker compose exec rradius rradiusd user add …` 管理帳號。
 
 > **注意：** 已經套用過的 migration 檔不能再改。要改資料表結構或加資料，一律新增下一個編號的檔案。
 
@@ -465,7 +467,7 @@ deb、rpm 與 FreeBSD port 裝好之後，都要自己建立設定檔。以下�
 ### 1. 產生起始設定
 
 ```console
-# rradius-server config init > /etc/rradius/rradius.toml
+# rradiusd config init > /etc/rradius/rradius.toml
 ```
 
 `config init` 印出一份可以直接用的底稿：叢集密碼和範例用戶端的共用密碼都是隨機產生的；`dictionary` 已經指向 `/usr/share/rradius/dictionary`；有 `include = ["conf.d/*.toml"]`，`conf.d/` 裡的 `.toml` 檔會一起讀進來；有一個 `[metrics]`。加上 `--lang zh-TW` 時，註解是中文。
@@ -503,7 +505,7 @@ listen = "127.0.0.1"
 ### 4. 檢查，再啟動
 
 ```console
-# rradius-server check
+# rradiusd check
 configuration ok
 # systemctl enable --now rradius
 ```
@@ -514,7 +516,7 @@ configuration ok
 
 `rradius.service`（來源是 `packages/common/rradius.service`）：
 
-- `ExecStart=/usr/bin/rradius-server serve`：讀預設設定檔。
+- `ExecStart=/usr/bin/rradiusd serve`：讀預設設定檔。
 - `ConditionPathExists=/etc/rradius/rradius.toml`：設定檔不存在時，服務不會啟動。
 - 以 `rradius` 用戶執行，`AmbientCapabilities=CAP_NET_BIND_SERVICE` 讓它能綁 TACACS+ 的埠 49。
 - `Restart=on-failure`、`RestartSec=2`：程式異常結束時兩秒後重啟。
@@ -527,8 +529,8 @@ logrotate 設定 `/etc/logrotate.d/rradius` 每天輪替 `/var/log/rradius/*.jso
 ## 確認版本與預設設定檔路徑
 
 ```console
-$ rradius-server --version
-rradius-server 0.1.0
+$ rradiusd --version
+rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
 ```
 
@@ -548,7 +550,7 @@ default config: /etc/rradius/rradius.toml
 
 ## 常見錯誤
 
-**症狀：** `rradius-server check` 印出：
+**症狀：** `rradiusd check` 印出：
 
 ```text
 /etc/rradius/rradius.toml: cannot read configuration: No such file or directory (os error 2)

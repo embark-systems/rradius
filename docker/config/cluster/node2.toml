@@ -49,8 +49,8 @@ secret_file = "/run/secrets/radius"
 address = "192.168.0.0/16"
 secret_file = "/run/secrets/radius"
 
-# /metrics, /livez and /readyz inside the container, for `rradius-server status`:
-#   docker compose exec <service> rradius-server status --config <this file>
+# /metrics, /livez and /readyz inside the container, for `rradiusd status`:
+#   docker compose exec <service> rradiusd status --config <this file>
 [metrics]
 bind = "127.0.0.1"
 port = 9812

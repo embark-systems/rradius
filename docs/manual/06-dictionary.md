@@ -244,7 +244,7 @@ minutes = 30
 **驗證：** 先 `check`，再啟動伺服器。`rradius-bench` 不認得字典名稱，用 `--attr 26=hex:…` 直接帶一個 VSA：`00007ed9` 是企業編號 32473，`01` 是屬性編號，`07` 是長度，後面是 `staff` 的 ASCII。
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
     --user alice --password alice-password --load pap,concurrency=1 --requests 1 \

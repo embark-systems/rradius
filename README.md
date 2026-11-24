@@ -17,7 +17,7 @@ Requires Rust (stable).
 ```bash
 cargo build --release
 cd rradius-server
-../target/release/rradius-server serve --config examples/scenarios/quick-start/rradius.toml
+../target/release/rradiusd serve --config examples/scenarios/quick-start/rradius.toml
 ```
 
 Docker works too: run `docker/init-secrets.sh` first, then `docker compose up --build` (single node) or use `compose.cluster.yaml` (three nodes); see [section 1.1 of the usage guide](docs/usage.md#11-docker). Release archives are made with `packages/tarball/release.sh`; see [`packages/tarball/README.md`](packages/tarball/README.md).
@@ -35,7 +35,7 @@ The documentation is written in Traditional Chinese.
 | Directory | Contents |
 | --- | --- |
 | `rradius-core/` | The server library: protocols, authentication chain, Lua scripts, cluster, configuration |
-| `rradius-server/` | The `rradius-server` program, examples and tests |
+| `rradius-server/` | The `rradiusd` program, examples and tests |
 | `rradius-bench/` | The load generator `rradius-bench` |
 | `share/` | RADIUS dictionaries |
 
@@ -43,7 +43,7 @@ Tests: `cargo test --workspace --locked`.
 
 ## Enterprise edition
 
-RadSec, realm-based proxying and roaming, Disconnect / CoA, NAS clients managed from a table, a Wi-Fi password per user, EAP-AKA', OCSP, EAP fast reconnect, and TACACS+ over TLS are supported by rradius-enterprise, provided separately. When rradius-server meets these settings, it says that they need rradius-enterprise.
+RadSec, realm-based proxying and roaming, Disconnect / CoA, NAS clients managed from a table, a Wi-Fi password per user, EAP-AKA', OCSP, EAP fast reconnect, and TACACS+ over TLS are supported by rradius-enterprise, provided separately. When rradiusd meets these settings, it says that they need rradius-enterprise.
 
 ## License
 

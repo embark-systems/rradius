@@ -110,7 +110,7 @@ secret_file = "campus.secret"      # openssl rand -hex 32 > campus.secret
 ```console
 $ for f in branch-ap campus; do openssl rand -hex 32 > $f.secret; done
 $ chmod 600 *.secret
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 $ kill -HUP <pid>
 $ curl -s http://127.0.0.1:9812/metrics | grep 'client_responses_total{client="campus"'

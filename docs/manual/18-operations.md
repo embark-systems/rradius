@@ -49,7 +49,7 @@
 ```console
 $ cp rradius.toml rradius.toml.orig
 $ vi rradius.toml
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
@@ -60,7 +60,7 @@ configuration ok
 `config diff` 把兩份設定都填上預設值，再逐鍵比較：
 
 ```console
-$ rradius-server config diff rradius.toml.orig rradius.toml
+$ rradiusd config diff rradius.toml.orig rradius.toml
 lua.max_execution_ms: 1000 | 500
 radius.auth_port: 1812 | 1822
 ```
@@ -221,8 +221,8 @@ WARN hiqlite::store::state_machine::sqlite::writer: SQL writer is shutting down
 核心的版本號用 `--version` 看：
 
 ```console
-$ rradius-server --version
-rradius-server 0.1.0
+$ rradiusd --version
+rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
 ```
 
@@ -251,7 +251,7 @@ default config: /etc/rradius/rradius.toml
 
 ```console
 $ printf 'ALTER TABLE users ADD COLUMN note TEXT;\n' > migrations/3_user_note.sql
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
@@ -263,7 +263,7 @@ configuration ok
 
 ```console
 $ printf -- '-- edited\n' >> migrations/1_schema.sql
-$ rradius-server serve --config rradius.toml
+$ rradiusd serve --config rradius.toml
 …
 migration file '1_schema.sql' changed after it was applied
 $ echo $?
@@ -276,7 +276,7 @@ $ echo $?
 
 ```console
 $ mv migrations/3_user_note.sql migrations/5_user_note.sql
-$ rradius-server serve --config rradius.toml
+$ rradiusd serve --config rradius.toml
 migration numbering must start at 1 without gaps or repeats: expected number 3, found '5_user_note.sql'
 $ echo $?
 2
@@ -456,7 +456,7 @@ SIGHUP 之後的計費寫進新的 `acct.jsonl`，舊檔不再增加。
 | --- | --- | --- |
 | `ConditionPathExists` | `/etc/rradius/rradius.toml` | 沒有設定檔就不啟動 |
 | `User`、`Group` | `rradius` | 用一般使用者執行 |
-| `ExecStart` | `/usr/bin/rradius-server serve` | 讀預設設定檔 |
+| `ExecStart` | `/usr/bin/rradiusd serve` | 讀預設設定檔 |
 | `ExecReload` | `/bin/kill -HUP $MAINPID` | `systemctl reload rradius` 就是 reload |
 | `Restart`、`RestartSec` | `on-failure`、`2` | 結束碼不是 0 時，2 秒後重啟 |
 | `TimeoutStopSec` | `60` | 等關機的時間 |
@@ -476,7 +476,7 @@ SIGHUP 之後的計費寫進新的 `acct.jsonl`，舊檔不再增加。
 
 原始碼的 `compose.yaml`（單節點）、`compose.cluster.yaml`（三節點，[第 16 章](16-cluster.md)）與 `deploy/synology/compose.yaml`（Synology 的 Container Manager 專案）都用同一個 image：
 
-- 程式以 `ENTRYPOINT ["/usr/local/bin/rradius-server"]` 執行，預設參數 `serve --config /etc/rradius/rradius.toml`，以 `rradius` 使用者執行；資料在 volume `/var/lib/rradius`。
+- 程式以 `ENTRYPOINT ["/usr/local/bin/rradiusd"]` 執行，預設參數 `serve --config /etc/rradius/rradius.toml`，以 `rradius` 使用者執行；資料在 volume `/var/lib/rradius`。
 - `stop_grace_period: 30s`：給關機足夠的時間。Docker 預設的 10 秒不夠。
 - `restart: unless-stopped`：異常結束後自動重啟。
 - 根檔案系統唯讀，設定以唯讀方式掛進 `/etc/rradius`。
@@ -488,8 +488,8 @@ SIGHUP 之後的計費寫進新的 `acct.jsonl`，舊檔不再增加。
 | reload | `docker compose kill -s HUP <服務>` |
 | 重新啟動 | `docker compose restart <服務>` |
 | 看日誌 | `docker compose logs -f <服務>` |
-| 看狀態 | `docker compose exec <服務> rradius-server status --config <設定檔>` |
-| 新增帳號 | `docker compose exec -T <服務> rradius-server user add --config <設定檔> <帳號>`，從標準輸入給密碼 |
+| 看狀態 | `docker compose exec <服務> rradiusd status --config <設定檔>` |
+| 新增帳號 | `docker compose exec -T <服務> rradiusd user add --config <設定檔> <帳號>`，從標準輸入給密碼 |
 
 Synology 上的專案目錄是 `/volume1/docker/rradius/`：`compose.yaml`、`config/`（從原始碼的 `docker/config/` 複製來，改 `rradius.toml`）、`secrets/`（三個密碼檔）。設定是唯讀掛載的，所以改設定要在 NAS 上改 `config/` 裡的檔案，再對容器送 SIGHUP 或重啟專案。資料放在 Docker 的具名 volume `data`，不是 `config/` 旁邊的資料夾；刪除專案時注意不要連 volume 一起刪。
 
@@ -498,7 +498,7 @@ Synology 上的日常工作：
 | 工作 | 做法 |
 | --- | --- |
 | 看日誌 | Container Manager 專案頁的「記錄」，或 SSH 上去 `sudo docker compose -p rradius logs` |
-| 改設定 | 改 `config/` 的檔案後，重新啟動專案。設定錯誤時容器會馬上結束，日誌寫明原因；先在別的電腦上用 `rradius-server check` 檢查更保險 |
+| 改設定 | 改 `config/` 的檔案後，重新啟動專案。設定錯誤時容器會馬上結束，日誌寫明原因；先在別的電腦上用 `rradiusd check` 檢查更保險 |
 | 更新版本 | 在別的電腦上建新 image、匯入 NAS、重新啟動專案（建置與匯入見[第 02 章](02-install.md#synology-nas)）。資料在 `data` volume，不會因為更新而不見 |
 | 停止 | 專案頁「停止」。`stop_grace_period` 是 30 秒，給資料庫完成關閉的時間；不要用強制停止，否則下次啟動要重建本機資料庫 |
 | 備份 | 備份 `config/` 與 `secrets/` 資料夾。資料在 Docker 管理的 volume，名稱是 `<專案名稱>_data`（專案叫 `rradius` 時是 `rradius_data`）：先停專案，再用 Hyper Backup 備份那個 volume 所在的資料夾，或用 `docker run --rm -v rradius_data:/d -v $PWD:/b alpine tar czf /b/data.tgz -C /d .` |
@@ -514,7 +514,7 @@ Synology 上的日常工作：
 - **改設定：** 設定來自 kustomize 產生的 ConfigMap。內容一改，ConfigMap 的名稱就變（`rradius-config-<雜湊>`），StatefulSet 跟著更新，pod 依 `RollingUpdate` 一個一個重啟。也就是說，在 Kubernetes 上改設定等於滾動重啟，不是 reload。改之前先在本機對 `config/` 的檔案跑 `check`。
 - **新增 migration：** 除了把檔案放進 `config/`，還要在 `kustomization.yaml` 的 `files` 加一行，並在 `statefulset.yaml` 的 `items` 加一行，把它掛到 `migrations/` 底下。漏了後者，檔案不會出現在 pod 的 `migrations/` 裡。
 - **一次只動一個 pod：** PodDisruptionBudget `maxUnavailable: 1` 讓排空 Kubernetes 節點這類操作一次只停一個 pod。
-- **下指令：** `kubectl exec -i rradius-0 -- rradius-server user add --config /etc/rradius/rradius-0.toml alice`。
+- **下指令：** `kubectl exec -i rradius-0 -- rradiusd user add --config /etc/rradius/rradius-0.toml alice`。
 - **看日誌：** `kubectl logs rradius-0`。
 - **資料：** 每個 pod 一個 PVC（`data-rradius-N`）。重建一個節點的做法（[第 16 章](16-cluster.md)）在這裡就是刪掉那個 pod 的 PVC 與 pod，讓 StatefulSet 用空的 volume 重建它。
 - **升級：** 換 image 版本後再 `kubectl apply -k deploy/kubernetes`，一樣一次換一個 pod。StatefulSet 從 `rradius-2` 換到 `rradius-0`，不會替你挑 leader 最後換；換到 leader 時有一段選舉的寫入空檔（秒數見[第 16 章](16-cluster.md#跨機房)），計費進 spool。
@@ -548,7 +548,7 @@ Synology 上的日常工作：
 
 - 計數器從啟動開始累計，每個節點各算各的，reload 不歸零。告警看增加的速度，不看絕對值。
 - 設了外部資料庫、具名查詢或 EAP 的環境，再加上 `rradius_external_db_*`、`rradius_query_*`、`rradius_eap_sessions_total` 這幾組，說明在第 09、11、17 章。
-- 沒有 Prometheus 時，在節點上跑 `rradius-server status --config rradius.toml --watch`，每秒列一次同樣的資料（[第 17 章](17-monitoring.md)）。
+- 沒有 Prometheus 時，在節點上跑 `rradiusd status --config rradius.toml --watch`，每秒列一次同樣的資料（[第 17 章](17-monitoring.md)）。
 - 「活著與否」用 Status-Server 最準，它走和認證相同的路徑：`rradius-bench run --load status-auth` 或帶 Message-Authenticator 的 `radclient`（[第 05 章](05-radius-clients.md#status-server)）。
 - 指標埠沒有認證也沒有 TLS，只綁內部位址。
 
@@ -556,14 +556,14 @@ Synology 上的日常工作：
 
 這是營運面的整合清單。安全相關的項目逐項寫在[第 20 章〈檢查清單〉](20-security.md#檢查清單)，這裡只指到它，不重複。
 
-- [ ] `rradius-server check --config …` 通過，而且沒有警告（祕密檔權限、共用密碼太短或含 `change-me`、`unencrypted` 等，見第 20 章）。
+- [ ] `rradiusd check --config …` 通過，而且沒有警告（祕密檔權限、共用密碼太短或含 `change-me`、`unencrypted` 等，見第 20 章）。
 - [ ] 所有 `*.secret` 是新產生的隨機值，不是範例附的（見上面的〈更換密碼〉）。
 - [ ] 憑證不是示範用的；伺服器憑證、NAS 與設備憑證的到期日有人盯。
 - [ ] `migrations/` 裡的示範資料檔（例如 `2_demo_users.sql`）已刪掉或換成正式資料，要在第一次啟動之前做，因為套用過的檔案不能改。
 - [ ] `[[radius.clients]]`、`[[tacacs.clients]]` 只列真的會來問的設備，不用 `0.0.0.0/0`。
 - [ ] `[metrics]` 只綁內部位址；多節點時 `[cluster] listen` 綁內部網路或 WireGuard 的位址。
 - [ ] 防火牆只開用到的埠，並限制來源：1812、1813（UDP）、49（TACACS+），叢集埠只在節點之間開。
-- [ ] 跑過 `rradius-server tuning --config …`，照建議調好接收緩衝與檔案描述元上限（[第 19 章](19-performance.md)）。
+- [ ] 跑過 `rradiusd tuning --config …`，照建議調好接收緩衝與檔案描述元上限（[第 19 章](19-performance.md)）。
 - [ ] 用 systemd、Compose 或 Kubernetes 管理，停止時送 SIGTERM（不要 SIGKILL），等待時間給夠；`data_dir` 與計費 spool 放在持久的本機磁碟（見上面〈關機要多久〉與〈用 systemd 管理〉）。
 - [ ] 設好自動重新啟動（systemd `Restart=on-failure`、Compose `restart: unless-stopped`）：節點的資料庫壞掉時，伺服器以結束碼 1 結束，等重啟來恢復。
 - [ ] 啟動後看日誌，每個要開的埠都有一行 `listening`：`RADIUS Server listening on …`、`TACACS+ Server listening on …`、`Metrics listening on …`。RADIUS 或 TACACS+ 的埠綁不了時伺服器以結束碼 1 結束；只有指標埠綁不了時只記一行錯誤、程序照常跑，所以一定要看到 `Metrics listening on …`。

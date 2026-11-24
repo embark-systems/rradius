@@ -52,7 +52,7 @@
 … INFO rradius_core::lua_engine: script allocate.lua (radius/authentication, client localhost): ip pool business is exhausted: no address for hank
 ```
 
-**監控用具名查詢。** 有池的情境都有 `[queries.<name>]`：每個節點每 30 秒（`interval_ms` 預設 `30000`）查一次自己的副本，結果變成指標 `rradius_query_<name>`；`rradius-server query <name>` 則是馬上查一次，印成表格。具名查詢改了要重啟才生效，細節見[第 09 章](09-external-databases.md)。
+**監控用具名查詢。** 有池的情境都有 `[queries.<name>]`：每個節點每 30 秒（`interval_ms` 預設 `30000`）查一次自己的副本，結果變成指標 `rradius_query_<name>`；`rradiusd query <name>` 則是馬上查一次，印成表格。具名查詢改了要重啟才生效，細節見[第 09 章](09-external-databases.md)。
 
 本章情境用到的設定鍵（完整說明見[附錄 A](90-config-reference.md)）：
 
@@ -81,7 +81,7 @@ $ cp -R rradius-server/examples/scenarios/ip-pool ~/rradius-lab/
 $ sed -i.bak "s#^dictionary = .*#dictionary = \"$PWD/share/dictionary\"#" ~/rradius-lab/ip-pool/rradius.toml
 $ cd ~/rradius-lab/ip-pool
 $ for f in *.secret; do openssl rand -hex 32 > $f; done; chmod 600 *.secret
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
@@ -104,7 +104,7 @@ minutes = 60
 
 `code=2` 是 Access-Accept、`3` 是 Access-Reject、`5` 是 Accounting-Response。追蹤的完整說明見[第 17 章](17-monitoring.md)。
 
-接著在一個終端機啟動伺服器（`rradius-server serve --config rradius.toml`），在另一個終端機做每一節的測試。本章用到 `rradius-bench` 的三種負載：
+接著在一個終端機啟動伺服器（`rradiusd serve --config rradius.toml`），在另一個終端機做每一節的測試。本章用到 `rradius-bench` 的三種負載：
 
 - `pap`：送一筆登入。
 - `acct-start`：送一筆 Accounting-Start，session ID 每次執行都不同。
@@ -209,7 +209,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 …
   pap: 639/s, sent 1, accept 1, reject 0, challenge 0, accounting 0, timeouts 0, invalid 0, late 0, socket errors 0, retransmits 0
 …
-$ rradius-server query pool_usage --config rradius.toml
+$ rradiusd query pool_usage --config rradius.toml
 pool         state     addresses
 business     free      3
 residential  free      6
@@ -230,7 +230,7 @@ residential  reserved  2
 $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
     --user alice --load acct-start,concurrency=1 --requests 1 --attr 8=ip:10.77.0.4
 …
-$ rradius-server session list --config rradius.toml
+$ rradiusd session list --config rradius.toml
 username=alice
 nas=192.0.2.1
 session_id=e370000000000000
@@ -253,7 +253,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 注意事項：
 
 - 預留要 120 秒才會過期。測完池用盡想再測一次，要等兩分鐘，或停掉伺服器刪掉 `data/` 重來。
-- `rradius_query_pool_usage` 每 30 秒才更新一次，剛做完的變化要等下一輪才看得到；要馬上看，用 `rradius-server query pool_usage`。
+- `rradius_query_pool_usage` 每 30 秒才更新一次，剛做完的變化要等下一輪才看得到；要馬上看，用 `rradiusd query pool_usage`。
 - 密碼錯、帳號停用或不存在都是 `reject`，而且不佔位址。
 
 ### 維運：查位址與增減位址
@@ -324,7 +324,7 @@ max by (pool) (rradius_query_pool_usage{state="free"}) < 100
 
 - **一個用戶一個位址。** 同一個帳號同時有兩個 session（例如兩台設備）會拿到同一個位址，因為「已經有綁定就沿用」。要限制同時連線數，另外做，見〈方案與用量控制〉。
 - **這個情境不處理 DHCPv6-PD。** IPv6 前綴要對齊分配，見〈IPv6 前綴池〉。
-- **沒有內建的池函式和專用的管理指令。** 使用率靠 `pool_usage` 與 `rradius-server query`；挑位址、釋放都在腳本裡。
+- **沒有內建的池函式和專用的管理指令。** 使用率靠 `pool_usage` 與 `rradiusd query`；挑位址、釋放都在腳本裡。
 - **一次一個位址。** 沒有「分配一整段」。
 - **NAS 當機之後，位址最多保留 15 分鐘**（3 個 Interim 間隔，900 秒）才會給別人；NAS 回來送 Accounting-On 會立刻釋放。
 - **池用盡時 NAS 只看到 Reject。** 原因在日誌，監控日誌裡的 `is exhausted`。
@@ -397,7 +397,7 @@ IPv6 的池太大，不能每個前綴存一列。這個情境的做法是池只
 起點由帳號名稱決定，所以同樣的示範資料，你拿到的前綴應該和這裡相同。`alice` 用 `session` 負載走完一次之後：
 
 ```console
-$ rradius-server query prefix_leases --config rradius.toml
+$ rradiusd query prefix_leases --config rradius.toml
 pool         state     prefixes
 business     reserved  1
 residential  active    1
@@ -457,7 +457,7 @@ ula          reserved  1
 - **還是要在 90% 之前擴充：** 預留填滿又沒有 `released` 可搶的 99%，每秒只有幾百到一千多個。
 - **資料表的列數都等於不同前綴數。** 262,144 的 100% 那組是 262,143 列，比預期少一列，沒有查出原因。
 
-三節點叢集（三個 `rradius-server` 程序在同一台機器上，容量 65,536，三個量測程式各對一個節點，合計 63 並行）：
+三節點叢集（三個 `rradiusd` 程序在同一台機器上，容量 65,536，三個量測程式各對一個節點，合計 63 並行）：
 
 | 使用率 | 池裡的前綴 | 新用戶 | 三個節點合計每秒 | 各節點 p99 | 被拒絕 |
 | --- | --- | --- | --- | --- | --- |
@@ -782,7 +782,7 @@ script = "line.lua"
 … script line.lua (radius/authentication, client bng): prefix pool tiny6 is exhausted: no prefix for max
 ```
 
-這時 `rradius-server query pool_usage` 的 `res4 reserved` 仍是 3（`alice`、`kim`、`lee`），`max` 剛預留的 IPv4 已經放回。
+這時 `rradiusd query pool_usage` 的 `res4 reserved` 仍是 3（`alice`、`kim`、`lee`），`max` 剛預留的 IPv4 已經放回。
 
 計費用 `session` 負載測：它把 Access-Accept 的 `Class` 與 `Framed-IP-Address` 帶進 Start 與 Stop，就像 BNG 那樣。Stop 之後，那條線的 IPv4 回到 `free`，前綴變成 `released`。
 
@@ -1078,7 +1078,7 @@ value = "slots"
 ```
 
 ```console
-$ rradius-server query slot_usage --config rradius.toml
+$ rradiusd query slot_usage --config rradius.toml
 ```
 
 - 現在有多少連線在線：`max(rradius_query_slot_usage{state="active"})`；`reserved` 是登入了、NAS 還沒送 Accounting-Start 的。每個節點輸出同樣的數字，叢集用 `max()`，不要 `sum()`。
@@ -1314,7 +1314,7 @@ script = "simultaneous-use.lua"
 
 **症狀：** 池明明還有位址，登入卻得到 `reject`，日誌是 `ip pool … is exhausted`。
 **原因：** 位址都在 `reserved`：認證通過了，但 NAS 沒送 Accounting-Start（或送到別的伺服器），預留要 120 秒才過期，回收最多每 60 秒做一次。
-**解法：** 用 `rradius-server query pool_usage` 看各狀態的數量；確認 NAS 的計費送到這台伺服器、共用密碼正確。
+**解法：** 用 `rradiusd query pool_usage` 看各狀態的數量；確認 NAS 的計費送到這台伺服器、共用密碼正確。
 
 **症狀：** 計費都有回應，位址卻一直停在 `reserved`，日誌有 `address … reported by … for … is held by someone else`。
 **原因：** NAS 回報的 `Framed-IP-Address` 不是 rradius 給的那一個，或 `User-Name` 和認證時不同。

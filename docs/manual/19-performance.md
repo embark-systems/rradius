@@ -44,15 +44,15 @@
 `tuning` 讀這台機器的系統值與你的設定檔，告訴你哪些限制該調高、調到多少、怎麼調。它只讀不改：不改系統設定、不啟動節點、不開任何埠。
 
 ```console
-$ rradius-server tuning --config rradius.toml
+$ rradiusd tuning --config rradius.toml
 ```
 
-用法是 `rradius-server tuning [--config <path>]`。沒有 `--config` 時讀 `/etc/rradius/rradius.toml`；讀不到就印一行說明，改用全部預設值來算。參數或指定的設定檔有錯時結束碼 2，其他情況是 0。它有 Linux、macOS、FreeBSD 三種平台的建議；其他平台只印一行「no advice for this platform」。
+用法是 `rradiusd tuning [--config <path>]`。沒有 `--config` 時讀 `/etc/rradius/rradius.toml`；讀不到就印一行說明，改用全部預設值來算。參數或指定的設定檔有錯時結束碼 2，其他情況是 0。它有 Linux、macOS、FreeBSD 三種平台的建議；其他平台只印一行「no advice for this platform」。
 
 下面是第 17 章那份實驗設定在 macOS 上的實際輸出：
 
 ```console
-$ rradius-server tuning --config rradius.toml
+$ rradiusd tuning --config rradius.toml
 rradius tuning advice for macOS
 
 UDP packets dropped because a receive buffer was full, since the system started: 137278
@@ -149,7 +149,7 @@ These suggestions are unmeasured starting points: apply them, then confirm with 
 **`sockets`：** 在 Linux 上，同一個埠可以開好幾個 socket，由核心把封包分給它們，讓每個工作執行緒都能收。核心是依封包的來源分配的，**同一個來源的封包總是進同一個 socket**，所以只有一台 NAS 時，多開 socket 幫不上忙。（這是 Linux 核心的行為，本章沒有在 Linux 上實測。）其他平台不會這樣分配封包，所以只能是 1：
 
 ```console
-$ rradius-server check --config s2.toml
+$ rradiusd check --config s2.toml
 s2.toml: radius.sockets = 2: only Linux shares UDP packets out over several sockets on one port, so it must be 1 here
 ```
 
@@ -173,7 +173,7 @@ s2.toml: radius.sockets = 2: only Linux shares UDP packets out over several sock
 設了 `recv_buffer_bytes` 之後再跑 `tuning`，它會改成比較設定值和建議值：
 
 ```console
-$ rradius-server tuning --config rb.toml
+$ rradiusd tuning --config rb.toml
 …
 Receive buffer of each RADIUS socket ([radius] recv_buffer_bytes)
   current:   8388608
@@ -196,7 +196,7 @@ rradius 的工作執行緒數等於這個行程能用的 CPU 數（Rust 標準�
 - 在 Linux 以外的平台，`check` 直接拒絕：
 
 ```console
-$ rradius-server check --config pin.toml
+$ rradiusd check --config pin.toml
 pin.toml: runtime.pin_threads is only supported on Linux
 ```
 
@@ -258,7 +258,7 @@ warnings:
 
 `rradius-bench` 是 repo 裡附的 RADIUS 與 TACACS+ 壓測工具。它有兩個子命令：`run` 對伺服器送負載，`calibrate` 量工具自己。完整的旗標見[附錄 B](91-command-reference.md)，或執行 `rradius-bench run --help`。
 
-> **注意：** deb、rpm、FreeBSD 套件與 Docker 映像只裝 `rradius-server`，不含 `rradius-bench`，要從原始碼建置（第 02 章）。
+> **注意：** deb、rpm、FreeBSD 套件與 Docker 映像只裝 `rradiusd`，不含 `rradius-bench`，要從原始碼建置（第 02 章）。
 
 ### 負載的寫法
 
@@ -359,7 +359,7 @@ $ cd y/benchmarks
 `<repo>` 換成原始碼 repo 的路徑。下面的指令都用預設埠（RADIUS 1812、1813，指標 9812）；`--auth-port`、`--acct-port` 寫出來只是讓你看清楚對的是哪個埠，用預設埠時可以拿掉。
 
 ```console
-$ rradius-server serve --config accept.toml
+$ rradiusd serve --config accept.toml
 ```
 
 另一個終端機：
@@ -405,7 +405,7 @@ $ rradius-bench run --server 127.0.0.1 --auth-port 1812 --secret bench-secret \
 | --- | --- |
 | 機器 | Apple M4 Max，14 核（10 個效能核心＋4 個節能核心），記憶體 36 GiB |
 | 作業系統 | macOS 27.2.1（26B131），arm64 |
-| rradius | `rradius-server 0.1.0`，撰寫時核心 repo 的 commit `a261e4d`；使用預先建好的執行檔，建置參數未另行確認 |
+| rradius | `rradiusd 0.1.0`，撰寫時核心 repo 的 commit `a261e4d`；使用預先建好的執行檔，建置參數未另行確認 |
 | 伺服器與工具 | 同一台機器，經由 loopback（`127.0.0.1`） |
 | 機器負載 | 與其他工作同時進行；量測期間 `uptime` 的一分鐘平均負載從約 2.4 升到約 8.5 |
 | 日期 | 2026-11-23 |
@@ -479,7 +479,7 @@ warnings:
 
 - `sent` 與各種回應的總數對得上，`timeouts`、`invalid`、`socket errors` 都是 0。
 - 伺服器的 `duplicates`、`discarded` 沒有增加。
-- 量測期間用 `rradius-server status --watch` 看伺服器：`Auth in progress` 有沒有接近上限，p99 和工具量到的差多少。
+- 量測期間用 `rradiusd status --watch` 看伺服器：`Auth in progress` 有沒有接近上限，p99 和工具量到的差多少。
 - 跑一次 `tuning`，看開頭的 UDP 丟包數在量測後有沒有增加。有增加，表示有封包在 rradius 看到之前就被丟了。
 
 ## 常見錯誤

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 
 const SCHEMA: &str = "CREATE TABLE ip_pool (pool TEXT NOT NULL, ip TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'free', PRIMARY KEY (pool, ip));
 CREATE INDEX ip_pool_state ON ip_pool (pool, state);";
@@ -76,7 +76,7 @@ fn wait_for(metrics: u16, text: &str, server: &Server) -> Result<String, String>
     }
 }
 
-/// Runs `rradius-server` with `args` and `--config`: the status, standard output and error.
+/// Runs `rradiusd` with `args` and `--config`: the status, standard output and error.
 fn run(config: &Path, args: &[&str]) -> Result<(Option<i32>, String, String), String> {
     let output = Command::new(PROGRAM).args(args).args(["--config", &config.display().to_string()]).output().map_err(|e| e.to_string())?;
     Ok((output.status.code(), String::from_utf8_lossy(&output.stdout).trim_end().to_string(), String::from_utf8_lossy(&output.stderr).into_owned()))

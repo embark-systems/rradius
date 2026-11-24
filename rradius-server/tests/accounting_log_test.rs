@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_rradius-server");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
 const SCRIPT: &str = "if get_attr('Acct-Session-Id') == 'refused' then return 'reject' end return 'accept'";
 
 /// A serving server with `[radius.accounting_log] file = "acct.jsonl"`.

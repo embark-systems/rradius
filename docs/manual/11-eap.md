@@ -58,7 +58,7 @@ Access-Accept 裡除了你的回覆屬性（例如 VLAN），還有 `MS-MPPE-Rec
 
 ## 核心提供的三種方法
 
-`rradius-server` 提供三種 EAP 方法。設定裡寫方法名稱：
+`rradiusd` 提供三種 EAP 方法。設定裡寫方法名稱：
 
 | 設定裡的名稱 | 方法 | 用戶端出示 | TLS 版本 | 用戶端要不要憑證 | 驗證鏈拿到什麼 |
 | --- | --- | --- | --- | --- | --- |
@@ -244,13 +244,13 @@ wrote certs in …/rradius-lab/wifi-certs/certs: ca.pem, ca.crl, server, laptop-
 $ for f in raft api wlc; do openssl rand -hex 32 > $f.secret; done
 $ chmod 600 *.secret
 $ sed -i.bak2 's/^address = "10.30.0.10"/address = "127.0.0.1"/' rradius.toml
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
 ```
 
 沒有先跑 `setup.sh` 時，`check` 會失敗：`rradius.toml: radius.eap.cert_file 'certs/server.pem': I/O error: No such file or directory (os error 2)`。
 
-啟動伺服器（`rradius-server serve --config rradius.toml`），再開一個終端機。
+啟動伺服器（`rradiusd serve --config rradius.toml`），再開一個終端機。
 
 **驗證：** 用 `rradius-bench` 扮演用戶端與 NAS：
 
@@ -301,7 +301,7 @@ rradius-bench: eap-tls: TLS: received fatal alert: CertificateRevoked
 最後用 `user` 指令停用 `laptop-001`：
 
 ```console
-$ rradius-server user disable --config rradius.toml laptop-001.corp.example.com
+$ rradiusd user disable --config rradius.toml laptop-001.corp.example.com
 disabled laptop-001.corp.example.com
 $ rradius-bench run --server 127.0.0.1 --secret "$(cat wlc.secret)" \
     --user laptop-001.corp.example.com --load eap-tls,concurrency=1 --requests 1 \
@@ -310,7 +310,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat wlc.secret)" \
 …
   eap-tls: 520/s, sent 1, accept 0, reject 1, challenge 0, accounting 0, timeouts 0, invalid 0, late 0, socket errors 0, retransmits 0
 …
-$ rradius-server user enable --config rradius.toml laptop-001.corp.example.com
+$ rradiusd user enable --config rradius.toml laptop-001.corp.example.com
 enabled laptop-001.corp.example.com
 ```
 
@@ -482,7 +482,7 @@ CRL 有 Next Update，rradius 過期後仍照用（見上），所以要自己�
 
 1. 用同一個 CA 簽一張新的伺服器憑證，名稱（例如 `DNS:radius.corp.example.com`）和用途（`serverAuth`）都跟舊的一樣。用戶端信任的是 CA 和名稱，不是那一張憑證，所以不必改用戶端的設定。
 2. 把新的憑證與私鑰放到 `cert_file`、`key_file` 指的位置，私鑰權限設成 0600。
-3. 執行 `rradius-server check --config rradius.toml`，確認是 `configuration ok`。私鑰跟憑證不是一對時，這裡就會看到 `does not fit cert_file`。
+3. 執行 `rradiusd check --config rradius.toml`，確認是 `configuration ok`。私鑰跟憑證不是一對時，這裡就會看到 `does not fit cert_file`。
 4. 送 SIGHUP。之後開始的對話用新的憑證；正在進行的對話用舊的走完。
 5. 叢集裡每個節點都要換，並各自送 SIGHUP。
 
@@ -559,7 +559,7 @@ PEAP 要 10 輪：rradius 先提議 EAP-TLS，用戶端回 Nak 改要 PEAP，再
 **加上 TTLS：** 改兩行，再 reload：
 
 ```console
-$ rradius-server config diff rradius.toml.before rradius.toml
+$ rradiusd config diff rradius.toml.before rradius.toml
 radius.clients[wlc].eap_methods: ["tls", "peap"] | ["tls", "peap", "ttls"]
 radius.eap.methods: ["tls", "peap"] | ["tls", "peap", "ttls"]
 $ kill -HUP <伺服器的 PID>
@@ -617,7 +617,7 @@ passwd = "UPDATE accounts SET password = ?2 WHERE name = ?1 AND kind = 'user'"
 show = "SELECT name, kind, grp, enabled FROM accounts WHERE name = ?1"
 ```
 
-`staff3` 用 `scheme = "nthash"` 新增，`staff4` 把 `scheme` 改成 `"bcrypt"` 之後新增（`printf 'staff3-password\n' | rradius-server user add --config rradius.toml staff3`）。結果：
+`staff3` 用 `scheme = "nthash"` 新增，`staff4` 把 `scheme` 改成 `"bcrypt"` 之後新增（`printf 'staff3-password\n' | rradiusd user add --config rradius.toml staff3`）。結果：
 
 | 帳號 | 存放格式 | PEAP | TTLS（內層 PAP） |
 | --- | --- | --- | --- |
@@ -743,7 +743,7 @@ rradius_eap_sessions_total{method="ttls",result="reject"} 1
 `status` 有一個 EAP 區段，顯示未完成的對話數：
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 …
 EAP
   Sessions under way  1
@@ -816,7 +816,7 @@ EAP
 
 **症狀：** `check` 印出 `radius.eap.<鍵>: not supported by this program (… needs rradius-enterprise)`，或 `radius.eap.methods: <方法> is not supported by this program (… needs rradius-enterprise)`。
 **原因：** 設定裡有企業版才有的鍵或方法。哪些鍵會這樣被拒絕，列在[附錄 A](90-config-reference.md) 的「核心不支援或沒有作用的設定」。
-**解法：** 在 `rradius-server` 的設定裡刪掉它們；方法只用 `tls`、`peap`、`ttls`。
+**解法：** 在 `rradiusd` 的設定裡刪掉它們；方法只用 `tls`、`peap`、`ttls`。
 
 **症狀：** `check` 印出 `radius.eap.methods: 'md5' is not a method this server offers; it has tls, peap and ttls`。
 **原因：** 核心只有 `tls`、`peap`、`ttls` 三種方法。

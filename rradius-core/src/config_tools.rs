@@ -1,4 +1,4 @@
-//! `rradius-server config`: the effective configuration with its defaults filled in (`show`),
+//! `rradiusd config`: the effective configuration with its defaults filled in (`show`),
 //! the differences between two configurations (`diff`), and a starting configuration (`init`).
 //! All three follow the configuration's JSON Schema, so a setting the schema has is covered
 //! without more code here. None of them writes a file.
@@ -10,9 +10,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-pub const USAGE: &str = "usage: rradius-server config show [--config <path>]\n\
-                         usage: rradius-server config diff <a.toml> <b.toml>\n\
-                         usage: rradius-server config init [--lang en|zh-TW]";
+pub const USAGE: &str = "usage: rradiusd config show [--config <path>]\n\
+                         usage: rradiusd config diff <a.toml> <b.toml>\n\
+                         usage: rradiusd config init [--lang en|zh-TW]";
 
 /// What `show` prints in place of a secret.
 pub const HIDDEN: &str = "<hidden>";
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_fill_by_kind() -> Result<(), String> {
-        let schema = crate::schema::build("rradius-server", &crate::extensions::builtin())?;
+        let schema = crate::schema::build("rradiusd", &crate::extensions::builtin())?;
         let mut config = table("dictionary = \"d\"\n[[auth.handlers]]\ntype = \"lua\"\nscript = \"h.lua\"\n[[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT 1\"\n")?;
         fill(&mut config, &schema);
         let handlers = config.get("auth").and_then(|auth| auth.get("handlers")).and_then(toml::Value::as_array).ok_or("no handlers")?;

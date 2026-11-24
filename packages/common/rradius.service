@@ -10,7 +10,7 @@ ConditionPathExists=/etc/rradius/rradius.toml
 Type=simple
 User=rradius
 Group=rradius
-ExecStart=/usr/bin/rradius-server serve
+ExecStart=/usr/bin/rradiusd serve
 # A node whose database cannot be recovered exits with status 1 and a restart recovers it.
 Restart=on-failure
 RestartSec=2

@@ -39,8 +39,8 @@ api = "rradius-2.rradius-cluster:8200"
 type = "sql"
 user_query = "SELECT password FROM users WHERE username = ?"
 
-# For rradius-server user, run in a pod:
-#   kubectl exec -i rradius-0 -- rradius-server user add --config /etc/rradius/rradius-0.toml alice
+# For the `user` command, run in a pod:
+#   kubectl exec -i rradius-0 -- rradiusd user add --config /etc/rradius/rradius-0.toml alice
 [accounts]
 add = "INSERT INTO users (username, password) VALUES (?1, ?2)"
 passwd = "UPDATE users SET password = ?2 WHERE username = ?1"

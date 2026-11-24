@@ -1,7 +1,7 @@
 # 91 附錄 B：命令參考
 
 > 本章讓你做到：
-> - 查到 `rradius-server` 每個子命令的寫法、旗標、輸出與結束碼
+> - 查到 `rradiusd` 每個子命令的寫法、旗標、輸出與結束碼
 > - 查到 `rradius-bench run`、`calibrate` 的每個旗標與預設值，以及 `--load` 的全部種類
 > - 在腳本裡依結束碼判斷結果
 > - 認出只有企業版才有的命令，知道核心遇到它們時的反應
@@ -42,17 +42,17 @@
 
 這份附錄的內容來自兩個執行檔的實測輸出，再對照命令列解析的程式碼：
 
-- `rradius-server`：`rradius-core/src/cli.rs`，以及各子命令的 `status.rs`、`config_tools.rs`、`tuning.rs`、`accounts.rs`、`sessions.rs`、`query_command.rs`、`cluster_commands.rs`、`admin.rs`
+- `rradiusd`：`rradius-core/src/cli.rs`，以及各子命令的 `status.rs`、`config_tools.rs`、`tuning.rs`、`accounts.rs`、`sessions.rs`、`query_command.rs`、`cluster_commands.rs`、`admin.rs`
 - `rradius-bench`：`rradius-bench/src/cli.rs`、`main.rs`、`run.rs`、`report.rs`、`calibrate.rs`
 
 本附錄的每個命令都實際執行過，範例裡的輸出照抄，只把機器相關的路徑縮成 `…`；少數結束碼的路徑只對照了程式碼，列在[結束碼總表](#結束碼總表)底下。速率、延遲這類數字每台機器不同，不要拿來當效能參考。
 
 幾個全部命令共通的規則：
 
-- **`--config <path>`：** 沒寫時讀 `/etc/rradius/rradius.toml`。實際的預設路徑是建置時決定的，`rradius-server --version` 的第二行會印出來。讀不到預設的設定檔時，訊息後面會多一行 `(the default configuration; give --config <path> for another)`。
+- **`--config <path>`：** 沒寫時讀 `/etc/rradius/rradius.toml`。實際的預設路徑是建置時決定的，`rradiusd --version` 的第二行會印出來。讀不到預設的設定檔時，訊息後面會多一行 `(the default configuration; give --config <path> for another)`。
 - **旗標的位置：** `status`、`user`、`session`、`cluster` 的旗標可以放在子命令後面的任何位置，`user show --config a.toml dave` 與 `user show dave --config a.toml` 相同。其他命令要照用法的順序寫：例如 `config --config a.toml show`、`query --json list` 都是用法錯誤。同一個旗標寫兩次也是用法錯誤。
 - **輸出：** 結果寫到標準輸出，錯誤與用法說明寫到標準錯誤。管理命令只把 `WARN` 以上的日誌寫到標準錯誤，所以 `check` 會印出祕密檔權限之類的警告。
-- **子命令沒有自己的 `--help`。** 參數不對時，命令會印出自己的用法並以結束碼 2 結束；完整的用法清單用 `rradius-server help`。
+- **子命令沒有自己的 `--help`。** 參數不對時，命令會印出自己的用法並以結束碼 2 結束；完整的用法清單用 `rradiusd help`。
 
 ## 驗證用的環境
 
@@ -121,7 +121,7 @@ interval_ms = 60000
 
 ## 命令總覽
 
-`rradius-server` 的命令，依 `rradius-server help` 的順序：
+`rradiusd` 的命令，依 `rradiusd help` 的順序：
 
 | 命令 | 做什麼 | 要伺服器在執行中 | 主章 |
 | --- | --- | --- | --- |
@@ -150,7 +150,7 @@ interval_ms = 60000
 
 ## 結束碼總表
 
-`rradius-server` 的慣例是：0 成功，2 用法或設定錯誤。其他值依命令而不同：
+`rradiusd` 的慣例是：0 成功，2 用法或設定錯誤。其他值依命令而不同：
 
 | 命令 | 0 | 1 | 2 | 3 |
 | --- | --- | --- | --- | --- |
@@ -179,7 +179,7 @@ interval_ms = 60000
 ## serve
 
 ```text
-rradius-server serve [--config <path>]
+rradiusd serve [--config <path>]
 ```
 
 啟動伺服器：讀設定、啟動叢集節點、套用 migrations、開 RADIUS／TACACS+／指標埠，然後一直執行。啟動的過程與日誌見 [03 第一次啟動與登入](03-quick-start.md)。
@@ -193,7 +193,7 @@ rradius-server serve [--config <path>]
 | 停止途中再一次 SIGTERM 或 SIGINT | 不再等處理中的請求 |
 
 ```console
-$ rradius-server serve --config rradius.toml
+$ rradiusd serve --config rradius.toml
 …
 … INFO rradius_core::cli: Servers started. Press Ctrl+C to stop.
 … INFO rradius_core::radius: RADIUS Server listening on 127.0.0.1:1812 and 127.0.0.1:1813
@@ -204,18 +204,18 @@ $ rradius-server serve --config rradius.toml
 結束碼的例子（都實測過）：
 
 ```console
-$ rradius-server serve --config bindfail.toml      # RADIUS 埠被別的行程占用
+$ rradiusd serve --config bindfail.toml      # RADIUS 埠被別的行程占用
 …
 RADIUS server error: cannot listen on 127.0.0.1:1812: Address already in use (os error 48)
 $ echo $?
 1
-$ rradius-server serve --config badmig.toml        # migration 檔的 SQL 有錯
+$ rradiusd serve --config badmig.toml        # migration 檔的 SQL 有錯
 migration file '1_bad.sql' could not be applied: Sqlite: near "TABL": syntax error in CREATE TABL oops (x);
  at offset 7
 $ echo $?
 2
-$ rradius-server serve --config rradius.toml extra
-usage: rradius-server serve [--config <path>]
+$ rradiusd serve --config rradius.toml extra
+usage: rradiusd serve [--config <path>]
 $ echo $?
 2
 ```
@@ -227,15 +227,15 @@ $ echo $?
 ## check
 
 ```text
-rradius-server check [--config <path>]
+rradiusd check [--config <path>]
 ```
 
 做啟動前會做的檢查，但不開埠、不建立資料目錄、不連任何東西：讀設定檔與 `include` 的檔案、字典、編譯 Lua 腳本、檢查 migrations 目錄的檔名、驗證鏈、`[lua.http]`、計費 spool 目錄，最後印出共用密碼太短之類的警告。
 
 ```console
-$ rradius-server check --config rradius.toml
+$ rradiusd check --config rradius.toml
 configuration ok
-$ rradius-server check --config ent.toml           # 多了核心不支援的 [proxy]
+$ rradiusd check --config ent.toml           # 多了核心不支援的 [proxy]
 ent.toml: proxy: not supported by this program (proxying needs rradius-enterprise)
 $ echo $?
 2
@@ -243,64 +243,64 @@ $ echo $?
 
 - 成功時印 `configuration ok`（標準輸出），結束碼 0；有錯時印出原因（標準錯誤），結束碼 2。
 - `check` 只檢查 migration 檔的**檔名**，不執行 SQL。上一節 `1_bad.sql` 的語法錯誤，`check` 會通過，`serve` 才會發現。
-- `check` 後面多一個參數，例如 `check --config a.toml extra`，印出 `usage: rradius-server check [--config <path>]`，結束碼 2。
+- `check` 後面多一個參數，例如 `check --config a.toml extra`，印出 `usage: rradiusd check [--config <path>]`，結束碼 2。
 
 ## help、--version
 
 ```console
-$ rradius-server --version
-rradius-server 0.1.0
+$ rradiusd --version
+rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
-$ rradius-server help
-usage: rradius-server serve [--config <path>]
-usage: rradius-server check [--config <path>]
-usage: rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]
-usage: rradius-server --version
-usage: rradius-server schema [--lang en|zh-TW]
-usage: rradius-server config show [--config <path>]
-usage: rradius-server config diff <a.toml> <b.toml>
-usage: rradius-server config init [--lang en|zh-TW]
-usage: rradius-server tuning [--config <path>]
-usage: rradius-server user add|passwd|enable|disable|delete|show [--config <path>] <name>
+$ rradiusd help
+usage: rradiusd serve [--config <path>]
+usage: rradiusd check [--config <path>]
+usage: rradiusd status [--config <path>] [--cluster] [--watch | --json | --tui]
+usage: rradiusd --version
+usage: rradiusd schema [--lang en|zh-TW]
+usage: rradiusd config show [--config <path>]
+usage: rradiusd config diff <a.toml> <b.toml>
+usage: rradiusd config init [--lang en|zh-TW]
+usage: rradiusd tuning [--config <path>]
+usage: rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>
   add and passwd read the password from standard input
-usage: rradius-server session list [--config <path>] [--json]
-usage: rradius-server session show [--config <path>] [--json] <name>
-usage: rradius-server query list [--config <path>] [--json]
-usage: rradius-server query <name> [--config <path>] [--json]
-usage: rradius-server cluster members|remove [--config <path>] [--force] [<node_id>]
+usage: rradiusd session list [--config <path>] [--json]
+usage: rradiusd session show [--config <path>] [--json] <name>
+usage: rradiusd query list [--config <path>] [--json]
+usage: rradiusd query <name> [--config <path>] [--json]
+usage: rradiusd cluster members|remove [--config <path>] [--force] [<node_id>]
   remove takes a node id, and --force to leave one or two voters
 without --config, the configuration is /etc/rradius/rradius.toml
 ```
 
 - `help`、`--help`、`-h` 與不帶任何參數，印出的都是這份清單（標準輸出），結束碼 0。
-- 不認得的命令，例如 `rradius-server bogus`，把同一份清單印到標準錯誤，結束碼 2。
+- 不認得的命令，例如 `rradiusd bogus`，把同一份清單印到標準錯誤，結束碼 2。
 - `--version` 只能單獨使用。
 
 ## schema
 
 ```text
-rradius-server schema [--lang en|zh-TW]
+rradiusd schema [--lang en|zh-TW]
 ```
 
 把設定檔的 JSON Schema 印到標準輸出，說明文字用 `--lang` 指定的語言，預設 `en`。編輯器可以拿它做自動完成與檢查；附錄 A 也是從它整理的。
 
 ```console
-$ rradius-server schema --lang zh-TW > schema.json
+$ rradiusd schema --lang zh-TW > schema.json
 $ python3 -c 'import json; print(sorted(json.load(open("schema.json"))["properties"]))'
 ['accounts', 'auth', 'cluster', 'databases', 'dictionary', 'include', 'log', 'lua', 'metrics', 'queries', 'radius', 'runtime', 'sessions', 'shutdown', 'tacacs']
-$ rradius-server schema --lang fr
-usage: rradius-server schema [--lang en|zh-TW]
+$ rradiusd schema --lang fr
+usage: rradiusd schema [--lang en|zh-TW]
 ```
 
 - 不認得的語言或多餘的參數：結束碼 2。
-- 寫出失敗時印 `schema: …`，結束碼 1。例如 `rradius-server schema | head -1` 會在標準錯誤看到 `schema: Broken pipe (os error 32)`，這是 `head` 提早關掉管線造成的，不是 schema 有問題。
+- 寫出失敗時印 `schema: …`，結束碼 1。例如 `rradiusd schema | head -1` 會在標準錯誤看到 `schema: Broken pipe (os error 32)`，這是 `head` 提早關掉管線造成的，不是 schema 有問題。
 
 ## config
 
 ```text
-rradius-server config show [--config <path>]
-rradius-server config diff <a.toml> <b.toml>
-rradius-server config init [--lang en|zh-TW]
+rradiusd config show [--config <path>]
+rradiusd config diff <a.toml> <b.toml>
+rradiusd config init [--lang en|zh-TW]
 ```
 
 只有 `init` 接受 `--lang`，`show` 與 `diff` 給了 `--lang` 是用法錯誤。三個子命令都不連伺服器。用法上的細節見 [04 設定檔的基本功](04-configuration.md)。
@@ -310,7 +310,7 @@ rradius-server config init [--lang en|zh-TW]
 印出補上全部預設值的設定（含 `include` 的檔案）。祕密顯示成 `<hidden>`；第一行的註解列出依這台機器算出來的值。
 
 ```console
-$ rradius-server config show --config rradius.toml
+$ rradiusd config show --config rradius.toml
 # computed on this machine: radius.sockets = 1, cluster.read_connections = 28
 dictionary = "…/share/dictionary"
 
@@ -329,17 +329,17 @@ query_timeout_ms = 5000
 比較兩份設定補上預設值之後的結果，一個鍵一行，格式是 `<鍵>: <a 的值> | <b 的值>`：
 
 ```console
-$ rradius-server config diff rradius.toml b.toml
+$ rradiusd config diff rradius.toml b.toml
 auth.policy: "first_match" | "all_accept"
 radius.auth_port: 1812 | 1822
 $ echo $?
 1
-$ rradius-server config diff n2.toml n3.toml
+$ rradiusd config diff n2.toml n3.toml
 cluster.secret_api: differs (hidden)
 cluster.secret_api_file: "api.secret" | (absent)
 node-specific:
   cluster.listen: "127.0.0.1" | "127.0.0.2"
-$ rradius-server config diff rradius.toml rradius.toml
+$ rradiusd config diff rradius.toml rradius.toml
 no differences
 ```
 
@@ -353,7 +353,7 @@ no differences
 把一份設定底稿印到標準輸出，叢集密碼與範例用戶端的共用密碼都是隨機產生的（32 個字元）。`--lang zh-TW` 讓註解變成中文。底稿的內容與接下來要改的地方見 [03 第一次啟動與登入](03-quick-start.md)。
 
 ```console
-$ rradius-server config init --lang zh-TW > rradius.toml
+$ rradiusd config init --lang zh-TW > rradius.toml
 $ head -2 rradius.toml
 # 由 `config init` 產生的 rradius 設定檔。
 # 叢集的每個節點都要用相同的 secret_raft 與 secret_api；範例用戶端的 secret 也要設在 NAS 上。
@@ -362,13 +362,13 @@ $ head -2 rradius.toml
 ## tuning
 
 ```text
-rradius-server tuning [--config <path>]
+rradiusd tuning [--config <path>]
 ```
 
 讀這台機器的系統設定與 UDP 掉包計數，再依設定檔估計需要的 socket 緩衝區與檔案數量，印出建議值、原因與指令。Linux、macOS、FreeBSD 有建議；其他平台印 `rradius tuning: no advice for this platform (Linux, macOS and FreeBSD have it)`，結束碼 0。每一項的意思見 [19 效能調校與壓測](19-performance.md)。
 
 ```console
-$ rradius-server tuning --config rradius.toml
+$ rradiusd tuning --config rradius.toml
 rradius tuning advice for macOS
 
 UDP packets dropped because a receive buffer was full, since the system started: …
@@ -390,7 +390,7 @@ These suggestions are unmeasured starting points: apply them, then confirm with 
 ## status
 
 ```text
-rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]
+rradiusd status [--config <path>] [--cluster] [--watch | --json | --tui]
 ```
 
 | 旗標 | 意思 |
@@ -404,16 +404,16 @@ rradius-server status [--config <path>] [--cluster] [--watch | --json | --tui]
 `status` 讀的是設定檔 `[metrics]` 的位址；`bind` 是 `0.0.0.0` 或 `::` 時改連本機位址。每一段、每一行的意思見 [17 監控、狀態與日誌](17-monitoring.md)。
 
 ```console
-$ rradius-server status --config rradius.toml
+$ rradiusd status --config rradius.toml
 rradius status of 127.0.0.1:9812 over 1.0 s
 
 Node
   Ready                     ok
   Leader                    1
 …
-$ rradius-server status --config rradius.toml --json
+$ rradiusd status --config rradius.toml --json
 {"address":"127.0.0.1:9812","counter_reset":false,"interval_seconds":1.002444875,"ready":{"status":200,"text":"ok"},"sections":[…]}
-$ rradius-server status --config rradius.toml --cluster
+$ rradiusd status --config rradius.toml --cluster
 rradius cluster status over 1.0 s, members from the cluster
 
 node   role    ready  auth/s  acct/s  discarded/s  in progress  address
@@ -438,7 +438,7 @@ total          1/1    0.0     0.0     0.0          0
 ## user
 
 ```text
-rradius-server user add|passwd|enable|disable|delete|show [--config <path>] <name>
+rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>
 ```
 
 執行 `[accounts]` 裡同名的 SQL，透過叢集的 API 埠寫入或查詢資料表，所以伺服器一定要在執行中。`<name>` 會像登入時一樣正規化，例如預設驗證鏈的 `username` 設定會去掉 realm。帳號資料表與 `[accounts]` 的寫法見 [07 使用者帳號與驗證鏈](07-users-and-chains.md)。
@@ -456,16 +456,16 @@ rradius-server user add|passwd|enable|disable|delete|show [--config <path>] <nam
 - 寫入類的動作以「有沒有改到資料列」判斷：沒改到任何列時印 `no account <name>`，結束碼 1。
 
 ```console
-$ printf 'dave-password\n' | rradius-server user add --config rradius.toml dave
+$ printf 'dave-password\n' | rradiusd user add --config rradius.toml dave
 added dave
-$ printf 'new-password\n' | rradius-server user passwd --config rradius.toml dave
+$ printf 'new-password\n' | rradiusd user passwd --config rradius.toml dave
 password changed for dave
-$ rradius-server user show --config rradius.toml dave
+$ rradiusd user show --config rradius.toml dave
 username=dave
 enabled=1
-$ rradius-server user delete --config rradius.toml dave
+$ rradiusd user delete --config rradius.toml dave
 deleted dave
-$ rradius-server user delete --config rradius.toml dave
+$ rradiusd user delete --config rradius.toml dave
 no account dave
 $ echo $?
 1
@@ -490,26 +490,26 @@ $ echo $?
 ## session
 
 ```text
-rradius-server session list [--config <path>] [--json]
-rradius-server session show [--config <path>] [--json] <name>
+rradiusd session list [--config <path>] [--json]
+rradiusd session show [--config <path>] [--json] <name>
 ```
 
 執行 `[sessions]` 的 `list` 或 `show` 查詢（`show` 的 `?1` 是正規化後的名稱），把結果照 SELECT 的欄位順序印出。伺服器本身沒有 session 表，「在線」的定義全在你寫的 SQL。設定方式見 [13 計費與 session](13-accounting.md)。
 
 ```console
-$ rradius-server session list --config rradius.toml
+$ rradiusd session list --config rradius.toml
 username=alice
 nas=192.0.2.1
 session_id=11b8000000000000
 started=1795384834
 updated=1795384834
-$ rradius-server session list --config rradius.toml --json
+$ rradiusd session list --config rradius.toml --json
 [{"username":"alice","nas":"192.0.2.1","session_id":"11b8000000000000","started":1795384834,"updated":1795384834}]
-$ rradius-server session show --config rradius.toml nobody
+$ rradiusd session show --config rradius.toml nobody
 no sessions for nobody
 $ echo $?
 1
-$ rradius-server session show --config rradius.toml --json nobody
+$ rradiusd session show --config rradius.toml --json nobody
 []
 ```
 
@@ -521,8 +521,8 @@ $ rradius-server session show --config rradius.toml --json nobody
 ## query
 
 ```text
-rradius-server query list [--config <path>] [--json]
-rradius-server query <name> [--config <path>] [--json]
+rradiusd query list [--config <path>] [--json]
+rradiusd query <name> [--config <path>] [--json]
 ```
 
 - `query list` 只讀設定檔，列出每個 `[queries.<name>]` 的名稱、`help`、`interval_ms` 與 `sql`，不連叢集。沒有任何查詢時什麼都不印，結束碼 0。
@@ -530,22 +530,22 @@ rradius-server query <name> [--config <path>] [--json]
 - 具名查詢的寫法、對應的指標見 [09 外部資料庫與具名查詢](09-external-databases.md)。
 
 ```console
-$ rradius-server query list --config rradius.toml
+$ rradiusd query list --config rradius.toml
 name=enabled_users
 help=Accounts that can log in
 interval_ms=60000
 sql=SELECT enabled, COUNT(*) AS value FROM users GROUP BY enabled
-$ rradius-server query enabled_users --config rradius.toml
+$ rradiusd query enabled_users --config rradius.toml
 enabled  value
 0        1
 1        2
-$ rradius-server query enabled_users --config rradius.toml --json
+$ rradiusd query enabled_users --config rradius.toml --json
 [{"enabled":0,"value":1},{"enabled":1,"value":2}]
-$ rradius-server query nobody_here --config q2.toml
+$ rradiusd query nobody_here --config q2.toml
 no rows
 $ echo $?
 0
-$ rradius-server query nope --config rradius.toml
+$ rradiusd query nope --config rradius.toml
 queries.nope is not set in rradius.toml
 ```
 
@@ -556,14 +556,14 @@ queries.nope is not set in rradius.toml
 ## cluster
 
 ```text
-rradius-server cluster members [--config <path>]
-rradius-server cluster remove [--config <path>] [--force] <node_id>
+rradiusd cluster members [--config <path>]
+rradiusd cluster remove [--config <path>] [--force] <node_id>
 ```
 
 透過設定檔 `[[cluster.nodes]]` 的 API 位址找到 leader，再列出或修改成員。完整的成員管理流程見 [16 叢集與高可用](16-cluster.md)。
 
 ```console
-$ rradius-server cluster members --config rradius.toml
+$ rradiusd cluster members --config rradius.toml
 node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 ```
 
@@ -590,16 +590,16 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 
 ## 舊的旗標寫法
 
-啟動與檢查以前是旗標，現在是子命令。用舊的寫法時，`rradius-server` 不會啟動伺服器，而是印出完整的用法清單，最後多一行提示，結束碼 2：
+啟動與檢查以前是旗標，現在是子命令。用舊的寫法時，`rradiusd` 不會啟動伺服器，而是印出完整的用法清單，最後多一行提示，結束碼 2：
 
 | 舊的寫法 | 最後一行的提示 |
 | --- | --- |
-| `rradius-server --config <path>` | `to start the server: rradius-server serve --config <path>` |
-| 任何位置有 `--check`，例如 `rradius-server --check --config <path>` | `to check a configuration: rradius-server check [--config <path>]` |
+| `rradiusd --config <path>` | `to start the server: rradiusd serve --config <path>` |
+| 任何位置有 `--check`，例如 `rradiusd --check --config <path>` | `to check a configuration: rradiusd check [--config <path>]` |
 
 ## 只有企業版才有的命令
 
-核心的 `rradius-server` 認得企業版命令的名稱，但不執行：在讀設定檔之前就印出 `<命令>: not supported by this program (<功能> needs rradius-enterprise)`，結束碼 2。後面的參數不影響結果。
+核心的 `rradiusd` 認得企業版命令的名稱，但不執行：在讀設定檔之前就印出 `<命令>: not supported by this program (<功能> needs rradius-enterprise)`，結束碼 2。後面的參數不影響結果。
 
 | 命令 | 核心印出的訊息 |
 | --- | --- |
@@ -612,7 +612,7 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 | `coa` | `coa: not supported by this program (CoA needs rradius-enterprise)` |
 | `otp` | `otp: not supported by this program (two-factor login needs rradius-enterprise)` |
 
-這份清單是 `rradius-core/src/extension.rs` 的 `COMMANDS_NEEDING_ENTERPRISE`，八個都實測過。這些命令不在 `rradius-server help` 的清單裡。
+這份清單是 `rradius-core/src/extension.rs` 的 `COMMANDS_NEEDING_ENTERPRISE`，八個都實測過。這些命令不在 `rradiusd help` 的清單裡。
 
 > **企業版：** 企業版的 `help` 會多列出這些命令與它們的用法。
 
@@ -681,7 +681,7 @@ rradius-bench run [OPTIONS] --server <SERVER> --secret <SECRET> --load <LOADS>
 | `--requests` 與 `--duration` 一起 | clap 的用法說明 |
 | 名稱解析失敗 | `--server nonexistent.invalid: failed to lookup address information: …` |
 
-> **未實機驗證：** `--transport tls` 需要 RadSec 伺服器，核心的 `rradius-server` 沒有 RadSec，所以只驗證了上表的參數檢查，沒有對伺服器實際跑過。
+> **未實機驗證：** `--transport tls` 需要 RadSec 伺服器，核心的 `rradiusd` 沒有 RadSec，所以只驗證了上表的參數檢查，沒有對伺服器實際跑過。
 
 ## --load 的寫法
 
@@ -834,14 +834,14 @@ what this tool can do here, against responders that do no other work:
 
 程式更新後，用下面的方法確認這份參考沒有漏掉或多出命令與旗標。2026-11-23 對本附錄執行的結果：每一項差異都是 0。
 
-**1. `rradius-server` 的命令與旗標。** `help` 的輸出已經包含每個子命令的用法，從中取出「命令 子命令」與旗標，逐一檢查在本附錄出現：
+**1. `rradiusd` 的命令與旗標。** `help` 的輸出已經包含每個子命令的用法，從中取出「命令 子命令」與旗標，逐一檢查在本附錄出現：
 
 ```console
-$ rradius-server help > help.txt
+$ rradiusd help > help.txt
 $ grep -oE -- '--[a-z]+(-[a-z]+)*' help.txt | sort -u > flags-help.txt
 $ grep -oE -- '--[a-z]+(-[a-z]+)*' 91-command-reference.md | sort -u > flags-book.txt
 $ comm -23 flags-help.txt flags-book.txt          # help 有、書沒有：要是空的
-$ sed -n 's/^usage: rradius-server \([a-z-]*\) \([a-z|]*\).*/\1 \2/p' help.txt \
+$ sed -n 's/^usage: rradiusd \([a-z-]*\) \([a-z|]*\).*/\1 \2/p' help.txt \
     | awk '{n=split($2,a,"|"); for(i=1;i<=n;i++) print $1" "a[i]}' \
     | grep -v ' $' \
     | while read c; do grep -qF "\`$c" 91-command-reference.md || echo "missing: $c"; done
@@ -849,7 +849,7 @@ $ sed -n 's/^usage: rradius-server \([a-z-]*\) \([a-z|]*\).*/\1 \2/p' help.txt \
 
 第二段產生 `config show`、`user add`、`cluster remove` 這類組合，沒有輸出才算通過。
 
-**2. 書裡多出來的旗標。** `comm -13 flags-help.txt flags-book.txt` 列出書裡有、`rradius-server help` 沒有的旗標。這些應該全部來自 `rradius-bench` 的 `--help`、舊的旗標 `--check`，以及 `--help`。把 `rradius-bench --help`、`rradius-bench run --help`、`rradius-bench calibrate --help` 的旗標也加進 `flags-help.txt` 再比，剩下的只能是 `--check`。
+**2. 書裡多出來的旗標。** `comm -13 flags-help.txt flags-book.txt` 列出書裡有、`rradiusd help` 沒有的旗標。這些應該全部來自 `rradius-bench` 的 `--help`、舊的旗標 `--check`，以及 `--help`。把 `rradius-bench --help`、`rradius-bench run --help`、`rradius-bench calibrate --help` 的旗標也加進 `flags-help.txt` 再比，剩下的只能是 `--check`。
 
 **3. `rradius-bench` 的旗標與預設值。** `rradius-bench run --help` 每個旗標都要在 [rradius-bench run](#rradius-bench-run) 的表裡，`[default: …]` 要與表的「預設」一致；`calibrate --help` 同理。
 
@@ -869,15 +869,15 @@ $ while read k; do grep -qF "\`$k\`" 91-command-reference.md || echo "missing: $
 
 ## 常見錯誤
 
-**症狀：** 子命令後面加 `--help`，例如 `rradius-server user --help`，印出用法，結束碼 2。
+**症狀：** 子命令後面加 `--help`，例如 `rradiusd user --help`，印出用法，結束碼 2。
 **原因：** 子命令沒有 `--help`，`--help` 被當成不認得的參數。
-**解法：** 用 `rradius-server help` 看全部用法；用法本身不是錯誤。
+**解法：** 用 `rradiusd help` 看全部用法；用法本身不是錯誤。
 
-**症狀：** `rradius-server --config rradius.toml` 沒有啟動，印出整份用法與 `to start the server: …`。
+**症狀：** `rradiusd --config rradius.toml` 沒有啟動，印出整份用法與 `to start the server: …`。
 **原因：** 舊的寫法，現在啟動是子命令。
-**解法：** 寫成 `rradius-server serve --config rradius.toml`。
+**解法：** 寫成 `rradiusd serve --config rradius.toml`。
 
-**症狀：** `rradius-server config show --config a.toml --lang zh-TW` 印出 `config` 的用法，結束碼 2。
+**症狀：** `rradiusd config show --config a.toml --lang zh-TW` 印出 `config` 的用法，結束碼 2。
 **原因：** 只有 `config init` 接受 `--lang`。
 **解法：** `config show` 不加 `--lang`。
 
