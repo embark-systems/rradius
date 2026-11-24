@@ -1,4 +1,4 @@
 # The accounting log of [radius.accounting_log]. newsyslog moves the file and sends SIGHUP to the
 # program, which opens a new one. Copy to rradius.conf (without .sample) to use it.
 # logfilename                      [owner:group]     mode count size when  flags pid_file                  sig_num
-/var/log/rradius/accounting.jsonl  rradius:rradius   640  30    *    @T00  J     /var/run/rradius_child.pid 1
+/var/log/rradius/accounting.jsonl  rradius:rradius   640  30    *    @T00  J     /var/run/rradius/rradius_child.pid 1
