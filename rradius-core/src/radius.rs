@@ -1909,11 +1909,13 @@ impl RadiusServer {
                         received = socket.recv_from(&mut buffer) => received,
                     };
                     let Ok((size, addr)) = received else { continue };
+                    self.metrics.traffic_bytes[crate::metrics::RADIUS_IN].add(size as u64);
                     (buffer[..size].to_vec(), addr)
                 }
             };
             // Without waiting: is the next one here already?
             if let Ok((size, from)) = socket.try_recv_from(&mut buffer) {
+                self.metrics.traffic_bytes[crate::metrics::RADIUS_IN].add(size as u64);
                 next = Some((buffer[..size].to_vec(), from));
             }
             let Some(slot) = self.try_slot(kind) else {
@@ -1932,13 +1934,14 @@ impl RadiusServer {
                 }
             });
             let socket = socket.clone();
+            let metrics = self.metrics.clone();
             if next.is_some() {
                 tokio::spawn(async move {
                     // Yield first: a freshly spawned task sits in this worker's LIFO slot, which other
                     // workers cannot steal, so a script that never yields would also stall the receive loop.
                     tokio::task::yield_now().await;
                     if let Some(response) = work.await {
-                        let _ = socket.send_to(&response, addr).await;
+                        count_sent(&metrics, socket.send_to(&response, addr).await);
                     }
                     drop(slot);
                 });
@@ -1953,17 +1956,20 @@ impl RadiusServer {
                 std::task::Poll::Ready(Ok(None)) => drop(slot),
                 std::task::Poll::Ready(Ok(Some(response))) => {
                     // Not waiting here for a full socket buffer: receiving goes on.
-                    if socket.try_send_to(&response, addr).is_err() {
-                        tokio::spawn(async move {
-                            let _ = socket.send_to(&response, addr).await;
-                            drop(slot);
-                        });
+                    match socket.try_send_to(&response, addr) {
+                        Ok(size) => count_sent(&metrics, Ok(size)),
+                        Err(_) => {
+                            tokio::spawn(async move {
+                                count_sent(&metrics, socket.send_to(&response, addr).await);
+                                drop(slot);
+                            });
+                        }
                     }
                 }
                 std::task::Poll::Pending => {
                     tokio::spawn(async move {
                         if let Some(response) = work.await {
-                            let _ = socket.send_to(&response, addr).await;
+                            count_sent(&metrics, socket.send_to(&response, addr).await);
                         }
                         drop(slot);
                     });
@@ -2987,6 +2993,13 @@ impl RadiusServer {
         } else {
             Replayed::TryAgain
         }
+    }
+}
+
+/// Counts a response that was written to the socket; one that was not written is not counted.
+fn count_sent(metrics: &Metrics, sent: std::io::Result<usize>) {
+    if let Ok(size) = sent {
+        metrics.traffic_bytes[crate::metrics::RADIUS_OUT].add(size as u64);
     }
 }
 
@@ -8344,6 +8357,59 @@ pub(crate) mod tests {
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
+        Ok(())
+    }
+
+    /// The bytes of a request and of its response are counted, and no TACACS+ byte is.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_traffic_bytes_of_a_request_and_its_response() -> Result<(), String> {
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'accept'").map_err(|e| e.to_string())?);
+        let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()));
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
+        let to = socket.local_addr().map_err(|e| e.to_string())?;
+        tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
+        let client = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
+        client.send_to(&request, to).await.map_err(|e| e.to_string())?;
+        let mut buffer = [0u8; MAX_PACKET_LEN];
+        let (size, _) = tokio::time::timeout(Duration::from_secs(10), client.recv_from(&mut buffer)).await.map_err(|_| "not answered".to_string())?.map_err(|e| e.to_string())?;
+        // The response is counted after it is written, which can be after the client has it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while server.metrics.traffic_bytes[crate::metrics::RADIUS_OUT].get() == 0 {
+            if Instant::now() > deadline {
+                return Err("the response was not counted".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let bytes = |slot: usize| server.metrics.traffic_bytes[slot].get();
+        assert_eq!(bytes(crate::metrics::RADIUS_IN), request.len() as u64);
+        assert_eq!(bytes(crate::metrics::RADIUS_OUT), size as u64);
+        assert_eq!((bytes(crate::metrics::TACACS_IN), bytes(crate::metrics::TACACS_OUT)), (0, 0));
+        Ok(())
+    }
+
+    /// A packet that is discarded was received: its bytes count in, and nothing counts out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_traffic_bytes_of_a_discarded_packet() -> Result<(), String> {
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'accept'").map_err(|e| e.to_string())?);
+        let mut table = ClientTable::default();
+        table.add("10.9.9.9", Some("other".to_string()), b"secret".to_vec(), crate::clients::ClientOptions::default()).map_err(|e| e.to_string())?;
+        let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), Arc::new(table), engine, share_dictionary()));
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
+        let to = socket.local_addr().map_err(|e| e.to_string())?;
+        tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
+        let client = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
+        client.send_to(&request, to).await.map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while server.metrics.radius_discarded_unknown_client.get() == 0 {
+            if Instant::now() > deadline {
+                return Err("the packet was not discarded".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(server.metrics.traffic_bytes[crate::metrics::RADIUS_IN].get(), request.len() as u64);
+        assert_eq!(server.metrics.traffic_bytes[crate::metrics::RADIUS_OUT].get(), 0);
         Ok(())
     }
 

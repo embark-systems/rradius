@@ -36,6 +36,14 @@ pub const TACACS_REPLIES: [(&str, &str); 12] = [
     ("acct", "error"),
 ];
 
+/// The protocol and direction of each traffic byte counter, as the labels of
+/// `rradius_traffic_bytes_total`; the constants after it give the places in this list.
+pub const TRAFFIC: [(&str, &str); 4] = [("radius", "in"), ("radius", "out"), ("tacacs", "in"), ("tacacs", "out")];
+pub const RADIUS_IN: usize = 0;
+pub const RADIUS_OUT: usize = 1;
+pub const TACACS_IN: usize = 2;
+pub const TACACS_OUT: usize = 3;
+
 /// Where a TACACS+ reply to a request of `type_` with this body is counted, or `None` for a type or
 /// a status that is not in `TACACS_REPLIES`. The status is the first byte of an authentication or
 /// authorization reply and the fifth of an accounting reply (RFC 8907 sections 5.2, 6.2 and 7.2).
@@ -373,6 +381,8 @@ pub struct Metrics {
     pub tacacs_malformed: Counter,
     /// TACACS+ replies written, by type and status, in the order of `TACACS_REPLIES`.
     pub tacacs_responses: [Counter; TACACS_REPLIES.len()],
+    /// The bytes of the RADIUS and TACACS+ packets received and sent, in the order of `TRAFFIC`.
+    pub traffic_bytes: [Counter; TRAFFIC.len()],
     pub radius_response_auth: Histogram,
     pub radius_response_acct: Histogram,
     pub tacacs_response_authen: Histogram,
@@ -554,6 +564,9 @@ impl Metrics {
         let replies: Vec<(String, u64)> = TACACS_REPLIES.iter().zip(&self.tacacs_responses).map(|((kind, status), counter)| (format!("{{type=\"{kind}\",status=\"{status}\"}}"), counter.get())).collect();
         let replies: Vec<(&str, u64)> = replies.iter().map(|(labels, value)| (labels.as_str(), *value)).collect();
         write_family(&mut out, "rradius_tacacs_responses_total", "counter", "TACACS+ replies written, by the type of the request and the status in the reply.", &replies);
+        let traffic: Vec<(String, u64)> = TRAFFIC.iter().zip(&self.traffic_bytes).map(|((protocol, direction), counter)| (format!("{{protocol=\"{protocol}\",direction=\"{direction}\"}}"), counter.get())).collect();
+        let traffic: Vec<(&str, u64)> = traffic.iter().map(|(labels, value)| (labels.as_str(), *value)).collect();
+        write_family(&mut out, "rradius_traffic_bytes_total", "counter", "Bytes of RADIUS (UDP) and TACACS+ packets received and written, without the headers of IP, UDP, TCP and TLS.", &traffic);
         write_histograms(&mut out, "rradius_tacacs_response_seconds", "How long TACACS+ requests took to answer, from reading the packet to writing the reply; each authentication packet on its own.", &[
             ("type=\"authen\"", &self.tacacs_response_authen),
             ("type=\"author\"", &self.tacacs_response_author),
@@ -1190,6 +1203,8 @@ mod tests {
             "rradius_tacacs_malformed_total 0",
             "rradius_tacacs_responses_total{type=\"authen\",status=\"pass\"} 0",
             "rradius_tacacs_responses_total{type=\"acct\",status=\"error\"} 0",
+            "rradius_traffic_bytes_total{protocol=\"radius\",direction=\"in\"} 0",
+            "rradius_traffic_bytes_total{protocol=\"tacacs\",direction=\"out\"} 0",
             "rradius_acct_spool_bytes 0",
             "rradius_log_dropped_lines_total 0",
             "rradius_script_http_requests_total{result=\"denied\"} 0",

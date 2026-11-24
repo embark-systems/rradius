@@ -272,6 +272,8 @@ fn core_sections_first() -> Vec<StatusSection> {
                 item("Discarded: invalid", "discarded_invalid", "rradius_radius_discarded_total", &[("reason", "invalid")], Show::Rate),
                 item("Discarded: database", "discarded_database", "rradius_radius_discarded_total", &[("reason", "database")], Show::Rate),
                 item("Discarded: no leader", "discarded_no_leader", "rradius_radius_discarded_total", &[("reason", "no_leader")], Show::Rate),
+                item("In bytes", "bytes_in", "rradius_traffic_bytes_total", &[("protocol", "radius"), ("direction", "in")], Show::Rate),
+                item("Out bytes", "bytes_out", "rradius_traffic_bytes_total", &[("protocol", "radius"), ("direction", "out")], Show::Rate),
                 item("Auth in progress", "auth_in_progress", "rradius_radius_requests_in_progress", &[("kind", "auth")], Show::Value),
                 item("Auth limit", "auth_limit", "rradius_radius_requests_limit", &[("kind", "auth")], Show::Value),
                 item("Acct in progress", "acct_in_progress", "rradius_radius_requests_in_progress", &[("kind", "acct")], Show::Value),
@@ -298,6 +300,8 @@ fn core_sections_last() -> Vec<StatusSection> {
                 item("Accounting", "acct", "rradius_tacacs_requests_total", &[("type", "acct")], Show::Rate),
                 item("Replies", "replies", "rradius_tacacs_responses_total", &[], Show::Rate),
                 item("Malformed", "malformed", "rradius_tacacs_malformed_total", &[], Show::Rate),
+                item("In bytes", "bytes_in", "rradius_traffic_bytes_total", &[("protocol", "tacacs"), ("direction", "in")], Show::Rate),
+                item("Out bytes", "bytes_out", "rradius_traffic_bytes_total", &[("protocol", "tacacs"), ("direction", "out")], Show::Rate),
                 item("Authentication p50 (ms)", "authen_p50_ms", "rradius_tacacs_response_seconds", &[("type", "authen")], Show::Quantile(0.5)),
                 item("Authentication p99 (ms)", "authen_p99_ms", "rradius_tacacs_response_seconds", &[("type", "authen")], Show::Quantile(0.99)),
                 item("Authorization p50 (ms)", "author_p50_ms", "rradius_tacacs_response_seconds", &[("type", "author")], Show::Quantile(0.5)),
@@ -1407,6 +1411,36 @@ mod tests {
         let after = "rradius_tacacs_connections_open 1\nrradius_tacacs_responses_total{type=\"authen\",status=\"pass\"} 230\nrradius_tacacs_responses_total{type=\"authen\",status=\"fail\"} 65\nrradius_tacacs_responses_total{type=\"acct\",status=\"success\"} 45\n";
         assert_eq!(reply_items(before, after)?, [serde_json::json!({"key": "replies", "label": "Replies", "rate": 40.0, "total": 340})]);
         assert!(reply_items("rradius_tacacs_connections_open 1\n", "rradius_tacacs_connections_open 1\n")?.is_empty(), "no item without the metric");
+        Ok(())
+    }
+
+    /// The bytes of the RADIUS and TACACS+ sections: each protocol's own rate and total, and no
+    /// item when the node does not report the metric.
+    #[test]
+    fn test_traffic_bytes() -> Result<(), String> {
+        let start = Instant::now();
+        let items = |before: &str, after: &str, section: &str| -> Result<Vec<serde_json::Value>, String> {
+            let before = sample_of(before, start)?;
+            let after = sample_of(after, start + Duration::from_secs(1))?;
+            let shown = view(address(), &before, &after, &[], 0.0);
+            let json = json(&shown);
+            let sections = json["sections"].as_array().ok_or("no sections")?;
+            let found = sections.iter().find(|s| s["key"] == section).ok_or("no section")?;
+            Ok(found["items"].as_array().ok_or("items")?.iter().filter(|item| item["key"].as_str().is_some_and(|key| key.starts_with("bytes_"))).cloned().collect())
+        };
+        let text = |radius_in: u64, radius_out: u64, tacacs_in: u64| {
+            format!(
+                "rradius_traffic_bytes_total{{protocol=\"radius\",direction=\"in\"}} {radius_in}\nrradius_traffic_bytes_total{{protocol=\"radius\",direction=\"out\"}} {radius_out}\nrradius_traffic_bytes_total{{protocol=\"tacacs\",direction=\"in\"}} {tacacs_in}\nrradius_traffic_bytes_total{{protocol=\"tacacs\",direction=\"out\"}} 0\nrradius_radius_packets_total{{kind=\"auth\"}} 1\nrradius_tacacs_connections_open 1\n"
+            )
+        };
+        let (before, after) = (text(1_000_000, 500, 70), text(1_060_000, 900, 170));
+        assert_eq!(
+            items(&before, &after, "radius")?,
+            [serde_json::json!({"key": "bytes_in", "label": "In bytes", "rate": 60000.0, "total": 1_060_000}), serde_json::json!({"key": "bytes_out", "label": "Out bytes", "rate": 400.0, "total": 900})]
+        );
+        assert_eq!(items(&before, &after, "tacacs")?[0], serde_json::json!({"key": "bytes_in", "label": "In bytes", "rate": 100.0, "total": 170}));
+        let bare = "rradius_radius_packets_total{kind=\"auth\"} 1\nrradius_tacacs_connections_open 1\n";
+        assert!(items(bare, bare, "radius")?.is_empty() && items(bare, bare, "tacacs")?.is_empty(), "no items without the metric");
         Ok(())
     }
 
