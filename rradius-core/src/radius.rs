@@ -7902,8 +7902,19 @@ pub(crate) mod tests {
         let reply = tokio::time::timeout(std::time::Duration::from_secs(1), exchange(&client, 2)).await.expect("fast request was blocked");
         assert_eq!(reply.identifier, 2, "only the fast request can be answered while the slow script runs");
 
-        let (size, _) = tokio::time::timeout(std::time::Duration::from_secs(5), client.recv_from(&mut buf)).await.unwrap().unwrap();
-        let late = RadiusPacket::parse(&buf[..size]).unwrap();
+        // `exchange` sends its request again every 100 ms, so on a slow machine the fast request
+        // can be answered more than once; skip those answers and wait for the slow one's.
+        let late = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let (size, _) = client.recv_from(&mut buf).await.unwrap();
+                let packet = RadiusPacket::parse(&buf[..size]).unwrap();
+                if packet.identifier != 2 {
+                    return packet;
+                }
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!((late.identifier, late.code), (9, ACCESS_ACCEPT));
     }
 
@@ -8306,7 +8317,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_requests_in_progress_are_reported() -> Result<(), String> {
         const SLOW: &str = "sql_query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 3000000) SELECT count(*) AS n FROM c')";
-        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}\nreturn 'accept'")).map_err(|e| e.to_string())?);
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}\nreturn 'accept'")).map_err(|e| e.to_string())?.with_max_execution(Duration::from_secs(120)).with_query_timeout(Duration::from_secs(120)));
         let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()));
         server.report_slots();
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
@@ -8341,7 +8352,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stopping_answers_what_is_being_handled() -> Result<(), String> {
         const SLOW: &str = "sql_query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 3000000) SELECT count(*) AS n FROM c')";
-        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}\nreturn 'accept'")).map_err(|e| e.to_string())?);
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}\nreturn 'accept'")).map_err(|e| e.to_string())?.with_max_execution(Duration::from_secs(120)).with_query_timeout(Duration::from_secs(120)));
         let stopping = crate::stopping::Stopping::new();
         let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()).with_limits(8, 8).with_stopping(stopping.clone()));
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);

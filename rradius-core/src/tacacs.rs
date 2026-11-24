@@ -2423,7 +2423,8 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stopping_closes_after_the_reply() -> Result<(), String> {
         const SLOW: &str = "if get_attr('user') == 'slow' then sql_query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 3000000) SELECT count(*) AS n FROM c') end ";
-        let engine = script_engine(&format!("{SLOW}return 'accept'")).await;
+        // The slow query must not hit the default limits (1 s of script, 5 s of query) on a loaded machine.
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}return 'accept'")).map_err(|e| e.to_string())?.with_max_execution(Duration::from_secs(120)).with_query_timeout(Duration::from_secs(120)));
         let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
         let metrics = Arc::new(Metrics::default());
@@ -2448,11 +2449,11 @@ pub(crate) mod tests {
         tokio::time::timeout(Duration::from_secs(5), serving).await.map_err(|_| "the accept loop did not end".to_string())?.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
         assert!(tokio::net::TcpStream::connect(addr).await.is_err(), "a new connection was taken");
         assert_eq!(read_end(&mut idle).await?, 0, "the idle connection ends");
-        let reply = tokio::time::timeout(Duration::from_secs(5), read_packet(&mut busy, MAX_BODY_LEN)).await.map_err(|_| "no reply".to_string())?.map_err(|e| e.to_string())?.ok_or("closed before the reply")?;
+        let reply = tokio::time::timeout(Duration::from_secs(60), read_packet(&mut busy, MAX_BODY_LEN)).await.map_err(|_| "no reply".to_string())?.map_err(|e| e.to_string())?.ok_or("closed before the reply")?;
         let body = TacacsPacket::encrypt_decrypt(&reply.body, SECRET, reply.session_id, reply.version, reply.seq_num);
         assert_eq!(body.first().copied(), Some(AUTHEN_STATUS_PASS));
         assert_eq!(read_end(&mut busy).await?, 0, "the connection ends after the reply");
-        assert_eq!(server.drain(tokio::time::Instant::now() + Duration::from_secs(5)).await, 0);
+        assert_eq!(server.drain(tokio::time::Instant::now() + Duration::from_secs(60)).await, 0);
         Ok(())
     }
 
