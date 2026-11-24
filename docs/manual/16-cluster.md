@@ -814,7 +814,7 @@ configuration ok
 
 | 項目 | 內容 |
 | --- | --- |
-| 服務 | `node1`、`node2`、`node3`，image `rradiusd`，從原始碼的 `Dockerfile` 建置 |
+| 服務 | `node1`、`node2`、`node3`，image `rradius-server`，從原始碼的 `Dockerfile` 建置 |
 | RADIUS 埠 | 主機的 1812/1813、2812/2813、3812/3813 對應到各容器的 1812/1813（UDP） |
 | 設定 | `./docker/config` 唯讀掛到 `/etc/rradius` |
 | 資料 | 每個節點一個 volume：`data1`、`data2`、`data3`，掛到 `/var/lib/rradius` |
@@ -1007,7 +1007,7 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 
 ### 量測條件
 
-- **環境：** Apple M4 Max（14 核）的一台主機，OrbStack 上的 Docker，三個節點各一個容器；image 是核心的 `rradiusd` 加上 `iproute2`。節點設定是 `docker/config/auth.lua` 與 `sql` 處理器（登入讀本機副本，每個計費封包一次 `INSERT`）。
+- **環境：** Apple M4 Max（14 核）的一台主機，OrbStack 上的 Docker，三個節點各一個容器；image 是核心的 `rradius-server` 加上 `iproute2`。節點設定是 `docker/config/auth.lua` 與 `sql` 處理器（登入讀本機副本，每個計費封包一次 `INSERT`）。
 - **延遲怎麼加：** 在每個節點對另外兩個節點的 egress 用 `tc netem` 加單向延遲（來回時間 RTT 的一半），RADIUS 用戶端到節點的路徑不加。RTT 用節點之間的 `ping` 校正，下表一律用實測值。
 - **模擬的限制：** 只有固定的延遲，沒有抖動、沒有封包遺失、兩個方向相同；節點在同一台主機上，CPU 與記憶體不是瓶頸。
 - **負載：** `rradius-bench`，固定並行 64，暖機 2 秒、量測 10 秒，每個 RTT 點 3 次。讀取負載是 `pap` 登入（讀本機副本）；寫入負載是 `acct-start`（每個封包一次 `INSERT INTO accounting`，要經過 Raft）。用戶端打的是當時的 leader。
