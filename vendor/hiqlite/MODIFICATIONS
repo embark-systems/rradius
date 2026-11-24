@@ -7,6 +7,13 @@ crates.io, with these changes, made for rradius:
 2. tests/ and benches/ are removed, and Cargo.toml has no [[test]], [[bench]] or
    [dev-dependencies] entries: they are not built or run here.
 3. Cargo.toml.orig, Cargo.lock, .cargo-ok and .cargo_vcs_info.json are not copied.
+4. src/network/tcp_socket.rs: on Linux every connection (the listening socket, accepted and
+   outgoing streams) gets TCP_USER_TIMEOUT of 10 seconds, so a connection whose peer was
+   partitioned is closed after 10 seconds without an acknowledgement instead of retransmitting
+   for minutes; a healed follower then reconnects in about 5 to 7 seconds, not 15 to 47. The
+   two tests at the end of that file are not built here (see change 2: the library's own tests
+   do not compile without the removed dev-dependencies); they were run in a copy of the file in
+   a small crate on Linux.
 
 Everything else is as published. To move to a newer hiqlite, take its source the same way and
 make change 1 again, unless it is no longer needed.
