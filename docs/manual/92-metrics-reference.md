@@ -241,7 +241,7 @@ TACACS+ 請求數，依認證、授權、計費分。一次登入算一筆，不
 
 伺服器收到與寫出的協定封包位元組數：`radius` 是 UDP 埠上收到的 RADIUS 封包與寫回去的回應長度，`tacacs` 是讀到的 TACACS+ 封包（12 位元組標頭加本文）與寫出的回覆長度，明文與 TLS 上的 TACACS+ 都算。`in` 在收到完整封包時就加，即使它之後被丟棄；`out` 在寫出成功之後才加。
 
-這是協定封包的位元組，不含 IP、UDP、TCP、TLS 的標頭與記錄開銷，所以比網路介面看到的少（例如 IPv4 的 RADIUS 每個封包少 28 位元組）。RadSec、proxy 上游、伺服器送出的 CoA、叢集與資料庫流量不在內。`status` 的 RADIUS 與 TACACS+ 區段把它顯示成 `In bytes` 與 `Out bytes`。
+這是協定封包的位元組，不含 IP、UDP、TCP、TLS 的標頭與記錄開銷，所以比網路介面看到的少（例如 IPv4 的 RADIUS 每個封包少 28 位元組）。RadSec、proxy 上游、伺服器送出的 CoA、叢集與資料庫流量不在內。`status` 的 RADIUS 與 TACACS+ 區段把它顯示成 `In bytes` 與 `Out bytes`，畫面上自動換成 KiB、MiB 等單位（1024 進位），`--json` 與 `/metrics` 仍是位元組。
 
 #### `rradius_tacacs_malformed_total`
 

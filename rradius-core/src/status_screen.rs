@@ -5,7 +5,7 @@
 //! is the table of the items of its section and, for the selected item that has a rate, a line
 //! chart of the rates of the last minute, kept here for as long as the view runs.
 
-use crate::status::{number, reading_text, ClusterView, Data, Reading, ShownItem, ShownSection, View};
+use crate::status::{bytes_text, number, reading_text, ClusterView, Data, Reading, ShownItem, ShownSection, View};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
@@ -36,7 +36,7 @@ struct History(BTreeMap<Key, VecDeque<f64>>);
 fn rates(view: &View) -> impl Iterator<Item = (&str, &str, f64)> {
     view.sections.iter().flat_map(move |section| {
         section.items.iter().filter_map(move |item| match &item.reading {
-            Reading::Rate { rate, .. } => Some((section.key.as_str(), item.key.as_str(), if view.counter_reset { 0.0 } else { *rate })),
+            Reading::Rate { rate, .. } | Reading::Bytes { rate, .. } => Some((section.key.as_str(), item.key.as_str(), if view.counter_reset { 0.0 } else { *rate })),
             Reading::Value(_) => None,
         })
     })
@@ -88,16 +88,17 @@ fn all_view(cluster: &ClusterView) -> Result<View, String> {
     all.counter_reset = false;
     for section in &mut all.sections {
         for item in &mut section.items {
-            if let Reading::Rate { .. } = item.reading {
+            let bytes = matches!(item.reading, Reading::Bytes { .. });
+            if bytes || matches!(item.reading, Reading::Rate { .. }) {
                 let (mut rate, mut total) = (0.0, 0.0);
                 for view in &views {
                     let found = view.sections.iter().filter(|s| s.key == section.key).flat_map(|s| s.items.iter()).find(|i| i.key == item.key);
-                    if let Some(ShownItem { reading: Reading::Rate { rate: r, total: t }, .. }) = found {
+                    if let Some(ShownItem { reading: Reading::Rate { rate: r, total: t } | Reading::Bytes { rate: r, total: t }, .. }) = found {
                         rate += r;
                         total += t;
                     }
                 }
-                item.reading = Reading::Rate { rate, total };
+                item.reading = if bytes { Reading::Bytes { rate, total } } else { Reading::Rate { rate, total } };
             }
         }
     }
@@ -456,6 +457,7 @@ fn draw_panel(frame: &mut Frame, screen: &Screen, area: ratatui::layout::Rect) {
         .map(|(index, item)| {
             let (value, total) = match &item.reading {
                 Reading::Rate { rate, total } => (format!("{rate:.1}/s"), number(*total)),
+                Reading::Bytes { rate, total } => (bytes_text(*rate, true), bytes_text(*total, false)),
                 other => (reading_text(other), String::new()),
             };
             let row = Row::new([item.label.clone(), value, total]);
@@ -470,9 +472,10 @@ fn draw_panel(frame: &mut Frame, screen: &Screen, area: ratatui::layout::Rect) {
     let header = Row::new(["", "rate or value", "total"]).style(Style::new().add_modifier(Modifier::DIM));
     frame.render_widget(Table::new(table_rows, widths).header(header), items);
     let Some(item) = section.items.get(selected) else { return };
-    if !matches!(item.reading, Reading::Rate { .. }) {
+    if !matches!(item.reading, Reading::Rate { .. } | Reading::Bytes { .. }) {
         return;
     }
+    let bytes = matches!(item.reading, Reading::Bytes { .. });
     let rates: Vec<f64> = screen.shown().history.get(&screen.who(), &section.key, &item.key).map(|kept| kept.iter().copied().collect()).unwrap_or_default();
     let last = rates.len().saturating_sub(1);
     let points: Vec<(f64, f64)> = rates.iter().enumerate().map(|(index, rate)| (-((last - index) as f64), *rate)).collect();
@@ -481,7 +484,7 @@ fn draw_panel(frame: &mut Frame, screen: &Screen, area: ratatui::layout::Rect) {
     let chart_widget = Chart::new(vec![dataset])
         .block(Block::new().borders(Borders::TOP).title(format!(" {} per second, last {WINDOW} s ", item.label)))
         .x_axis(Axis::default().bounds([-(WINDOW as f64), 0.0]).labels(vec![format!("-{WINDOW} s"), "now".to_string()]))
-        .y_axis(Axis::default().bounds([0.0, top]).labels(vec!["0".to_string(), number(top)]));
+        .y_axis(Axis::default().bounds([0.0, top]).labels(vec!["0".to_string(), if bytes { bytes_text(top, true) } else { number(top) }]));
     frame.render_widget(chart_widget, chart);
 }
 
@@ -659,6 +662,48 @@ mod tests {
         screen.on_key(key(KeyCode::Right));
         let text = drawn(&screen, 60, 10)?;
         assert!(text.contains("12.5/s") && text.contains("100") && text.contains("fine"), "{text}");
+        Ok(())
+    }
+
+    /// A section whose items count bytes, each at the given rate and a total ten times it.
+    fn byted(key: &str, items: &[(&str, f64)]) -> ShownSection {
+        ShownSection {
+            key: key.to_string(),
+            title: key.to_string(),
+            items: items.iter().map(|(name, rate)| ShownItem { key: name.to_string(), label: name.to_string(), reading: Reading::Bytes { rate: *rate, total: rate * 10.0 } }).collect(),
+        }
+    }
+
+    /// The table shows a bytes item in KiB and the like, and the chart's top is in the same unit
+    /// with `/s`, while a plain rate stays as it was.
+    #[test]
+    fn bytes_are_drawn_in_units() -> Test {
+        let screen = Screen::new(Data::Node(view(vec![byted("radius", &[("bytes_in", 60_000.0)]), rated("tacacs", "TACACS+", &[("auth", 12.5)])]).map_err(|e| e.to_string())));
+        let text = drawn(&screen, 80, 24)?;
+        assert!(text.contains("58.6 KiB/s") && text.contains("585.9 KiB"), "{text}");
+        assert!(!text.contains("60000"), "{text}");
+        let mut screen = screen;
+        for _ in 0..3 {
+            screen.set_data(Data::Node(view(vec![byted("radius", &[("bytes_in", 60_000.0)])]).map_err(|e| e.to_string())));
+        }
+        let text = drawn(&screen, 80, 24)?;
+        assert!(text.contains("bytes_in per second") && text.lines().any(|line| line.contains("KiB/s") && !line.contains("bytes_in")), "the top of the axis is in KiB/s: {text}");
+        Ok(())
+    }
+
+    /// The members' bytes are added up, then shown in the one unit.
+    #[test]
+    fn the_bytes_of_all_the_members_are_added_up() -> Test {
+        let data = Data::Cluster(ClusterView {
+            from: crate::cluster_commands::Source::Cluster,
+            interval: 1.0,
+            members: vec![member(1, "leader", Ok(view(vec![byted("radius", &[("bytes_in", 30_000.0)])])?)), member(2, "follower", Ok(view(vec![byted("radius", &[("bytes_in", 30_000.0)])])?))],
+        });
+        let mut screen = Screen::new(data);
+        screen.on_key(key(KeyCode::Right));
+        assert_eq!(rates_of(&screen, "all", "radius", "bytes_in"), [60_000.0]);
+        let text = drawn(&screen, 100, 24)?;
+        assert!(text.contains("58.6 KiB/s"), "{text}");
         Ok(())
     }
 

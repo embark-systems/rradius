@@ -265,6 +265,9 @@ pub enum Show {
     Value,
     /// The change per second of a counter, and its total.
     Rate,
+    /// The change per second of a counter of bytes, and its total, in B, KiB, MiB, GiB and TiB
+    /// (1024 each) where people read it; `--json` has the plain numbers.
+    Bytes,
     /// The total of a counter alone.
     Total,
     /// A quantile (0.5 for the median) of what a histogram counted between the two samples, in

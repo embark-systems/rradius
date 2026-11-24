@@ -9,7 +9,7 @@ The first release.
 ### Added
 
 - **RADIUS:** authentication, accounting and Status-Server; PAP, CHAP, MS-CHAPv2, EAP-TLS, PEAP-MSCHAPv2 and EAP-TTLS; extended and vendor-specific attributes; the dictionaries in `share/`.
-- **Traffic bytes:** `rradius_traffic_bytes_total{protocol,direction}` counts the bytes of RADIUS (UDP) and TACACS+ packets received and written, and `status` shows them as `In bytes` and `Out bytes`. They are protocol packets, without the headers of IP, UDP, TCP and TLS, and without RadSec and proxy traffic.
+- **Traffic bytes:** `rradius_traffic_bytes_total{protocol,direction}` counts the bytes of RADIUS (UDP) and TACACS+ packets received and written, and `status` shows them as `In bytes` and `Out bytes`. They are protocol packets, without the headers of IP, UDP, TCP and TLS, and without RadSec and proxy traffic. `status` shows them in B, KiB, MiB, GiB and TiB (1024 each); `--json` and the metrics keep plain bytes.
 - **TACACS+:** authentication, authorization (permit and deny rules by device group) and accounting.
 - **Account sources:** built-in tables with many password hash formats, LDAP and Active Directory, HTTP APIs and other databases, which can be chained.
 - **Policies:** authentication and accounting logic in Luau scripts and SQL.
