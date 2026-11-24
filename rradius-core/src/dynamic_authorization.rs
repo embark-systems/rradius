@@ -71,15 +71,30 @@ pub fn random_identifier() -> Result<u8, getrandom::Error> {
     Ok(byte[0])
 }
 
+/// The octets a [`send_and_wait_counted`] call wrote to the socket and read from it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WaitedBytes {
+    /// Every send that succeeded, each retransmission counted again.
+    pub sent: u64,
+    /// Every datagram received, whether or not it answered the request.
+    pub received: u64,
+}
+
 /// Sends a Disconnect-Request or CoA-Request signed with `secret` up to `attempts` times, and
 /// returns the first answer that proves to be from the NAS. Network errors are logged and count
 /// as an attempt without an answer.
 pub async fn send_and_wait(target: SocketAddr, packet: &[u8], secret: &[u8], timeout: Duration, attempts: u32) -> Option<RadiusPacket> {
+    send_and_wait_counted(target, packet, secret, timeout, attempts).await.0
+}
+
+/// [`send_and_wait`], and how many octets it sent and received.
+pub async fn send_and_wait_counted(target: SocketAddr, packet: &[u8], secret: &[u8], timeout: Duration, attempts: u32) -> (Option<RadiusPacket>, WaitedBytes) {
+    let mut bytes = WaitedBytes::default();
     let socket = match connected_socket(target).await {
         Ok(socket) => socket,
         Err(e) => {
             log_line(tracing::Level::WARN, format!("dynamic authorization to {target}: {e}"));
-            return None;
+            return (None, bytes);
         }
     };
     let mut buf = [0u8; MAX_PACKET_LEN];
@@ -88,6 +103,7 @@ pub async fn send_and_wait(target: SocketAddr, packet: &[u8], secret: &[u8], tim
             log_line(tracing::Level::WARN, format!("dynamic authorization to {target}: {e}"));
             continue;
         }
+        bytes.sent += packet.len() as u64;
         let deadline = Instant::now() + timeout;
         loop {
             match tokio::time::timeout_at(deadline, socket.recv(&mut buf)).await {
@@ -97,14 +113,15 @@ pub async fn send_and_wait(target: SocketAddr, packet: &[u8], secret: &[u8], tim
                     break;
                 }
                 Ok(Ok(size)) => {
+                    bytes.received += size as u64;
                     if let Some(answer) = checked_answer(packet, secret, &buf[..size]) {
-                        return Some(answer);
+                        return (Some(answer), bytes);
                     }
                 }
             }
         }
     }
-    None
+    (None, bytes)
 }
 
 /// The ACK or NAK to `request` in `data`, if its Identifier fits and it is signed with `secret`;
@@ -134,4 +151,87 @@ fn response_authenticator(data: &[u8]) -> [u8; 16] {
     let mut authenticator = [0u8; 16];
     authenticator.copy_from_slice(&data[4..20]);
     authenticator
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET: &[u8] = b"coa-test-secret";
+
+    /// A NAS on loopback: `behave` gets each request it reads, in order, and returns the
+    /// datagrams to write back.
+    async fn nas(behave: impl Fn(usize, &[u8]) -> Vec<Vec<u8>> + Send + 'static) -> Result<SocketAddr, String> {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let address = socket.local_addr().map_err(|e| e.to_string())?;
+        tokio::spawn(async move {
+            let mut buffer = [0u8; MAX_PACKET_LEN];
+            let mut count = 0;
+            while let Ok((size, from)) = socket.recv_from(&mut buffer).await {
+                for datagram in behave(count, &buffer[..size]) {
+                    let _ = socket.send_to(&datagram, from).await;
+                }
+                count += 1;
+            }
+        });
+        Ok(address)
+    }
+
+    fn request() -> Vec<u8> {
+        RadiusPacket::create_signed_request(DISCONNECT_REQUEST, 7, vec![(1, b"alice".to_vec())], SECRET)
+    }
+
+    fn ack_to(request: &[u8]) -> Result<Vec<u8>, String> {
+        let parsed = RadiusPacket::parse(request).map_err(|e| format!("{e:?}"))?;
+        Ok(RadiusPacket::create_response(DISCONNECT_ACK, &parsed, vec![], SECRET))
+    }
+
+    /// The first request goes unanswered and the second is answered: both sends and the answer
+    /// are counted.
+    #[tokio::test]
+    async fn test_a_retransmission_is_counted() -> Result<(), String> {
+        let packet = request();
+        let address = nas(|count, request| if count == 1 { ack_to(request).into_iter().collect() } else { Vec::new() }).await?;
+        let (answer, bytes) = send_and_wait_counted(address, &packet, SECRET, Duration::from_millis(150), 2).await;
+        assert_eq!(answer.map(|answer| answer.code), Some(DISCONNECT_ACK));
+        assert_eq!(bytes, WaitedBytes { sent: 2 * packet.len() as u64, received: 20 });
+        Ok(())
+    }
+
+    /// A datagram that is not the answer is read and counted before the real one.
+    #[tokio::test]
+    async fn test_a_datagram_that_is_not_the_answer_is_counted() -> Result<(), String> {
+        let packet = request();
+        let address = nas(|_, request| {
+            let mut replies = vec![vec![0u8; 30]];
+            replies.extend(ack_to(request));
+            replies
+        })
+        .await?;
+        let (answer, bytes) = send_and_wait_counted(address, &packet, SECRET, Duration::from_millis(500), 1).await;
+        assert!(answer.is_some());
+        assert_eq!(bytes, WaitedBytes { sent: packet.len() as u64, received: 50 });
+        Ok(())
+    }
+
+    /// Nothing answers: the sends are counted and there is no answer.
+    #[tokio::test]
+    async fn test_no_answer_counts_only_the_sends() -> Result<(), String> {
+        let packet = request();
+        let address = nas(|_, _| Vec::new()).await?;
+        let (answer, bytes) = send_and_wait_counted(address, &packet, SECRET, Duration::from_millis(50), 3).await;
+        assert!(answer.is_none());
+        assert_eq!(bytes, WaitedBytes { sent: 3 * packet.len() as u64, received: 0 });
+        Ok(())
+    }
+
+    /// `send_and_wait` answers as before.
+    #[tokio::test]
+    async fn test_send_and_wait_answers() -> Result<(), String> {
+        let packet = request();
+        let address = nas(|_, request| ack_to(request).into_iter().collect()).await?;
+        let answer = send_and_wait(address, &packet, SECRET, Duration::from_millis(500), 1).await;
+        assert_eq!(answer.map(|answer| answer.code), Some(DISCONNECT_ACK));
+        Ok(())
+    }
 }
