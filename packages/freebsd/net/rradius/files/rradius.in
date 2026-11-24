@@ -25,8 +25,12 @@ load_rc_config $name
 
 required_files=${rradius_config}
 pidfile=/var/run/rradius.pid
-child_pidfile=/var/run/rradius_child.pid
+# daemon(8) opens the -p file after dropping to ${rradius_user}, so it cannot live directly in
+# the root-owned /var/run; use a directory owned by that user (created at start, /var/run is cleared on boot).
+child_piddir=/var/run/rradius
+child_pidfile=${child_piddir}/rradius_child.pid
 command=/usr/sbin/daemon
+start_precmd=rradius_prestart
 # daemon(8) restarts the program when it exits: a node whose database cannot be recovered
 # exits with status 1 and a restart recovers it.
 command_args="-P ${pidfile} -p ${child_pidfile} -r -R 2 -S -T rradius -u ${rradius_user} \
@@ -34,6 +38,11 @@ command_args="-P ${pidfile} -p ${child_pidfile} -r -R 2 -S -T rradius -u ${rradi
 
 extra_commands=reload
 reload_cmd=rradius_reload
+
+rradius_prestart()
+{
+    install -d -o ${rradius_user} -m 0755 ${child_piddir}
+}
 
 rradius_reload()
 {
