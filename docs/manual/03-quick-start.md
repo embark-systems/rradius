@@ -115,7 +115,7 @@ show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE
 
 | 設定 | 這裡的值 | 預設值 | reload | 意思 |
 | --- | --- | --- | --- | --- |
-| `dictionary` | 字典路徑 | 必填 | 要重啟 | 屬性名稱的來源（第 06 章） |
+| `dictionary` | 字典路徑 | 預設字典路徑 | 要重啟 | 屬性名稱的來源（第 06 章） |
 | `lua.script` | `accounting.lua` | 必填 | 可以 | 最上層腳本。這裡有 `[auth]`，所以它只處理計費 |
 | `cluster.data_dir` | `data` | 必填 | 要重啟 | 叢集資料庫的目錄，相對於設定檔 |
 | `cluster.secret_raft_file`、`secret_api_file` | 檔名 | 無 | 要重啟 | 叢集密碼放在哪個檔案 |

@@ -26,7 +26,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 ./target/release/rradiusd        # 讀 /usr/local/etc/rradius/rradius.toml
 ```
 
-用 cargo 建置時，改了 `RRADIUS_PREFIX` 會自動重新編譯；企業版建置時設的值一樣有效。
+用 cargo 建置時，改了 `RRADIUS_PREFIX` 會自動重新編譯；企業版建置時設的值一樣有效。字典也跟著這個前綴：設定檔沒寫 `dictionary` 時，讀 `$RRADIUS_PREFIX/share/rradius/dictionary`（上面的例子是 `/usr/local/share/rradius/dictionary`）。
 
 **發行檔：** `rradius-<版本>-<平台>.tar.gz`，平台是 `macos-aarch64`、`linux-x86_64` 或 `linux-aarch64`，旁邊的 `.sha256` 可以用 `shasum -a 256 -c` 檢查。解開後的目錄結構和 repo 相同，所以範例設定和文件裡的相對路徑都照樣成立：
 
@@ -39,7 +39,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 | `README.md`、`VERSION` | 說明，以及版本和建置它的 commit；Linux 版另外寫出需要的 glibc 版本 |
 
 - **Linux 版的 glibc：** 它在 Debian 12（bookworm）建置，需要的版本寫在壓縮檔的 `VERSION` 和 `README.md`。0.1.0 需要 glibc 2.34 以上，2026-11-08 在 Debian 12、Ubuntu 22.04（2.35）和 Rocky Linux 9（2.34）上確認過可以執行。更舊的發行版請用 Docker 映像（1.1 節）或自己建置。
-- **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡；執行檔放到 `PATH` 裡。
+- **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡（放在預設字典路徑，也就是 `$RRADIUS_PREFIX/share/rradius/dictionary` 時可以不寫）；執行檔放到 `PATH` 裡。
 - **自己產生發行檔：** `packages/tarball/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
 
 - **啟動服務要用 `serve` 子命令：** `rradiusd serve [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`serve` 後面接其他參數時印出它的用法，狀態碼 2。
@@ -110,7 +110,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 
 | 區段 | 必填 | 用途 |
 | --- | --- | --- |
-| `dictionary` | 是 | RADIUS 字典檔路徑（FreeRADIUS 格式，例如專案中的 `share/dictionary`） |
+| `dictionary` | 否 | RADIUS 字典檔路徑（FreeRADIUS 格式，例如專案中的 `share/dictionary`），相對路徑以設定檔所在的目錄為準。沒寫時是建置時決定的預設字典路徑：`$RRADIUS_PREFIX/share/rradius/dictionary`，沒設前綴（或是空字串、`/`）就是 `/usr/share/rradius/dictionary`；用 `--version` 看實際的值。deb、rpm 與 FreeBSD 套件都把字典裝在這個位置 |
 | `include` | 否 | 一起讀的其他檔案，例如 `conf.d/*.toml`（下方〈把設定拆成多個檔案〉） |
 | `[lua]` | 是 | 最上層 Lua 腳本與 Lua 的時限 |
 | `[cluster]` | 是 | 內嵌資料庫節點與叢集 |

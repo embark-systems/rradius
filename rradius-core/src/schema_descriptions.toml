@@ -353,6 +353,10 @@ zh-TW = "讀本機資料庫的連線數，1 到 128；預設是工作執行緒�
 
 # databases
 
+[fields."dictionary"]
+en = "The RADIUS dictionary (FreeRADIUS format): relative to this file's directory, or absolute. Without it, the default dictionary path fixed when the program was built: <prefix>/share/rradius/dictionary, or /usr/share/rradius/dictionary when it was built without a prefix (`--version` shows it)."
+zh-TW = "RADIUS 字典檔（FreeRADIUS 格式）：相對於這個檔案所在的目錄，或絕對路徑。沒寫時用建置時決定的預設字典路徑：<prefix>/share/rradius/dictionary，建置時沒設前綴就是 /usr/share/rradius/dictionary（`--version` 會印出）。"
+
 [fields."include"]
 en = "Files read with this one, as if their text followed it: names relative to this file's directory, with * and ? allowed in the file name (\"conf.d/*.toml\"), in the order of their paths. An included file has to begin with a table, cannot have include, and cannot set what another file sets. Read again at a reload."
 zh-TW = "和這個檔案一起讀的檔案，讀起來像是它們的文字接在這個檔案後面：名稱相對於這個檔案所在的目錄，檔名可以用 * 和 ?（\"conf.d/*.toml\"），依路徑順序載入。引入的檔案要以表開頭，不能再有 include，也不能設定別的檔案已經設定的東西。重新載入時再讀一次。"
