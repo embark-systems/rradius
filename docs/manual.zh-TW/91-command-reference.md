@@ -1,10 +1,10 @@
-# 91 附錄 B：命令參考
+# 附錄 B：命令參考
 
 > 本章讓你做到：
-> - 查到 `rradiusd` 每個子命令的寫法、旗標、輸出與結束碼
+> - 查到 `rradiusd` 每個子指令的寫法、旗標、輸出與結束碼
 > - 查到 `rradius-bench run`、`calibrate` 的每個旗標與預設值，以及 `--load` 的全部種類
 > - 在腳本裡依結束碼判斷結果
-> - 認出只有企業版才有的命令，知道核心遇到它們時的反應
+> - 認出只有企業版才有的指令，知道核心遇到它們時的反應
 > - 程式更新後，自己比對這份參考與 `help` 的輸出
 
 前置條件：讀過 [03 第一次啟動與登入](03-quick-start.md)，會啟動 quick-start 情境。
@@ -13,7 +13,7 @@
 
 - [怎麼讀這份參考](#怎麼讀這份參考)
 - [驗證用的環境](#驗證用的環境)
-- [命令總覽](#命令總覽)
+- [指令總覽](#指令總覽)
 - [結束碼總表](#結束碼總表)
 - [serve](#serve)
 - [check](#check)
@@ -27,7 +27,7 @@
 - [query](#query)
 - [cluster](#cluster)
 - [舊的旗標寫法](#舊的旗標寫法)
-- [只有企業版才有的命令](#只有企業版才有的命令)
+- [只有企業版才有的指令](#只有企業版才有的指令)
 - [rradius-bench run](#rradius-bench-run)
 - [--load 的寫法](#--load-的寫法)
 - [run 的輸出與結束碼](#run-的輸出與結束碼)
@@ -42,17 +42,17 @@
 
 這份附錄的內容來自兩個執行檔的實測輸出，再對照命令列解析的程式碼：
 
-- `rradiusd`：`rradius-core/src/cli.rs`，以及各子命令的 `status.rs`、`config_tools.rs`、`tuning.rs`、`accounts.rs`、`sessions.rs`、`query_command.rs`、`cluster_commands.rs`、`admin.rs`
+- `rradiusd`：`rradius-core/src/cli.rs`，以及各子指令的 `status.rs`、`config_tools.rs`、`tuning.rs`、`accounts.rs`、`sessions.rs`、`query_command.rs`、`cluster_commands.rs`、`admin.rs`
 - `rradius-bench`：`rradius-bench/src/cli.rs`、`main.rs`、`run.rs`、`report.rs`、`calibrate.rs`
 
-本附錄的每個命令都實際執行過，範例裡的輸出照抄，只把機器相關的路徑縮成 `…`；少數結束碼的路徑只對照了程式碼，列在[結束碼總表](#結束碼總表)底下。速率、延遲這類數字每台機器不同，不要拿來當效能參考。
+本附錄的每個指令都實際執行過，範例裡的輸出照抄，只把機器相關的路徑縮成 `…`；少數結束碼的路徑只對照了程式碼，列在[結束碼總表](#結束碼總表)底下。速率、延遲這類數字每台機器不同，不要拿來當效能參考。
 
-幾個全部命令共通的規則：
+幾個全部指令共通的規則：
 
 - **`--config <path>`：** 沒寫時讀 `/etc/rradius/rradius.toml`。實際的預設路徑是建置時決定的，`rradiusd --version` 的第二行會印出來。讀不到預設的設定檔時，訊息後面會多一行 `(the default configuration; give --config <path> for another)`。
-- **旗標的位置：** `status`、`user`、`session`、`cluster` 的旗標可以放在子命令後面的任何位置，`user show --config a.toml dave` 與 `user show dave --config a.toml` 相同。其他命令要照用法的順序寫：例如 `config --config a.toml show`、`query --json list` 都是用法錯誤。同一個旗標寫兩次也是用法錯誤。
-- **輸出：** 結果寫到標準輸出，錯誤與用法說明寫到標準錯誤。管理命令只把 `WARN` 以上的日誌寫到標準錯誤，所以 `check` 會印出祕密檔權限之類的警告。
-- **子命令沒有自己的 `--help`。** 參數不對時，命令會印出自己的用法並以結束碼 2 結束；完整的用法清單用 `rradiusd help`。
+- **旗標的位置：** `status`、`user`、`session`、`cluster` 的旗標可以放在子指令後面的任何位置，`user show --config a.toml dave` 與 `user show dave --config a.toml` 相同。其他指令要照用法的順序寫：例如 `config --config a.toml show`、`query --json list` 都是用法錯誤。同一個旗標寫兩次也是用法錯誤。
+- **輸出：** 結果寫到標準輸出，錯誤與用法說明寫到標準錯誤。管理指令只把 `WARN` 以上的日誌寫到標準錯誤，所以 `check` 會印出祕密檔權限之類的警告。
+- **子指令沒有自己的 `--help`。** 參數不對時，指令會印出自己的用法並以結束碼 2 結束；完整的用法清單用 `rradiusd help`。
 
 ## 驗證用的環境
 
@@ -119,11 +119,11 @@ interval_ms = 60000
 
 這份設定通過 `check`，各段的意思見[附錄 A](90-config-reference.md)。
 
-## 命令總覽
+## 指令總覽
 
-`rradiusd` 的命令，依 `rradiusd help` 的順序：
+`rradiusd` 的指令，依 `rradiusd help` 的順序：
 
-| 命令 | 做什麼 | 要伺服器在執行中 | 主章 |
+| 指令 | 做什麼 | 要伺服器在執行中 | 主章 |
 | --- | --- | --- | --- |
 | `serve` | 啟動伺服器，直到收到停止訊號 | — | [03](03-quick-start.md) |
 | `check` | 檢查設定，不開任何埠 | 否 | [04](04-configuration.md) |
@@ -136,28 +136,28 @@ interval_ms = 60000
 | `tuning` | 依這台機器與設定給系統調校建議 | 否 | [19](19-performance.md) |
 | `user add`、`user passwd`、`user enable`、`user disable`、`user delete`、`user show` | 用 `[accounts]` 的 SQL 管理帳號 | 是（叢集 API 埠） | [07](07-users-and-chains.md) |
 | `session list`、`session show` | 用 `[sessions]` 的 SQL 列出在線 session | 是（叢集 API 埠） | [13](13-accounting.md) |
-| `accounting find` | 從計費記錄檔反查某個公網位址與埠在某時刻屬於誰 | 否（只讀檔案） | [13](13-accounting.md) |
+| `accounting find` | 從計費記錄檔反查某個公網位址與埠在某時刻屬於誰 | 否（只讀取檔案） | [13](13-accounting.md) |
 | `query list`、`query <name>` | 列出或執行 `[queries.<name>]` | `list` 否；執行要 | [09](09-external-databases.md) |
 | `cluster members`、`remove` | 列出叢集成員、移除節點 | 是（叢集 API 埠） | [16](16-cluster.md) |
-| `help` | 印出全部命令的用法 | 否 | 本章 |
+| `help` | 印出全部指令的用法 | 否 | 本章 |
 
-`rradius-bench` 的命令：
+`rradius-bench` 的指令：
 
-| 命令 | 做什麼 | 主章 |
+| 指令 | 做什麼 | 主章 |
 | --- | --- | --- |
 | `run` | 對伺服器送負載，報告速率與延遲；也能用 `--requests 1` 當登入測試 | [19](19-performance.md) |
 | `calibrate` | 對自己行程裡的回應者送負載，量這個工具在這台機器上的上限 | [19](19-performance.md) |
-| `help` | 印出命令清單，或某個命令的說明 | 本章 |
+| `help` | 印出指令清單，或某個指令的說明 | 本章 |
 
 ## 結束碼總表
 
-`rradiusd` 的慣例是：0 成功，2 用法或設定錯誤。其他值依命令而不同：
+`rradiusd` 的慣例是：0 成功，2 用法或設定錯誤。其他值依指令而不同：
 
-| 命令 | 0 | 1 | 2 | 3 |
+| 指令 | 0 | 1 | 2 | 3 |
 | --- | --- | --- | --- | --- |
 | `serve` | 收到 SIGTERM 或 SIGINT 後正常停止，包括啟動途中被要求停止 | 啟動後無法服務：RADIUS 埠無法監聽、叢集錯誤中斷 migration、沒有 leader 而設了 `stop_without_leader_ms`、Raft 核心停止 | 設定、字典、腳本有錯，migration 檔不合規則或 SQL 失敗，叢集節點無法啟動（`cannot start cluster node …`），參數不對 | — |
 | `check` | `configuration ok` | — | 設定有錯 | — |
-| `help`、`--version`、不帶參數 | 印出結果 | — | 不認得的命令 | — |
+| `help`、`--version`、不帶參數 | 印出結果 | — | 不認得的指令 | — |
 | `schema` | 印出 schema | 寫出失敗，例如管線被關掉 | 參數不對 | — |
 | `config show`、`init` | 印出結果 | — | 參數或設定有錯 | — |
 | `config diff` | 沒有差異，或只有節點專屬的差異 | 有差異 | 參數或設定有錯 | — |
@@ -167,7 +167,7 @@ interval_ms = 60000
 | `session` | 有資料 | 沒有 session | 參數或設定有錯、`[sessions]` 缺少這個動作、SQL 失敗 | 同 `user` |
 | `query` | 成功，包括沒有任何查詢、查無資料列 | — | 參數或設定有錯、`queries.<name>` 沒設定、SQL 失敗 | 同 `user` |
 | `cluster` | 成功 | `remove`：叢集裡沒有這個節點、leader 拒絕、leader 連續換了兩次 | 參數或設定有錯、API 密碼不對、要移除的節點還在回應、移除後只剩一或兩個 voter 而沒有 `--force`、最後一個 voter | 30 秒內沒有回答；`remove` 送出後沒有回應 |
-| 企業版的命令 | — | — | 一律 2 | — |
+| 企業版的指令 | — | — | 一律 2 | — |
 
 > **未實機驗證：** 表中這幾格只對照了程式碼，沒有實際重現：`serve` 啟動途中被要求停止的 0；`serve` 因叢集錯誤中斷 migration、`stop_without_leader_ms`、Raft 核心停止的 1；`serve` 叢集節點無法啟動的 2；`tuning` 在沒有建議的平台上的 0；`status --cluster` 問不到成員的 2；`query` 的 SQL 失敗的 2、沒有任何查詢時 `query list` 的 0；`user` 兩次密碼不同的 2；`cluster` 需要多節點的各格（見 [cluster](#cluster)）。其他各格都實測過。
 
@@ -274,7 +274,7 @@ without --config, the configuration is /etc/rradius/rradius.toml
 ```
 
 - `help`、`--help`、`-h` 與不帶任何參數，印出的都是這份清單（標準輸出），結束碼 0。
-- 不認得的命令，例如 `rradiusd bogus`，把同一份清單印到標準錯誤，結束碼 2。
+- 不認得的指令，例如 `rradiusd bogus`，把同一份清單印到標準錯誤，結束碼 2。
 - `--version` 只能單獨使用。
 
 ## schema
@@ -304,7 +304,7 @@ rradiusd config diff <a.toml> <b.toml>
 rradiusd config init [--full] [--lang en|zh-TW]
 ```
 
-只有 `init` 接受 `--lang`，`show` 與 `diff` 給了 `--lang` 是用法錯誤。三個子命令都不連伺服器。用法上的細節見 [04 設定檔的基本功](04-configuration.md)。
+只有 `init` 接受 `--lang`，`show` 與 `diff` 給了 `--lang` 是用法錯誤。三個子指令都不連伺服器。用法上的細節見 [04 設定檔的基本功](04-configuration.md)。
 
 ### config show
 
@@ -366,7 +366,7 @@ $ head -2 rradius.toml
 rradiusd tuning [--config <path>]
 ```
 
-讀這台機器的系統設定與 UDP 掉包計數，再估計需要的 socket 緩衝區與檔案數量，印出建議值、原因與指令。`--config` 可以不給：不給時讀預設路徑的設定檔，沒有就用全部預設值估算；給了才會依你的設定（例如 `recv_buffer_bytes`、`sockets`）檢查系統上限夠不夠。指令只讀不改。Linux、macOS、FreeBSD 有建議；其他平台印 `rradius tuning: no advice for this platform (Linux, macOS and FreeBSD have it)`，結束碼 0。每一項的意思見 [19 效能調校與壓測](19-performance.md)。
+讀這台機器的系統設定與 UDP 掉包計數，再估計需要的 socket 緩衝區與檔案數量，印出建議值、原因與指令。`--config` 可以不給：不給時讀預設路徑的設定檔，沒有就用全部預設值估算；給了才會依你的設定（例如 `recv_buffer_bytes`、`sockets`）檢查系統上限夠不夠。指令只讀取不改。Linux、macOS、FreeBSD 有建議；其他平台印 `rradius tuning: no advice for this platform (Linux, macOS and FreeBSD have it)`，結束碼 0。每一項的意思見 [19 效能調校與壓測](19-performance.md)。
 
 ```console
 $ rradiusd tuning --config rradius.toml
@@ -453,7 +453,7 @@ rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>
 | `delete` | `accounts.delete` | `deleted <name>` |
 | `show` | `accounts.show` | 每欄一行 `欄位=值`；多列之間空一行 |
 
-- `add` 與 `passwd` 從標準輸入讀密碼：在終端機上關掉回顯問兩次（`password: `、`again: `）；從管線讀時只讀第一行。存進資料表前依 `accounts.scheme` 處理。
+- `add` 與 `passwd` 從標準輸入讀密碼：在終端機上關掉回顯問兩次（`password: `、`again: `）；從管線讀時只讀取第一行。存進資料表前依 `accounts.scheme` 處理。
 - 寫入類的動作以「有沒有改到資料列」判斷：沒改到任何列時印 `no account <name>`，結束碼 1。
 
 ```console
@@ -552,7 +552,7 @@ rradiusd query list [--config <path>] [--json]
 rradiusd query <name> [--config <path>] [--json]
 ```
 
-- `query list` 只讀設定檔，列出每個 `[queries.<name>]` 的名稱、`help`、`interval_ms` 與 `sql`，不連叢集。沒有任何查詢時什麼都不印，結束碼 0。
+- `query list` 只讀取設定檔，列出每個 `[queries.<name>]` 的名稱、`help`、`interval_ms` 與 `sql`，不連叢集。沒有任何查詢時什麼都不印，結束碼 0。
 - `query <name>` 在叢集上執行一次那段 SQL，以表格印出。名稱 `list` 保留給列出，不能當查詢名稱。
 - 具名查詢的寫法、對應的指標見 [09 外部資料庫與具名查詢](09-external-databases.md)。
 
@@ -617,18 +617,18 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 
 ## 舊的旗標寫法
 
-啟動與檢查以前是旗標，現在是子命令。用舊的寫法時，`rradiusd` 不會啟動伺服器，而是印出完整的用法清單，最後多一行提示，結束碼 2：
+啟動與檢查以前是旗標，現在是子指令。用舊的寫法時，`rradiusd` 不會啟動伺服器，而是印出完整的用法清單，最後多一行提示，結束碼 2：
 
 | 舊的寫法 | 最後一行的提示 |
 | --- | --- |
 | `rradiusd --config <path>` | `to start the server: rradiusd serve --config <path>` |
 | 任何位置有 `--check`，例如 `rradiusd --check --config <path>` | `to check a configuration: rradiusd check [--config <path>]` |
 
-## 只有企業版才有的命令
+## 只有企業版才有的指令
 
-核心的 `rradiusd` 認得企業版命令的名稱，但不執行：在讀設定檔之前就印出 `<命令>: not supported by this program (<功能> needs rradius-enterprise)`，結束碼 2。後面的參數不影響結果。
+核心的 `rradiusd` 認得企業版指令的名稱，但不執行：在讀設定檔之前就印出 `<指令>: not supported by this program (<功能> needs rradius-enterprise)`，結束碼 2。後面的參數不影響結果。
 
-| 命令 | 核心印出的訊息 |
+| 指令 | 核心印出的訊息 |
 | --- | --- |
 | `aka` | `aka: not supported by this program (EAP-AKA' needs rradius-enterprise)` |
 | `aka-seal` | `aka-seal: not supported by this program (EAP-AKA' needs rradius-enterprise)` |
@@ -639,15 +639,15 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 | `coa` | `coa: not supported by this program (CoA needs rradius-enterprise)` |
 | `otp` | `otp: not supported by this program (two-factor login needs rradius-enterprise)` |
 
-這份清單是 `rradius-core/src/extension.rs` 的 `COMMANDS_NEEDING_ENTERPRISE`，八個都實測過。這些命令不在 `rradiusd help` 的清單裡。
+這份清單是 `rradius-core/src/extension.rs` 的 `COMMANDS_NEEDING_ENTERPRISE`，八個都實測過。這些指令不在 `rradiusd help` 的清單裡。
 
-> **企業版：** 企業版的 `help` 會多列出這些命令與它們的用法。
+> **企業版：** 企業版的 `help` 會多列出這些指令與它們的用法。
 
 ---
 
 ## rradius-bench run
 
-> **注意：** `rradius-bench` 不在任何套件、壓縮檔或 Docker image 裡，要從原始碼建置，做法見[第 02 章](02-install.md)。
+> **注意：** `rradius-bench` 不在任何套件、壓縮檔或 Docker image 裡，要從原始碼建置，做法見[第 2 章](02-install.md)。
 
 ```text
 rradius-bench run [OPTIONS] --server <SERVER> --secret <SECRET> --load <LOADS>
@@ -816,7 +816,7 @@ server counters: auth 49, acct 0, duplicates 0, discarded overload 0, unknown_cl
 | 0 | 量到的請求全部是 Accept，或計費都有回應 |
 | 1 | 有 Reject 或 Challenge，沒有逾時或錯誤 |
 | 2 | 有逾時、無效的回應或 socket 錯誤 |
-| 3 | 參數錯誤或沒能開始（例如名稱解析失敗），沒有結果；不認得的命令、少了必填旗標也是 3 |
+| 3 | 參數錯誤或沒能開始（例如名稱解析失敗），沒有結果；不認得的指令、少了必填旗標也是 3 |
 
 ```console
 $ rradius-bench run --server 127.0.0.1 --auth-port 1899 --secret x --load pap,concurrency=1 --requests 1 --timeout 0.5
@@ -829,7 +829,7 @@ $ echo $?
 2
 ```
 
-這個例子故意用沒有人在聽的埠 1899。`rradius-bench --help`、`-h`、`--version`、`-V` 的結束碼是 0；不帶任何參數時印出命令清單，結束碼 3。
+這個例子故意用沒有人在聽的埠 1899。`rradius-bench --help`、`-h`、`--version`、`-V` 的結束碼是 0；不帶任何參數時印出指令清單，結束碼 3。
 
 ## rradius-bench calibrate
 
@@ -859,9 +859,9 @@ what this tool can do here, against responders that do no other work:
 
 ## 比對方法
 
-程式更新後，用下面的方法確認這份參考沒有漏掉或多出命令與旗標。2026-11-23 對本附錄執行的結果：每一項差異都是 0。
+程式更新後，用下面的方法確認這份參考沒有漏掉或多出指令與旗標。2026-11-23 對本附錄執行的結果：每一項差異都是 0。
 
-**1. `rradiusd` 的命令與旗標。** `help` 的輸出已經包含每個子命令的用法，從中取出「命令 子命令」與旗標，逐一檢查在本附錄出現：
+**1. `rradiusd` 的指令與旗標。** `help` 的輸出已經包含每個子指令的用法，從中取出「指令 子指令」與旗標，逐一檢查在本附錄出現：
 
 ```console
 $ rradiusd help > help.txt
@@ -890,18 +890,18 @@ $ while read k; do grep -qF "\`$k\`" 91-command-reference.md || echo "missing: $
 
 目前是 20 種。
 
-**5. 企業版的命令。** 從 `extension.rs` 的 `COMMANDS_NEEDING_ENTERPRISE` 取出名稱，對核心逐一執行，每一個都要得到 `not supported by this program`、結束碼 2，而且出現在[只有企業版才有的命令](#只有企業版才有的命令)的表裡。
+**5. 企業版的指令。** 從 `extension.rs` 的 `COMMANDS_NEEDING_ENTERPRISE` 取出名稱，對核心逐一執行，每一個都要得到 `not supported by this program`、結束碼 2，而且出現在[只有企業版才有的指令](#只有企業版才有的指令)的表裡。
 
-結束碼不在 `help` 裡，要對照各子命令的原始碼（`return`、`exit_code`、`STATUS_*` 常數）。
+結束碼不在 `help` 裡，要對照各子指令的原始碼（`return`、`exit_code`、`STATUS_*` 常數）。
 
 ## 常見錯誤
 
-**症狀：** 子命令後面加 `--help`，例如 `rradiusd user --help`，印出用法，結束碼 2。
-**原因：** 子命令沒有 `--help`，`--help` 被當成不認得的參數。
+**症狀：** 子指令後面加 `--help`，例如 `rradiusd user --help`，印出用法，結束碼 2。
+**原因：** 子指令沒有 `--help`，`--help` 被當成不認得的參數。
 **解法：** 用 `rradiusd help` 看全部用法；用法本身不是錯誤。
 
 **症狀：** `rradiusd --config rradius.toml` 沒有啟動，印出整份用法與 `to start the server: …`。
-**原因：** 舊的寫法，現在啟動是子命令。
+**原因：** 舊的寫法，現在啟動是子指令。
 **解法：** 寫成 `rradiusd serve --config rradius.toml`。
 
 **症狀：** `rradiusd config show --config a.toml --lang zh-TW` 印出 `config` 的用法，結束碼 2。
@@ -913,8 +913,8 @@ $ while read k; do grep -qF "\`$k\`" 91-command-reference.md || echo "missing: $
 **解法：** 判斷輸出，或改用 `--json` 檢查是不是 `[]`。
 
 **症狀：** `user`、`session`、`cluster` 停 30 秒後印出 `the cluster did not answer within 30 s`，結束碼 3。
-**原因：** 伺服器沒在跑、`[[cluster.nodes]]` 的 API 位址不對，或 API 密碼與叢集不一致。遇到密碼不一致時，命令會直接說 `refused the api secret`，結束碼 2，不會等到逾時；只有連不上或沒有回答才會等 30 秒。
-**解法：** 確認伺服器在執行，命令用的設定檔與伺服器相同。
+**原因：** 伺服器沒在跑、`[[cluster.nodes]]` 的 API 位址不對，或 API 密碼與叢集不一致。遇到密碼不一致時，指令會直接說 `refused the api secret`，結束碼 2，不會等到逾時；只有連不上或沒有回答才會等 30 秒。
+**解法：** 確認伺服器在執行，指令用的設定檔與伺服器相同。
 
 **症狀：** `rradius-bench` 的結果都是 `timeouts`，伺服器日誌有 `discarded 1 Access-Requests lacking a Message-Authenticator`。
 **原因：** 用了 `--no-message-authenticator`，而伺服器預設要求 Access-Request 帶 Message-Authenticator。

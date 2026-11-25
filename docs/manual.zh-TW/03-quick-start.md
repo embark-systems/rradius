@@ -1,4 +1,4 @@
-# 03 第一次啟動與登入
+# 第一次啟動與登入
 
 > 本章讓你做到：
 > - 用 quick-start 情境在十分鐘內啟動 rradius
@@ -7,7 +7,7 @@
 > - 送一筆計費，用 `session list` 看到它寫進資料表
 > - 用 `status` 看伺服器狀態，再乾淨地停止它
 
-前置條件：照[第 02 章](02-install.md)的「從原始碼建置」建好 `rradiusd` 與 `rradius-bench`。本章全部在一台機器上做，不需要真的 NAS。
+前置條件：照[第 2 章](02-install.md)的「從原始碼建置」建好 `rradiusd` 與 `rradius-bench`。本章全部在一台機器上做，不需要真的 NAS。
 
 本章小節：
 
@@ -115,17 +115,17 @@ show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE
 
 | 設定 | 這裡的值 | 預設值 | reload | 意思 |
 | --- | --- | --- | --- | --- |
-| `dictionary` | 字典路徑 | 預設字典路徑 | 要重啟 | 屬性名稱的來源（第 06 章） |
+| `dictionary` | 字典路徑 | 預設字典路徑 | 要重啟 | 屬性名稱的來源（第 6 章） |
 | `lua.script` | `accounting.lua` | 必填 | 可以 | 最上層腳本。這裡有 `[auth]`，所以它只處理計費 |
 | `cluster.data_dir` | `data` | 必填 | 要重啟 | 叢集資料庫的目錄，相對於設定檔 |
 | `cluster.secret_raft_file`、`secret_api_file` | 檔名 | 無 | 要重啟 | 叢集密碼放在哪個檔案 |
 | `cluster.migrations_dir` | `migrations` | 無 | 要重啟 | 啟動時依序套用的 SQL 檔 |
-| `auth.policy` | `first_match` | `first_match` | 可以 | 驗證鏈怎麼決定（第 07 章） |
+| `auth.policy` | `first_match` | `first_match` | 可以 | 驗證鏈怎麼決定（第 7 章） |
 | `auth.handlers` | 一個 sql 處理器 | 無 | 可以 | `user_query` 查密碼，`reply_query` 查回覆屬性 |
 | `radius.bind` | `127.0.0.1` | `0.0.0.0` | 要重啟 | RADIUS 監聽的位址 |
 | `radius.auth_port`、`acct_port` | `1812`、`1813` | `1812`、`1813` | 要重啟 | 認證埠、計費埠 |
 | `radius.status_server` | `true` | `true` | 要重啟 | 回應 Status-Server |
-| `radius.clients` | `127.0.0.1` | 無 | 可以 | 允許送請求的用戶端（第 05 章） |
+| `radius.clients` | `127.0.0.1` | 無 | 可以 | 允許送請求的用戶端（第 5 章） |
 | `metrics.bind`、`port` | `127.0.0.1`、`9812` | `127.0.0.1`、`9812` | 要重啟 | 指標埠，`status` 讀它 |
 | `sessions.list`、`show` | 兩段 SQL | 無 | 只有指令讀，不必 reload | `session list`、`session show` 執行的查詢（第 13 章） |
 
@@ -180,7 +180,7 @@ show = "SELECT username, enabled FROM users WHERE username = ?1"
 ```
 
 - `?1` 是帳號名稱，`?2` 是要存進資料表的密碼值。
-- `scheme` 是 `user add` 與 `user passwd` 存密碼的方式，預設就是 `bcrypt`，這裡寫出來只是讓你看見。其他選擇與取捨見[第 07 章](07-users-and-chains.md)。
+- `scheme` 是 `user add` 與 `user passwd` 存密碼的方式，預設就是 `bcrypt`，這裡寫出來只是讓你看見。其他選擇與取捨見[第 7 章](07-users-and-chains.md)。
 - `show` 不要選密碼欄。
 
 `[accounts]` 只有 `user` 指令會讀，每次執行指令時讀一次，改了不必 reload 伺服器。
@@ -297,7 +297,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 
 ## 新增帳號
 
-`user add` 從標準輸入讀密碼。在終端機上直接執行時，它會關掉回顯、問兩次；用管線餵進去時只讀第一行：
+`user add` 從標準輸入讀密碼。在終端機上直接執行時，它會關掉回顯、問兩次；用管線餵進去時只讀取第一行：
 
 ```console
 $ printf 'dave-password\n' | rradiusd user add --config rradius.toml dave
@@ -331,7 +331,7 @@ $ rradiusd user enable --config rradius.toml dave
 enabled dave
 ```
 
-`user` 指令透過叢集的 API 埠寫入資料表，所以伺服器一定要在執行中。指令的結束碼：0 是成功；1 是沒有符合的帳號或 SQL 失敗；2 是參數或設定錯誤；3 是連不到叢集。`user` 指令的完整說明在[第 07 章](07-users-and-chains.md)。
+`user` 指令透過叢集的 API 埠寫入資料表，所以伺服器一定要在執行中。指令的結束碼：0 是成功；1 是沒有符合的帳號或 SQL 失敗；2 是參數或設定錯誤；3 是連不到叢集。`user` 指令的完整說明在[第 7 章](07-users-and-chains.md)。
 
 ## 送一筆計費
 
@@ -442,7 +442,7 @@ RADIUS
 … WARN hiqlite::store::state_machine::sqlite::writer: SQL writer is shutting down
 ```
 
-停止的順序：`/readyz` 先改回 503；不再接新請求；等處理中的請求做完，最多等 5000 毫秒；關閉資料庫。等待的時間由 `[shutdown]` 決定，詳細見[第 04 章](04-configuration.md)。停止時再按一次 Ctrl+C，就不等處理中的請求。
+停止的順序：`/readyz` 先改回 503；不再接新請求；等處理中的請求做完，最多等 5000 毫秒；關閉資料庫。等待的時間由 `[shutdown]` 決定，詳細見[第 4 章](04-configuration.md)。停止時再按一次 Ctrl+C，就不等處理中的請求。
 
 > **注意：** 讓伺服器自己關閉資料庫再結束。用 `kill -9` 強制結束的節點，下次啟動時可能要重建本機的資料庫。
 
@@ -477,7 +477,7 @@ $ rradiusd config init --lang zh-TW > rradius.toml
 1. 建立 `auth.lua`。
 2. 字典不在預設的位置時，把 `dictionary` 改成實際的位置。
 
-從這份底稿長出完整設定的做法，見[第 04 章](04-configuration.md)與[第 07 章](07-users-and-chains.md)。
+從這份底稿長出完整設定的做法，見[第 4 章](04-configuration.md)與[第 7 章](07-users-and-chains.md)。
 
 ## 常見錯誤
 
@@ -519,7 +519,7 @@ $ rradiusd config init --lang zh-TW > rradius.toml
 
 **症狀：** `check` 印出 `at least one of [radius] or [tacacs] must be configured`。
 **原因：** 設定檔裡 `[radius]` 與 `[tacacs]` 都沒有。
-**解法：** 至少加一個（第 05 章、第 12 章）。
+**解法：** 至少加一個（第 5 章、第 12 章）。
 
 ## 相關章節
 

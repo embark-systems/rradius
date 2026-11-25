@@ -1,4 +1,4 @@
-# 02 安裝
+# 安裝
 
 > 本章讓你做到：
 > - 依你的環境選一種安裝方式：原始碼、deb、rpm、FreeBSD port、發行壓縮檔、Docker、Docker Compose 或 Synology
@@ -6,7 +6,7 @@
 > - 寫出第一份能通過 `check` 的設定檔，啟動服務
 > - 用 `--version` 確認版本與預設設定檔路徑
 
-前置條件：讀過[第 01 章](01-overview.md)，知道設定檔、資料目錄、字典的角色。
+前置條件：讀過[第 1 章](01-overview.md)，知道設定檔、資料目錄、字典的角色。
 
 本章小節：
 
@@ -45,7 +45,7 @@ repo 提供的是各種安裝方式的建置腳本與定義檔，本書的每一
 
 本章提到的路徑都相對於 rradius 原始碼 repo 的根目錄。
 
-> **注意：** 壓測程式 `rradius-bench` 不在任何套件、壓縮檔或 Docker image 裡。第 03 章用它來測試登入，第 19 章用它壓測。要用它，就照[從原始碼建置](#從原始碼建置)把它建出來，放在能連到伺服器的機器上。
+> **注意：** 壓測程式 `rradius-bench` 不在任何套件、壓縮檔或 Docker image 裡。第 3 章用它來測試登入，第 19 章用它壓測。要用它，就照[從原始碼建置](#從原始碼建置)把它建出來，放在能連到伺服器的機器上。
 
 ## 裝好之後檔案在哪裡
 
@@ -111,7 +111,7 @@ default config: /etc/rradius/rradius.toml
 
 `--version` 第一行括號裡寫的是版本類型：核心版是 `(community)`，企業版是 `(enterprise)`。兩個版本的執行檔都叫 `rradiusd`，共用同一份設定、資料目錄、服務與用戶，所以一台機器只裝其中一個；要並存做比對時，放在不同的目錄，用完整路徑執行。
 
-想直接用範例情境試跑，接著讀[第 03 章](03-quick-start.md)。
+想直接用範例情境試跑，接著讀[第 3 章](03-quick-start.md)。
 
 要把原始碼建出來的程式當正式服務用，可以把 `target/release/rradiusd` 複製到 `/usr/local/bin`，字典目錄 `share/` 複製到固定的位置（例如 `/usr/share/rradius`），再自己寫服務檔。`packages/common/rradius.service` 是現成的 systemd unit，可以參考。不過比較省事的做法是建一個 deb 或 rpm。
 
@@ -213,7 +213,7 @@ rc.d 腳本 `rradius` 讀這些 `rc.conf` 變數：
 | `rradius_config` | `/usr/local/etc/rradius/rradius.toml` | 設定檔 |
 | `rradius_user` | `rradius` | 執行身分 |
 
-服務透過 `daemon(8)` 執行，程式結束時隔 2 秒自動重新啟動，輸出交給 syslog（tag 是 `rradius`）。設了 `rradius_user` 時，rc.subr 已經用 `su -m` 以那個用戶執行整個指令，所以腳本不再給 `daemon` 加 `-u`（非 root 的 `daemon -u` 會在 initgroups 失敗）。PID 檔放在 `/var/run/rradius/`，啟動時由腳本建立，擁有者是 `rradius_user`。`service rradius reload` 會對程式送 SIGHUP，重新載入設定（第 04 章）。
+服務透過 `daemon(8)` 執行，程式結束時隔 2 秒自動重新啟動，輸出交給 syslog（tag 是 `rradius`）。設了 `rradius_user` 時，rc.subr 已經用 `su -m` 以那個用戶執行整個指令，所以腳本不再給 `daemon` 加 `-u`（非 root 的 `daemon -u` 會在 initgroups 失敗）。PID 檔放在 `/var/run/rradius/`，啟動時由腳本建立，擁有者是 `rradius_user`。`service rradius reload` 會對程式送 SIGHUP，重新載入設定（第 4 章）。
 
 ```console
 # sysrc rradius_enable=YES
@@ -358,13 +358,13 @@ $ docker compose down
 | `migrations/1_schema.sql` | 建立 `users` 與 `accounting` 兩個表 |
 | `cluster/` | 三節點叢集用的設定，見第 16 章 |
 
-> **警告：** 預設的用戶端涵蓋三個完整的私有網段，因為 Docker 給容器的來源位址就在這些網段裡。正式使用前，把它們改成你的 NAS 實際所在的位址或網段（第 05 章）。
+> **警告：** 預設的用戶端涵蓋三個完整的私有網段，因為 Docker 給容器的來源位址就在這些網段裡。正式使用前，把它們改成你的 NAS 實際所在的位址或網段（第 5 章）。
 
 ### 加入帳號
 
-這份設定沒有 `[accounts]`，所以 `user add` 不能用。`1_schema.sql` 的註解建議的做法是新增一個編號更大的 migration 檔，例如 `docker/config/migrations/2_users.sql`，內容是 `INSERT INTO users …`。密碼欄位的格式見[第 07 章](07-users-and-chains.md)。
+這份設定沒有 `[accounts]`，所以 `user add` 不能用。`1_schema.sql` 的註解建議的做法是新增一個編號更大的 migration 檔，例如 `docker/config/migrations/2_users.sql`，內容是 `INSERT INTO users …`。密碼欄位的格式見[第 7 章](07-users-and-chains.md)。
 
-也可以照第 07 章在 `rradius.toml` 加上 `[accounts]`，之後用 `docker compose exec rradius rradiusd user add …` 管理帳號。
+也可以照第 7 章在 `rradius.toml` 加上 `[accounts]`，之後用 `docker compose exec rradius rradiusd user add …` 管理帳號。
 
 > **注意：** 已經套用過的 migration 檔不能再改。要改資料表結構或加資料，一律新增下一個編號的檔案。
 
@@ -428,11 +428,11 @@ ARM 的 NAS 把 `linux/amd64` 換成 `linux/arm64`。`Dockerfile` 在 arm64 上�
        --user <帳號> --password <密碼> --load pap,concurrency=1 --requests 1 | grep 'pap:'
    ```
 
-   `accept 1` 表示通了；`reject 1` 表示伺服器有回應、只是帳號或密碼不對。沒有回應時看下面的疑難排解。
+   `accept 1` 表示通了；`reject 1` 表示伺服器有回應、只是帳號或密碼不對。沒有回應時看下面的排錯。
 
 > **未實機驗證：** 上面 DSM 的畫面名稱與操作順序依 Synology 文件與 Docker 的一般行為寫成，沒有在實機上跑過。
 
-### Synology 上的疑難排解
+### Synology 上的排錯
 
 | 現象 | 原因與做法 |
 | --- | --- |
@@ -488,7 +488,7 @@ listen = "127.0.0.1"
 
 - 叢集：底稿沒有 `[[cluster.nodes]]`，是監聽 `127.0.0.1` 的單節點，不用設 `listen`。要組叢集時才加 `[[cluster.nodes]]` 並設 `listen`，做法見第 16 章。
 - 底稿的 `[lua]` 指向 `auth.lua`，這個檔案要自己建，放在 `/etc/rradius/auth.lua`。腳本怎麼寫見第 10 章；只想先讓設定通過檢查，可以寫一行 `return "reject"`。
-- 範例用戶端 `127.0.0.1` 要換成你的 NAS（第 05 章）。
+- 範例用戶端 `127.0.0.1` 要換成你的 NAS（第 5 章）。
 
 之後如果用到計費 spool（`[radius.accounting_spool]` 的 `dir`），放在 `/var/lib/rradius` 底下；計費記錄檔（`[radius.accounting_log]` 的 `file`）放在 `/var/log/rradius` 底下。
 
@@ -522,7 +522,7 @@ configuration ok
 - 以 `rradius` 用戶執行，`AmbientCapabilities=CAP_NET_BIND_SERVICE` 讓它能綁 TACACS+ 的埠 49。
 - `Restart=on-failure`、`RestartSec=2`：程式異常結束時兩秒後重啟。
 - `TimeoutStopSec=60`：給叢集節點足夠的時間停止。
-- `ExecReload` 送 SIGHUP：`systemctl reload rradius` 會重新載入設定，並重新開啟計費記錄檔（第 04 章）。
+- `ExecReload` 送 SIGHUP：`systemctl reload rradius` 會重新載入設定，並重新開啟計費記錄檔（第 4 章）。
 - `LimitNOFILE=65536`、`ProtectSystem=strict`、`ProtectHome=yes`、`PrivateTmp=yes`、`NoNewPrivileges=yes`。
 
 logrotate 設定 `/etc/logrotate.d/rradius` 每天輪替 `/var/log/rradius/*.jsonl`，保留 30 份，輪替後送 SIGHUP 讓程式開新檔。它不用 `copytruncate`，因為那樣會遺失資料。

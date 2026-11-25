@@ -1,4 +1,4 @@
-# 16 叢集與高可用
+# 叢集與高可用
 
 > 本章讓你做到：
 > - 架起三個節點的叢集，確認寫進一個節點的資料，其他節點也讀得到
@@ -7,7 +7,7 @@
 > - 讓新節點加入叢集，安全地移除節點
 > - 用 Docker Compose 或 Kubernetes 部署三個節點的叢集
 
-前置條件：做過[第 03 章](03-quick-start.md)，知道怎麼啟動伺服器、用 `rradius-bench` 測登入；讀過[第 04 章](04-configuration.md)，知道 `check` 與 reload。本章的練習在一台機器上起三到四個節點，需要原始碼建出來的 `rradiusd` 與 `rradius-bench`，以及原始碼裡的 `rradius-server/examples/scenarios/ha-cluster/`。
+前置條件：做過[第 3 章](03-quick-start.md)，知道怎麼啟動伺服器、用 `rradius-bench` 測登入；讀過[第 4 章](04-configuration.md)，知道 `check` 與 reload。本章的練習在一台機器上起三到四個節點，需要原始碼建出來的 `rradiusd` 與 `rradius-bench`，以及原始碼裡的 `rradius-server/examples/scenarios/ha-cluster/`。
 
 本章小節：
 
@@ -71,7 +71,7 @@ leader 停掉時，剩下的節點會自己選出新的 leader，不需要人介
 | --- | --- | --- |
 | 三台都在 | 正常 | 正常 |
 | 停一台 | 正常，NAS 改問其他台。停的剛好是 leader 時，選舉那段時間要寫入的登入沒有回應（時間見[跨機房](#跨機房)） | 正常。停的是 leader 時，選舉那段時間寫入逾時，有計費 spool 就先寫進 spool，之後重放，可能重複一次 |
-| 停兩台，剩一台 | 只讀資料的登入（`sql`、`ldap`）讀本機副本，照常回應；要寫入的（驗證碼、IP 配發）不回應，讓 NAS 重送或改問別台。設了 `stop_without_leader_ms` 時，超過那段時間連只讀的登入都不回應 | 寫不進資料庫；有計費 spool 時先寫在本機並回覆，叢集恢復後重放 |
+| 停兩台，剩一台 | 唯讀資料的登入（`sql`、`ldap`）讀本機副本，照常回應；要寫入的（驗證碼、IP 配發）不回應，讓 NAS 重送或改問別台。設了 `stop_without_leader_ms` 時，超過那段時間連唯讀的登入都不回應 | 寫不進資料庫；有計費 spool 時先寫在本機並回覆，叢集恢復後重放 |
 
 因為計費可能被重放、也可能因為逾時重送而記兩次，計費腳本要能重複執行（例如以 `Acct-Session-Id` 為鍵、用 `INSERT OR IGNORE`），見[第 13 章](13-accounting.md)。
 
@@ -103,7 +103,7 @@ snapshot 是複寫用的，不是備份。核心沒有備份功能，資料保�
 
 | 狀況 | 沒有設 `stop_without_leader_ms`（預設） | 設了，而且沒有 leader 超過這段時間 |
 | --- | --- | --- |
-| 只讀資料的登入（例如 `sql` 處理器查密碼） | 照常回答，用本機副本，資料可能是舊的 | 不回應，算進 `rradius_radius_discarded_total{reason="no_leader"}` |
+| 唯讀資料的登入（例如 `sql` 處理器查密碼） | 照常回答，用本機副本，資料可能是舊的 | 不回應，算進 `rradius_radius_discarded_total{reason="no_leader"}` |
 | Status-Server | 照常回答 | 不回應 |
 | 腳本要寫入的登入 | 沒有回應（寫入失敗） | 不回應 |
 | 計費 | 前幾秒寫入在等 leader，沒有回應；沒有 leader 超過 5 秒後寫入立刻失敗，有計費 spool 就寫進 spool 並回應，沒有就不回應 | 同左 |
@@ -117,7 +117,7 @@ snapshot 是複寫用的，不是備份。核心沒有備份功能，資料保�
 - 例外是失去多數後的第一次寫入：它在 5 秒之前就交給叢集，會等到叢集的 30 秒逾時才失敗，不受 `query_timeout_ms` 限制。失敗的訊息是 `the cluster took the write and said nothing of it within 30 s; it may have been committed`（這時寫入可能已經生效，不要當成一定沒寫進去）；叢集只剩 leader 自己時，是 `local client write timed out`，登入沒有回應。實測：三節點停掉兩個，剩下節點的第一次寫入 30 秒後失敗，第二次起 12 毫秒內失敗，讀取一直立即成功。這是以認證寫入量的；計費寫入與寫入重疊的情形沒有量。
 - leader 本身如果超過 5 秒沒有收到過半數節點的確認，也算沒有 leader。被隔開的舊 leader 不會以為自己還能寫。
 
-什麼時候該設 `stop_without_leader_ms`？當 NAS 設了多台 RADIUS 伺服器時，設了它，被隔開的節點會停止回應，NAS 就會改問其他還在叢集裡的節點，`/readyz` 也會讓負載平衡器把它移出去。Kubernetes 的範例設定就設了 10000。只有一台伺服器可問的 NAS，不設比較好：至少只讀的登入還能通過。
+什麼時候該設 `stop_without_leader_ms`？當 NAS 設了多台 RADIUS 伺服器時，設了它，被隔開的節點會停止回應，NAS 就會改問其他還在叢集裡的節點，`/readyz` 也會讓負載平衡器把它移出去。Kubernetes 的範例設定就設了 10000。只有一台伺服器可問的 NAS，不設比較好：至少唯讀的登入還能通過。
 
 ### 叢集的埠與安全
 
@@ -160,7 +160,7 @@ snapshot 是複寫用的，不是備份。核心沒有備份功能，資料保�
 
 每個節點的設定裡，`nodes` 列出包含自己在內的所有節點。各節點的設定除了 `node_id`、`listen` 這類本機的值，其餘最好完全相同；用 `config diff` 檢查的方法見[檢查各節點的設定](#檢查各節點的設定)。
 
-設了 `nodes` 而且超過一個節點時，`[shutdown]` 的 `ready_delay_ms` 預設變成 5000（單節點是 0），讓 NAS 與負載平衡器有時間改問別的節點。`[shutdown]` 的說明在[第 04 章](04-configuration.md)，關機的順序見[第 18 章](18-operations.md)。
+設了 `nodes` 而且超過一個節點時，`[shutdown]` 的 `ready_delay_ms` 預設變成 5000（單節點是 0），讓 NAS 與負載平衡器有時間改問別的節點。`[shutdown]` 的說明在[第 4 章](04-configuration.md)，關機的順序見[第 18 章](18-operations.md)。
 
 ### 哪些東西是每個節點自己的
 
@@ -301,7 +301,7 @@ port = 27041
 - `query_timeout_ms = 2000`：一個請求等資料庫的總時間。叢集失去多數節點後，已交給叢集的第一次寫入仍然要等 30 秒才失敗（見上面的規則），這個值不縮短它；它限制的是腳本的讀取與還沒交出的寫入。ha-cluster 情境用的也是這個值。
 - `migrations_wait_ms = 120000`：三個節點一起重開時，先起來的節點要等其他節點，給它長一點的時間。
 - `[radius.accounting_spool]`：寫不進資料庫時，計費先寫在本機磁碟，之後重送（[第 13 章](13-accounting.md)）。每個節點要用自己的目錄。
-- `[accounts]`、`[sessions]`：讓本章可以用 `user add` 與 `session list` 確認複寫（[第 07 章](07-users-and-chains.md)、[第 13 章](13-accounting.md)）。
+- `[accounts]`、`[sessions]`：讓本章可以用 `user add` 與 `session list` 確認複寫（[第 7 章](07-users-and-chains.md)、[第 13 章](13-accounting.md)）。
 
 把 `node1.toml` 複製成 `node2.toml`、`node3.toml`，照上表改 `node_id`、`data_dir`、RADIUS、TACACS+、指標的埠，以及 `[radius.accounting_spool]` 的 `dir`（`spool2`、`spool3`）。三份的 `[[cluster.nodes]]` 完全相同。
 
@@ -436,7 +436,7 @@ updated=1795384786
 | 約 25 秒 | — | 恢復正常 |
 
 - 舊 leader 在關機的 14.5 秒裡一直還是 leader，所以寫入照常。真正沒有 leader 的時間，是它關閉資料庫之後到新 leader 能接寫入之間，這台機器上大約 10 秒。
-- 這段時間裡，只讀資料的登入不受影響：follower 用本機副本回答。
+- 這段時間裡，唯讀資料的登入不受影響：follower 用本機副本回答。
 - 節點 2 的 `rradius_cluster_leader` 一直是 1：指標每秒更新一次，follower 在選舉期間仍認得某個 leader。所以不要只靠這個指標判斷寫入有沒有中斷，要一起看計費的回應與計費 spool。
 
 新 leader 選出後：
@@ -785,7 +785,7 @@ total          3/3    0.0     0.0     0.0          0
 | `metrics.bind` | 各自的 WireGuard 位址，埠 9812 | 監控從內部網路抓；三台同埠，`status --cluster` 才讀得到 |
 | `log.format` | `json` | 方便集中收集 |
 
-照[第 03 章](03-quick-start.md)的做法把情境複製到工作目錄、把 `dictionary` 改成字典的絕對路徑後，三份都能通過 `check`（會警告範例的公開密碼與檔案權限）：
+照[第 3 章](03-quick-start.md)的做法把情境複製到工作目錄、把 `dictionary` 改成字典的絕對路徑後，三份都能通過 `check`（會警告範例的公開密碼與檔案權限）：
 
 ```console
 $ for n in 1 2 3; do rradiusd check --config node$n.toml; done 2>&1 | grep -v WARN
@@ -980,11 +980,11 @@ patches:
 | 路徑 | 200 | 503 | 範例的用途 |
 | --- | --- | --- | --- |
 | `/livez` | 行程在回應 | 不會 | `startupProbe`、`livenessProbe` |
-| `/readyz` | 會回應認證 | 正在停止（收到 SIGTERM）；設了 `stop_without_leader_ms` 且沒有 leader 超過這段時間；或某個設了 `required_for_ready` 的外部資料庫連不上（內容 `database <名稱> unreachable`，[第 09 章](09-external-databases.md)） | `readinessProbe` |
+| `/readyz` | 會回應認證 | 正在停止（收到 SIGTERM）；設了 `stop_without_leader_ms` 且沒有 leader 超過這段時間；或某個設了 `required_for_ready` 的外部資料庫連不上（內容 `database <名稱> unreachable`，[第 9 章](09-external-databases.md)） | `readinessProbe` |
 
 - **未就緒的 pod 會從 `rradius` Service 移出，** NAS 的請求改送其他 pod。範例設 `stop_without_leader_ms = 10000`：三台剩一台時，剩下那台約 10 秒後停止回應、變成未就緒；`/livez` 仍是 200，容器不會被重啟。
 - **刪除或更新 pod 時，** kubelet 送 SIGTERM，`/readyz` 立刻變 503，pod 照常回應 5 秒（三節點的預設 `ready_delay_ms`），`readinessProbe` 每 5 秒一次、失敗 1 次就移出，所以 Service 先不再送請求過來，之後 pod 才停止接收、等處理中的請求做完再結束。整個過程約 15 秒，在 `terminationGracePeriodSeconds: 30` 之內。
-- **沒設 `stop_without_leader_ms` 時，除了停止中以外 `/readyz` 一直是 200：** 節點沒有 leader 也照常用本機副本回應只讀的登入，把它移出 Service 反而讓所有登入都失敗。
+- **沒設 `stop_without_leader_ms` 時，除了停止中以外 `/readyz` 一直是 200：** 節點沒有 leader 也照常用本機副本回應唯讀的登入，把它移出 Service 反而讓所有登入都失敗。
 - **`startupProbe` 最多等 5 分鐘**（每 5 秒、最多 60 次）：指標埠在節點追上叢集後才開，這要先有 leader。沒有 `startupProbe` 的話，`livenessProbe` 會在選出 leader 前把容器重啟。
 
 ### 在 pod 裡下指令
@@ -1056,7 +1056,7 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 - 被隔開的節點副本停在分區當時，照常回應登入。不能接受的話設 `stop_without_leader_ms`（這次沒有設，也沒有測設了之後的行為）。
 - 多數方的計費寫入在 leader 換人後要很久才恢復，這次觀察到分區後 32 秒仍沒有恢復。可能和上面殺掉 leader 是同一個原因，但分區時舊 leader 還活著，沒有驗證。
 
-**隔開 follower 後的恢復時間（Linux，不用調 `tcp_retries2`）：** Raft 的節點之間連線（8100 埠）與 API 連線都設了 `TCP_USER_TIMEOUT` 10 秒：資料送出後 10 秒沒有收到對方的確認，核心就關掉這條連線，之後重連。沒有這個設定時，隔開期間沒有回應的連線每次重傳間隔加倍，接回後要等下一次重傳才送得出去，所以恢復時間隨隔開多久而變長。2026-11-25 用同樣的三節點 Docker 環境（RTT 0）量「接回後到這個節點知道 leader、追上資料、經它寫入有回應」，各 3 次的中位數：
+**隔開 follower 後的恢復時間（Linux，不用調 `tcp_retries2`）：** Raft 的節點之間連線（8100 埠）與 API 連線都設了 `TCP_USER_TIMEOUT` 10 秒：資料送出後 10 秒沒有收到對方的確認，核心就關掉這條連線，之後重連。沒有這個設定時，隔開期間沒有回應的連線每次重送間隔加倍，接回後要等下一次重送才送得出去，所以恢復時間隨隔開多久而變長。2026-11-25 用同樣的三節點 Docker 環境（RTT 0）量「接回後到這個節點知道 leader、追上資料、經它寫入有回應」，各 3 次的中位數：
 
 | 隔開時間 | 沒有這個設定（2026-11-24，各 1 次） | 有這個設定（各 3 次） |
 | --- | --- | --- |
@@ -1088,7 +1088,7 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 
 | | 跨三個機房的單一叢集 | 主叢集加冷備援 | 各機房獨立叢集 |
 | --- | --- | --- | --- |
-| 做法 | 三個節點分在三個機房，同一個叢集 | 一個機房跑叢集；另一個機房平時沒有節點，用企業版的 `[cluster.backup]`（[第 01 章](01-overview.md)）定期存副本，出事時把副本還原成新叢集 | 每個機房一個三節點叢集，互不相干 |
+| 做法 | 三個節點分在三個機房，同一個叢集 | 一個機房跑叢集；另一個機房平時沒有節點，用企業版的 `[cluster.backup]`（[第 1 章](01-overview.md)）定期存副本，出事時把副本還原成新叢集 | 每個機房一個三節點叢集，互不相干 |
 | 登入（讀） | 不受影響（量到 0.7 ms） | 同主叢集 | 同單機房 |
 | 寫入（IP 配發、驗證碼、計費） | 每次約 3 到 4 個 RTT；並行 64 時 20 ms 約 830／s、50 ms 約 320／s | 同單機房 | 同單機房 |
 | 一個機房整個失聯 | 剩兩個機房有多數；選舉約 5 到 7 秒，寫入中斷要抓餘裕（見上） | 主機房失聯就要靠還原，會丟掉上一份副本之後的寫入；切換要人操作 | 其他機房不受影響；失聯機房的用戶要靠別處 |

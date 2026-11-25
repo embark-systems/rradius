@@ -1,4 +1,4 @@
-# 20 安全強化
+# 安全強化
 
 > 本章讓你做到：
 > - 用 `check` 一次找出設定裡所有和安全有關的警告，並逐一處理
@@ -7,7 +7,7 @@
 > - 限制腳本能做的事，加密到資料庫與 LDAP 的連線
 > - 讓指標埠、叢集埠只開在該開的地方
 
-前置條件：讀過[第 03 章](03-quick-start.md)，手上有一份能通過 `check` 的設定。本章的每一項都連到它的主章，這裡只講「怎麼收緊」與「沒收緊時會看到什麼」。
+前置條件：讀過[第 3 章](03-quick-start.md)，手上有一份能通過 `check` 的設定。本章的每一項都連到它的主章，這裡只講「怎麼收緊」與「沒收緊時會看到什麼」。
 
 本章小節：
 
@@ -163,7 +163,7 @@ configuration ok
 
 > **警告：** 主設定檔 `rradius.toml` 或它所在的目錄可以被群組或其他人寫入時，啟動、每次 reload 與 `check` 都會警告 `configuration file … can be written by its group or by others, which lets them change who may log in`（目錄則是 `the directory of configuration file …`），和被讀進來的檔案一樣；只可讀不警告。警告不會擋啟動。主設定檔與它所在的目錄仍要自己設成只有 root 能寫。
 
-`include` 的用法見[第 04 章](04-configuration.md)。
+`include` 的用法見[第 4 章](04-configuration.md)。
 
 ## 共用密碼的長度與範例值
 
@@ -227,7 +227,7 @@ secret_file = "nas1.secret"
 
 - 用 `secret_file`，不要把共用密碼直接寫在設定檔的 `secret`。兩者只能設一個，同時設或都不設會得到 `exactly one of secret or secret_file must be set`。
 - 每台 NAS（或每個網段）用不同的密碼。一把密碼外洩時，只要換一個用戶端。
-- 改共用密碼可以 reload，不必重啟（[第 05 章](05-radius-clients.md)）。
+- 改共用密碼可以 reload，不必重啟（[第 5 章](05-radius-clients.md)）。
 
 ## Message-Authenticator 與 limit_proxy_state
 
@@ -240,7 +240,7 @@ Message-Authenticator 是用共用密碼對整個封包算出來的簽章，伺�
 | `require_message_authenticator` | `"yes"` | 可以 | `yes`：沒有 Message-Authenticator 的 Access-Request 直接丟棄；`no`：接受；`auto`：看伺服器啟動後這個用戶端的第一個請求來決定 |
 | `limit_proxy_state` | `"yes"` | 可以 | 只在不要求 Message-Authenticator 時有作用。`yes`：丟棄帶 Proxy-State 卻沒有 Message-Authenticator 的 Access-Request |
 
-Status-Server 不看這兩個設定，一律要有正確的 Message-Authenticator。完整的鍵說明見[附錄 A](90-config-reference.md)，用戶端的寫法見[第 05 章](05-radius-clients.md)。
+Status-Server 不看這兩個設定，一律要有正確的 Message-Authenticator。完整的鍵說明見[附錄 A](90-config-reference.md)，用戶端的寫法見[第 5 章](05-radius-clients.md)。
 
 ### 預設就是最安全的
 
@@ -333,7 +333,7 @@ allow_mschapv1 = false
 
 ### 每個密碼都要有格式前綴
 
-sql 處理器讀到的密碼，以開頭的前綴判斷格式，例如 `{crypt}`、`{argon2}`、`{SHA256}`、`{nthash}`，`{clear}` 表示明文（格式清單見[第 07 章](07-users-and-chains.md)）。沒有前綴的值有兩種情況會記警告：
+sql 處理器讀到的密碼，以開頭的前綴判斷格式，例如 `{crypt}`、`{argon2}`、`{SHA256}`、`{nthash}`，`{clear}` 表示明文（格式清單見[第 7 章](07-users-and-chains.md)）。沒有前綴的值有兩種情況會記警告：
 
 看起來像雜湊（例如 `$2y$…`）卻沒有前綴：拒絕登入。
 
@@ -384,7 +384,7 @@ bcrypt_cost = 9
 
 `rradius_password_checks_total{scheme="crypt",result="failed"}` 也跟著增加。如果你的帳號確實用了更高的成本，照訊息說的調高上限；不然就是有人改了帳號表，要查。
 
-`user add` 存密碼用的 `[accounts] scheme` 見[第 07 章](07-users-and-chains.md)。
+`user add` 存密碼用的 `[accounts] scheme` 見[第 7 章](07-users-and-chains.md)。
 
 ## 登入失敗鎖定
 
@@ -455,7 +455,7 @@ rradius.toml: auth.lockout.max_failures must be greater than 0
 rradius.toml: auth.lockout.account_max_failures must be greater than max_failures (10), not 5
 ```
 
-驗證鏈的完整說明見[第 07 章](07-users-and-chains.md)。
+驗證鏈的完整說明見[第 7 章](07-users-and-chains.md)。
 
 ## 同時處理的上限
 
@@ -471,7 +471,7 @@ rradius.toml: auth.lockout.account_max_failures must be greater than max_failure
 
 這些值怎麼依機器調整見[第 19 章](19-performance.md)。
 
-重送偵測（同一個 NAS 重送同一個請求時，回之前的答案）是為了不重複處理，不是安全機制；說明見[第 05 章](05-radius-clients.md)。
+重送偵測（同一個 NAS 重送同一個請求時，回之前的答案）是為了不重複處理，不是安全機制；說明見[第 5 章](05-radius-clients.md)。
 
 ## 腳本：沙箱、時限與 HTTP 白名單
 
@@ -549,7 +549,7 @@ timeout_ms = 1500
 
 > **注意：** 這個警告只在伺服器啟動時出現，`check` 不會印。實測同一份設定 `check` 只印 `configuration ok`。
 
-資料庫用內部 CA 簽的憑證時，用 `ca_file` 指定 CA，不要改成 `"off"`。詳細見[第 09 章](09-external-databases.md)。
+資料庫用內部 CA 簽的憑證時，用 `ca_file` 指定 CA，不要改成 `"off"`。詳細見[第 9 章](09-external-databases.md)。
 
 ### LDAP
 
@@ -559,7 +559,7 @@ ldap 處理器的 `urls`：
 - `ldap://`：預設用 StartTLS 升級成加密連線。
 - `ldap://` 加上 `allow_plaintext = true`：**不加密**，`bind` 檢查密碼時，使用者的密碼以明文送到目錄伺服器。
 
-`allow_plaintext = true` 並使用 `ldap://` 時，啟動、每次 reload 與 `check` 都會警告 `ldap handler ldap://… is used without encryption because allow_plaintext is true`，但 `check` 照樣通過。除非目錄伺服器就在同一台機器，不要開它。內部 CA 用 `ca_file` 指定。詳細見[第 08 章](08-ldap-and-ad.md)。
+`allow_plaintext = true` 並使用 `ldap://` 時，啟動、每次 reload 與 `check` 都會警告 `ldap handler ldap://… is used without encryption because allow_plaintext is true`，但 `check` 照樣通過。除非目錄伺服器就在同一台機器，不要開它。內部 CA 用 `ca_file` 指定。詳細見[第 8 章](08-ldap-and-ad.md)。
 
 > **未實機驗證：** 沒有接上真的 LDAP 或 PostgreSQL／MySQL 伺服器測試加密連線，只用 `check` 與一個連不到的位址確認了設定與警告。
 
@@ -622,7 +622,7 @@ trace 的用法見[第 17 章](17-monitoring.md)。
 | `ProtectSystem=strict`、`ReadWritePaths=/var/lib/rradius /var/log/rradius` | 整個系統唯讀，只有資料目錄與日誌目錄可寫 |
 | `ProtectHome=yes`、`PrivateTmp=yes` | 看不到家目錄，有自己的 `/tmp` |
 
-所以祕密檔屬於 `root:rradius`、權限 `640` 是最合適的：服務讀得到，改不了。你在設定裡另外用到可寫的路徑（例如計費記錄檔放在別處）時，要加進 `ReadWritePaths`，或改放在 `/var/lib/rradius`、`/var/log/rradius` 底下。安裝與 unit 的其他設定見[第 02 章](02-install.md)。
+所以祕密檔屬於 `root:rradius`、權限 `640` 是最合適的：服務讀得到，改不了。你在設定裡另外用到可寫的路徑（例如計費記錄檔放在別處）時，要加進 `ReadWritePaths`，或改放在 `/var/lib/rradius`、`/var/log/rradius` 底下。安裝與 unit 的其他設定見[第 2 章](02-install.md)。
 
 ### Kubernetes
 

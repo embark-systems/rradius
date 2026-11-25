@@ -1,4 +1,4 @@
-# 21 排錯
+# 排錯
 
 > 本章讓你做到：
 > - 照固定的順序找問題：`check` → 日誌 → trace → `status` → 指標 → `tuning`
@@ -6,7 +6,7 @@
 > - 從一行錯誤訊息找到原因與處置
 > - 處理用戶端比對失敗、共用密碼不一致、資料庫不能用、叢集沒有 leader、計費遺漏、過載、EAP 卡住這幾類常見問題
 
-前置條件：讀過[第 03 章](03-quick-start.md)，會用 `rradius-bench` 送測試請求、用 `status` 看狀態。
+前置條件：讀過[第 3 章](03-quick-start.md)，會用 `rradius-bench` 送測試請求、用 `status` 看狀態。
 
 本章小節：
 
@@ -210,7 +210,7 @@ cannot compile script 'accounting.lua': syntax error: 2: Expected identifier whe
 ```
 
 - 字典的錯誤寫出檔名與行號，以及那一行的內容。
-- 自己的字典可以先用 `$INCLUDE` 帶入附的字典，再加自己的屬性（[第 06 章](06-dictionary.md)）。
+- 自己的字典可以先用 `$INCLUDE` 帶入附的字典，再加自己的屬性（[第 6 章](06-dictionary.md)）。
 
 缺了必要的部分：
 
@@ -218,7 +218,7 @@ cannot compile script 'accounting.lua': syntax error: 2: Expected identifier whe
 rradius.toml: the [cluster] section is required
 ```
 
-`[lua]`、`[radius]`／`[tacacs]` 都沒有時的訊息見[第 03 章](03-quick-start.md)的常見錯誤。
+`[lua]`、`[radius]`／`[tacacs]` 都沒有時的訊息見[第 3 章](03-quick-start.md)的常見錯誤。
 
 用戶端與祕密檔：
 
@@ -342,7 +342,7 @@ cluster was not ready: no usable leader within 53.980820917s, and stop_without_l
 - 一個網段的 NAS 可以用 CIDR 寫成一個用戶端，例如 `address = "10.0.0.0/24"`。
 - 確認改了之後 reload 成功（看日誌的 `configuration reloaded`）。
 
-這行警告每秒最多記一行，避免被大量的陌生封包灌爆日誌；期間內不只一個時，行尾加上 `(N since the last line)`，N 是這段時間的總數。用戶端的設定見[第 05 章](05-radius-clients.md)。
+這行警告每秒最多記一行，避免被大量的陌生封包灌爆日誌；期間內不只一個時，行尾加上 `(N since the last line)`，N 是這段時間的總數。用戶端的設定見[第 5 章](05-radius-clients.md)。
 
 ## 共用密碼不一致
 
@@ -369,11 +369,11 @@ NAS 與伺服器的共用密碼不同時，結果依請求有沒有 Message-Auth
 
 | 認證紀錄 | 原因 | 處置 |
 | --- | --- | --- |
-| `handler="sql"`（或 `ldap` 等） | 處理器查到帳號，但密碼不對 | 確認密碼；確認 NAS 用的方法（PAP、CHAP、MS-CHAPv2）與帳號存的格式相容（[第 07 章](07-users-and-chains.md)） |
+| `handler="sql"`（或 `ldap` 等） | 處理器查到帳號，但密碼不對 | 確認密碼；確認 NAS 用的方法（PAP、CHAP、MS-CHAPv2）與帳號存的格式相容（[第 7 章](07-users-and-chains.md)） |
 | `handler="none"`，`account` 有值 | 沒有處理器認得這個帳號：不存在、停用，或查詢條件沒選到 | 用 `user show` 或直接查資料表 |
 | `handler="lockout"` | 被登入失敗鎖定 | 見[第 20 章](20-security.md) |
 | `handler="mschapv1_refused"` | MS-CHAPv1 預設是關的 | 讓 NAS 改用其他方法，或確認非用不可再寫 `allow_mschapv1 = true` |
-| `handler="length"` | User-Password 長度不合，NAS 沒把密碼補到 16 的倍數，或密碼超過 128 個位元組 | 看同時的 WARN 行裡的用戶端與長度；修 NAS 的設定，見[第 07 章](07-users-and-chains.md#密碼長度) |
+| `handler="length"` | User-Password 長度不合，NAS 沒把密碼補到 16 的倍數，或密碼超過 128 個位元組 | 看同時的 WARN 行裡的用戶端與長度；修 NAS 的設定，見[第 7 章](07-users-and-chains.md#密碼長度) |
 
 伴隨的警告，代表帳號資料本身有問題（都實測過）：
 
@@ -393,7 +393,7 @@ NAS 與伺服器的共用密碼不同時，結果依請求有沒有 Message-Auth
 … INFO rradius_auth: authentication protocol="radius" client="localhost" source=127.0.0.1 user="alice" account="alice" chain="default" handler="sql" decision="reject"
 ```
 
-實測在 `user_reply` 表加一列 `No-Such-Attr`，`alice` 用正確的密碼就被拒絕了。處置：改正資料表裡的屬性名稱，或把屬性加進字典（[第 06 章](06-dictionary.md)）。
+實測在 `user_reply` 表加一列 `No-Such-Attr`，`alice` 用正確的密碼就被拒絕了。處置：改正資料表裡的屬性名稱，或把屬性加進字典（[第 6 章](06-dictionary.md)）。
 
 ## 資料庫不能用
 
@@ -433,7 +433,7 @@ External databases
 - 檢查每 5 秒一次，連續兩次失敗算連不上，一次成功就恢復。
 - `required_for_ready` 預設 `false`：沒設的資料庫斷了，`/readyz` 照樣回 200，只有請求不回應。
 
-處置：查資料庫本身、網路、帳號密碼。`connect_timeout_ms` 要比 NAS 的重送時間短，NAS 才有機會改問別台。詳細見[第 09 章](09-external-databases.md)。
+處置：查資料庫本身、網路、帳號密碼。`connect_timeout_ms` 要比 NAS 的重送時間短，NAS 才有機會改問別台。詳細見[第 9 章](09-external-databases.md)。
 
 > **未實機驗證：** 只測了「埠沒有在聽」這一種連不上。資料庫在跑但帳號密碼錯、TLS 憑證驗不過的訊息沒有實測。
 
@@ -449,7 +449,7 @@ External databases
 
 節點 1 繼續用自己的資料回答：
 
-- 登入：只讀資料，`alice` 照樣 `accept`。
+- 登入：唯讀資料，`alice` 照樣 `accept`。
 - 計費：腳本要寫入，失敗，不回應：
 
 ```text
@@ -489,7 +489,7 @@ Node
   Discarded: no leader       0.0/s (1)
 ```
 
-- RADIUS 請求一律不回應，連只讀的登入也一樣，NAS 可以改問其他節點。
+- RADIUS 請求一律不回應，連唯讀的登入也一樣，NAS 可以改問其他節點。
 - 節點 2、3 回來之後，`/readyz` 回到 `ok`，登入恢復（實測）。
 - 這個設定也讓節點在啟動時找不到 leader 就結束，見[伺服器啟動失敗](#伺服器啟動失敗)。
 
@@ -770,7 +770,7 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `cannot read secret_file '…': …` | 祕密檔不存在或讀不到 | 確認路徑與權限 |
 | `unknown auth chain 'X' (no [auth.chains.X])` | 用戶端的 `auth` 指到不存在的鏈 | 新增 `[auth.chains.X]` 或改名 |
 | `duplicate client network '…'` | 兩個用戶端位址相同 | 合併或刪掉一個 |
-| `duplicate client name '…'` | 同一張清單裡兩個用戶端同名（沒寫名稱時以位址為名） | 改掉其中一個的 `name`（[第 05 章](05-radius-clients.md)） |
+| `duplicate client name '…'` | 同一張清單裡兩個用戶端同名（沒寫名稱時以位址為名） | 改掉其中一個的 `name`（[第 5 章](05-radius-clients.md)） |
 | `cluster.secret_raft must be at least 16 characters` | 叢集密碼太短 | `openssl rand -hex 32` |
 | `key_file '…' does not fit cert_file '…'` | 私鑰與憑證不是一對 | 換成成對的檔案 |
 | `radius.eap.client_ca_file is required` | 用 `tls` 卻沒有 CA | 加 `client_ca_file` |
@@ -819,7 +819,7 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | 訊息 | 原因 | 處置 |
 | --- | --- | --- |
 | `cannot reach the metrics port at 127.0.0.1:9812: Connection refused (os error 61)`（`status`，結束碼 3） | 伺服器沒在跑，或伺服器用的 `[metrics]` 位址與指令讀的設定不同 | 啟動伺服器，或用 `--config` 指向伺服器用的設定 |
-| `the cluster did not answer within 30 s`（`user` 等指令，結束碼 3） | 伺服器沒在跑 | 啟動伺服器（[第 03 章](03-quick-start.md)） |
+| `the cluster did not answer within 30 s`（`user` 等指令，結束碼 3） | 伺服器沒在跑 | 啟動伺服器（[第 3 章](03-quick-start.md)） |
 | `rradius-bench` 的 `timeouts 1, … socket errors 1`（結束碼 2） | 伺服器沒在跑或埠不對 | 確認位址與埠 |
 
 日誌裡結尾是 `(N since the last line)` 的行，是任何人都能觸發的訊息（陌生來源、被拒絕的連線等）：每種每秒最多記一行，N 是這一行與上一行之間發生的總數，所以 N 大不代表只有一次。

@@ -1,7 +1,7 @@
-# 94 附錄 E：術語與 RFC 對照
+# 附錄 E：術語與 RFC 對照
 
 > 本章讓你做到：
-> - 查到書中每個術語的寫法、意思，以及它對應的設定鍵或命令
+> - 查到書中每個術語的寫法、意思，以及它對應的設定鍵或指令
 > - 分清楚容易混淆的詞，例如用戶端與使用者、授權群組與 LDAP 群組
 > - 查到核心實作了哪些 RFC 與標準，各用在哪個功能
 > - 認出程式碼提到、但核心沒有實作的 RFC
@@ -31,9 +31,9 @@
 
 ## 怎麼讀這份對照
 
-全書用同一套寫法。表格的「書中寫法」是正文用的詞；設定鍵、命令、屬性名稱、RFC 名稱一律保留原文。「不翻譯」的詞在書裡照英文寫，例如 realm、session、leader。
+全書用同一套寫法。表格的「書中寫法」是正文用的詞；設定鍵、指令、屬性名稱、RFC 名稱一律保留原文。「不翻譯」的詞在書裡照英文寫，例如 realm、session、leader。
 
-每個詞的「對應」一欄列出它在設定檔或命令裡的樣子，詳細用法見「主章」。
+每個詞的「對應」一欄列出它在設定檔或指令裡的樣子，詳細用法見「主章」。
 
 ## 基本詞
 
@@ -42,7 +42,7 @@
 | NAS | NAS | 送 RADIUS 請求給伺服器的設備，例如 AP 控制器、交換器、BNG、VPN 閘道。第一次出現時寫成「NAS（網路存取設備，例如 AP 控制器、交換器、BNG、VPN 閘道）」 | — | [05](05-radius-clients.md) |
 | client | 用戶端（client） | 設定裡的一個 `[[radius.clients]]` 或 `[[tacacs.clients]]` 項目，也就是允許送請求的 NAS。一個項目可以是一整個網段，所以一個用戶端不一定是一台設備 | `radius.clients`、`tacacs.clients` | [05](05-radius-clients.md)、[12](12-tacacs.md) |
 | user | 使用者 | 登入的人或設備 | `User-Name` | [07](07-users-and-chains.md) |
-| account | 帳號 | 資料表裡代表一個使用者的那一列 | `user` 命令、`[accounts]` | [07](07-users-and-chains.md) |
+| account | 帳號 | 資料表裡代表一個使用者的那一列 | `user` 指令、`[accounts]` | [07](07-users-and-chains.md) |
 | shared secret | 共用密碼 | 用戶端與伺服器雙方設定的同一個密碼，用來簽章與隱藏密碼欄位 | `secret`、`secret_file` | [05](05-radius-clients.md) |
 | authentication／authorization／accounting | 認證／授權／計費 | 確認身分／決定能做什麼／記錄用了多少。三者合稱 AAA | — | [01](01-overview.md) |
 | realm | realm | 帳號名稱裡 `@` 後面的部分，例如 `@example.com` | `auth.username.strip_realm` | [07](07-users-and-chains.md) |
@@ -67,7 +67,7 @@
 
 | 原文 | 書中寫法 | 意思 | 對應 | 主章 |
 | --- | --- | --- | --- | --- |
-| session | session | 一個使用者從上線到下線的一段連線，由 Accounting Start 開始、Stop 結束 | `[sessions]`、`session` 命令 | [13](13-accounting.md) |
+| session | session | 一個使用者從上線到下線的一段連線，由 Accounting Start 開始、Stop 結束 | `[sessions]`、`session` 指令 | [13](13-accounting.md) |
 | accounting spool | 計費 spool | 資料庫暫時不能寫入時，計費請求先寫在磁碟上、等待重送的暫存。第一次出現時要這樣說明 | `radius.accounting_spool` | [13](13-accounting.md) |
 | replay | 重送（replay；NAS 的 retransmit 也叫重送，兩者不同） | 把計費 spool 裡的請求再交給腳本處理一次 | `replay_interval_ms`、`replay_window` | [13](13-accounting.md) |
 
@@ -112,7 +112,7 @@
 | proxy | 轉送 | `proxy: not supported by this program (proxying needs rradius-enterprise)`；「代理伺服器」只在講上游時用 |
 | upstream | 上游伺服器 | — |
 | second factor／MFA | 第二因素 | `mfa: not supported by this program (two-factor login needs rradius-enterprise)`；設定鍵 `mfa` 保留原文 |
-| sealed key／seal | 加密存放 | 用另一把主金鑰加密後才寫進資料庫，例如 `aka-seal` 是「產生加密存放的值」。核心沒有用到加密存放的設定或命令，`aka-seal` 得到 `not supported by this program` |
+| sealed key／seal | 加密存放 | 用另一把主金鑰加密後才寫進資料庫，例如 `aka-seal` 是「產生加密存放的值」。核心沒有用到加密存放的設定或指令，`aka-seal` 得到 `not supported by this program` |
 
 ---
 

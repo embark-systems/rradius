@@ -1,12 +1,12 @@
-# 15 情境實作：組織網路存取
+# 情境實作：組織網路存取
 
 > 本章讓你做到：
 > - 讓印表機、IP 電話這類不會 802.1X 的設備用 MAC 位址登入，放進各自的 VLAN
 > - 讓 VPN 閘道用公司目錄的帳號與群組決定誰能連、套用哪一組規則
-> - 替跳板機加上「密碼之後再輸入 TOTP 驗證碼」的兩步驟登入
+> - 替跳板機加上「密碼之後再輸入 TOTP 驗證碼」的第二因素登入
 > - 帳號放在別的系統時，每次登入用 HTTP API 去問它
 
-前置條件：讀過[第 03 章](03-quick-start.md)與[第 14 章](14-isp-recipes.md)的「準備實驗目錄」；知道[第 07 章](07-users-and-chains.md)的驗證鏈。接 LDAP 與 Active Directory 的細節在[第 08 章](08-ldap-and-ad.md)，腳本的 HTTP 與 TOTP 函式在[第 10 章](10-lua-policies.md)。
+前置條件：讀過[第 3 章](03-quick-start.md)與[第 14 章](14-isp-recipes.md)的「準備實驗目錄」；知道[第 7 章](07-users-and-chains.md)的驗證鏈。接 LDAP 與 Active Directory 的細節在[第 8 章](08-ldap-and-ad.md)，腳本的 HTTP 與 TOTP 函式在[第 10 章](10-lua-policies.md)。
 
 本章小節：
 
@@ -66,7 +66,7 @@ secret_file = "switches.secret"
 ```
 
 - 沒有 `[auth]`，認證與計費都交給 `mac-auth.lua`，計費一律回覆。
-- 整個管理網段的交換器共用一個用戶端（第 05 章）。
+- 整個管理網段的交換器共用一個用戶端（第 5 章）。
 
 ### 腳本重點
 
@@ -261,10 +261,10 @@ auth = "mfa"
 | ldap 處理器的 `required_groups` | 不要求群組 | 可以 | 屬於其中一個群組才接受 |
 | ldap 處理器的 `group_reply` | 無 | 可以 | 屬於某群組時加上的回覆屬性 |
 
-各鍵的完整說明見[附錄 A](90-config-reference.md)；ldap 處理器的其他鍵（`ca_file`、逾時、連線數等）見[第 08 章](08-ldap-and-ad.md)。
+各鍵的完整說明見[附錄 A](90-config-reference.md)；ldap 處理器的其他鍵（`ca_file`、逾時、連線數等）見[第 8 章](08-ldap-and-ad.md)。
 
-- `filter` 的後半段讓 AD 裡停用的帳號（`userAccountControl` 第 2 位元）找不到，等同不存在。OpenLDAP 的寫法（`pwdAccountLockedTime`）見[第 08 章](08-ldap-and-ad.md)〈用目錄帳號登入〉，要先在自己的目錄上確認。
-- `required_groups` 預設看 `memberOf`，只算直接的成員。AD 要算巢狀群組，改用 `group_base_dn` 加 `group_filter = "(member:1.2.840.113556.1.4.1941:={dn})"`，見[第 08 章](08-ldap-and-ad.md)〈依群組決定能不能登入〉（這個寫法沒有在 AD 上測過）。
+- `filter` 的後半段讓 AD 裡停用的帳號（`userAccountControl` 第 2 位元）找不到，等同不存在。OpenLDAP 的寫法（`pwdAccountLockedTime`）見[第 8 章](08-ldap-and-ad.md)〈用目錄帳號登入〉，要先在自己的目錄上確認。
+- `required_groups` 預設看 `memberOf`，只算直接的成員。AD 要算巢狀群組，改用 `group_base_dn` 加 `group_filter = "(member:1.2.840.113556.1.4.1941:={dn})"`，見[第 8 章](08-ldap-and-ad.md)〈依群組決定能不能登入〉（這個寫法沒有在 AD 上測過）。
 - `password_check = "bind"` 要拿到明文密碼，所以 VPN 閘道要用 PAP 送密碼。
 - `group_reply` 的 `Filter-Id` 要對應 VPN 閘道上同名的規則（filter 或 group policy）。
 - 目錄伺服器的憑證不是系統信任的 CA 簽的時候，加 `ca_file`。
@@ -280,7 +280,7 @@ auth = "mfa"
 
 連續 5 次驗證碼錯誤，帳號鎖 5 分鐘；鎖定寫在叢集資料庫裡，每個節點都看得到。challenge 的回答可能送到另一個節點，那個節點的副本可能稍舊。
 
-> **注意：** 腳本只限制猜驗證碼的次數，不限制猜密碼：如果猜密碼也會鎖帳號，任何知道帳號名稱的人都能故意把它鎖住。自己驗證密碼的腳本不受 `[auth.lockout]` 保護；要連密碼的猜測一起限制，改成在驗證鏈裡驗密碼（`[auth.lockout]` 會計算失敗次數，第 07 章），只讓腳本處理驗證碼。
+> **注意：** 腳本只限制猜驗證碼的次數，不限制猜密碼：如果猜密碼也會鎖帳號，任何知道帳號名稱的人都能故意把它鎖住。自己驗證密碼的腳本不受 `[auth.lockout]` 保護；要連密碼的猜測一起限制，改成在驗證鏈裡驗密碼（`[auth.lockout]` 會計算失敗次數，第 7 章），只讓腳本處理驗證碼。
 
 > **企業版：** 企業版內建 TOTP／HOTP 第二因素，不必自己寫這個腳本。
 
@@ -483,7 +483,7 @@ allowed_hosts = ["push.example.com"]
 timeout_ms = 7000
 ```
 
-這份片段放進 `config init` 的底稿（第 04 章）可以通過 `check`。腳本假設的推播服務：
+這份片段放進 `config init` 的底稿（第 4 章）可以通過 `check`。腳本假設的推播服務：
 
 - `POST https://push.example.com/v1/push`，內容 `username=<帳號>`，回 201 與標頭 `X-Push-Id`，表示推播已送到使用者的手機。
 - `GET https://push.example.com/v1/push/<id>?wait=<秒數>`，等到使用者回答或時間到，回 200 與標頭 `X-Push-Result`：`approved`、`denied` 或 `pending`。
@@ -510,7 +510,7 @@ timeout_ms = 7000
 
 **症狀：** VPN 登入沒有回應，日誌有 `no server reachable; rejecting` 與 `not answered: the authentication backend could not be used`。
 **原因：** 連不到任何一台目錄伺服器：名稱查不到、埠不通，或憑證不被信任。
-**解法：** 確認伺服器上能連到 `urls` 列的位址；目錄的憑證不是系統信任的 CA 簽的，加 `ca_file`（第 08 章）。
+**解法：** 確認伺服器上能連到 `urls` 列的位址；目錄的憑證不是系統信任的 CA 簽的，加 `ca_file`（第 8 章）。
 
 **症狀：** 跳板機輸入正確的驗證碼還是被拒絕。
 **原因：** challenge 超過 60 秒才回答；同一個驗證碼已經用過；伺服器或手機的時間差超過一步（30 秒）；或連續錯了 5 次，帳號鎖了 5 分鐘。

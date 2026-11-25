@@ -1,4 +1,4 @@
-# 05 RADIUS 服務與 NAS 用戶端
+# RADIUS 服務與 NAS 用戶端
 
 > 本章讓你做到：
 > - 決定 RADIUS 監聽哪些位址與埠
@@ -7,7 +7,7 @@
 > - 設定 Message-Authenticator 與 Proxy-State 的檢查
 > - 理解 Status-Server、重送、同時處理上限，以及伺服器什麼時候「不回答」
 
-前置條件：照[第 04 章](04-configuration.md)做出一份能啟動的設定。本章的驗證都用 `rradius-bench` 從本機送請求，不需要真的 NAS。
+前置條件：照[第 4 章](04-configuration.md)做出一份能啟動的設定。本章的驗證都用 `rradius-bench` 從本機送請求，不需要真的 NAS。
 
 本章小節：
 
@@ -84,8 +84,8 @@ acct_port = 1813
 | --- | --- | --- |
 | `address` | 必填 | IP 位址或 CIDR 網段，例如 `192.0.2.10`、`198.51.100.0/24`、`2001:db8::/32` |
 | `name` | `address` 的值 | 日誌、指標與 `[log.trace]` 用的名稱；同一張清單（RADIUS 或 TACACS+）內不能重複，沒寫 `name` 時 `address` 也算，載入時重複會失敗（見〈常見錯誤〉） |
-| `secret`、`secret_file` | 剛好設一個 | 共用密碼，或存放它的檔案（[第 04 章](04-configuration.md)） |
-| `auth` | 預設的驗證鏈 | 這個用戶端的登入改用哪一條 `[auth.chains.<name>]`（[第 07 章](07-users-and-chains.md)） |
+| `secret`、`secret_file` | 剛好設一個 | 共用密碼，或存放它的檔案（[第 4 章](04-configuration.md)） |
+| `auth` | 預設的驗證鏈 | 這個用戶端的登入改用哪一條 `[auth.chains.<name>]`（[第 7 章](07-users-and-chains.md)） |
 | `eap_methods` | `radius.eap.methods` | 這個用戶端可以用的 EAP 方法，需要 `[radius.eap]`（[第 11 章](11-eap.md)） |
 | `require_message_authenticator` | `[radius]` 的值 | 覆寫 `[radius]` 的設定，見下一節 |
 | `limit_proxy_state` | `[radius]` 的值 | 覆寫 `[radius]` 的設定，見下一節 |
@@ -125,7 +125,7 @@ rradius_radius_client_responses_total{client="campus",code="accounting_response"
 把同一個共用密碼給 NAS 時，在 NAS 上設定 rradius 的位址、認證埠與計費埠，以及這個密碼。
 
 - 用 `cat campus.secret` 取出密碼貼到 NAS 的設定畫面。檔案結尾的換行會被去掉，不必擔心。
-- 少於 16 個位元組，或含有範例附的 `change-me` 的共用密碼會得到警告，見[第 04 章](04-configuration.md)。
+- 少於 16 個位元組，或含有範例附的 `change-me` 的共用密碼會得到警告，見[第 4 章](04-configuration.md)。
 - 有些舊設備限制共用密碼的長度或字元；`openssl rand -hex` 只產生 0–9、a–f，大多數設備都接受。
 
 > **注意：** `authorize_group` 只用於 TACACS+ 用戶端，寫在 RADIUS 用戶端時 `check` 失敗。
@@ -383,7 +383,7 @@ rradius_radius_duplicates_total 1
 
 > **未實機驗證：** 資料庫不能用與 `no_leader` 這兩列依程式碼與規格整理，本章沒有實際製造資料庫故障來驗證。叢集的情況見[第 16 章](16-cluster.md)。
 
-另外，回應封包超過 RADIUS 的上限 4096 位元組時，伺服器改送一個不帶屬性的 Access-Reject，並記一行錯誤，見[第 06 章](06-dictionary.md)。
+另外，回應封包超過 RADIUS 的上限 4096 位元組時，伺服器改送一個不帶屬性的 Access-Reject，並記一行錯誤，見[第 6 章](06-dictionary.md)。
 
 ## 接上一台新的 NAS
 

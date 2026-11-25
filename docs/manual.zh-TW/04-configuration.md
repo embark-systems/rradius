@@ -1,4 +1,4 @@
-# 04 設定檔的基本功
+# 設定檔的基本功
 
 > 本章讓你做到：
 > - 看懂設定檔的結構，知道哪些區段一定要有
@@ -7,7 +7,7 @@
 > - 用 SIGHUP 重新載入（reload）設定，分得出哪些變更要重新啟動
 > - 用 `[shutdown]` 決定伺服器怎麼停止
 
-前置條件：做過[第 03 章](03-quick-start.md)，手上有能啟動的 `rradiusd`。本章的指令都在一個工作目錄裡做，不需要真的 NAS。
+前置條件：做過[第 3 章](03-quick-start.md)，手上有能啟動的 `rradiusd`。本章的指令都在一個工作目錄裡做，不需要真的 NAS。
 
 本章小節：
 
@@ -67,7 +67,7 @@ TOML 用 `[表名]` 開一個表，用 `[[表名]]` 在表陣列裡加一項，�
 
 ```toml
 # rradius.toml
-dictionary = "/usr/share/rradius/dictionary"   # 字典實際的位置，見第 06 章
+dictionary = "/usr/share/rradius/dictionary"   # 字典實際的位置，見第 6 章
 include = ["conf.d/*.toml"]
 
 [lua]
@@ -150,7 +150,7 @@ include = ["conf.d/*.toml"]
 # …（其他設定略）
 ```
 
-`include` 沒有預設值，不寫就只讀主檔；它跟著主檔一起被讀，所以 reload 就套用。然後在 `conf.d/` 放檔案，每個檔案都要以一個表開頭：
+`include` 沒有預設值，不寫就只讀取主檔；它跟著主檔一起被讀，所以 reload 就套用。然後在 `conf.d/` 放檔案，每個檔案都要以一個表開頭：
 
 ```toml
 # conf.d/20-lab.toml
@@ -187,12 +187,12 @@ secret_file = "lab.secret"
 - 一個名稱比對到的檔案依路徑排序。所以用 `10-`、`20-` 這種數字開頭的檔名來控制順序。
 - 萬用字元不會比對到以 `.` 開頭的檔名，編輯器留下的暫存檔不會被誤讀。
 - 有萬用字元的名稱比對不到任何檔案（例如 `conf.d/` 是空的或不存在）不算錯誤；沒有萬用字元的名稱一定要是讀得到的檔案，否則失敗。
-- 同一個檔案被兩個名稱比對到，只讀一次；主檔自己會被略過。
+- 同一個檔案被兩個名稱比對到，只讀取一次；主檔自己會被略過。
 - 最多 1000 個檔案，每個檔案最多 1048576 位元組（1 MiB）。
 - 被讀進來的檔案不能再寫 `include`，而且第一個不是空白或註解的行一定要是 `[表]` 或 `[[表陣列]]`。
 - 每個檔案自己就要是完整的 TOML：一個檔案裡沒關上的字串，不會吃掉下一個檔案。
 - **同一個表不能在兩個檔案裡各寫一次。** 主檔已經有 `[radius]`，`conf.d/` 的檔案就不能再寫 `[radius]`，否則得到 `duplicate key`。表陣列不受這個限制：`[[radius.clients]]` 可以分散在好幾個檔案裡，依檔案順序加進去。
-- TOML 的語法錯誤與型別錯誤，訊息指出出錯的是哪個檔案的第幾行，不是合併後的行號。合併之後才做的檢查（例如用戶端的檢查）訊息開頭是主設定檔的名稱，沒有行號；訊息裡有單引號括起的名稱（例如 `'core'`）時，後面會附上 `(in <檔案> line <行>)`，列出哪些行以引號字串寫著這個名稱（最多三處，其餘寫 `and N more`），主檔的行也會列出，所以名稱重複時兩處都看得到。只有找到的行至少有一行在被讀進來的檔案時才會附；名稱只在主檔或找不到時，訊息和沒有 `include` 時一樣。這是用名稱比對，名稱也出現在別的設定值時會多列一處。見[第 05 章](05-radius-clients.md)。
+- TOML 的語法錯誤與型別錯誤，訊息指出出錯的是哪個檔案的第幾行，不是合併後的行號。合併之後才做的檢查（例如用戶端的檢查）訊息開頭是主設定檔的名稱，沒有行號；訊息裡有單引號括起的名稱（例如 `'core'`）時，後面會附上 `(in <檔案> line <行>)`，列出哪些行以引號字串寫著這個名稱（最多三處，其餘寫 `and N more`），主檔的行也會列出，所以名稱重複時兩處都看得到。只有找到的行至少有一行在被讀進來的檔案時才會附；名稱只在主檔或找不到時，訊息和沒有 `include` 時一樣。這是用名稱比對，名稱也出現在別的設定值時會多列一處。見[第 5 章](05-radius-clients.md)。
 
 > **警告：** 被讀進來的檔案能決定誰可以登入。檔案本身或它所在的目錄可以被群組或其他人寫入時，`check`、啟動與每次 reload 都會印出警告，例如 `included configuration file conf.d/20-lab.toml can be written by its group or by others, which lets them change who may log in`。這只是警告，設定照樣讀；看到它就把權限改成只有擁有者能寫。
 
@@ -236,7 +236,7 @@ $ chmod 600 nas1.secret
 
 這三種都只是警告，不會擋下啟動。但它們出現在 `check` 的輸出裡，上線前看一眼就能抓到。
 
-> **注意：** 用 systemd 跑的套件版本以 `rradius` 使用者執行。權限收到 `0600` 時，檔案的擁有者要是 `rradius`；或讓 root 擁有、群組是 `rradius`、權限 `0640`。安裝路徑與使用者見[第 02 章](02-install.md)。
+> **注意：** 用 systemd 跑的套件版本以 `rradius` 使用者執行。權限收到 `0600` 時，檔案的擁有者要是 `rradius`；或讓 root 擁有、群組是 `rradius`、權限 `0640`。安裝路徑與使用者見[第 2 章](02-install.md)。
 
 ## 檢查設定：check
 
@@ -433,7 +433,7 @@ rradius_reload_last_success_timestamp_seconds 1795384713
 - 最上層腳本（`lua.script` 和它的內容）、`[lua]` 的 `query_timeout_ms`、`max_execution_ms`、`[lua.http]`。
 - 整個 `[auth]`：驗證鏈、處理器、腳本、`[auth.lockout]`、`[auth.password_limits]` 等。鎖定的失敗計數保留在行程裡，reload 不會清掉。
 - RADIUS 與 TACACS+ 的用戶端清單，含每個用戶端的設定與共用密碼（祕密檔會重新讀）。移除的用戶端，之後的請求就當成不明的來源丟掉。
-- `radius.require_message_authenticator`、`radius.limit_proxy_state`。用 `auto` 學到的結果在 reload 後仍保留（第 05 章）。
+- `radius.require_message_authenticator`、`radius.limit_proxy_state`。用 `auto` 學到的結果在 reload 後仍保留（第 5 章）。
 - `[radius.eap]`（新的 EAP 登入才用新設定）、`[tacacs]` 的 `enable` 與 `authorize_groups`、`[log.trace]`、`[shutdown]`。
 - `[radius.accounting_log]` 會重新開檔，配合日誌輪替；也可以藉此改檔名（第 13 章）。
 - `[accounts]`、`[sessions]` 根本不需要 reload：`user`、`session` 指令每次執行時才讀。
@@ -463,7 +463,7 @@ rradius_reload_last_success_timestamp_seconds 1795384713
 
 腳本已經換成新的，但伺服器還在舊的埠上。這行警告在重新啟動之前，每次 reload 都會再出現一次：伺服器拿來比較的是啟動時的設定。
 
-> **注意：** 字典**檔案的內容**改了不算「設定不同」：reload 只比較 `dictionary` 這個路徑。但 reload 會重新讀字典檔，內容和啟動時不同就多寫一行 `WARN`：`dictionary files changed since the server started; restart to apply: <路徑>`（最多列五個檔，其餘寫 `and N more`），每次 reload 只要還不同就會再寫。伺服器仍用啟動時讀的字典，腳本用新屬性會得到 `unknown attribute`。改字典之後一定要重新啟動。詳見[第 06 章](06-dictionary.md)。
+> **注意：** 字典**檔案的內容**改了不算「設定不同」：reload 只比較 `dictionary` 這個路徑。但 reload 會重新讀字典檔，內容和啟動時不同就多寫一行 `WARN`：`dictionary files changed since the server started; restart to apply: <路徑>`（最多列五個檔，其餘寫 `and N more`），每次 reload 只要還不同就會再寫。伺服器仍用啟動時讀的字典，腳本用新屬性會得到 `unknown attribute`。改字典之後一定要重新啟動。詳見[第 6 章](06-dictionary.md)。
 
 ## 停止伺服器：shutdown
 

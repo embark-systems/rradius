@@ -1,4 +1,4 @@
-# 18 日常維運
+# 日常維運
 
 > 本章讓你做到：
 > - 照「`check` → `config diff` → reload → 看日誌與指標」改設定
@@ -7,7 +7,7 @@
 > - 知道核心能怎麼保護資料，以及它沒有備份功能
 > - 在 systemd、logrotate、Docker Compose、Kubernetes、Synology 上做這些事
 
-前置條件：做過[第 03 章](03-quick-start.md)；讀過[第 04 章](04-configuration.md)，知道設定檔、`include` 與 `[shutdown]`。叢集的部分要先讀[第 16 章](16-cluster.md)。
+前置條件：做過[第 3 章](03-quick-start.md)；讀過[第 4 章](04-configuration.md)，知道設定檔、`include` 與 `[shutdown]`。叢集的部分要先讀[第 16 章](16-cluster.md)。
 
 本章小節：
 
@@ -31,7 +31,7 @@
 - [常見錯誤](#常見錯誤)
 - [相關章節](#相關章節)
 
-本章的例子用 quick-start 情境（[第 03 章](03-quick-start.md)），另外加了計費記錄檔與 `[shutdown]`。埠都用預設值：RADIUS 1812、1813，指標 9812。
+本章的例子用 quick-start 情境（[第 3 章](03-quick-start.md)），另外加了計費記錄檔與 `[shutdown]`。埠都用預設值：RADIUS 1812、1813，指標 9812。
 
 ## 改設定的標準流程
 
@@ -155,7 +155,7 @@ reload 時套用與不套用的設定：
 | `shutdown.ready_delay_ms` | 單節點 0；`cluster.nodes` 超過一個時 5000 | 讓負載平衡器看到 503、把流量移走的時間 |
 | `shutdown.drain_ms` | 5000 | 等處理中請求的上限 |
 
-兩個鍵都是 reload 就生效，以收到停止訊號那一刻的設定為準。說明見[第 04 章](04-configuration.md)。
+兩個鍵都是 reload 就生效，以收到停止訊號那一刻的設定為準。說明見[第 4 章](04-configuration.md)。
 
 實測：quick-start 設 `ready_delay_ms = 3000`，送 SIGTERM 後每 0.4 秒測一次：
 
@@ -292,7 +292,7 @@ $ echo $?
 - 它們讀的是設定檔裡的 `[accounts]`、`[sessions]`、`[queries.<name>]`，每次執行時讀，改了不必 reload。
 - 在叢集裡，用哪個節點的設定都可以；寫入會交給 leader。
 
-各指令的用法：`user` 在[第 07 章](07-users-and-chains.md)，`session` 在[第 13 章](13-accounting.md)，`query` 在[第 09 章](09-external-databases.md)。
+各指令的用法：`user` 在[第 7 章](07-users-and-chains.md)，`session` 在[第 13 章](13-accounting.md)，`query` 在[第 9 章](09-external-databases.md)。
 
 ## 更換密碼
 
@@ -300,10 +300,10 @@ $ echo $?
 
 | 密碼 | 怎麼換 | 換的時候 |
 | --- | --- | --- |
-| RADIUS 用戶端的共用密碼（`secret_file`） | 改檔案，送 SIGHUP。NAS 那邊也要換，兩邊越接近越好 | 兩邊不同步的那一段，這台 NAS 的請求會被丟棄（`Discarded: invalid`）。每台 NAS 用不同的密碼，一次只影響一台。步驟與實測見[第 05 章](05-radius-clients.md) |
+| RADIUS 用戶端的共用密碼（`secret_file`） | 改檔案，送 SIGHUP。NAS 那邊也要換，兩邊越接近越好 | 兩邊不同步的那一段，這台 NAS 的請求會被丟棄（`Discarded: invalid`）。每台 NAS 用不同的密碼，一次只影響一台。步驟與實測見[第 5 章](05-radius-clients.md) |
 | TACACS+ 用戶端的共用密碼 | 同上 | 用戶端清單可以 reload；開著的連線也照新清單比對（[第 12 章](12-tacacs.md)） |
-| LDAP 服務帳號（`bind_password_file`） | 先在目錄改服務帳號的密碼，再改檔案並送 SIGHUP | 目錄改了、rradius 還沒 reload 的那一段，LDAP 驗證會失敗（[第 08 章](08-ldap-and-ad.md)） |
-| 外部資料庫（`[databases.<名稱>]` 的 `password_file`） | 先在資料庫改密碼，再改檔案，**重新啟動** | `[databases]` 不能 reload（見上面的表）。叢集用滾動重啟（[第 09 章](09-external-databases.md)） |
+| LDAP 服務帳號（`bind_password_file`） | 先在目錄改服務帳號的密碼，再改檔案並送 SIGHUP | 目錄改了、rradius 還沒 reload 的那一段，LDAP 驗證會失敗（[第 8 章](08-ldap-and-ad.md)） |
+| 外部資料庫（`[databases.<名稱>]` 的 `password_file`） | 先在資料庫改密碼，再改檔案，**重新啟動** | `[databases]` 不能 reload（見上面的表）。叢集用滾動重啟（[第 9 章](09-external-databases.md)） |
 | `secret_raft`、`secret_api`（或 `_file`） | 每個節點都要相同，整個叢集一起換 | `[cluster]` 要重新啟動。各節點密碼不同就連不起來，所以這是要排維護時間的事（依程式行為推論，未實機驗證） |
 | EAP 的憑證與私鑰 | 換檔案，送 SIGHUP | 新的對話用新的，進行中的不受影響；新檔案有錯時 reload 失敗，繼續用舊的（[第 11 章](11-eap.md)） |
 
@@ -320,7 +320,7 @@ $ (umask 077; openssl rand -hex 32 > nas.secret)
 
 `accounting`、`tacacs_log` 這類表會一直變大，rradius 不會自動清除。可以在計費腳本裡定期刪除：每小時最多一次，整個叢集只有一個請求會真的去做。
 
-先用 migration 建一張記錄上次執行時間的表。下面接在 quick-start 的 `1_schema.sql`（[第 03 章](03-quick-start.md)）後面，作為下一個編號的 migration：
+先用 migration 建一張記錄上次執行時間的表。下面接在 quick-start 的 `1_schema.sql`（[第 3 章](03-quick-start.md)）後面，作為下一個編號的 migration：
 
 ```sql
 -- 3_housekeeping.sql
@@ -391,7 +391,7 @@ data/
 | 異常結束後自動重建 | 斷電、強制結束 | 下次啟動從 Raft 記錄重建本機資料庫 |
 | 計費 spool | 寫不進資料庫時的計費 | 計費先寫在本機磁碟，之後重送（[第 13 章](13-accounting.md)） |
 | 計費記錄檔 | 想另外保存每一筆計費 | `[radius.accounting_log]` 把每個計費請求寫成一行 JSON，可以用 logrotate 輪替、搬到別處保存（[第 13 章](13-accounting.md)） |
-| 外部資料庫 | 想把資料放在自己管理的資料庫 | 驗證與腳本可以用 `[databases]` 的 PostgreSQL、MySQL（[第 09 章](09-external-databases.md)），那些資料庫用它們自己的備份方式 |
+| 外部資料庫 | 想把資料放在自己管理的資料庫 | 驗證與腳本可以用 `[databases]` 的 PostgreSQL、MySQL（[第 9 章](09-external-databases.md)），那些資料庫用它們自己的備份方式 |
 | 設定與 migration 放進版本控制 | 重建整個環境 | 資料表結構與示範資料都在 `migrations/`，加上設定檔就能重建一個空的叢集 |
 
 這些都不能防「錯誤的寫入」：誤刪的帳號會立刻複寫到每個節點。叢集同時失去過半數節點的資料，資料也就沒了。
@@ -499,7 +499,7 @@ Synology 上的日常工作：
 | --- | --- |
 | 看日誌 | Container Manager 專案頁的「記錄」，或 SSH 上去 `sudo docker compose -p rradius logs` |
 | 改設定 | 改 `config/` 的檔案後，重新啟動專案。設定錯誤時容器會馬上結束，日誌寫明原因；先在別的電腦上用 `rradiusd check` 檢查更保險 |
-| 更新版本 | 在別的電腦上建新 image、匯入 NAS、重新啟動專案（建置與匯入見[第 02 章](02-install.md#synology-nas)）。資料在 `data` volume，不會因為更新而不見 |
+| 更新版本 | 在別的電腦上建新 image、匯入 NAS、重新啟動專案（建置與匯入見[第 2 章](02-install.md#synology-nas)）。資料在 `data` volume，不會因為更新而不見 |
 | 停止 | 專案頁「停止」。`stop_grace_period` 是 30 秒，給資料庫完成關閉的時間；不要用強制停止，否則下次啟動要重建本機資料庫 |
 | 備份 | 備份 `config/` 與 `secrets/` 資料夾。資料在 Docker 管理的 volume，名稱是 `<專案名稱>_data`（專案叫 `rradius` 時是 `rradius_data`）：先停專案，再用 Hyper Backup 備份那個 volume 所在的資料夾，或用 `docker run --rm -v rradius_data:/d -v $PWD:/b alpine tar czf /b/data.tgz -C /d .` |
 
@@ -549,7 +549,7 @@ Synology 上的日常工作：
 - 計數器從啟動開始累計，每個節點各算各的，reload 不歸零。告警看增加的速度，不看絕對值。
 - 設了外部資料庫、具名查詢或 EAP 的環境，再加上 `rradius_external_db_*`、`rradius_query_*`、`rradius_eap_sessions_total` 這幾組，說明在第 09、11、17 章。
 - 沒有 Prometheus 時，在節點上跑 `rradiusd status --config rradius.toml --watch`，每秒列一次同樣的資料（[第 17 章](17-monitoring.md)）。
-- 「活著與否」用 Status-Server 最準，它走和認證相同的路徑：`rradius-bench run --load status-auth` 或帶 Message-Authenticator 的 `radclient`（[第 05 章](05-radius-clients.md#status-server)）。
+- 「活著與否」用 Status-Server 最準，它走和認證相同的路徑：`rradius-bench run --load status-auth` 或帶 Message-Authenticator 的 `radclient`（[第 5 章](05-radius-clients.md#status-server)）。
 - 指標埠沒有認證也沒有 TLS，只綁內部位址。
 
 ## 上線前的檢查清單

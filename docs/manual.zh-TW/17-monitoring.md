@@ -1,4 +1,4 @@
-# 17 監控、狀態與日誌
+# 監控、狀態與日誌
 
 > 本章讓你做到：
 > - 開啟指標埠，知道 `/metrics`、`/livez`、`/readyz` 各自什麼時候回什麼
@@ -7,7 +7,7 @@
 > - 調整日誌的等級與格式，讀懂每一筆認證紀錄
 > - 在不重啟的情況下，針對特定使用者或用戶端開一段時間的 trace
 
-前置條件：做完[第 03 章](03-quick-start.md)，手上有能跑的 quick-start 情境，以及 `rradiusd`、`rradius-bench` 兩個指令。每個指標的完整說明在[附錄 C](92-metrics-reference.md)。
+前置條件：做完[第 3 章](03-quick-start.md)，手上有能跑的 quick-start 情境，以及 `rradiusd`、`rradius-bench` 兩個指令。每個指標的完整說明在[附錄 C](92-metrics-reference.md)。
 
 本章小節：
 
@@ -46,7 +46,7 @@ rradius 給你三種觀察它的管道，用途不一樣：
 
 本章用預設埠：RADIUS 1812、1813，指標 9812。TACACS+ 跟[第 12 章](12-tacacs.md)一樣用 4949，因為標準埠 49 小於 1024，一般帳號不能監聽。
 
-從 quick-start 複製一份，換掉範例密碼（做法同第 03 章）：
+從 quick-start 複製一份，換掉範例密碼（做法同第 3 章）：
 
 ```console
 $ cp -R rradius-server/examples/scenarios/quick-start ~/rradius-lab/monitoring
@@ -55,7 +55,7 @@ $ for f in raft api localhost; do openssl rand -hex 32 > $f.secret; done
 $ chmod 600 *.secret
 ```
 
-字典路徑照第 03 章改成絕對路徑。quick-start 的 `[radius]` 與 `[metrics]` 已經是預設埠，不用改。
+字典路徑照第 3 章改成絕對路徑。quick-start 的 `[radius]` 與 `[metrics]` 已經是預設埠，不用改。
 
 為了讓 `status` 的每個區段都有東西看，在檔案最後再加上 TACACS+、登入失敗鎖定、計費記錄檔與一個具名查詢。它們各自的用法在別章，這裡只是借來產生指標：
 
@@ -83,7 +83,7 @@ labels = ["state"]
 interval_ms = 5000
 ```
 
-- `[auth.lockout]` 見[第 07 章](07-users-and-chains.md)，`[radius.accounting_log]` 見[第 13 章](13-accounting.md)，`[tacacs]` 見[第 12 章](12-tacacs.md)，`[queries]` 見[第 09 章](09-external-databases.md)。
+- `[auth.lockout]` 見[第 7 章](07-users-and-chains.md)，`[radius.accounting_log]` 見[第 13 章](13-accounting.md)，`[tacacs]` 見[第 12 章](12-tacacs.md)，`[queries]` 見[第 9 章](09-external-databases.md)。
 - TACACS+ 用戶端借用 `localhost.secret` 只是為了少建一個檔案，正式環境每個用戶端用自己的共用密碼。
 
 ```console
@@ -189,7 +189,7 @@ ok
 … INFO rradius_core::cli: stopping: every request taken was answered
 ```
 
-`ready_delay_ms` 這段時間裡，`/readyz` 已經是 503，但請求照常回答，讓負載平衡器有時間把流量移走。`[shutdown]` 的說明在[第 04 章](04-configuration.md)，停機的程序在[第 18 章](18-operations.md)。
+`ready_delay_ms` 這段時間裡，`/readyz` 已經是 503，但請求照常回答，讓負載平衡器有時間把流量移走。`[shutdown]` 的說明在[第 4 章](04-configuration.md)，停機的程序在[第 18 章](18-operations.md)。
 
 **外部資料庫：** 在 `[databases.<名稱>]` 設 `required_for_ready = true`，伺服器每 5 秒用一條自己的連線對它執行 `SELECT 1`；連續兩次失敗就算連不上，一次成功就恢復。實測把一個不存在的 PostgreSQL（`127.0.0.1` 上一個沒有服務在聽的埠）設成必要：
 
@@ -205,7 +205,7 @@ database billing unreachable
 … WARN rradius_core::external_db: databases.billing: not reachable at startup: error communicating with database: Connection refused (os error 61); /readyz answers 503 until it is
 ```
 
-外部資料庫的設定見[第 09 章](09-external-databases.md)。
+外部資料庫的設定見[第 9 章](09-external-databases.md)。
 
 > **未實機驗證：** `no leader` 這一種回答需要多節點叢集才能重現，本章沒有實際跑過；行為依據是 `rradius-core/src/metrics.rs` 與 `specs/server-metrics`（Health Endpoints）。
 
@@ -242,7 +242,7 @@ rradius_radius_responses_total{code="accounting_response"} 1
 | `rradius_build_info`、`rradius_start_time_seconds` | 版本、啟動時間 |
 | `rradius_log_dropped_lines_total` | 丟掉的日誌行 |
 
-其他指標族有各自的主章：叢集與 `rradius_db_*` 在[第 16 章](16-cluster.md)，計費 spool 與計費記錄檔在[第 13 章](13-accounting.md)，鎖定與密碼比對在[第 07 章](07-users-and-chains.md)，Netlogon 在[第 08 章](08-ldap-and-ad.md)，外部資料庫與具名查詢在[第 09 章](09-external-databases.md)，腳本的 HTTP 呼叫在[第 10 章](10-lua-policies.md)。
+其他指標族有各自的主章：叢集與 `rradius_db_*` 在[第 16 章](16-cluster.md)，計費 spool 與計費記錄檔在[第 13 章](13-accounting.md)，鎖定與密碼比對在[第 7 章](07-users-and-chains.md)，Netlogon 在[第 8 章](08-ldap-and-ad.md)，外部資料庫與具名查詢在[第 9 章](09-external-databases.md)，腳本的 HTTP 呼叫在[第 10 章](10-lua-policies.md)。
 
 ### 沒有回應的請求
 
@@ -384,7 +384,7 @@ rradius 輸出的是 Prometheus 指標，**沒有內建 SNMP**。依你的監控
 | `RradiusExternalDatabaseFailing` | 呼叫外部資料庫失敗（`reason="unavailable"`）：資料庫掛了、慢，或網路不通 |
 | `RradiusExternalDatabasePoolFull` | 連線池用滿超過 5 分鐘，呼叫在排隊：查詢變慢，或 `pool_size` 太小 |
 | `RradiusNamedQueryStale` | 具名查詢超過 2 分鐘沒有成功，依賴它的數字（例如位址池使用率）是舊的；看 `RradiusNamedQueryFailing` 與日誌 |
-| `RradiusNamedQueryFailing` | `reason` 標籤是 `timeout`、`error` 或 `shape`（結果的欄位不符合標籤與數值），見[第 09 章](09-external-databases.md#具名查詢把-sql-變成指標) |
+| `RradiusNamedQueryFailing` | `reason` 標籤是 `timeout`、`error` 或 `shape`（結果的欄位不符合標籤與數值），見[第 9 章](09-external-databases.md#具名查詢把-sql-變成指標) |
 | `RradiusReloadFailed` | 節點照舊設定運作；日誌寫了原因，修好再重新載入 |
 | `RradiusLogLinesDropped` | 日誌的去處太慢，見[日誌行被丟棄的時候](#日誌行被丟棄的時候) |
 | `RradiusEapSessionsLost` | 同時進行的 802.1X 對話超過節點保留的量，有的被擠掉或被拒絕；見[第 21 章](21-troubleshooting.md#eap-卡住或失敗) |
@@ -743,7 +743,7 @@ $ kill -HUP <pid>
 
 - 每個符合的請求兩行：`request` 與 `response`，target 是 `rradius_trace`，不受 `level` 影響。沒有送出回應時，第二行是 `no response`。
 - `code` 是 RADIUS 的封包代碼：1 是 Access-Request，2 是 Access-Accept。
-- `alice` 拿到了 `Session-Timeout = 3600`、`Filter-Id = staff`，這正是第 03 章用 `rradius-bench` 看不到的回覆屬性。
+- `alice` 拿到了 `Session-Timeout = 3600`、`Filter-Id = staff`，這正是第 3 章用 `rradius-bench` 看不到的回覆屬性。
 - `carol` 不在名單上，只有認證紀錄，沒有 trace。
 
 **哪些值會被遮住：** 下列屬性一律顯示 `<hidden>`：
