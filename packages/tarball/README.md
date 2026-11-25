@@ -12,7 +12,8 @@ RADIUS、TACACS+ 的 AAA 伺服器，認證和計費邏輯用 Luau 腳本與 SQL
 | `rradius-server/examples/` | 其他範例設定和腳本 |
 | `docs/manual/` | 使用手冊（英文），從 `docs/manual/README.md` 開始讀 |
 | `docs/manual.zh-TW/` | 使用手冊（繁體中文），從 `docs/manual.zh-TW/README.md` 開始讀 |
-| `docs/usage.md` | 所有設定和功能的參考 |
+| `docs/usage.md` | 所有設定和功能的參考（英文） |
+| `docs/usage.zh-TW.md` | 所有設定和功能的參考（繁體中文） |
 | `VERSION` | 版本和建置它的 commit；Linux 版另有一行 `glibc <版本>`，是它需要的最低 glibc 版本 |
 
 目錄結構和原始碼 repo 相同，所以範例設定和文件裡的相對路徑都照樣成立。
