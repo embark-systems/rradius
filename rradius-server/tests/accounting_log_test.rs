@@ -138,3 +138,109 @@ fn test_every_answer_written_through_shutdown() -> Result<(), String> {
     assert_eq!(lines(&file).len(), 1000, "{}", server.stderr());
     Ok(())
 }
+
+/// One `IP-Port-Range` attribute (RFC 8045, Extended-Type 6 of 241) from its sub-attributes:
+/// Alloc (8), Ext-IPv4-Addr (3), Range-Start (9) and Range-End (10) as they are given.
+fn port_range(alloc: u32, address: [u8; 4], ports: Option<(u32, u32)>) -> (u8, Vec<u8>) {
+    let mut value = vec![6u8, 8, 6];
+    value.extend_from_slice(&alloc.to_be_bytes());
+    value.extend_from_slice(&[3, 6]);
+    value.extend_from_slice(&address);
+    if let Some((start, end)) = ports {
+        value.extend_from_slice(&[9, 6]);
+        value.extend_from_slice(&start.to_be_bytes());
+        value.extend_from_slice(&[10, 6]);
+        value.extend_from_slice(&end.to_be_bytes());
+    }
+    (241, value)
+}
+
+fn with_ranges(identifier: u8, session: &str, ranges: Vec<(u8, Vec<u8>)>) -> Vec<u8> {
+    let mut attributes = vec![(40, 3u32.to_be_bytes().to_vec()), (1, b"alice".to_vec()), (44, session.as_bytes().to_vec())];
+    attributes.extend(ranges);
+    RadiusPacket::create_accounting_request(identifier, attributes, b"s")
+}
+
+/// The `time` of a log line.
+fn time_of(line: &str) -> Result<String, String> {
+    let rest = line.strip_prefix("{\"time\":\"").ok_or("no time")?;
+    Ok(rest.split('"').next().ok_or("no end")?.to_string())
+}
+
+/// Runs `accounting find` with `args`, giving it `input` on standard input: the status, the
+/// standard output and the standard error.
+fn find(args: &[&str], input: &str) -> Result<(i32, String, String), String> {
+    use std::io::Write;
+    let mut child = Command::new(PROGRAM)
+        .arg("accounting")
+        .arg("find")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    child.stdin.take().ok_or("no stdin")?.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    Ok((output.status.code().unwrap_or(-1), String::from_utf8_lossy(&output.stdout).to_string(), String::from_utf8_lossy(&output.stderr).to_string()))
+}
+
+/// spec Accounting Log Lines, Scenario: Port ranges keep their instances, and Accounting Find
+/// Command, Port Block Holding and Accounting Find Output: a request with two ranges and a later
+/// release are logged by the server and read back by `accounting find`.
+#[test]
+fn test_port_ranges_are_logged_and_found() -> Result<(), String> {
+    let server = server()?;
+    let (port, file) = (server.port_acct(), server.dir.path().join("acct.jsonl"));
+    let socket = udp(Duration::from_secs(5))?;
+    let address = [198, 51, 100, 7];
+    assert!(account(&socket, port, &with_ranges(1, "s-1", vec![port_range(1, address, Some((1024, 2047))), port_range(1, address, Some((4096, 4096)))]))?);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(account(&socket, port, &with_ranges(2, "s-1", vec![port_range(2, address, None)]))?);
+    let written = wait_lines(&file, 2)?;
+    assert!(written[0].contains("\"IP-Port-Range\":[{\"IP-Port-Range-Alloc\":\"Allocation\",\"IP-Port-Range-Ext-IPv4-Addr\":\"198.51.100.7\",\"IP-Port-Range-Range-Start\":\"1024\",\"IP-Port-Range-Range-End\":\"2047\"},{"), "{}", written[0]);
+    assert!(written[0].contains("\"IP-Port-Range-Range-Start\":[\"1024\",\"4096\"]"), "the keys outside the list stay: {}", written[0]);
+    let (allocated, released) = (time_of(&written[0])?, time_of(&written[1])?);
+    assert_ne!(allocated, released);
+    let path = file.to_str().ok_or("path")?;
+
+    let (status, out, err) = find(&["--ip", "198.51.100.7", "--port", "1500", "--at", &allocated, "--file", path, "--json"], "")?;
+    assert_eq!(status, 0, "{err}");
+    let found: serde_json::Value = serde_json::from_str(&out).map_err(|e| format!("{e}: {out}"))?;
+    let hold = found.get(0).ok_or("no hold")?;
+    assert_eq!((hold["ext_ip"].as_str(), hold["port_start"].as_u64(), hold["port_end"].as_u64()), (Some("198.51.100.7"), Some(1024), Some(2047)));
+    assert_eq!((hold["time_source"].as_str(), hold["ended_by"].as_str(), hold["released"].as_str()), (Some("received"), Some("release"), Some(released.as_str())));
+    assert_eq!((hold["attributes"]["User-Name"].as_str(), hold["attributes"]["Acct-Session-Id"].as_str(), hold["attributes"]["client"].as_str()), (Some("alice"), Some("s-1"), Some("127.0.0.1")));
+
+    // The second range of the same request, in text, and from standard input.
+    let text = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+    let (status, out, err) = find(&["--ip", "198.51.100.7", "--port", "4096", "--at", &allocated], &text)?;
+    assert_eq!(status, 0, "{err}");
+    assert!(out.contains("198.51.100.7:4096-4096 allocated") && out.contains("User-Name=alice"), "{out}");
+    // Two files are one log, and a dash is standard input.
+    let (status, ..) = find(&["--ip", "198.51.100.7", "--port", "1500", "--at", &allocated, "--file", path, "--file", "-"], &text)?;
+    assert_eq!(status, 0);
+
+    // After the release, another port, another address and a time before it: none.
+    for (ip, number, at) in [("198.51.100.7", "1500", released.as_str()), ("198.51.100.7", "3000", allocated.as_str()), ("198.51.100.9", "1500", allocated.as_str())] {
+        let (status, out, _) = find(&["--ip", ip, "--port", number, "--at", at, "--file", path, "--json"], "")?;
+        assert_eq!((status, out.trim()), (1, "[]"), "{ip} {number} {at}");
+    }
+
+    // Mistakes are 2, and name what is wrong.
+    for (args, named) in [
+        (vec!["--ip", "198.51.100.7", "--port", "1500"], "--at"),
+        (vec!["--ip", "2001:db8::1", "--port", "1", "--at", "2026-11-25T10:00:00Z"], "--ip"),
+        (vec!["--ip", "198.51.100.7", "--port", "70000", "--at", "2026-11-25T10:00:00Z"], "--port"),
+        (vec!["--ip", "198.51.100.7", "--port", "1", "--at", "2026-11-25"], "--at"),
+        (vec!["--ip", "198.51.100.7", "--port", "1", "--at", "2026-11-25T10:00:00Z", "--file", "missing.jsonl"], "missing.jsonl"),
+    ] {
+        let (status, _, err) = find(&args, "")?;
+        assert_eq!(status, 2, "{args:?}: {err}");
+        assert!(err.contains(named), "{args:?}: {err}");
+    }
+    let (status, _, err) = find(&["--ip", "198.51.100.7", "--port", "1", "--at", "2026-11-25T10:00:00Z"], "{\"attributes\":{}}\nnot json\n")?;
+    assert_eq!(status, 2);
+    assert!(err.contains("line 2"), "{err}");
+    Ok(())
+}

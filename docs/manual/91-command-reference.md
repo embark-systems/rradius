@@ -136,6 +136,7 @@ interval_ms = 60000
 | `tuning` | 依這台機器與設定給系統調校建議 | 否 | [19](19-performance.md) |
 | `user add`、`user passwd`、`user enable`、`user disable`、`user delete`、`user show` | 用 `[accounts]` 的 SQL 管理帳號 | 是（叢集 API 埠） | [07](07-users-and-chains.md) |
 | `session list`、`session show` | 用 `[sessions]` 的 SQL 列出在線 session | 是（叢集 API 埠） | [13](13-accounting.md) |
+| `accounting find` | 從計費記錄檔反查某個公網位址與埠在某時刻屬於誰 | 否（只讀檔案） | [13](13-accounting.md) |
 | `query list`、`query <name>` | 列出或執行 `[queries.<name>]` | `list` 否；執行要 | [09](09-external-databases.md) |
 | `cluster members`、`remove` | 列出叢集成員、移除節點 | 是（叢集 API 埠） | [16](16-cluster.md) |
 | `help` | 印出全部命令的用法 | 否 | 本章 |
@@ -517,6 +518,32 @@ $ rradiusd session show --config rradius.toml --json nobody
 - 沒有資料時：文字格式印 `no sessions` 或 `no sessions for <name>`，`--json` 印 `[]`，結束碼都是 1。
 - SQL 失敗時印 `the statement failed: …`，結束碼 **2**（`user` 的 SQL 失敗是 1）。實測：`the statement failed: Sqlite: no such column: nosuchcol in SELECT nosuchcol, …`。
 - `[sessions]` 沒有 `list` 時印 `sessions.list is not set in …`，結束碼 2。連不到叢集時與 `user` 相同，結束碼 3。
+
+## accounting
+
+```text
+rradiusd accounting find --ip <address> --port <port> --at <time> [--file <path>]... [--json]
+```
+
+讀計費記錄檔（`[radius.accounting_log]`），列出在 `--at` 這個時間持有公網位址 `--ip`、埠 `--port` 的 `IP-Port-Range` 區段（RFC 8045）。不需要設定檔、不連叢集。`--at` 是 RFC 3339 且要有時區（`Z` 或 `±HH:MM`，可帶小數秒）；`--file` 可以給多次，`-` 或沒給就讀標準輸入；不讀 `.gz`，用 `zcat` 接進來。
+
+```console
+$ rradiusd accounting find --ip 198.51.100.7 --port 1500 --at 2026-11-25T10:30:00Z --file accounting.jsonl
+198.51.100.7:1024-2047 allocated 2026-11-25T10:00:00.120Z ended 2026-11-25T11:00:00Z ended_by release time_source received identity "Acct-Session-Id=s-1 client=bng1" client=bng1 User-Name=alice Acct-Session-Id=s-1 Framed-IP-Address=100.64.0.5
+$ rradiusd accounting find --ip 198.51.100.7 --port 1500 --at 2026-11-25T11:30:00Z --file accounting.jsonl
+$ echo $?
+1
+$ rradiusd accounting find --ip 198.51.100.7 --port 1500 --file accounting.jsonl
+--at is required
+usage: rradiusd accounting find --ip <address> --port <port> --at <time> [--file <path>]... [--json]
+  --file - or no --file reads standard input; --at is RFC 3339, such as 2026-11-25T10:00:00Z
+$ echo $?
+2
+```
+
+- 結束碼：0 列出了至少一個持有，1 沒有，2 是參數、檔案或某一行不是 JSON 物件（訊息指出檔名與行號）。
+- `--json` 是一個陣列，鍵為 `ext_ip`、`port_start`、`port_end`、`allocated`、`released`（還沒結束是 `null`）、`ended_by`（`release`、`stop` 或 `null`）、`time_source`、`identity`、`attributes`；沒有持有時是 `[]`。
+- 持有規則、時間依據與已知限制見 [13 計費與 session](13-accounting.md) 的「公網位址與埠的反查」。
 
 ## query
 

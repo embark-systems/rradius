@@ -81,6 +81,10 @@ pub struct AccountingRecord {
     /// other octets as `0x` and hexadecimal. One the dictionary does not name is `Attr-<type>`,
     /// with its octets in hexadecimal.
     pub attributes: Vec<(String, String)>,
+    /// For each valid instance of a TLV attribute that keeps its instances apart, such as
+    /// `IP-Port-Range`, the name of the attribute and what that instance holds, as `attributes`
+    /// has it. `attributes` has the same sub-attributes, all instances together.
+    pub groups: Vec<(String, Vec<(String, String)>)>,
 }
 
 /// What is told of each accounting request the RADIUS server answers, once its Accounting-Response
