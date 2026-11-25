@@ -237,6 +237,7 @@ $ packages/tarball/release.sh --target linux-x86_64 --out dist
 - `--target` can be `macos-aarch64`, `linux-x86_64` or `linux-aarch64`, and you can repeat it to give several. If you do not give it, the script builds for the local platform.
 - `macos-aarch64` can only be built on an arm64 Mac. The Linux builds are made in Docker using the build stage of the `Dockerfile`.
 - The script needs specific versions of `cargo-about` and `cargo-deny`, which it uses to check and list the licenses of dependencies. When the versions do not match, the script prints the install commands to run.
+- Before it builds anything, the script checks with `gh` that the Release workflow (`release.yml`, which runs every other workflow for one commit) has passed for the commit. Start it with `gh workflow run release.yml --ref <ref>`. For a build that is not a release, such as one from a fork, add `--no-ci-check`.
 - The output is `dist/rradius-<version>-<platform>.tar.gz` and the matching `.sha256`. Before packaging finishes, the script unpacks the tarball and checks the example scenarios with the program inside; if a check fails, no output is produced.
 
 The directory layout in the tarball is the same as in the source repository, so the relative paths in the example configurations still work:

@@ -4,7 +4,7 @@
 # repository so that every relative path in them still holds. Everything packaged comes from one
 # commit, through `git archive`.
 #
-#   packages/tarball/release.sh [--target macos-aarch64|linux-x86_64|linux-aarch64]... [--out <dir>] [--commit <rev>]
+#   packages/tarball/release.sh [--target macos-aarch64|linux-x86_64|linux-aarch64]... [--out <dir>] [--commit <rev>] [--no-ci-check]
 #
 # Each archive is rradius-<version>-<platform>.tar.gz. Without --target it builds for this
 # machine. Linux builds use the Dockerfile's build stage. It needs cargo-about
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: packages/tarball/release.sh [--target macos-aarch64|linux-x86_64|linux-aarch64]... [--out <dir>] [--commit <rev>]" >&2
+    echo "usage: packages/tarball/release.sh [--target macos-aarch64|linux-x86_64|linux-aarch64]... [--out <dir>] [--commit <rev>] [--no-ci-check]" >&2
     exit 2
 }
 
@@ -29,6 +29,8 @@ fail() {
 root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 out="$root/dist"
 commit=HEAD
+# A release needs a passed run of release.yml for its commit; --no-ci-check is for a build that is not one.
+ci_check=yes
 targets=()
 program=rradius-server
 # The name of the executable the crate builds; the crate and the executable are not named alike.
@@ -38,6 +40,7 @@ while [ $# -gt 0 ]; do
         --target) [ $# -ge 2 ] || usage; targets+=("$2"); shift 2 ;;
         --out) [ $# -ge 2 ] || usage; out="$2"; shift 2 ;;
         --commit) [ $# -ge 2 ] || usage; commit="$2"; shift 2 ;;
+        --no-ci-check) ci_check=no; shift ;;
         *) usage ;;
     esac
 done
@@ -67,6 +70,9 @@ for tool in about deny; do
 done
 
 hash=$(git -C "$root" rev-parse --verify "$commit^{commit}") || fail "no commit '$commit'"
+if [ "$ci_check" = yes ]; then
+    "$root/.github/scripts/require-release-run.sh" "$hash" || exit 1
+fi
 # A program's version, from its Cargo.toml in the commit packaged.
 version_of() {
     local version

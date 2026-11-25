@@ -40,7 +40,7 @@ RRADIUS_PREFIX=/usr/local cargo build --release
 
 - **Linux 版的 glibc：** 它在 Debian 12（bookworm）建置，需要的版本寫在壓縮檔的 `VERSION` 和 `README.md`。0.1.0 需要 glibc 2.34 以上，2026-11-08 在 Debian 12、Ubuntu 22.04（2.35）和 Rocky Linux 9（2.34）上確認過可以執行。更舊的發行版請用 Docker 映像（1.1 節）或自己建置。
 - **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡（放在預設字典路徑，也就是 `$RRADIUS_PREFIX/share/rradius/dictionary` 時可以不寫）；執行檔放到 `PATH` 裡。
-- **自己產生發行檔：** `packages/tarball/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
+- **自己產生發行檔：** `packages/tarball/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>] [--no-ci-check]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。打包前，腳本先用 `gh` 問 GitHub：這個 commit 的 Release workflow（`release.yml`，對同一個 commit 把其他 workflow 全部跑一遍）有沒有通過；用 `gh workflow run release.yml --ref <ref>` 啟動它。不是正式 release 的建置（例如從 fork 建置）用 `--no-ci-check` 略過。
 
 - **啟動服務要用 `serve` 子命令：** `rradiusd serve [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`serve` 後面接其他參數時印出它的用法，狀態碼 2。
 - **不帶參數只印用法：** `rradiusd`、`rradiusd help`（或 `-h`、`--help`）把所有子命令的用法印到 stdout，最後一行寫出預設設定檔，狀態碼 0，不讀設定檔也不啟動任何東西。參數不對時印出同樣的用法到 stderr，狀態碼 2；第一個參數是 `--config` 或 `--check` 時（舊的寫法）多一行提示改用 `serve --config <path>` 或 `check --config <path>`，不會啟動也不會檢查。

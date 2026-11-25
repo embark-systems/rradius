@@ -1,0 +1,21 @@
+# Before a release: every workflow of the repository, for one commit. Start it by hand on the
+# branch or tag that is to be released (`gh workflow run release.yml --ref <ref>`). It calls
+# ci.yml (test, and the jobs that wait for the weekly run: deny, ldap, external-db, docker, which
+# a call from here runs because this workflow is started by hand), bench.yml and fuzz.yml.
+# packages/tarball/release.sh packs a release only when a run of this workflow for the commit
+# has passed.
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+  bench:
+    uses: ./.github/workflows/bench.yml
+  fuzz:
+    uses: ./.github/workflows/fuzz.yml
