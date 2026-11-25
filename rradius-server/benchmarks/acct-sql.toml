@@ -1,5 +1,5 @@
 # For measuring with rradius-bench only: the secrets are in this file, and everyone is
-# accepted. See "效能量測" in docs/usage.md.
+# accepted. See "Performance measurements" (section 9) in docs/usage.md.
 dictionary = "../../share/dictionary"
 
 [lua]

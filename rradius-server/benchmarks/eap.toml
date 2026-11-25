@@ -1,6 +1,6 @@
 # For measuring EAP with rradius-bench only: the secrets are in this file, and the one user is
 # "bench" with the password "bench". The certificates go in eap-certs/, made by the commands
-# in "效能量測" in docs/usage.md.
+# in "Performance measurements" (section 9) in docs/usage.md.
 dictionary = "../../share/dictionary"
 
 [lua]
