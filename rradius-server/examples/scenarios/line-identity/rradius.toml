@@ -1,6 +1,6 @@
 # 線路身分認證（固網寬頻 IPoE）：BNG 把 DHCP Option 82 的 circuit-id、remote-id 放進 RADIUS 請求，
 # 用戶沒有密碼，「哪一條線」就是身分。認得的線路回位址池名稱和設定檔名稱，不認得的拒絕。
-# 說明：docs/manual/14-isp-recipes.md〈依線路身分認證：line-identity〉
+# 說明：docs/manual.zh-TW/14-isp-recipes.md〈依線路身分認證：line-identity〉
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/line-identity/rradius.toml

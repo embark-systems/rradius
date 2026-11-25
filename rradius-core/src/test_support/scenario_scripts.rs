@@ -206,7 +206,7 @@ fn code_block<'a>(markdown: &'a str, lang: &str, first_line: &str) -> &'a str {
 /// that are old enough.
 #[tokio::test]
 async fn test_manual_purge_snippet() {
-    let manual = include_str!("../../../docs/manual/18-operations.md");
+    let manual = include_str!("../../../docs/manual.zh-TW/18-operations.md");
     let tables = ["users", "user_reply", "accounting", "user_reply_user", "accounting_user", "housekeeping"];
     apply(&renamed(QUICK_START_SCHEMA, "hk", &tables)).await;
     apply(&renamed(code_block(manual, "sql", "-- 3_housekeeping.sql"), "hk", &tables)).await;

@@ -1,5 +1,5 @@
 # IPv6 前綴池（DHCPv6-PD）：單機，認證時從池分配委派前綴，計費確認與釋放。
-# 說明：docs/manual/14-isp-recipes.md〈IPv6 前綴池：prefix-pool〉
+# 說明：docs/manual.zh-TW/14-isp-recipes.md〈IPv6 前綴池：prefix-pool〉
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/prefix-pool/rradius.toml

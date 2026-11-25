@@ -1,5 +1,5 @@
 # 位址池：單機，認證時從資料表的池分配 IP 位址，計費確認與釋放。
-# 說明：docs/manual/14-isp-recipes.md〈IPv4 位址池：ip-pool〉
+# 說明：docs/manual.zh-TW/14-isp-recipes.md〈IPv4 位址池：ip-pool〉
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/ip-pool/rradius.toml

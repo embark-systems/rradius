@@ -103,6 +103,6 @@ CREATE INDEX prefix_leases_nas ON prefix_leases (nas, state);
 CREATE INDEX prefix_leases_released ON prefix_leases (pool, updated) WHERE state = 'released';
 CREATE INDEX prefix_leases_pool_state ON prefix_leases (pool, state);
 
--- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual/18-operations.md〈清除舊資料〉）。
+-- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual.zh-TW/18-operations.md〈清除舊資料〉）。
 CREATE TABLE housekeeping (name TEXT PRIMARY KEY, last_run INTEGER NOT NULL);
 INSERT INTO housekeeping VALUES ('reap-ip-pool', 0), ('reap-prefix-pool', 0);

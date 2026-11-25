@@ -1,5 +1,5 @@
 # 用戶資源控制：每個用戶有方案，限制同時連線數和一段時間的流量。單機。
-# 說明：docs/manual/14-isp-recipes.md〈方案與用量控制：usage-control〉
+# 說明：docs/manual.zh-TW/14-isp-recipes.md〈方案與用量控制：usage-control〉
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/usage-control/rradius.toml
