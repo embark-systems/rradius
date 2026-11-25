@@ -1,0 +1,42 @@
+# The load generator, rradius-bench, a member of the workspace; its tests start a real server.
+# The ones that need rradius-enterprise say so and pass when it is not built. It runs once a
+# week, when started by hand, in release.yml, and for a pull request that changes the load
+# generator or the dependencies. Not for every pull request: ci.yml's test job runs the tests of
+# the program, and rradius-server's own bench_test runs the load generator against it.
+name: Bench
+
+on:
+  pull_request:
+    paths:
+      - 'rradius-bench/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/bench.yml'
+  schedule:
+    - cron: '27 4 * * 1'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --locked -p rradius-bench
+      - run: cargo clippy --locked -p rradius-bench --all-targets
+      - run: cargo test --locked -p rradius-bench

@@ -237,6 +237,7 @@ $ packages/tarball/release.sh --target linux-x86_64 --out dist
 - `--target` 可以是 `macos-aarch64`、`linux-x86_64`、`linux-aarch64`，可以重複給多個。不給時建本機的平台。
 - `macos-aarch64` 只能在 arm64 的 Mac 上建；Linux 版在 Docker 裡用 `Dockerfile` 的建置階段建。
 - 腳本需要特定版本的 `cargo-about` 和 `cargo-deny`，用來檢查與列出相依套件的授權。版本不符時，腳本會印出要執行的安裝指令。
+- 開始建置之前，腳本會用 `gh` 確認這個 commit 的 Release workflow（`release.yml`，對同一個 commit 把其他 workflow 全部跑一遍）已經通過；用 `gh workflow run release.yml --ref <ref>` 啟動它。不是正式 release 的建置（例如從 fork 建置）加 `--no-ci-check`。
 - 產出是 `dist/rradius-<版本>-<平台>.tar.gz` 與對應的 `.sha256`。打包完成前，腳本會解開壓縮檔，用裡面的程式檢查範例情境，檢查失敗就不產出。
 
 壓縮檔裡的目錄結構和原始碼 repo 一樣，所以範例設定裡的相對路徑照樣成立：
