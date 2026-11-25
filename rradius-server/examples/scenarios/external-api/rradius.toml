@@ -1,6 +1,6 @@
 # 帳號在別的系統：會員系統（或帳務系統）已經有帳號和密碼，rradius 不存帳號，
 # 每次登入用 HTTPS 問它的 API。
-# 說明：docs/manual/15-access-recipes.md〈帳號在外部系統：external-api〉
+# 說明：docs/manual.zh-TW/15-access-recipes.md〈帳號在外部系統：external-api〉
 
 dictionary = "../../../../share/dictionary"
 

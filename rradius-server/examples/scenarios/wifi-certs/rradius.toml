@@ -1,5 +1,5 @@
 # 憑證登入的 Wi-Fi，加上撤銷檢查：遺失的筆電用撤銷清單擋下。
-# 說明：docs/manual/11-eap.md〈用 CRL 擋下撤銷的憑證〉
+# 說明：docs/manual.zh-TW/11-eap.md〈用 CRL 擋下撤銷的憑證〉
 #
 # 憑證和撤銷清單不在 repo 裡，先執行 ./setup.sh 產生。
 

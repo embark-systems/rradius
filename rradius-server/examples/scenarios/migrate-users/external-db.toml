@@ -1,5 +1,5 @@
 # 帳號留在原本的 PostgreSQL：舊系統繼續維護帳號表，rradius 只讀。計費仍寫進 rradius 自己的資料表。
-# 說明：docs/manual/09-external-databases.md；欄位見 docs/usage.md 2.17 節。
+# 說明：docs/manual.zh-TW/09-external-databases.md；欄位見 docs/usage.md 2.17 節。
 
 dictionary = "../../../../share/dictionary"
 

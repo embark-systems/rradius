@@ -10,7 +10,7 @@ RADIUS、TACACS+ 的 AAA 伺服器，認證和計費邏輯用 Luau 腳本與 SQL
 | `share/` | RADIUS 字典，設定檔的 `dictionary` 指向 `share/dictionary` |
 | `rradius-server/examples/scenarios/` | 使用手冊各情境的設定、資料表 migration 和 Lua 腳本，可以直接啟動 |
 | `rradius-server/examples/` | 其他範例設定和腳本 |
-| `docs/manual/` | 使用手冊，從 `docs/manual/README.md` 開始讀 |
+| `docs/manual.zh-TW/` | 使用手冊，從 `docs/manual.zh-TW/README.md` 開始讀 |
 | `docs/usage.md` | 所有設定和功能的參考 |
 | `VERSION` | 版本和建置它的 commit；Linux 版另有一行 `glibc <版本>`，是它需要的最低 glibc 版本 |
 
@@ -26,7 +26,7 @@ cd rradius-server
 ../bin/rradiusd serve --config examples/scenarios/quick-start/rradius.toml
 ```
 
-使用手冊假設執行檔在 `PATH` 上，第一步寫成 `export PATH="$PWD/target/release:$PATH"`（在原始碼 repo 的根目錄）；用這個壓縮檔時，在解開後的根目錄改成 `export PATH="$PWD/bin:$PATH"`，其他部分都一樣。見 `docs/manual/03-quick-start.md`。
+使用手冊假設執行檔在 `PATH` 上，第一步寫成 `export PATH="$PWD/target/release:$PATH"`（在原始碼 repo 的根目錄）；用這個壓縮檔時，在解開後的根目錄改成 `export PATH="$PWD/bin:$PATH"`，其他部分都一樣。見 `docs/manual.zh-TW/03-quick-start.md`。
 
 - 範例的密碼檔（`*.secret`）都是示範值，正式環境一定要換掉。
 - 範例啟動後會在範例目錄產生 `data/` 等目錄，要從頭再來就停止伺服器後刪掉。

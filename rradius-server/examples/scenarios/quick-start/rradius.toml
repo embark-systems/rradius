@@ -1,5 +1,5 @@
 # 快速開始：單機，使用者存在 SQL 資料表，計費寫進資料表。
-# 說明：docs/manual/03-quick-start.md
+# 說明：docs/manual.zh-TW/03-quick-start.md
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/quick-start/rradius.toml

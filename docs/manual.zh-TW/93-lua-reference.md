@@ -552,7 +552,7 @@ $ wc -l < /tmp/source.txt
 
 ```console
 $ grep -v -x -e radsec_subject -e radsec_subject_attrs /tmp/source.txt > /tmp/expected.txt
-$ grep -E '^### [a-z_]+$' docs/manual/93-lua-reference.md | cut -c5- | sort > /tmp/book.txt
+$ grep -E '^### [a-z_]+$' docs/manual.zh-TW/93-lua-reference.md | cut -c5- | sort > /tmp/book.txt
 $ diff /tmp/expected.txt /tmp/book.txt && echo same
 same
 ```

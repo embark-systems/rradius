@@ -1,6 +1,6 @@
 # 固定位址與前綴（固網寬頻）：商業用戶或特定方案要固定的 IPv4 位址、路由的子網段、IPv6 前綴。
 # 密碼由 sql 處理器驗，位址屬性由 lua 處理器依資料表回。
-# 說明：docs/manual/14-isp-recipes.md〈固定位址與前綴：static-ip〉
+# 說明：docs/manual.zh-TW/14-isp-recipes.md〈固定位址與前綴：static-ip〉
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/static-ip/rradius.toml

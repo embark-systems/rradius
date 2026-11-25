@@ -1,6 +1,6 @@
 # 三節點高可用叢集的第 1 個節點。三份設定只差 node_id 和 listen。
 # 節點之間走 WireGuard（10.99.0.0/24），設定方式見 docs/usage.md 2.2 節。
-# 說明：docs/manual/16-cluster.md〈多台主機：ha-cluster 情境〉
+# 說明：docs/manual.zh-TW/16-cluster.md〈多台主機：ha-cluster 情境〉
 #
 # 資料表、示範帳號（migrations/2_demo_users.sql，正式環境要刪掉）和計費腳本（accounting.lua）
 # 都和快速開始相同。
