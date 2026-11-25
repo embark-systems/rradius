@@ -365,7 +365,7 @@ $ head -2 rradius.toml
 rradiusd tuning [--config <path>]
 ```
 
-讀這台機器的系統設定與 UDP 掉包計數，再依設定檔估計需要的 socket 緩衝區與檔案數量，印出建議值、原因與指令。Linux、macOS、FreeBSD 有建議；其他平台印 `rradius tuning: no advice for this platform (Linux, macOS and FreeBSD have it)`，結束碼 0。每一項的意思見 [19 效能調校與壓測](19-performance.md)。
+讀這台機器的系統設定與 UDP 掉包計數，再估計需要的 socket 緩衝區與檔案數量，印出建議值、原因與指令。`--config` 可以不給：不給時讀預設路徑的設定檔，沒有就用全部預設值估算；給了才會依你的設定（例如 `recv_buffer_bytes`、`sockets`）檢查系統上限夠不夠。指令只讀不改。Linux、macOS、FreeBSD 有建議；其他平台印 `rradius tuning: no advice for this platform (Linux, macOS and FreeBSD have it)`，結束碼 0。每一項的意思見 [19 效能調校與壓測](19-performance.md)。
 
 ```console
 $ rradiusd tuning --config rradius.toml
