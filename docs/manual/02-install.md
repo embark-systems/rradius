@@ -35,7 +35,7 @@ repo 提供的是各種安裝方式的建置腳本與定義檔，本書的每一
 | 原始碼 | 開發、測試、跟著本書做練習 | `cargo` | 已驗證 |
 | deb | Debian 12、13，Ubuntu 22.04 以後 | `packages/deb/` | 未實機驗證 |
 | rpm | RHEL 系列（例如 Rocky、AlmaLinux） | `packages/rpm/` | 未實機驗證 |
-| FreeBSD port | FreeBSD | `packages/freebsd/net/rradius/` | 未實機驗證 |
+| FreeBSD port | FreeBSD | `packages/freebsd/net/rradius/` | rc.d 腳本實機驗證，建置未驗證 |
 | 發行壓縮檔 | 不想用套件管理、或在 macOS 上試用 | `packages/tarball/release.sh` | 未實機驗證 |
 | Docker | 容器環境 | `Dockerfile` | 已驗證 |
 | Docker Compose | 單機容器部署 | `compose.yaml`、`docker/` | 已驗證 |
@@ -185,7 +185,7 @@ $ sudo dnf install ./dist/rradius-0.1.0-1.el9.x86_64.rpm
 
 ## FreeBSD port
 
-> **未實機驗證：** 本節只對照了 `packages/freebsd/net/rradius/` 的 Makefile、`pkg-plist` 與 rc.d 腳本，沒有在 FreeBSD 上建置或安裝過。
+> **部分實機驗證：** 本節對照了 `packages/freebsd/net/rradius/` 的 Makefile、`pkg-plist` 與 rc.d 腳本。rc.d 腳本在 FreeBSD 15.2-STABLE 上以 `rradius` 用戶啟動並穩定執行過；port 的建置與 `pkg` 安裝沒有實測過。
 
 ### 建置
 
@@ -213,7 +213,7 @@ rc.d 腳本 `rradius` 讀這些 `rc.conf` 變數：
 | `rradius_config` | `/usr/local/etc/rradius/rradius.toml` | 設定檔 |
 | `rradius_user` | `rradius` | 執行身分 |
 
-服務透過 `daemon(8)` 執行，程式結束時隔 2 秒自動重新啟動，輸出交給 syslog（tag 是 `rradius`）。`service rradius reload` 會對程式送 SIGHUP，重新載入設定（第 04 章）。
+服務透過 `daemon(8)` 執行，程式結束時隔 2 秒自動重新啟動，輸出交給 syslog（tag 是 `rradius`）。設了 `rradius_user` 時，rc.subr 已經用 `su -m` 以那個用戶執行整個指令，所以腳本不再給 `daemon` 加 `-u`（非 root 的 `daemon -u` 會在 initgroups 失敗）。PID 檔放在 `/var/run/rradius/`，啟動時由腳本建立，擁有者是 `rradius_user`。`service rradius reload` 會對程式送 SIGHUP，重新載入設定（第 04 章）。
 
 ```console
 # sysrc rradius_enable=YES
