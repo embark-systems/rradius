@@ -1,11 +1,11 @@
--- 公司配發的設備。套用過的檔案不能再改，要改結構就新增下一個編號的檔案。
+-- Company-issued devices. An applied file must not be changed; to change the structure, add a file with the next number.
 CREATE TABLE devices (
-  name TEXT PRIMARY KEY,             -- 憑證上的名稱，例如 laptop-001.corp.example.com
+  name TEXT PRIMARY KEY,             -- the name on the certificate, for example laptop-001.corp.example.com
   vlan TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1
 );
 
--- 計費，和快速開始相同。
+-- Accounting, same as the quick start.
 CREATE TABLE accounting (
   client TEXT NOT NULL,
   nas TEXT NOT NULL,

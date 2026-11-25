@@ -1,14 +1,14 @@
-# 快速開始：單機，使用者存在 SQL 資料表，計費寫進資料表。
-# 說明：docs/manual.zh-TW/03-quick-start.md
+# Quick start: a single node, users in an SQL table, accounting written to a table.
+# Explanation: docs/manual/03-quick-start.md
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/quick-start/rradius.toml
 #
-# 相對路徑都以這個檔案所在的目錄為準。
+# Relative paths are relative to the directory of this file.
 
 dictionary = "../../../../share/dictionary"
 
-# 有 [auth] 時，認證交給下面的串接；這個腳本只處理計費。
+# With [auth] present, authentication goes to the chain below; this script only handles accounting.
 [lua]
 script = "accounting.lua"
 
@@ -16,7 +16,7 @@ script = "accounting.lua"
 data_dir = "data"
 secret_raft_file = "raft.secret"
 secret_api_file = "api.secret"
-# 啟動時依序套用 migrations/ 裡的 SQL 檔，建立資料表和示範帳號。
+# At startup, the SQL files in migrations/ are applied in order, creating the tables and the demo accounts.
 migrations_dir = "migrations"
 
 [auth]
@@ -24,13 +24,13 @@ policy = "first_match"
 
 [[auth.handlers]]
 type = "sql"
-# 停用的帳號查不到，等同不存在：串接只有這個處理器，所以會被拒絕。
+# A disabled account is not found, which is the same as not existing: the chain has only this handler, so it is rejected.
 user_query = "SELECT password FROM users WHERE username = ? AND enabled = 1"
 reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 
 [radius]
 bind = "127.0.0.1"
-# 回應 Status-Server，監控不必用測試帳號登入。
+# Answer Status-Server, so monitoring does not need a test account to log in.
 status_server = true
 
 [[radius.clients]]
@@ -40,9 +40,9 @@ secret_file = "localhost.secret"
 
 [metrics]
 
-# 現在在線的 session：rradiusd session list，或某個使用者的 session：
-# rradiusd session show alice。查詢由你決定哪些列算在線：這裡是還沒結束、而且最近
-# 15 分鐘內有更新的列（NAS 當機沒送 Stop 的列不會一直留著）。
+# Sessions online now: rradiusd session list, or the sessions of one user:
+# rradiusd session show alice. The query decides which rows count as online: here, rows that have not ended and
+# were updated within the last 15 minutes (rows of a NAS that crashed without sending Stop do not stay forever).
 [sessions]
 list = "SELECT username, nas, session_id, started, updated FROM accounting WHERE stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
 show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE username = ?1 AND stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"

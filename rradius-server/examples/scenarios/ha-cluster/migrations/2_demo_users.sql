@@ -1,7 +1,7 @@
--- 示範帳號，正式環境請刪掉這個檔案，改用自己的資料。
---   alice：明文密碼，PAP 和 CHAP 都能用
---   bob：bcrypt 雜湊（htpasswd -nbBC 10 bob bob-password），只能 PAP
---   carol：停用中
+-- Demo accounts. In production, delete this file and use your own data.
+--   alice: plaintext password, works with both PAP and CHAP
+--   bob: bcrypt hash (htpasswd -nbBC 10 bob bob-password), PAP only
+--   carol: disabled
 INSERT INTO users (username, password, enabled) VALUES
   ('alice', 'alice-password', 1),
   ('bob', '{crypt}$2y$10$awiMiQfG.xfcf8MOW53ZjeCjW9hF2SDAhxDjwHKSR8ISBOS4wC/Ay', 1),

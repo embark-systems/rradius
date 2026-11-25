@@ -1,14 +1,14 @@
-# IPv6 前綴池（DHCPv6-PD）：單機，認證時從池分配委派前綴，計費確認與釋放。
-# 說明：docs/manual.zh-TW/14-isp-recipes.md〈IPv6 前綴池：prefix-pool〉
+# IPv6 prefix pool (DHCPv6-PD): single node; a delegated prefix is allocated from the pool at authentication, and accounting confirms and releases it.
+# See: docs/manual/14-isp-recipes.md "IPv6 prefix pool: prefix-pool"
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/prefix-pool/rradius.toml
 #
-# 相對路徑都以這個檔案所在的目錄為準。
+# Relative paths are all relative to the directory this file is in.
 
 dictionary = "../../../../share/dictionary"
 
-# 有 [auth] 時認證交給下面的串接；這個腳本只處理計費（確認、延長、釋放前綴）。
+# With [auth] configured, authentication goes to the chain below; this script only handles accounting (confirm, extend, release prefixes).
 [lua]
 script = "accounting.lua"
 
@@ -18,8 +18,8 @@ secret_raft_file = "raft.secret"
 secret_api_file = "api.secret"
 migrations_dir = "migrations"
 
-# all_accept：依序執行，任一個拒絕就停。先由 sql 處理器驗密碼（密碼錯就不會往下，所以不會替沒通過的人
-# 分配前綴），再由 lua 處理器分配前綴。
+# all_accept: run in order and stop at the first reject. The sql handler checks the password first (a wrong password does not go further, so no prefix is
+# allocated to someone who did not pass), then the lua handler allocates the prefix.
 [auth]
 policy = "all_accept"
 
@@ -42,15 +42,15 @@ secret_file = "localhost.secret"
 
 [metrics]
 
-# 現在在線的 session：rradiusd session list。前綴池本身就記著誰在用哪個前綴，
-# 所以直接查它：狀態是 active 而且還沒到期的列。
+# Sessions online now: rradiusd session list. The prefix pool itself records who uses which prefix,
+# so query it directly: rows whose state is active and that have not expired.
 [sessions]
 list = "SELECT username, nas, session_id, prefix, updated FROM prefix_leases WHERE state = 'active' AND expires > strftime('%s', 'now') ORDER BY pool, n"
 show = "SELECT username, nas, session_id, prefix, updated FROM prefix_leases WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY pool, n"
 
-# 監控：每個池各狀態的前綴數（reserved、active、released）、池的容量、最舊的 released 的年齡，成為指標
-# rradius_query_prefix_leases{pool,state}、rradius_query_prefix_capacity{pool}、rradius_query_prefix_hold_age{pool}。
-# 使用率只算 reserved 與 active：released 是留給離線用戶的，要用時可以被搶；說明見手冊第 14 章〈IPv6 前綴池〉的「池很滿的時候」。
+# Monitoring: the number of prefixes in each state (reserved, active, released) of each pool, the pool capacity, and the age of the oldest released one become the metrics
+# rradius_query_prefix_leases{pool,state}, rradius_query_prefix_capacity{pool}, rradius_query_prefix_hold_age{pool}.
+# Utilization counts only reserved and active: released ones are kept for offline users and can be taken when needed; see "When the pool is nearly full" in manual chapter 14, "IPv6 prefix pool: prefix-pool".
 [queries.prefix_leases]
 sql = "SELECT pool, state, count(*) AS prefixes FROM prefix_leases GROUP BY pool, state"
 help = "Prefixes of each pool by state: reserved, active, or released (kept for a user who went offline)."

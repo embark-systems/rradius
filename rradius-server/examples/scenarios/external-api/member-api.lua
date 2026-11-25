@@ -1,19 +1,19 @@
--- 用會員系統的 API 驗證帳號密碼。
+-- Verify the user name and password with the member system's API.
 --
--- 這份腳本假設的 API（請換成你的系統實際提供的）：
+-- The API this script assumes (replace it with what your system really provides):
 --   POST https://members.example.com/v1/radius/login
---   Authorization: Bearer <API 金鑰>
+--   Authorization: Bearer <API key>
 --   Content-Type: application/x-www-form-urlencoded
---   內容：username=<帳號>&password=<密碼>
---   200：帳號密碼正確，可以上網；回應標頭 X-Plan 是方案名稱（選填）
---   401、403：帳號密碼不對，或不能上網
--- 腳本沒有 JSON 函式，所以請 API 用狀態碼和標頭回答。
+--   body: username=<user>&password=<password>
+--   200: user name and password are correct and access is allowed; the response header X-Plan is the plan name (optional)
+--   401, 403: wrong user name or password, or access is not allowed
+-- The script has no JSON functions, so have the API answer with status codes and headers.
 local API = 'https://members.example.com/v1/radius/login'
-local API_KEY = 'member-api-key-change-me'   -- 示範值。這個檔案只讓執行 rradius 的帳號讀得到
+local API_KEY = 'member-api-key-change-me'   -- demo value. Only the account that runs rradius should be able to read this file
 
 local user = get_attr('User-Name') or ''
 local password = get_attr('User-Password') or ''
--- 只有 PAP 帶得出明文密碼；CHAP、MS-CHAPv2 這裡無法驗證。空的名稱或密碼不必問 API。
+-- Only PAP gives the plaintext password; CHAP and MS-CHAPv2 cannot be verified here. An empty name or password need not be sent to the API.
 if user == '' or password == '' then
   return 'reject'
 end
@@ -25,11 +25,11 @@ local response, problem = http_request{
     Authorization = 'Bearer ' .. API_KEY,
     ['Content-Type'] = 'application/x-www-form-urlencoded',
   },
-  -- 名稱和密碼來自使用者，一律先編碼。
+  -- The name and password come from the user, so always encode them first.
   body = 'username=' .. url_encode(user) .. '&password=' .. url_encode(password),
 }
 
--- API 沒有回答（逾時、連不上、太忙）：拒絕，並留下一行記錄。不要記錄密碼。
+-- The API did not answer (timeout, unreachable, too busy): reject, and leave one log line. Do not log the password.
 if not response then
   log('member API gave no answer:', problem)
   return 'reject'
@@ -41,7 +41,7 @@ if response.status ~= 200 then
   return 'reject'
 end
 
--- 方案名稱交給 NAS 當 Filter-Id，由 NAS 上同名的規則決定速率。只收看起來像名稱的值。
+-- Give the plan name to the NAS as Filter-Id, and the rule of the same name on the NAS sets the rate. Accept only values that look like names.
 local plan = response.headers['x-plan']
 if plan and plan:match('^[%w_-]+$') then
   set_attr('Filter-Id', plan)

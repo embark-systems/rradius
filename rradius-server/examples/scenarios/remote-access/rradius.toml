@@ -1,10 +1,10 @@
-# 遠端存取：VPN 閘道用公司目錄（LDAP／AD）的帳號登入，只有 vpn 群組的人能連，
-# 依群組給不同的存取規則；跳板機另外要求密碼加 TOTP 驗證碼。
-# 說明：docs/manual.zh-TW/15-access-recipes.md〈遠端存取：remote-access〉
+# Remote access: the VPN gateway logs in with accounts from the company directory (LDAP/AD), only people in the vpn group can connect,
+# and different access rules are given by group; the jump host additionally requires a password plus a TOTP code.
+# See: docs/manual/15-access-recipes.md "Remote access: remote-access"
 
 dictionary = "../../../../share/dictionary"
 
-# 計費交給快速開始的腳本。兩個 client 都指定了串接，認證不會來到這裡。
+# Accounting is handled by the quick start script. Both clients specify the chain, so authentication never reaches here.
 [lua]
 script = "accounting.lua"
 
@@ -14,7 +14,7 @@ secret_raft_file = "raft.secret"
 secret_api_file = "api.secret"
 migrations_dir = "migrations"
 
-# VPN：用服務帳號找到使用者，再以使用者的身分 bind 驗證密碼（只支援 PAP）。
+# VPN: find the user with a service account, then verify the password by binding as the user (PAP only).
 [auth.chains.vpn]
 policy = "first_match"
 
@@ -24,13 +24,13 @@ urls = ["ldaps://dc1.corp.example.com", "ldaps://dc2.corp.example.com"]
 bind_dn = "CN=svc-radius,OU=Service Accounts,DC=corp,DC=example,DC=com"
 bind_password_file = "ldap.secret"
 base_dn = "OU=People,DC=corp,DC=example,DC=com"
-# AD：停用的帳號（userAccountControl 第 2 位元）找不到，等同不存在。
+# AD: a disabled account (bit 2 of userAccountControl) is not found, which is the same as not existing.
 filter = "(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
 password_check = "bind"
 required_groups = ["CN=vpn-users,OU=Groups,DC=corp,DC=example,DC=com"]
-# ca_file = "corp-ca.pem"          # 目錄伺服器的憑證不是系統信任的 CA 簽的時候
+# ca_file = "corp-ca.pem"          # for when the directory server's certificate is not signed by a CA the system trusts
 
-# 群組決定 VPN 閘道套用哪一組規則（閘道上要有同名的 filter／group policy）。
+# The group decides which set of rules the VPN gateway applies (the gateway needs a filter/group policy of the same name).
 [[auth.chains.vpn.handlers.group_reply]]
 group = "CN=it-staff,OU=Groups,DC=corp,DC=example,DC=com"
 attributes = { "Filter-Id" = "vpn-it" }
@@ -39,12 +39,12 @@ attributes = { "Filter-Id" = "vpn-it" }
 group = "CN=contractors,OU=Groups,DC=corp,DC=example,DC=com"
 attributes = { "Filter-Id" = "vpn-contractor", "Session-Timeout" = "28800" }
 
-# 使用者可能輸入 CORP\alice 或 alice@corp.example.com。
+# The user may type CORP\alice or alice@corp.example.com.
 [auth.chains.vpn.username]
 strip_realm = "both"
 lowercase = true
 
-# 跳板機：密碼之後回 Access-Challenge，要求 TOTP 驗證碼。
+# Jump host: after the password, reply Access-Challenge to ask for a TOTP code.
 [auth.chains.mfa]
 policy = "first_match"
 

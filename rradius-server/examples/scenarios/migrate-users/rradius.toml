@@ -1,6 +1,6 @@
-# 從舊系統搬帳號：把舊目錄、舊 RADIUS 伺服器或 /etc/shadow 匯出的密碼雜湊原樣放進資料表，
-# 使用者不必重設密碼。之後改密碼時改存新的格式。
-# 說明：docs/manual.zh-TW/07-users-and-chains.md〈搬入舊系統的密碼雜湊〉
+# Moving accounts from an old system: put the password hashes exported from the old directory, old RADIUS server or /etc/shadow into the table as they are,
+# so users do not have to reset their passwords. When a password is changed later, it is stored in the new format.
+# See: docs/manual/07-users-and-chains.md "Migrate password hashes from an old system"
 
 dictionary = "../../../../share/dictionary"
 
@@ -18,17 +18,17 @@ policy = "first_match"
 
 [[auth.handlers]]
 type = "sql"
-# 密碼欄是 {格式}值，伺服器依前綴決定怎麼比對，見 docs/usage.md 第 5 節。
+# The password column is {format}value; the server picks the comparison from the prefix, see docs/usage.md section 5.
 user_query = "SELECT password FROM users WHERE username = ? AND enabled = 1"
 reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 
-# 舊系統的名稱大小寫不一、有的帶網域：查帳號前先統一。資料表一律存小寫。
+# The old system's names vary in case and some carry a domain: normalize before looking up the account. The table always stores lowercase.
 [auth.username]
 strip_realm = "both"
 lowercase = true
 
-# rradiusd user passwd 之後存成 bcrypt，舊格式的帳號就這樣一個一個換掉。
-# origin 改成 rradius，方便統計還有多少帳號留在舊格式。
+# After rradiusd user passwd the password is stored as bcrypt; accounts in the old format are replaced one by one this way.
+# Change origin to rradius, so you can count how many accounts are still in the old format.
 [accounts]
 scheme = "bcrypt"
 add = "INSERT INTO users (username, password, origin) VALUES (?1, ?2, 'rradius')"

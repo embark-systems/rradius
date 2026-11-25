@@ -1,10 +1,10 @@
-# 網路設備管理（TACACS+）：管理員登入路由器和交換器，依角色決定權限等級和能下的指令，
-# 每個指令都記下來。
-# 說明：docs/manual.zh-TW/12-tacacs.md
+# Network device administration (TACACS+): administrators log in to routers and switches; the role decides the privilege level and the commands allowed,
+# and every command is recorded.
+# Explanation: docs/manual/12-tacacs.md
 
 dictionary = "../../../../share/dictionary"
 
-# TACACS+ 的授權和計費都交給這個腳本；認證交給下面的串接。
+# TACACS+ authorization and accounting both go to this script; authentication goes to the chain below.
 [lua]
 script = "tacacs.lua"
 
@@ -23,7 +23,7 @@ user_query = "SELECT password FROM admins WHERE username = ? AND enabled = 1"
 
 [tacacs]
 bind = "0.0.0.0"
-port = 49                    # 需要權限，見手冊
+port = 49                    # needs privileges, see the manual
 idle_timeout_ms = 300000
 
 [[tacacs.clients]]

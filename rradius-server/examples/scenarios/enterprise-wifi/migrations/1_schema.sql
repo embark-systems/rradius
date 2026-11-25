@@ -1,13 +1,13 @@
--- 帳號（員工）和裝置（公司配發的電腦）在同一張表，依 grp 決定 VLAN。
+-- Users (employees) and devices (company-issued computers) are in one table; grp decides the VLAN.
 CREATE TABLE accounts (
-  name TEXT PRIMARY KEY,                -- 員工：小寫帳號；裝置：憑證上的名稱（DNS SAN）
-  kind TEXT NOT NULL,                   -- 'user' 或 'device'
-  password TEXT,                        -- 員工用，PEAP 需要明文或 {nthash}；裝置留空
+  name TEXT PRIMARY KEY,                -- employee: lowercase user name; device: the name on the certificate (DNS SAN)
+  kind TEXT NOT NULL,                   -- 'user' or 'device'
+  password TEXT,                        -- for employees; PEAP needs plaintext or {nthash}; leave empty for devices
   grp TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1
 );
 
--- 每個群組的回覆屬性。VLAN 的三個屬性都要有，tag 寫在名稱後面。
+-- Reply attributes of each group. All three VLAN attributes are needed, and the tag goes after the name.
 CREATE TABLE group_reply (
   grp TEXT NOT NULL,
   attribute TEXT NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE group_reply (
 );
 CREATE INDEX group_reply_grp ON group_reply (grp);
 
--- accounting.lua（共用快速開始的腳本）寫這張表。
+-- accounting.lua (the quick-start script, shared) writes this table.
 CREATE TABLE accounting (
   client TEXT NOT NULL,
   nas TEXT NOT NULL,

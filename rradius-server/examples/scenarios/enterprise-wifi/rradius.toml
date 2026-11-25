@@ -1,12 +1,12 @@
-# 企業 Wi-Fi（WPA2／WPA3-Enterprise，802.1X）：公司配發的電腦用憑證（EAP-TLS），
-# 員工自己的手機用帳號密碼（PEAP-MSCHAPv2），依群組放進不同 VLAN。
-# 說明：docs/manual.zh-TW/11-eap.md
+# Enterprise Wi-Fi (WPA2/WPA3-Enterprise, 802.1X): company-issued computers use a certificate (EAP-TLS),
+# employees' own phones use user name and password (PEAP-MSCHAPv2), and each group is put in a different VLAN.
+# See: docs/manual/11-eap.md "802.1X and EAP"
 #
-# 憑證不在 repo 裡，先執行 ./make-certs.sh 產生示範用的 CA 和伺服器憑證。
+# The certificates are not in the repo; run ./make-certs.sh first to create a demo CA and server certificate.
 
 dictionary = "../../../../share/dictionary"
 
-# 有 [auth] 時，這個腳本只處理計費。
+# With [auth] set, this script handles accounting only.
 [lua]
 script = "accounting.lua"
 
@@ -16,8 +16,8 @@ secret_raft_file = "raft.secret"
 secret_api_file = "api.secret"
 migrations_dir = "migrations"
 
-# 帳號和裝置在同一張表。憑證通過後用 certificate_query，密碼登入用 user_query，
-# 兩者都依群組回覆 VLAN。
+# Users and devices are in one table. After a certificate passes, certificate_query is used; for password logins, user_query.
+# Both reply with the VLAN of the group.
 [auth]
 policy = "first_match"
 
@@ -27,8 +27,8 @@ user_query = "SELECT password FROM accounts WHERE name = ? AND kind = 'user' AND
 certificate_query = "SELECT 1 FROM accounts WHERE name = ? AND kind = 'device' AND enabled = 1"
 reply_query = "SELECT r.attribute, r.value FROM accounts a JOIN group_reply r ON r.grp = a.grp WHERE a.name = ?"
 
-# 員工可能輸入 Alice@corp.example.com，資料表存小寫、不含 realm 的名稱。
-# 憑證登入不去掉 realm（見 docs/usage.md 2.12 節），所以裝置名稱存憑證上的完整名稱。
+# An employee may type Alice@corp.example.com, while the table stores lowercase names without the realm.
+# Certificate logins do not strip the realm (see docs/usage.md section 2.12), so a device's name is the full name on its certificate.
 [auth.username]
 strip_realm = "suffix"
 lowercase = true
@@ -43,7 +43,7 @@ key_file = "certs/server.key"
 client_ca_file = "certs/ca.pem"
 methods = ["tls", "peap"]
 
-# 無線控制器。先提供 EAP-TLS，沒有憑證的裝置可以改用 PEAP。
+# The wireless controller. Offer EAP-TLS first; devices without a certificate can fall back to PEAP.
 [[radius.clients]]
 name = "wlc"
 address = "10.30.0.10"

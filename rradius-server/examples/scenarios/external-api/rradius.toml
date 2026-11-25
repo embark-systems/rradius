@@ -1,18 +1,18 @@
-# 帳號在別的系統：會員系統（或帳務系統）已經有帳號和密碼，rradius 不存帳號，
-# 每次登入用 HTTPS 問它的 API。
-# 說明：docs/manual.zh-TW/15-access-recipes.md〈帳號在外部系統：external-api〉
+# Accounts are in another system: the member (or billing) system already has accounts and passwords, rradius stores no accounts,
+# and asks its API over HTTPS at every login.
+# See: docs/manual/15-access-recipes.md "Accounts in an external system: external-api"
 
 dictionary = "../../../../share/dictionary"
 
-# 計費照樣寫進本機的資料表，用快速開始的腳本。
+# Accounting is still written to local tables, using the quick-start script.
 [lua]
 script = "accounting.lua"
 
-# 腳本只能呼叫這裡列出的主機。沒有這個區段時，腳本裡沒有 http_request。
+# The script can call only the hosts listed here. Without this section, http_request does not exist in the script.
 [lua.http]
-allowed_hosts = ["members.example.com"]   # 只寫主機：只允許 HTTPS 的 443 埠
-timeout_ms = 1500        # 要比 NAS 的重送時間短
-max_concurrent = 64      # 同時最多幾個請求在等這台主機
+allowed_hosts = ["members.example.com"]   # host only: allows HTTPS on port 443 only
+timeout_ms = 1500        # keep it shorter than the NAS retransmit time
+max_concurrent = 64      # at most this many requests waiting on this host at once
 
 [cluster]
 data_dir = "data"
@@ -26,7 +26,7 @@ policy = "first_match"
 [[auth.handlers]]
 type = "lua"
 script = "member-api.lua"
-# 這個腳本真的把密碼交給 API 比對過。EAP-TTLS 的內層 PAP 要有這個設定才會放行。
+# This script really did hand the password to the API for comparison. EAP-TTLS inner PAP is allowed only with this setting.
 verifies_password = true
 
 [radius]

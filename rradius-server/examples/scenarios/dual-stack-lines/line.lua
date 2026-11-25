@@ -1,36 +1,36 @@
--- 雙堆疊線路：用戶沒有密碼，BNG 轉送的 DHCP Option 82 說這是哪一條線（手冊第 14 章〈依線路身分認證〉）。
--- 一個腳本做完四件事，順序是：
---   1. 線路身分：認得的、沒停用的、MAC 鎖（lock_mac）對得上的線路才往下（第 14 章〈依線路身分認證〉）。
---   2. IPv4：線路有固定的 ipv4 就回固定的（第 14 章〈固定位址與前綴〉），沒有就從方案的 IPv4 池拿一個（第 14 章〈IPv4 位址池〉）。
---   3. IPv6：線路有固定的 wan_v6 或 pd_v6 就回固定的（第 14 章〈固定位址與前綴〉），沒有就從方案的前綴池拿一個（第 14 章〈IPv6 前綴池〉）。
---   4. 前綴池用盡時，剛為這個請求預留的 IPv4 放回去，不留孤兒預留；然後預設拒絕（ALLOW_V4_ONLY 見下）。
+-- Dual-stack line: the user has no password; the DHCP Option 82 relayed by the BNG says which line this is (manual chapter 14, "Authenticate by line identity").
+-- One script does four things, in this order:
+--   1. Line identity: only a line that is known, not disabled and whose MAC lock (lock_mac) matches goes on (chapter 14, "Authenticate by line identity").
+--   2. IPv4: if the line has a fixed ipv4, return it (chapter 14, "Fixed addresses and prefixes"); otherwise take one from the plan's IPv4 pool (chapter 14, "IPv4 address pool").
+--   3. IPv6: if the line has a fixed wan_v6 or pd_v6, return it (chapter 14, "Fixed addresses and prefixes"); otherwise take one from the plan's prefix pool (chapter 14, "IPv6 prefix pool").
+--   4. When the prefix pool is exhausted, put back the IPv4 just reserved for this request so no orphan reservation is left; then reject by default (see ALLOW_V4_ONLY below).
 --
--- 為什麼是一個腳本：認證串接的處理器之間不傳值（前一個處理器設的回覆屬性，後一個讀不到），兩個池腳本要
--- 各自重算「這是哪個用戶」，而且只有同一個腳本才能在前綴用盡時撤銷剛預留的 IPv4。
+-- Why one script: handlers in an auth chain pass no values to each other (reply attributes set by an earlier handler cannot be read by a later one), so two pool scripts would
+-- each have to work out "which user is this" again, and only a single script can revoke the IPv4 it just reserved when the prefix runs out.
 --
--- 池的鍵是 lines.subscriber（一條線一個用戶名稱）。回給 BNG 的 Class 也是它：BNG 在計費封包帶回 Class，
--- accounting.lua 靠它找到這條線，因為 IPoE 的計費封包沒有可靠的 User-Name。
+-- The pool key is lines.subscriber (one user name per line). The Class returned to the BNG is the same: the BNG sends Class back in accounting packets,
+-- and accounting.lua uses it to find this line, because IPoE accounting packets have no reliable User-Name.
 --
--- 線路身分不是祕密：能讓 BNG 送出任意 Option 82 的人就能冒充任何一條線，所以 client 清單只列 BNG。
+-- Line identity is not a secret: anyone who can make the BNG send an arbitrary Option 82 can impersonate any line, so the client list contains only the BNG.
 
--- 前綴用盡時：false 整個登入拒絕（NAS 只看到 Access-Reject，原因寫在記錄）；
--- true 保留 IPv4、只回 IPv4 屬性，用戶沒有 IPv6 但能上網。
+-- When the prefix runs out: false rejects the whole login (the NAS only sees Access-Reject; the reason is in the log);
+-- true keeps the IPv4 and returns only IPv4 attributes, so the user has no IPv6 but can get online.
 local ALLOW_V4_ONLY = false
 
--- 下面幾個數字要和 accounting.lua 一致。
-local RESERVE_SECONDS = 120    -- 預留多久：Accounting-Start 沒來就放回
-local HOLD_SECONDS = 86400     -- 黏著多久：位址放回後，原用戶在這段時間內優先拿回它
-local REAP_SECONDS = 60        -- 請求觸發的回收間隔
--- 第 14 章〈IPv4 位址池〉：
-local CANDIDATES = 8           -- 一次讀幾個空閒位址
-local V4_ATTEMPTS = 4          -- 最多讀幾輪候選
--- 第 14 章〈IPv6 前綴池〉：
-local ATTEMPTS = 16            -- 搶輸了最多再試幾次
-local WINDOW = 1024            -- 從起點往後最多看幾個 n 找空的
-local STEAL_CHOICES = 8        -- 搶 released 時，第一次從最舊的幾列裡隨機挑
+-- The numbers below must match accounting.lua.
+local RESERVE_SECONDS = 120    -- -- how long to reserve: put back if Accounting-Start does not arrive
+local HOLD_SECONDS = 86400     -- -- how long to stick: after an address is put back, its previous user gets it first within this time
+local REAP_SECONDS = 60        -- -- interval of the request-triggered reaping
+-- Chapter 14, "IPv4 address pool":
+local CANDIDATES = 8           -- -- how many free addresses to read at once
+local V4_ATTEMPTS = 4          -- -- how many rounds of candidates to read at most
+-- Chapter 14, "IPv6 prefix pool":
+local ATTEMPTS = 16            -- -- how many more times to retry after losing a race
+local WINDOW = 1024            -- -- how many n to look at from the start point to find a free one, at most
+local STEAL_CHOICES = 8        -- -- when stealing a released prefix, the first pick is random among this many oldest rows
 
--- 這個最上層腳本之外沒有 [auth] 以外的處理器，所以先處理協定與階段：同一台伺服器若也開了 [tacacs]，
--- 一律接受會授權每個指令。
+-- Apart from this top-level script there is no handler other than [auth], so handle protocol and phase first: if the same server also enables [tacacs],
+-- accepting everything would authorize every command.
 if protocol ~= 'radius' then
   return 'reject'
 end
@@ -41,7 +41,7 @@ end
 local now = math.floor(now_unix())
 
 ---------------------------------------------------------------------------
--- 1. 線路身分（第 14 章〈依線路身分認證〉）
+-- 1. Line identity (chapter 14, "Authenticate by line identity")
 ---------------------------------------------------------------------------
 
 local function line_id(value)
@@ -65,7 +65,7 @@ end
 
 local circuit = line_id(get_attr('ADSL-Agent-Circuit-Id')) or line_id(get_attr('NAS-Port-Id'))
 if not circuit then
-  -- Access-Reject 不帶屬性，原因寫在記錄裡。
+  -- Access-Reject carries no attributes; the reason is in the log.
   log('dual stack: no circuit-id and no NAS-Port-Id in the request')
   return 'reject'
 end
@@ -99,7 +99,7 @@ if line.lock_mac == 1 then
   end
   local bound = line.bound_mac
   if bound == nil then
-    -- 第一次：只有 bound_mac 還是空的才寫得進去；兩個請求同時來，只有一個贏，另一個重讀後比較。
+    -- First time: the write succeeds only if bound_mac is still empty; if two requests arrive at once only one wins, and the other re-reads and compares.
     local took = sql_execute('UPDATE lines SET bound_mac = ? WHERE remote_id = ? AND circuit_id = ? AND bound_mac IS NULL', {mac, remote, circuit})
     if took == 1 then
       bound = mac
@@ -115,11 +115,11 @@ if line.lock_mac == 1 then
 end
 
 ---------------------------------------------------------------------------
--- 固定資料的檢查（第 14 章〈固定位址與前綴〉）：欄位的值不合法時拒絕並記錄，不悄悄退回動態，
--- 否則付費要固定位址的用戶會拿到一個會變的位址，沒有人知道。
+-- Check of fixed data (chapter 14, "Fixed addresses and prefixes"): when a field value is invalid, reject and log it; do not silently fall back to dynamic,
+-- otherwise a user who pays for a fixed address would get one that changes, and nobody would know.
 ---------------------------------------------------------------------------
 
--- set_attr 會依字典檢查值的格式；不合法時丟錯，這裡接住，記下是哪個欄位。
+-- set_attr checks the value format against the dictionary and throws on an invalid value; catch it here and log which field it was.
 local function put(name, column, value)
   local ok, err = pcall(set_attr, name, value)
   if not ok then
@@ -137,7 +137,7 @@ local function octets(text)
   return a * 16777216 + b * 65536 + c * 256 + d
 end
 
--- 子網段：a.b.c.d/n，n 在 0 到 32，主機位元是 0。
+-- Subnet: a.b.c.d/n, n from 0 to 32, host bits 0.
 local function valid_subnet(text)
   local address, length = string.match(text, '^([%d%.]+)/(%d+)$')
   local value, bits = address and octets(address), tonumber(length)
@@ -148,7 +148,7 @@ local function valid_subnet(text)
   return value % host == 0
 end
 
--- 子網路遮罩：1 連續在前面，0 連續在後面。
+-- Subnet mask: 1s contiguous at the front, 0s contiguous at the back.
 local function valid_netmask(text)
   local value = string.find(text, '^%d+%.%d+%.%d+%.%d+$') and octets(text)
   if not value then
@@ -174,8 +174,8 @@ if line.routed_v4 and not valid_subnet(line.routed_v4) then
 end
 
 ---------------------------------------------------------------------------
--- 請求觸發的回收（第 14、19 章）：到期還沒確認的預留、沒收到 Interim-Update 的 session，放回。
--- 先讀本機副本判斷該不該跑，再用 UPDATE 搶一次，只有搶到的那一個去做，所以多個節點每個週期只做一次。
+-- Request-triggered reaping (chapters 14 and 19): put back reservations that expired unconfirmed and sessions that received no Interim-Update.
+-- First read the local copy to decide whether to run, then race with an UPDATE; only the one that wins does the work, so with multiple nodes it runs once per period.
 ---------------------------------------------------------------------------
 
 local function due(name)
@@ -190,7 +190,7 @@ if not fixed_v4 and due('reap-ip-pool') then
                                 ORDER BY rowid LIMIT 1000)]], {now, now, now})
 end
 if not fixed_v6 and due('reap-prefix-pool') then
-  -- 沒收到 Interim 而過期的 active：改成 released，留給用戶 HOLD_SECONDS 秒；過期的 reserved、released：刪掉就是空閒。
+  -- An active row that expired for lack of Interim: set to released, kept for the user for HOLD_SECONDS seconds; expired reserved and released rows: delete them and they are free.
   sql_execute([[UPDATE prefix_leases SET state = 'released', expires = ?, updated = ?
                 WHERE rowid IN (SELECT rowid FROM prefix_leases WHERE state = 'active' AND expires < ? LIMIT 1000)]],
     {now + HOLD_SECONDS, now, now})
@@ -200,11 +200,11 @@ if not fixed_v6 and due('reap-prefix-pool') then
 end
 
 ---------------------------------------------------------------------------
--- 2. IPv4 位址池（第 14 章〈IPv4 位址池〉allocate.lua 的函式版）。回傳 (位址, 是不是這個請求剛預留的)；沒有位址回傳 nil。
+-- 2. IPv4 address pool (function version of chapter 14, "IPv4 address pool" allocate.lua). Returns (address, whether this request just reserved it); returns nil if there is no address.
 ---------------------------------------------------------------------------
 
 local function allocate_v4(pool)
-  -- 已經有綁定（reserved 或 active）就沿用，不多佔一個。預留的延長；active 的由計費延長。
+  -- If there is already a binding (reserved or active), reuse it and do not take another. A reservation is extended; an active one is extended by accounting.
   local mine = sql_query("SELECT ip FROM ip_pool WHERE pool = ? AND username = ? AND state IN ('reserved', 'active') LIMIT 1", {pool, user})
   if #mine > 0 then
     sql_execute("UPDATE ip_pool SET expires = max(expires, ?), updated = ? WHERE pool = ? AND ip = ? AND username = ? AND state = 'reserved'",
@@ -212,21 +212,21 @@ local function allocate_v4(pool)
     return mine[1].ip, false
   end
 
-  -- 搶一個空閒的位址：只有它還是 free 才會改成功。
+  -- Race for a free address: it succeeds only if the row is still free.
   local function claim(ip)
     return sql_execute([[UPDATE ip_pool SET state = 'reserved', username = ?, session_id = NULL, nas = NULL, expires = ?, updated = ?
                          WHERE pool = ? AND ip = ? AND state = 'free']], {user, now + RESERVE_SECONDS, now, pool, ip}) == 1
   end
 
-  -- 黏著：他上次用過、現在空閒、而且放回不到 HOLD_SECONDS 的位址。
+  -- Sticky: an address this user used last time, that is free now, and was put back less than HOLD_SECONDS ago.
   local sticky = sql_query("SELECT ip FROM ip_pool WHERE pool = ? AND state = 'free' AND last_user = ? AND released >= ? ORDER BY released DESC LIMIT 1",
     {pool, user, now - HOLD_SECONDS})
   if #sticky > 0 and claim(sticky[1].ip) then
     return sticky[1].ip, true
   end
 
-  -- 從空閒的位址裡挑幾個來搶。起點在空閒位址的 n 範圍內隨機取，同時進來的請求才不會都搶同一批。
-  -- LIMIT 直接寫進語句：它是這個腳本的常數，不是請求送來的值。
+  -- Pick a few of the free addresses to race for. The start point is random within the n range of free addresses, so requests arriving together do not all race for the same batch.
+  -- LIMIT is written straight into the statement: it is a constant of this script, not a value sent by the request.
   local from_here = string.format("SELECT ip FROM ip_pool WHERE pool = ? AND state = 'free' AND n >= ? ORDER BY n LIMIT %d", CANDIDATES)
   local from_start = string.format("SELECT ip FROM ip_pool WHERE pool = ? AND state = 'free' ORDER BY n LIMIT %d", CANDIDATES)
   for _ = 1, V4_ATTEMPTS do
@@ -252,21 +252,21 @@ local function allocate_v4(pool)
   return nil, false
 end
 
--- 前綴池用盡時把剛預留的 IPv4 放回：只動這個請求剛預留、還沒被確認的那一列。
+-- When the prefix pool is exhausted, put back the IPv4 just reserved: touch only the row this request just reserved and that is not yet confirmed.
 local function give_back_v4(pool, ip)
   sql_execute([[UPDATE ip_pool SET state = 'free', username = NULL, session_id = NULL, nas = NULL, expires = 0, updated = ?
                 WHERE pool = ? AND ip = ? AND username = ? AND state = 'reserved' AND session_id IS NULL]], {now, pool, ip, user})
 end
 
 ---------------------------------------------------------------------------
--- 3. IPv6 前綴池（第 14 章〈IPv6 前綴池〉allocate.lua 的函式版）。回傳前綴文字；沒有前綴回傳 nil。
+-- 3. IPv6 prefix pool (function version of chapter 14, "IPv6 prefix pool" allocate.lua). Returns the prefix text; returns nil if there is no prefix.
 ---------------------------------------------------------------------------
 
 local function allocate_prefix(pool)
   local function mine()
     return sql_query("SELECT prefix, state FROM prefix_leases WHERE username = ? AND pool = ?", {user, pool})
   end
-  -- 已經有前綴就沿用：reserved、active 照舊；released（他離線了，前綴暫時留給他）改回 reserved。
+  -- If the user already has a prefix, reuse it: reserved and active stay as they are; released (the user went offline and the prefix was kept for them) goes back to reserved.
   local have = mine()
   if #have > 0 then
     sql_execute("UPDATE prefix_leases SET state = 'reserved', expires = ?, updated = ? WHERE username = ? AND pool = ? AND state = 'released'",
@@ -277,7 +277,7 @@ local function allocate_prefix(pool)
     if #current > 0 then
       return current[1].prefix
     end
-    -- 剛好被搶走了：當作沒有，往下重新找一個。
+    -- It was just taken by someone else: treat it as none and look for a new one below.
   end
 
   local capacity_row = sql_query("SELECT (1 << (dlen - plen)) AS capacity FROM prefix_pools WHERE pool = ?", {pool})
@@ -287,8 +287,8 @@ local function allocate_prefix(pool)
   end
   local capacity = capacity_row[1].capacity
 
-  -- FNV-1a，32 位元。Luau 的數字是雙精度，32 位元乘 16777619 會超過 2^53，所以把乘法拆開：
-  -- 16777619 = 2^24 + 403，乘 2^24 再取 32 位元就是低 8 位元左移 24 位。
+  -- FNV-1a, 32-bit. Luau numbers are doubles, and a 32-bit value times 16777619 would exceed 2^53, so the multiplication is split:
+  -- 16777619 = 2^24 + 403; multiplying by 2^24 and keeping 32 bits is the low 8 bits shifted left by 24.
   local function hash(text)
     local h = 2166136261
     for i = 1, #text do
@@ -302,7 +302,7 @@ local function allocate_prefix(pool)
     return #sql_query("SELECT 1 FROM prefix_leases WHERE pool = ? AND n = ?", {pool, n}) > 0
   end
 
-  -- [from, upper) 裡的空段（連續的空 n）的第一個 n，最多 count 個，由小到大。
+  -- The first n of each empty run (consecutive empty n) in [from, upper), at most count of them, in ascending order.
   local GAP = [[SELECT a.n + 1 AS n FROM prefix_leases a
                 WHERE a.pool = ? AND a.n >= ? AND a.n < ?
                   AND NOT EXISTS (SELECT 1 FROM prefix_leases b WHERE b.pool = a.pool AND b.n = a.n + 1)
@@ -322,8 +322,8 @@ local function allocate_prefix(pool)
     return found
   end
 
-  -- 前綴的高 64 位元是 base | (n << (64 - dlen))，在 SQL 裡算：Luau 沒有 64 位元整數。
-  -- 文字是伺服器解碼 Delegated-IPv6-Prefix 的形式（壓縮、小寫）。
+  -- The high 64 bits of the prefix are base | (n << (64 - dlen)), computed in SQL: Luau has no 64-bit integers.
+  -- The text is the form in which the server decodes Delegated-IPv6-Prefix (compressed, lowercase).
   local CLAIM = [[WITH h AS (SELECT p.pool AS pool, p.dlen AS dlen, p.base | (? << (64 - p.dlen)) AS v
                              FROM prefix_pools p WHERE p.pool = ?)
                   INSERT OR IGNORE INTO prefix_leases (pool, n, prefix, state, username, expires, updated)
@@ -342,7 +342,7 @@ local function allocate_prefix(pool)
 
   local start = hash(user) % capacity
 
-  -- 起點往後 WINDOW 個 n（到池尾繞回 0）裡最多 count 個空段的第一個 n。
+  -- The first n of at most count empty runs within WINDOW n after the start point (wrapping to 0 at the end of the pool).
   local function free_near(count)
     local upper = math.min(start + WINDOW, capacity)
     local found = free_in(start, upper, count)
@@ -354,7 +354,7 @@ local function allocate_prefix(pool)
     return found
   end
 
-  -- 整個池裡從起點往後最多 count 個空段的第一個 n；窗口裡沒有空的、也沒有 released 可搶時用。
+  -- The first n of at most count empty runs from the start point onward in the whole pool; used when the window has no empty n and there is no released prefix to steal.
   local function free_anywhere(count)
     local found = free_in(start, capacity, count)
     if #found < count then
@@ -369,14 +369,14 @@ local function allocate_prefix(pool)
     return sql_execute(CLAIM, {n, pool, n, user, now + RESERVE_SECONDS, now}) == 1
   end
 
-  -- 最舊的 released 列（離線最久的用戶的前綴）。
+  -- The oldest released row (the prefix of the user who has been offline longest).
   local OLDEST = "SELECT n, username, updated FROM prefix_leases WHERE pool = ? AND state = 'released' ORDER BY updated LIMIT ?"
-  -- 搶它：條件是它還是那個用戶的、還是 released、還是那一次釋放（updated 沒變）。
+  -- Steal it: the condition is that it still belongs to that user, is still released, and is still that same release (updated unchanged).
   local STEAL = [[UPDATE OR IGNORE prefix_leases
                   SET username = ?, state = 'reserved', session_id = NULL, nas = NULL, expires = ?, updated = ?
                   WHERE pool = ? AND n = ? AND state = 'released' AND username = ? AND updated = ?]]
 
-  -- 搶一列最舊的 released。回傳 (搶到了, 有 released 列可搶)。
+  -- Steal the oldest released row. Returns (whether it was stolen, whether there was a released row to steal).
   local function steal(width)
     local oldest = sql_query(OLDEST, {pool, STEAL_CHOICES * width})
     if #oldest == 0 then
@@ -411,7 +411,7 @@ local function allocate_prefix(pool)
         return got[1].prefix
       end
     end
-    -- 搶輸了：這個 n 剛被別人拿走，或這個用戶同時的另一個請求已經拿到前綴。
+    -- Lost the race: this n was just taken by someone else, or another concurrent request of this user already got a prefix.
     local again = mine()
     if #again > 0 then
       return again[1].prefix
@@ -424,11 +424,11 @@ local function allocate_prefix(pool)
 end
 
 ---------------------------------------------------------------------------
--- 組合：先 IPv4 再 IPv6（IPv6 失敗時才需要撤銷 IPv4）。
+-- Combine: IPv4 first, then IPv6 (the IPv4 only needs revoking if IPv6 fails).
 ---------------------------------------------------------------------------
 
 local v4, v4_fresh
--- 拒絕前把剛為這個請求預留的 IPv4 放回去，不留孤兒預留。
+-- Before rejecting, put back the IPv4 just reserved for this request so no orphan reservation is left.
 local function refuse()
   if v4 and v4_fresh then
     give_back_v4(line.pool, v4)
@@ -460,27 +460,27 @@ if fixed_v6 then
   end
 else
   v6 = allocate_prefix(line.pool6)
-  -- 固定的 IPv4 也算「有 IPv4」：只固定 IPv4 的線路，前綴池用盡時也依 ALLOW_V4_ONLY 放行。
+  -- A fixed IPv4 also counts as "has IPv4": a line with only a fixed IPv4 is also let through per ALLOW_V4_ONLY when the prefix pool is exhausted.
   if not v6 and (not ALLOW_V4_ONLY or not (fixed_v4 or v4)) then
     return refuse()
   end
 end
 
--- 固定的屬性上面已經設過；池來的在這裡設。
+-- Fixed attributes were set above; those from the pools are set here.
 if v4 then
   set_attr('Framed-IP-Address', v4)
 end
 if v6 then
   set_attr('Delegated-IPv6-Prefix', v6)
-  -- WAN 的 /64 不在這裡分配：回池的名稱，由 BNG 自己的池決定。
+  -- The WAN /64 is not allocated here: return the pool's name and let the BNG's own pool decide.
   set_attr('Framed-IPv6-Pool', line.pool6)
 end
 set_attr('Filter-Id', line.profile)
 set_attr('Acct-Interim-Interval', line.interim)
--- BNG 會在計費封包帶回 Class，accounting.lua 靠它知道這條線是誰。
+-- The BNG sends Class back in accounting packets; accounting.lua uses it to know which line this is.
 set_attr('Class', user)
 
--- 記錄最後的 MAC 和時間；這一行每次登入寫一次，不需要時可以拿掉（手冊第 14 章〈依線路身分認證〉的「已知限制」）。
+-- Record the last MAC and time; this line is written once per login and can be removed if not needed (docs/manual/14-isp-recipes.md "Known limitations" of "Authenticate by line identity").
 if mac then
   sql_execute('UPDATE lines SET last_mac = ?, last_seen = ? WHERE remote_id = ? AND circuit_id = ?', {mac, now, remote, circuit})
 else

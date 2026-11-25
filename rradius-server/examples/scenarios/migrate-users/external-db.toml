@@ -1,5 +1,5 @@
-# 帳號留在原本的 PostgreSQL：舊系統繼續維護帳號表，rradius 只讀。計費仍寫進 rradius 自己的資料表。
-# 說明：docs/manual.zh-TW/09-external-databases.md；欄位見 docs/usage.md 2.17 節。
+# Accounts stay in the original PostgreSQL: the old system keeps maintaining the account tables and rradius only reads them. Accounting is still written to rradius's own tables.
+# See: docs/manual/09-external-databases.md "Set up an external database"; for the fields see docs/usage.md section 2.17.
 
 dictionary = "../../../../share/dictionary"
 
@@ -12,14 +12,14 @@ secret_raft_file = "raft.secret"
 secret_api_file = "api.secret"
 migrations_dir = "migrations"
 
-# 舊系統的資料庫。只給 rradius 一個唯讀帳號，能讀 radcheck 和 radreply 就好。
+# The old system's database. Give rradius a read-only account that can read radcheck and radreply, nothing more.
 [databases.legacy]
 kind = "postgresql"
 host = "db.example.com"
 database = "radius"
 user = "rradius_ro"
 password_file = "legacy-db.secret"
-# tls = "verify" 是預設：驗證資料庫的憑證和主機名稱。用自己的 CA 時加 ca_file。
+# tls = "verify" is the default: it checks the database certificate and host name. Add ca_file when using your own CA.
 pool_size = 8
 
 [auth]
@@ -28,7 +28,7 @@ policy = "first_match"
 [[auth.handlers]]
 type = "sql"
 database = "legacy"
-# 密碼欄一樣是 {格式}值，見 docs/usage.md 第 5 節。佔位符寫 ?，送到 PostgreSQL 時改成 $1。
+# The password column is again {format}value, see docs/usage.md section 5. Write the placeholder as ?; it becomes $1 when sent to PostgreSQL.
 user_query = "SELECT password FROM radcheck WHERE username = ?"
 reply_query = "SELECT attribute, value FROM radreply WHERE username = ?"
 

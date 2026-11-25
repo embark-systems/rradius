@@ -1,10 +1,10 @@
--- TACACS+ 設備管理：依角色授權 shell 和指令，計費記下每個指令。
--- 認證由 [auth] 的 sql 處理器負責，這裡只做授權和計費。
+-- TACACS+ device administration: authorize shell and commands by role; accounting records every command.
+-- Authentication is done by the sql handler in [auth]; this script only does authorization and accounting.
 --
---   netadmin：權限等級 15，所有指令
---   noc：權限等級 1，只能用 READ_ONLY 列出的指令，show 只能看 SHOW 列出的項目（看不到設定檔，裡面有密碼）
+--   netadmin: privilege level 15, all commands
+--   noc: privilege level 1, only the commands listed in READ_ONLY, and show only for the items listed in SHOW (the configuration file is off limits, it contains passwords)
 
--- 這個伺服器只開 TACACS+。萬一之後加了 [radius]，也不要讓這個腳本放行任何人。
+-- This server only serves TACACS+. If [radius] is added later, this script still must not let anyone in.
 if protocol ~= 'tacacs' then
   return 'reject'
 end
@@ -12,9 +12,9 @@ end
 local user = get_attr('user')
 
 if phase == 'accounting' then
-  -- 設備每筆記錄都有 task_id；stop_time 表示結束，start_time 表示開始，其他是中間的更新。
+  -- Every record from the device has a task_id; stop_time means the end, start_time the start, anything else is an update in between.
   local event = (get_attr('stop_time') and 'stop') or (get_attr('start_time') and 'start') or 'update'
-  -- 指令記錄把指令和參數分開送，組回一行。
+  -- A command record sends the command and its arguments separately; put them back together as one line.
   local cmd = get_attr('cmd') or ''
   for _, arg in ipairs(get_attrs('cmd-arg')) do
     if arg ~= '<cr>' then
@@ -38,7 +38,7 @@ if not role or get_attr('service') ~= 'shell' then
 end
 
 local cmd = get_attr('cmd')
--- 沒有 cmd：要開 shell（EXEC 授權），回覆權限等級。
+-- No cmd: a shell is being opened (EXEC authorization); reply with the privilege level.
 if not cmd or cmd == '' then
   set_attr('priv-lvl', role == 'netadmin' and 15 or 1)
   return 'accept'
@@ -48,10 +48,10 @@ if role == 'netadmin' then
   return 'accept'
 end
 
--- noc：只放行列出來的指令。用允許清單而不是禁止清單：設定檔有很多種看法
--- （show running-config、show configuration、show archive …），列不完。
+-- noc: allow only the listed commands. Use an allow list rather than a deny list: there are many ways to view the configuration
+-- (show running-config, show configuration, show archive ...) and they cannot all be listed.
 local READ_ONLY = { show = true, ping = true, traceroute = true, exit = true, terminal = true }
--- show 後面只能接這些，其他（包括所有看設定檔的寫法）都拒絕。
+-- Only these may follow show; everything else (including every way of viewing the configuration) is rejected.
 local SHOW = { interfaces = true, ip = true, ipv6 = true, version = true, clock = true, inventory = true,
   vlan = true, mac = true, arp = true, cdp = true, lldp = true, users = true, processes = true,
   logging = true, ['spanning-tree'] = true, etherchannel = true }

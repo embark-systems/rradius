@@ -1,9 +1,9 @@
--- 示範資料，正式環境請刪掉這個檔案，改用自己的資料。
---   alice：住宅，動態，回池 residential
---   bob：固定一個 IPv4 位址
---   carol：商業，固定位址加路由的 /29 子網段，IPv6 的 /64 和 /56
---   dave：只有固定的 IPv6 前綴
---   erin：停用中
+-- Demo data; delete this file in production and use your own data.
+--   alice: residential, dynamic, returns pool residential
+--   bob: one fixed IPv4 address
+--   carol: business, a fixed address plus a routed /29 subnet, an IPv6 /64 and a /56
+--   dave: a fixed IPv6 prefix only
+--   erin: disabled
 INSERT INTO subscribers (username, password, pool, enabled) VALUES
   ('alice', 'alice-password', 'residential', 1),
   ('bob', 'bob-password', 'residential', 1),

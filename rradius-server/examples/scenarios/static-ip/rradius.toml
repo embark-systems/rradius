@@ -1,15 +1,15 @@
-# 固定位址與前綴（固網寬頻）：商業用戶或特定方案要固定的 IPv4 位址、路由的子網段、IPv6 前綴。
-# 密碼由 sql 處理器驗，位址屬性由 lua 處理器依資料表回。
-# 說明：docs/manual.zh-TW/14-isp-recipes.md〈固定位址與前綴：static-ip〉
+# Static addresses and prefixes (fixed broadband): business users or particular plans get a fixed IPv4 address, a routed subnet and an IPv6 prefix.
+# The sql handler checks the password; the lua handler returns the address attributes from the table.
+# See: `docs/manual/14-isp-recipes.md` "Fixed addresses and prefixes: static-ip"
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/static-ip/rradius.toml
 #
-# 相對路徑都以這個檔案所在的目錄為準。
+# Relative paths are resolved against the directory that holds this file.
 
 dictionary = "../../../../share/dictionary"
 
-# 有 [auth] 時認證交給下面的串接；這個腳本只處理計費（一律回覆）。
+# With [auth], authentication goes to the chain below; this script handles only accounting (always replies).
 [lua]
 script = "accounting.lua"
 
@@ -19,7 +19,7 @@ secret_raft_file = "raft.secret"
 secret_api_file = "api.secret"
 migrations_dir = "migrations"
 
-# all_accept：依序執行，任一個拒絕就停。先驗密碼，再回位址屬性；密碼錯的人不會執行到後面。
+# all_accept: run in order and stop at the first reject. Check the password first, then return the address attributes; a wrong password never reaches the later handler.
 [auth]
 policy = "all_accept"
 
