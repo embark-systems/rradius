@@ -221,6 +221,29 @@ fn test_port_ranges_are_logged_and_found() -> Result<(), String> {
     let (status, ..) = find(&["--ip", "198.51.100.7", "--port", "1500", "--at", &allocated, "--file", path, "--file", "-"], &text)?;
     assert_eq!(status, 0);
 
+    // The same log compressed, as a rotated file is: read by its `.gz` name, but not from
+    // standard input.
+    {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        let packed = encoder.finish().map_err(|e| e.to_string())?;
+        let zipped = server.dir.path().join("acct.jsonl.gz");
+        std::fs::write(&zipped, &packed).map_err(|e| e.to_string())?;
+        let zipped = zipped.to_str().ok_or("path")?;
+        let (status, out, err) = find(&["--ip", "198.51.100.7", "--port", "1500", "--at", &allocated, "--file", zipped], "")?;
+        assert_eq!(status, 0, "{err}");
+        assert!(out.contains("198.51.100.7:1024-2047 allocated") && out.contains("User-Name=alice"), "{out}");
+        let damaged = server.dir.path().join("damaged.jsonl.gz");
+        std::fs::write(&damaged, &packed[..packed.len() / 2]).map_err(|e| e.to_string())?;
+        let damaged = damaged.to_str().ok_or("path")?;
+        let (status, _, err) = find(&["--ip", "198.51.100.7", "--port", "1500", "--at", &allocated, "--file", damaged], "")?;
+        assert_eq!(status, 2, "{err}");
+        assert!(err.contains("damaged.jsonl.gz"), "{err}");
+        let (status, ..) = find(&["--ip", "198.51.100.7", "--port", "1500", "--at", &allocated, "--file", "-"], &String::from_utf8_lossy(&packed))?;
+        assert_eq!(status, 2);
+    }
+
     // After the release, another port, another address and a time before it: none.
     for (ip, number, at) in [("198.51.100.7", "1500", released.as_str()), ("198.51.100.7", "3000", allocated.as_str()), ("198.51.100.9", "1500", allocated.as_str())] {
         let (status, out, _) = find(&["--ip", ip, "--port", number, "--at", at, "--file", path, "--json"], "")?;

@@ -525,7 +525,7 @@ $ rradiusd session show --config rradius.toml --json nobody
 rradiusd accounting find --ip <address> --port <port> --at <time> [--file <path>]... [--json]
 ```
 
-讀計費記錄檔（`[radius.accounting_log]`），列出在 `--at` 這個時間持有公網位址 `--ip`、埠 `--port` 的 `IP-Port-Range` 區段（RFC 8045）。不需要設定檔、不連叢集。`--at` 是 RFC 3339 且要有時區（`Z` 或 `±HH:MM`，可帶小數秒）；`--file` 可以給多次，`-` 或沒給就讀標準輸入；不讀 `.gz`，用 `zcat` 接進來。
+讀計費記錄檔（`[radius.accounting_log]`），列出在 `--at` 這個時間持有公網位址 `--ip`、埠 `--port` 的 `IP-Port-Range` 區段（RFC 8045）。不需要設定檔、不連叢集。`--at` 是 RFC 3339 且要有時區（`Z` 或 `±HH:MM`，可帶小數秒）；`--file` 可以給多次，`-` 或沒給就讀標準輸入；檔名以 `.gz` 結尾的 `--file` 會自動解壓（可由幾個 gzip 串成），標準輸入不解壓，要用 `zcat` 接進來；`.gz` 損毀或被截斷時結束碼 2 並指出檔名。
 
 ```console
 $ rradiusd accounting find --ip 198.51.100.7 --port 1500 --at 2026-11-25T10:30:00Z --file accounting.jsonl
