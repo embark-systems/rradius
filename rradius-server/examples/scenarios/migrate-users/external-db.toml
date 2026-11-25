@@ -38,8 +38,6 @@ lowercase = true
 
 [radius]
 bind = "0.0.0.0"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 [[radius.clients]]
@@ -48,5 +46,3 @@ address = "10.90.0.0/24"
 secret_file = "nas.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812

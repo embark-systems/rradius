@@ -468,15 +468,14 @@ $ rradiusd config init --lang zh-TW > rradius.toml
 這份底稿的內容：
 
 - 叢集密碼與一個範例用戶端（`127.0.0.1`）的共用密碼，都是隨機產生的。
-- `dictionary` 指向 `/usr/share/rradius/dictionary`，也就是套件安裝的位置。
+- `dictionary` 是這個版本預設的字典位置（套件安裝是 `/usr/share/rradius/dictionary`）；字典放在別處就改它。
 - `include = ["conf.d/*.toml"]`：旁邊 `conf.d/` 的 `.toml` 檔會一起讀進來。
-- 每一節都附上說明，被註解掉的設定列出預設值。
+- 全部約 30 行，沒有 `[[cluster.nodes]]`（單節點）。要每一節都附說明、被註解掉的設定列出預設值，用 `rradiusd config init --full`。
 
 它沒有 migrations、沒有 `[auth]`、沒有 `[accounts]`，`[lua]` 指向一個還不存在的 `auth.lua`。所以直接 `check` 會失敗，要先：
 
-1. 把 `dictionary` 改成字典實際的位置。
-2. 建立 `auth.lua`。
-3. 單機時在 `[cluster]` 加 `listen = "127.0.0.1"`，否則會看到 `cluster.listen is not set` 的警告。
+1. 建立 `auth.lua`。
+2. 字典不在預設的位置時，把 `dictionary` 改成實際的位置。
 
 從這份底稿長出完整設定的做法，見[第 04 章](04-configuration.md)與[第 07 章](07-users-and-chains.md)。
 

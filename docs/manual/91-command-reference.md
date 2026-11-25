@@ -259,7 +259,7 @@ usage: rradiusd --version
 usage: rradiusd schema [--lang en|zh-TW]
 usage: rradiusd config show [--config <path>]
 usage: rradiusd config diff <a.toml> <b.toml>
-usage: rradiusd config init [--lang en|zh-TW]
+usage: rradiusd config init [--full] [--lang en|zh-TW]
 usage: rradiusd tuning [--config <path>]
 usage: rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>
   add and passwd read the password from standard input
@@ -300,7 +300,7 @@ usage: rradiusd schema [--lang en|zh-TW]
 ```text
 rradiusd config show [--config <path>]
 rradiusd config diff <a.toml> <b.toml>
-rradiusd config init [--lang en|zh-TW]
+rradiusd config init [--full] [--lang en|zh-TW]
 ```
 
 只有 `init` 接受 `--lang`，`show` 與 `diff` 給了 `--lang` 是用法錯誤。三個子命令都不連伺服器。用法上的細節見 [04 設定檔的基本功](04-configuration.md)。

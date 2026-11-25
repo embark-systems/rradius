@@ -30,8 +30,6 @@ reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 
 [radius]
 bind = "127.0.0.1"
-auth_port = 1812
-acct_port = 1813
 # 回應 Status-Server，監控不必用測試帳號登入。
 status_server = true
 
@@ -41,8 +39,6 @@ address = "127.0.0.1"
 secret_file = "localhost.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812
 
 # 現在在線的 session：rradiusd session list，或某個使用者的 session：
 # rradiusd session show alice。查詢由你決定哪些列算在線：這裡是還沒結束、而且最近

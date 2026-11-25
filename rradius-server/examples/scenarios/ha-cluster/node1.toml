@@ -45,8 +45,6 @@ reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 
 [radius]
 bind = "0.0.0.0"
-auth_port = 1812
-acct_port = 1813
 # NAS 和負載平衡器用它判斷節點是否活著。
 status_server = true
 
@@ -64,7 +62,6 @@ max_bytes = 1073741824
 # 監控系統從內部網路抓。沒有認證，不要對外開放。
 [metrics]
 bind = "10.99.0.1"
-port = 9812
 
 [log]
 format = "json"

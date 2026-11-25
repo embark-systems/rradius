@@ -29,8 +29,6 @@ script = "line.lua"
 
 [radius]
 bind = "0.0.0.0"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 # 只列 BNG：線路身分不是祕密，能讓 BNG 以外的來源送請求的人就能冒充任何一條線。
@@ -40,8 +38,6 @@ address = "10.60.0.0/24"
 secret_file = "bng.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812
 
 # 監控：每個池、每個狀態的數量（說明見手冊第 14 章〈IPv4 位址池〉與〈IPv6 前綴池〉的「監控」）。
 [queries.pool_usage]

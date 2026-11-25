@@ -33,8 +33,6 @@ script = "rate.lua"
 
 [radius]
 bind = "127.0.0.1"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 # 每個 BNG 一個 client。回哪一種屬性看 nas_styles 表裡這個 client 的風格；
@@ -65,5 +63,3 @@ address = "10.70.0.4"
 secret_file = "erx.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812

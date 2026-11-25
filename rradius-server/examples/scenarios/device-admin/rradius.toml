@@ -32,5 +32,3 @@ address = "10.50.0.0/24"
 secret_file = "tacacs.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812

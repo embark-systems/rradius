@@ -138,7 +138,10 @@ fn test_init_passes_the_check() -> Result<(), String> {
     assert!(second.contains("# 叢集的每個節點都要用相同的 secret_raft"), "{second}");
     let dictionary = rradius_core::test_support::dictionary();
     let file = dir.path().join("rradius.toml");
-    std::fs::write(&file, first.replacen("/usr/share/rradius/dictionary", path(&dictionary)?, 1)).map_err(|e| e.to_string())?;
+    let default = rradius_core::config::default_dictionary_path();
+    assert!(first.contains(&format!("dictionary = \"{default}\"")), "{first}");
+    assert!(!first.contains("[[cluster.nodes]]") && first.lines().count() <= 40, "{first}");
+    std::fs::write(&file, first.replacen(&default.to_string(), path(&dictionary)?, 1)).map_err(|e| e.to_string())?;
     std::fs::write(dir.path().join("auth.lua"), "return 'accept'").map_err(|e| e.to_string())?;
     let output = Command::new(PROGRAM).args(["check", "--config", path(&file)?]).output().map_err(|e| e.to_string())?;
     assert_eq!(String::from_utf8_lossy(&output.stdout), "configuration ok\n", "{}", String::from_utf8_lossy(&output.stderr));
@@ -146,8 +149,20 @@ fn test_init_passes_the_check() -> Result<(), String> {
 }
 
 #[test]
+fn test_init_full_is_the_commented_reference() -> Result<(), String> {
+    let (code, full, stderr) = config(&["init", "--full"])?;
+    assert_eq!(code, Some(0), "{stderr}");
+    let (_, minimal, _) = config(&["init"])?;
+    assert!(full.contains("# acct_port = 1813") && full.lines().count() > 200 && !full.lines().any(|line| line == "[[cluster.nodes]]"), "{full}");
+    let (_, reordered, _) = config(&["init", "--lang", "zh-TW", "--full"])?;
+    assert!(reordered.lines().count() > 200 && reordered.contains("# 叢集的每個節點都要用相同的 secret_raft"));
+    assert!(minimal.lines().count() < full.lines().count() / 5);
+    Ok(())
+}
+
+#[test]
 fn test_wrong_arguments() -> Result<(), String> {
-    for args in [&[][..], &["show", "extra"], &["diff", "a.toml"], &["init", "--lang", "fr"], &["unknown"]] {
+    for args in [&[][..], &["show", "extra"], &["diff", "a.toml"], &["init", "--lang", "fr"], &["init", "--verbose"], &["init", "--full", "--full"], &["unknown"]] {
         let (code, _, stderr) = config(args)?;
         assert_eq!(code, Some(2), "{args:?}");
         assert!(stderr.contains("usage: rradiusd config show"), "{args:?}: {stderr}");
