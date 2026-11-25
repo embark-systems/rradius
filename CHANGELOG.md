@@ -25,5 +25,5 @@ The first release.
 
 ### Known limits
 
-- There are no metrics for bytes in and out, and none that count TACACS+ replies by status.
+- The byte counters count protocol packets only, without the headers of IP, UDP, TCP and TLS, and in this edition only RADIUS and TACACS+ traffic and CoA/Disconnect datagrams; RadSec and proxy traffic are counted by the enterprise edition.
 - The release has not been tried on physical NAS, router or switch hardware. The manual marks the steps that were not tried on the outside system they involve (for example Windows and Active Directory, Samba, Synology DSM and `snmp_notifier`), and the numbers carried over from earlier measurements as not measured again.
