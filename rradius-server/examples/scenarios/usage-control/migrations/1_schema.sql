@@ -1,10 +1,10 @@
--- 方案、用戶、連線位和計費。套用過的檔案不能再改，要改結構就新增下一個編號的檔案。
+-- Plans, users, session slots and accounting. An applied file must not be edited; to change the structure, add a file with the next number.
 
--- 每個方案：最多同時幾個連線、一段時間的流量上限、超過之後怎麼辦。
---   quota_octets   流量上限（位元組，進加出）；0 表示不限
---   period_days    計量期間：最近幾天（滾動窗口，不是日曆月）
---   over_quota     超過之後：'throttle' 降速（登入成功，但回 throttle_filter）或 'reject' 拒絕
---   normal_filter  正常時回給 NAS 的 Filter-Id；throttle_filter 是降速時的
+-- Each plan: the maximum concurrent sessions, the traffic limit over a period, and what to do when it is exceeded.
+--   quota_octets   traffic limit (bytes, in plus out); 0 means unlimited
+--   period_days    metering period: the last N days (a rolling window, not a calendar month)
+--   over_quota     when exceeded: 'throttle' (login succeeds but returns throttle_filter) or 'reject'
+--   normal_filter  the Filter-Id returned to the NAS normally; throttle_filter is the one used when throttled
 CREATE TABLE plans (
   plan TEXT PRIMARY KEY,
   max_sessions INTEGER NOT NULL CHECK (max_sessions >= 1),
@@ -17,15 +17,15 @@ CREATE TABLE plans (
 
 CREATE TABLE subscribers (
   username TEXT PRIMARY KEY,
-  password TEXT,                          -- 格式見 docs/usage.md 第 5 節
+  password TEXT,                          -- Format: see docs/usage.md section 5
   plan TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1
 );
 
--- 每個用戶 max_sessions 個連線位，第一次登入時建立。同時連線數就是被佔住的連線位數。
---   free      空的
---   reserved  認證時預留了，還沒收到 Accounting-Start；expires 到了還沒確認就放回
---   active    NAS 回報在線；每個 Interim-Update 延長 expires，到期沒收到就放回
+-- Each user has max_sessions slots, created at first login. The number of concurrent sessions is the number of occupied slots.
+--   free      empty
+--   reserved  held during authentication, no Accounting-Start yet; put back if not confirmed by expires
+--   active    the NAS reports it online; each Interim-Update extends expires, and it is put back if none arrives by then
 CREATE TABLE session_slots (
   username TEXT NOT NULL,
   slot INTEGER NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE session_slots (
 );
 CREATE INDEX session_slots_expiry ON session_slots (state, expires);
 
--- 每個 session 一列（寫法同 quick-start）。Session ID 只在同一台 NAS 內唯一，所以主鍵包含 client 和 NAS。
+-- One row per session (written as in quick-start). A Session ID is unique only within one NAS, so the primary key includes the client and the NAS.
 CREATE TABLE accounting (
   client TEXT NOT NULL,
   nas TEXT NOT NULL,
@@ -53,9 +53,9 @@ CREATE TABLE accounting (
   terminate_cause INTEGER,
   PRIMARY KEY (client, nas, session_id)
 );
--- 認證時加總一個用戶期間內的流量：靠這個索引只看他自己的列。
+-- At authentication, sum a user's traffic over the period: this index lets it read only that user's rows.
 CREATE INDEX accounting_user ON accounting (username, started);
 
--- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual.zh-TW/18-operations.md〈清除舊資料〉）。
+-- For periodic work triggered by requests: one row per job, recording when it last ran (see `docs/manual/18-operations.md` "Purging old data").
 CREATE TABLE housekeeping (name TEXT PRIMARY KEY, last_run INTEGER NOT NULL);
 INSERT INTO housekeeping VALUES ('reap-session-slots', 0);

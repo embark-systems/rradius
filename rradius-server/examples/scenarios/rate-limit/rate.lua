@@ -1,22 +1,22 @@
--- 認證串接的 lua 處理器：依用戶的方案，回 BNG 看得懂的速率屬性。
--- 前面的 sql 處理器已經驗過密碼；all_accept 遇到拒絕就停，所以密碼錯的人不會來到這裡。
+-- lua handler in the auth chain: returns rate attributes the BNG understands, according to the user's plan.
+-- The sql handler before it has already checked the password; all_accept stops at a reject, so a user with a wrong password never gets here.
 --
--- 同一個方案、不同廠商的 BNG 要的屬性不同。每個 BNG 是一個 RADIUS client，nas_styles 表說它用哪一種
--- 風格；沒有列的 client 用 profile。風格是下面 styles 表的一項，要支援別的廠商就加一項：
---   - 只送名稱的風格（profile、alc_sla、erx）：速率在 BNG 上、依名稱找到的設定檔裡設，單位和方向不在這裡。
---   - 送數值的風格（wispr、mikrotik）：單位和方向取自屬性的定義。請對照你的 BNG 的文件確認。
--- 下載（down）是往用戶的方向，上傳（up）是用戶往網路的方向；plans 的速率單位是 kbit/s。
+-- BNGs from different vendors need different attributes for the same plan. Each BNG is a RADIUS client, and the nas_styles table says which
+-- style it uses; a client not listed uses profile. A style is an entry in the styles table below; to support another vendor, add an entry:
+--   - Name-only styles (profile, alc_sla, erx): the rate is set on the BNG in the profile found by name, so the unit and direction are not here.
+--   - Value styles (wispr, mikrotik): the unit and direction come from the attribute's definition. Check them against your BNG's documentation.
+-- Download (down) is toward the user and upload (up) is from the user toward the network; the plans' rates are in kbit/s.
 
 local DEFAULT_STYLE = 'profile'
 local INTERIM_SECONDS = 300
 
 local styles = {
-  -- 標準的 Filter-Id：值是 BNG 上的設定檔名稱。
+  -- Standard Filter-Id: the value is a profile name on the BNG.
   profile = function(plan)
     set_attr('Filter-Id', plan.profile)
   end,
-  -- 無線網路營運商漫遊（WISPr）：兩個方向，單位 bit/s。屬性是 32 位元整數，最大 4294967295 bit/s
-  -- （約 4.29 Gbit/s）；更快的方案送不出去，所以拒絕並記錄，不送一個被截斷或不合法的值。
+  -- Wireless ISP Roaming (WISPr): two directions, unit bit/s. The attribute is a 32-bit integer, at most 4294967295 bit/s
+  -- (about 4.29 Gbit/s); a faster plan cannot be sent, so reject and log it rather than send a truncated or invalid value.
   wispr = function(plan)
     local down, up = plan.down_kbps * 1000, plan.up_kbps * 1000
     if down > 4294967295 or up > 4294967295 then
@@ -26,15 +26,15 @@ local styles = {
     set_attr('WISPr-Bandwidth-Max-Down', down)
     set_attr('WISPr-Bandwidth-Max-Up', up)
   end,
-  -- Mikrotik-Rate-Limit：「rx/tx」，從路由器看：rx 是用戶上傳、tx 是用戶下載；k 是 kbit/s。
+  -- Mikrotik-Rate-Limit: "rx/tx", seen from the router: rx is the user upload, tx is the user download; k is kbit/s.
   mikrotik = function(plan)
     set_attr('Mikrotik-Rate-Limit', string.format('%dk/%dk', plan.up_kbps, plan.down_kbps))
   end,
-  -- SLA 設定檔名稱。
+  -- SLA profile name.
   alc_sla = function(plan)
     set_attr('Alc-SLA-Prof-Str', plan.profile)
   end,
-  -- 進與出的政策名稱：進（Ingress）是用戶上傳，出（Egress）是用戶下載；名稱是設定檔名稱加 -up、-down。
+  -- Ingress and egress policy names: ingress is the user upload and egress is the user download; the names are the profile name plus -up or -down.
   erx = function(plan)
     set_attr('ERX-Ingress-Policy-Name', plan.profile .. '-up')
     set_attr('ERX-Egress-Policy-Name', plan.profile .. '-down')
@@ -74,7 +74,7 @@ if not apply then
   return 'reject'
 end
 
--- 風格函式回 false 表示這個方案送不出去；沒有回值就是送了。
+-- A style function returning false means this plan cannot be sent; returning nothing means it was sent.
 if apply(plan) == false then
   return 'reject'
 end

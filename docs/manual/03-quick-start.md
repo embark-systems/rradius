@@ -111,7 +111,7 @@ list = "SELECT username, nas, session_id, started, updated FROM accounting WHERE
 show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE username = ?1 AND stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
 ```
 
-Section by section (for defaults and whether each setting can be reloaded, see the full list in [Appendix A](../manual.zh-TW/90-config-reference.md)):
+Section by section (for defaults and whether each setting can be reloaded, see the full list in [Appendix A](90-config-reference.md)):
 
 | Setting | Value here | Default | reload | Meaning |
 | --- | --- | --- | --- | --- |
@@ -180,7 +180,7 @@ show = "SELECT username, enabled FROM users WHERE username = ?1"
 ```
 
 - `?1` is the account name. `?2` is the password value to store in the table.
-- `scheme` is how `user add` and `user passwd` store passwords. The default is already `bcrypt`; it is written out here only so you can see it. For the other choices and their trade-offs, see [chapter 07](../manual.zh-TW/07-users-and-chains.md).
+- `scheme` is how `user add` and `user passwd` store passwords. The default is already `bcrypt`; it is written out here only so you can see it. For the other choices and their trade-offs, see [chapter 07](07-users-and-chains.md).
 - Do not put the password column in `show`.
 
 Only the `user` commands read `[accounts]`. They read it once each time you run a command, so you do not need to reload the server after changing it.
@@ -224,7 +224,7 @@ $ curl -s http://127.0.0.1:9812/readyz
 ok
 ```
 
-`/readyz` answering `ok` (HTTP 200) means the server can handle requests. `/livez` also answers `ok`. For the difference between them, see [chapter 17](../manual.zh-TW/17-monitoring.md).
+`/readyz` answering `ok` (HTTP 200) means the server can handle requests. `/livez` also answers `ok`. For the difference between them, see [chapter 17](17-monitoring.md).
 
 ## First login
 
@@ -331,7 +331,7 @@ $ rradiusd user enable --config rradius.toml dave
 enabled dave
 ```
 
-The `user` commands write to the tables through the cluster's API port, so the server must be running. Exit codes: 0 is success; 1 is no matching account or a failed SQL statement; 2 is an argument or configuration error; 3 is that the cluster cannot be reached. The full description of the `user` commands is in [chapter 07](../manual.zh-TW/07-users-and-chains.md).
+The `user` commands write to the tables through the cluster's API port, so the server must be running. Exit codes: 0 is success; 1 is no matching account or a failed SQL statement; 2 is an argument or configuration error; 3 is that the cluster cannot be reached. The full description of the `user` commands is in [chapter 07](07-users-and-chains.md).
 
 ## Send an accounting request
 
@@ -387,7 +387,7 @@ After the Stop, the session is no longer in the list, and the exit code of `sess
 
 > **Note:** If you run `acct-start` and `acct-stop` as two separate runs, the Stop carries a different session ID and cannot end the session that the earlier Start created. To test Start to Stop, use the `session` load.
 
-How to design the accounting tables, how to write the script, and the accounting spool used when the database fails are all in [chapter 13](../manual.zh-TW/13-accounting.md).
+How to design the accounting tables, how to write the script, and the accounting spool used when the database fails are all in [chapter 13](13-accounting.md).
 
 ## Check server status
 
@@ -429,7 +429,7 @@ RADIUS
 - In the `RADIUS` section, the number in parentheses is the total since startup, and the number before it is the rate over the last second.
 - The lines that start with `Discarded` count requests that got no response. When you troubleshoot, look here first. For example, if the shared secrets do not match, `Discarded: invalid` goes up.
 
-`status` also has `--watch` (keep updating) and `--json`. For the meaning of every line, see [chapter 17](../manual.zh-TW/17-monitoring.md).
+`status` also has `--watch` (keep updating) and `--json`. For the meaning of every line, see [chapter 17](17-monitoring.md).
 
 ## Stop the server
 
@@ -477,7 +477,7 @@ It has no migrations, no `[auth]` and no `[accounts]`, and `[lua]` points to an 
 1. Create `auth.lua`.
 2. If the dictionary is not at the default location, change `dictionary` to the real location.
 
-To grow this starting configuration into a full one, see [chapter 04](04-configuration.md) and [chapter 07](../manual.zh-TW/07-users-and-chains.md).
+To grow this starting configuration into a full one, see [chapter 04](04-configuration.md) and [chapter 07](07-users-and-chains.md).
 
 ## Common mistakes
 
@@ -526,9 +526,9 @@ To grow this starting configuration into a full one, see [chapter 04](04-configu
 - [02 Installation](02-install.md)
 - [04 Configuration file basics](04-configuration.md)
 - [05 RADIUS service and NAS clients](05-radius-clients.md)
-- [07 User accounts and auth chains](../manual.zh-TW/07-users-and-chains.md)
-- [10 Writing policies in Lua](../manual.zh-TW/10-lua-policies.md)
-- [13 Accounting and sessions](../manual.zh-TW/13-accounting.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [19 Performance tuning and load testing](../manual.zh-TW/19-performance.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
+- [07 User accounts and auth chains](07-users-and-chains.md)
+- [10 Writing policies in Lua](10-lua-policies.md)
+- [13 Accounting and sessions](13-accounting.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [19 Performance tuning and load testing](19-performance.md)
+- [Appendix A: Configuration reference](90-config-reference.md)

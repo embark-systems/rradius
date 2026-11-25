@@ -25,9 +25,11 @@ override_dh_auto_install:
 	install -d debian/rradius/usr/share/rradius
 	cp -a share/. debian/rradius/usr/share/rradius/
 	install -d debian/rradius/usr/share/doc/rradius
-	cp -a docs/manual.zh-TW debian/rradius/usr/share/doc/rradius/manual
+	cp -a docs/manual debian/rradius/usr/share/doc/rradius/manual
+	cp -a docs/manual.zh-TW debian/rradius/usr/share/doc/rradius/manual.zh-TW
 	install -m 0644 LICENSE debian/rradius/usr/share/doc/rradius/LICENSE
 	install -m 0644 docs/usage.md debian/rradius/usr/share/doc/rradius/usage.md
+	install -m 0644 docs/usage.zh-TW.md debian/rradius/usr/share/doc/rradius/usage.zh-TW.md
 	cp -a rradius-server/examples debian/rradius/usr/share/doc/rradius/examples
 	install -m 0644 packages/common/README.packages debian/rradius/usr/share/doc/rradius/README.packages
 	install -D -m 0644 packages/common/rradius.logrotate debian/rradius/etc/logrotate.d/rradius

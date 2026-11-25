@@ -1,6 +1,6 @@
 # Three rradius-server nodes in one Raft cluster. Create the Secret first (see
 # secret.example.yaml), then: kubectl apply -k deploy/kubernetes
-# The manual's chapter 16, the section on Kubernetes (docs/manual.zh-TW/16-cluster.md), explains each choice.
+# The manual's chapter 16, the section on Kubernetes (docs/manual/16-cluster.md), explains each choice.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

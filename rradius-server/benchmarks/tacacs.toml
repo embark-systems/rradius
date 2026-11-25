@@ -1,5 +1,5 @@
 # For measuring TACACS+ with rradius-bench only: the secrets are in this file, and every
-# login, authorization and accounting record is accepted. See "效能量測" in docs/usage.md.
+# login, authorization and accounting record is accepted. See "Performance measurements" (section 9) in docs/usage.md.
 dictionary = "../../share/dictionary"
 
 [lua]

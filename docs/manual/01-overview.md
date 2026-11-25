@@ -192,7 +192,7 @@ $ echo 'Message-Authenticator=0x00' | radclient 127.0.0.1:1812 status "$(cat loc
 
 The last line is a Status-Server request. `radius.status_server` is on by default (chapter 05).
 
-> **Not verified on real equipment:** The external tool commands in this section were not run again for this version. The previous version of the manual tested them with `radclient` from FreeRADIUS 3.2.10 (older versions may not add the Message-Authenticator automatically). The fact that `Message-Authenticator` is required by default was checked against the code and the measurements in chapters 05 and 21.
+> **Not verified on real hardware:** The external tool commands in this section were not run again for this version. The previous version of the manual tested them with `radclient` from FreeRADIUS 3.2.10 (older versions may not add the Message-Authenticator automatically). The fact that `Message-Authenticator` is required by default was checked against the code and the measurements in chapters 05 and 21.
 
 ## Core and enterprise editions
 
@@ -226,7 +226,7 @@ The table below lists the items that the core edition refuses and that exist onl
 | CoA and Disconnect | `[radius.coa]` | `coa`, `disconnect` |
 | Cluster backup | `[cluster.backup]` | — |
 
-Besides the table, `[radius.eap]` and `[[radius.clients]]` also have a few keys that only the enterprise edition can use, for example OCSP revocation checking and session resumption in EAP. The core edition refuses most of these too, with a message that also ends in `needs rradius-enterprise`. A few are accepted but have no effect in the core edition. These keys are listed in [Appendix A](../manual.zh-TW/90-config-reference.md) and marked "not supported in core". The main text of this manual does not describe them.
+Besides the table, `[radius.eap]` and `[[radius.clients]]` also have a few keys that only the enterprise edition can use, for example OCSP revocation checking and session resumption in EAP. The core edition refuses most of these too, with a message that also ends in `needs rradius-enterprise`. A few are accepted but have no effect in the core edition. These keys are listed in [Appendix A](90-config-reference.md) and marked "not supported in core". The main text of this manual does not describe them.
 
 The rule of thumb is simple: check your configuration with `rradiusd check`. If it passes, the core edition can run it. If you see `needs rradius-enterprise`, that item needs the enterprise edition.
 
@@ -248,7 +248,7 @@ The formats used in the book:
 
 - The first line of a configuration example says which file it belongs in, for example `# rradius.toml`.
 - Commands start with `$ `, and the actual output follows. Where long output is cut, the cut is marked with `…`.
-- `> **Note:** ` marks things that are easy to get wrong. `> **Warning:** ` marks things that affect security or can interrupt service. `> **Not verified on real equipment:** ` means the passage was only checked against the code and the tests, and was not run on real devices or services.
+- `> **Note:** ` marks things that are easy to get wrong. `> **Warning:** ` marks things that affect security or can interrupt service. `> **Not verified on real hardware:** ` means the passage was only checked against the code and the tests, and was not run on real devices or services.
 - Shared secrets and cluster secrets always go in files, generated with `openssl rand -hex 32`. The examples do not contain plain-text secrets.
 
 ## Common mistakes
@@ -275,7 +275,7 @@ The formats used in the book:
 - [03 First start and first login](03-quick-start.md)
 - [04 Configuration file basics](04-configuration.md)
 - [05 RADIUS service and NAS clients](05-radius-clients.md)
-- [07 User accounts and auth chains](../manual.zh-TW/07-users-and-chains.md)
-- [10 Writing policies in Lua](../manual.zh-TW/10-lua-policies.md)
-- [16 Clusters and high availability](../manual.zh-TW/16-cluster.md)
-- [Appendix E: Glossary and RFC cross-reference](../manual.zh-TW/94-glossary.md)
+- [07 User accounts and auth chains](07-users-and-chains.md)
+- [10 Writing policies in Lua](10-lua-policies.md)
+- [16 Clusters and high availability](16-cluster.md)
+- [Appendix E: Glossary and RFC cross-reference](94-glossary.md)

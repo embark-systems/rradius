@@ -1,15 +1,15 @@
--- 線路身分認證：用戶沒有密碼，BNG 轉送的 DHCP Option 82 說這是哪一條線。
+-- Line identity authentication: the subscriber has no password; the DHCP Option 82 relayed by the BNG says which line this is.
 --
--- 線路：ADSL-Agent-Circuit-Id（RFC 4679，BNG 轉送的 circuit-id），沒有的話用 NAS-Port-Id；
--- remote-id 是 ADSL-Agent-Remote-Id，沒有就當空字串。兩個 id 先正規化再查 lines 表：
---   - 含不可印字元（二進位）的值，寫成 0x 加小寫十六進位，不做其他處理；
---   - 其餘去頭尾空白、轉小寫。
+-- Line: ADSL-Agent-Circuit-Id (RFC 4679, the circuit-id relayed by the BNG), or NAS-Port-Id if absent;
+-- remote-id is ADSL-Agent-Remote-Id, or an empty string if absent. Both ids are normalized before the lookup in the lines table:
+--   - a value with non-printable (binary) characters is written as 0x plus lowercase hex, with nothing else done to it;
+--   - any other value has leading and trailing whitespace removed and is lowercased.
 --
--- 線路身分不是祕密：能讓 BNG 送出任意 Option 82 的人就能冒充任何一條線，所以 client 清單只列 BNG。
--- 要多一層，把 lock_mac 設成 1：第一次登入把 MAC 綁起來，之後換了 MAC 就拒絕。
+-- Line identity is not a secret: anyone who can make the BNG send any Option 82 can impersonate any line, so the client list contains only the BNGs.
+-- For one more layer, set lock_mac to 1: the first login binds the MAC, and a different MAC afterwards is rejected.
 --
--- 這個腳本是最上層腳本（沒有 [auth]），所以先處理協定與階段：同一台伺服器若也開了 [tacacs]，
--- 一律接受會授權每個指令。
+-- This script is the top-level script (there is no [auth]), so it handles protocol and phase first: if the same server also enables [tacacs],
+-- accepting everything would authorize every command.
 
 if protocol ~= 'radius' then
   return 'reject'
@@ -39,7 +39,7 @@ end
 
 local circuit = line_id(get_attr('ADSL-Agent-Circuit-Id')) or line_id(get_attr('NAS-Port-Id'))
 if not circuit then
-  -- Access-Reject 不帶屬性，原因寫在記錄裡。
+  -- Access-Reject carries no attributes; the reason goes in the log.
   log('line identity: no circuit-id and no NAS-Port-Id in the request')
   return 'reject'
 end
@@ -70,7 +70,7 @@ if line.lock_mac == 1 then
   end
   local bound = line.bound_mac
   if bound == nil then
-    -- 第一次：只有 bound_mac 還是空的才寫得進去；兩個請求同時來，只有一個贏，另一個重讀後比較。
+    -- First time: the write succeeds only while bound_mac is still empty; if two requests arrive together, only one wins and the other rereads and compares.
     local took = sql_execute('UPDATE lines SET bound_mac = ? WHERE remote_id = ? AND circuit_id = ? AND bound_mac IS NULL', {mac, remote, circuit})
     if took == 1 then
       bound = mac
@@ -85,8 +85,8 @@ if line.lock_mac == 1 then
   end
 end
 
--- 記錄最後的 MAC 和時間；這一行每次登入寫一次，不需要時可以拿掉（手冊「已知限制」）。
--- 請求沒有 MAC 時只更新時間，不蓋掉上一次看到的 MAC。
+-- Record the last MAC and time; this line writes once per login and can be removed if not needed (manual, "Known limitations").
+-- If the request has no MAC, only the time is updated and the MAC seen last time is kept.
 if mac then
   sql_execute('UPDATE lines SET last_mac = ?, last_seen = ? WHERE remote_id = ? AND circuit_id = ?',
     {mac, math.floor(now_unix()), remote, circuit})
@@ -97,6 +97,6 @@ end
 set_attr('Framed-Pool', line.pool)
 set_attr('Filter-Id', line.profile)
 set_attr('Acct-Interim-Interval', line.interim)
--- BNG 會在計費封包帶回 Class，計費紀錄就知道這條線是誰。
+-- The BNG returns Class in accounting packets, so the accounting records know who this line is.
 set_attr('Class', line.subscriber)
 return 'accept'

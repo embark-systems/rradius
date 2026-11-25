@@ -1,4 +1,4 @@
--- 管理員和角色。role 由 tacacs.lua 解讀：'netadmin' 全部權限，'noc' 只能查看。
+-- Administrators and roles. The role is interpreted by tacacs.lua: 'netadmin' has all privileges, 'noc' can only view.
 CREATE TABLE admins (
   username TEXT PRIMARY KEY,
   password TEXT,
@@ -6,14 +6,14 @@ CREATE TABLE admins (
   enabled INTEGER NOT NULL DEFAULT 1
 );
 
--- 計費記錄：登入、登出和每個指令。同一筆送兩次只留一筆。
+-- Accounting records: logins, logouts and every command. The same record sent twice is kept once.
 CREATE TABLE tacacs_log (
-  device TEXT NOT NULL,          -- [[tacacs.clients]] 的 name
+  device TEXT NOT NULL,          -- name of the [[tacacs.clients]] entry
   task_id TEXT NOT NULL,
-  event TEXT NOT NULL,           -- 'start'、'stop' 或 'update'
+  event TEXT NOT NULL,           -- 'start', 'stop' or 'update'
   username TEXT NOT NULL,
-  rem_addr TEXT NOT NULL,        -- 管理員從哪裡連進設備
-  cmd TEXT NOT NULL,             -- 指令全文；登入、登出是空字串
+  rem_addr TEXT NOT NULL,        -- where the administrator connected to the device from
+  cmd TEXT NOT NULL,             -- the full command; an empty string for login and logout
   logged INTEGER NOT NULL,
   PRIMARY KEY (device, task_id, event)
 );

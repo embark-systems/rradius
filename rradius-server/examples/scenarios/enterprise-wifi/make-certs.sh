@@ -1,6 +1,6 @@
 #!/bin/sh
-# 產生示範用的 CA、RADIUS 伺服器憑證和一張裝置憑證，放在 certs/（或第一個參數指定的目錄）。
-# 只供測試。正式環境請用公司的 CA，私鑰不要離開伺服器。
+# Create a demo CA, a RADIUS server certificate and one device certificate, in certs/ (or the directory given as the first argument).
+# For testing only. In production use the company's CA, and the private key must not leave the server.
 set -eu
 out=${1:-"$(dirname "$0")/certs"}
 mkdir -p "$out"
@@ -26,7 +26,7 @@ extendedKeyUsage = clientAuth
 subjectAltName = DNS:laptop-001.corp.example.com
 CNF
 
-# 每張憑證都先產生金鑰和 CSR，再用 x509 簽發，LibreSSL 和 OpenSSL 都能用。CA 自己簽自己。
+# Each certificate first gets a key and a CSR, then is issued with x509, which works in both LibreSSL and OpenSSL. The CA signs itself.
 openssl req -newkey rsa:2048 -nodes -subj "/CN=Example Corp Wi-Fi CA" -keyout ca.key -out ca.csr 2>/dev/null
 openssl x509 -req -in ca.csr -signkey ca.key -days 3650 -extfile ext.cnf -extensions ca -out ca.pem 2>/dev/null
 rm ca.csr

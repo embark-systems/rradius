@@ -1,26 +1,26 @@
-# 三節點高可用叢集的第 2 個節點。三份設定只差 node_id 和 listen。
-# 節點之間走 WireGuard（10.99.0.0/24），設定方式見 docs/usage.md 2.2 節。
-# 說明：docs/manual.zh-TW/16-cluster.md〈多台主機：ha-cluster 情境〉
+# Node 2 of the three-node high-availability cluster. The three configurations differ only in node_id and listen.
+# Nodes talk to each other over WireGuard (10.99.0.0/24); for the setup see section 2.2 of docs/usage.md.
+# Explanation: docs/manual/16-cluster.md "Several hosts: the ha-cluster scenario"
 #
-# 資料表、示範帳號（migrations/2_demo_users.sql，正式環境要刪掉）和計費腳本（accounting.lua）
-# 都和快速開始相同。
+# The tables, the demo accounts (migrations/2_demo_users.sql; delete in production) and the accounting script (accounting.lua)
+# are the same as in the quick start.
 
 dictionary = "../../../../share/dictionary"
 
 [lua]
 script = "accounting.lua"
-# 叢集失去多數節點時，寫入要等這麼久才失敗，計費才會寫進暫存並回覆 NAS。
-# 要比 NAS 的重送間隔短，否則 NAS 的重送會被當成處理中而丟棄。
+# When the cluster has lost its majority, a write waits this long before failing, after which accounting goes to the spool and the NAS gets its reply.
+# Keep it shorter than the NAS retransmit interval, otherwise the NAS retransmission is treated as in progress and dropped.
 query_timeout_ms = 2000
 
 [cluster]
 node_id = 2
-listen = "10.99.0.2"           # 只在 WireGuard 介面上監聽 raft 和 api
+listen = "10.99.0.2"           # listen for raft and api only on the WireGuard interface
 data_dir = "data"
-secret_raft_file = "raft.secret"  # 三個節點要相同
-secret_api_file = "api.secret"    # 三個節點要相同
-migrations_dir = "migrations"     # 三個節點要相同
-migrations_wait_ms = 120000       # 一起重開時，等其他節點的時間
+secret_raft_file = "raft.secret"  # must be the same on all three nodes
+secret_api_file = "api.secret"    # must be the same on all three nodes
+migrations_dir = "migrations"     # must be the same on all three nodes
+migrations_wait_ms = 120000       # how long to wait for the other nodes when all restart together
 
 [[cluster.nodes]]
 id = 1
@@ -45,21 +45,21 @@ reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 
 [radius]
 bind = "0.0.0.0"
-# NAS 和負載平衡器用它判斷節點是否活著。
+# NASes and load balancers use it to tell whether the node is alive.
 status_server = true
 
-# 每台 NAS 把三個節點都設成 RADIUS 伺服器。共用密碼在三個節點上要相同。
+# Each NAS lists all three nodes as RADIUS servers. The shared secret must be the same on all three nodes.
 [[radius.clients]]
 name = "nas-network"
 address = "10.80.0.0/16"
 secret_file = "nas.secret"
 
-# 叢集失去多數節點、寫不進資料庫時，計費先寫在本機，恢復後重放。
+# When the cluster has lost its majority and cannot write to the database, accounting is written locally first and replayed after recovery.
 [radius.accounting_spool]
 dir = "spool"
 max_bytes = 1073741824
 
-# 監控系統從內部網路抓。沒有認證，不要對外開放。
+# The monitoring system scrapes from the internal network. There is no authentication, so do not expose it externally.
 [metrics]
 bind = "10.99.0.2"
 

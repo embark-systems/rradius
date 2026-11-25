@@ -1,8 +1,8 @@
--- 線路、方案、IPv4 位址池、IPv6 前綴池。套用過的檔案不能再改，要改結構就新增下一個編號的檔案。
--- 池的表取自手冊第 14 章〈IPv4 位址池〉（ip_pool）與〈IPv6 前綴池〉（prefix_pools、prefix_leases），用 subscriber 當用戶名稱。
+-- Lines, plans, IPv4 address pool, IPv6 prefix pool. A file that has been applied must not be edited; to change the structure, add a file with the next number.
+-- The pool tables are taken from manual chapter 14, "IPv4 address pool" (ip_pool) and "IPv6 prefix pool" (prefix_pools, prefix_leases), using subscriber as the user name.
 
--- 每個方案：回給 BNG 的設定檔名稱（速率等由 BNG 上同名的設定檔決定）、Interim 間隔，以及動態線路
--- 從哪個 IPv4 池（pool，ip_pool 的池名稱）與哪個前綴池（pool6，prefix_pools 的池名稱）拿位址。
+-- Each plan: the profile name returned to the BNG (rates and so on are decided by the profile of the same name on the BNG), the Interim interval, and
+-- which IPv4 pool (pool, the pool name in ip_pool) and which prefix pool (pool6, the pool name in prefix_pools) a dynamic line takes addresses from.
 CREATE TABLE plans (
   plan TEXT PRIMARY KEY,
   pool TEXT NOT NULL,
@@ -11,16 +11,16 @@ CREATE TABLE plans (
   interim INTEGER NOT NULL DEFAULT 300
 );
 
--- 每條線一列。主鍵是 (remote_id, circuit_id)，兩個 id 都存正規化後的值（見 line.lua）。
---   lock_mac     0：只記錄最後看到的 MAC；1：第一次登入把 MAC 綁起來，之後不同的 MAC 拒絕。
--- 固定資料（欄位是 NULL 就不是固定的）：
---   ipv4         固定的 IPv4 位址；有它，這條線的 IPv4 就不從池拿。netmask 沒設時回 255.255.255.255。
---   routed_v4    路由給用戶的子網段，回成 Framed-Route；要和 ipv4 一起設。
---   wan_v6       連線本身的前綴（Framed-IPv6-Prefix），例如 2001:db8:1:1::/64。
---   pd_v6        委派前綴（Delegated-IPv6-Prefix），例如 2001:db8:f00::/56。
--- wan_v6 與 pd_v6 只要設了任何一個，這條線的 IPv6 就不從前綴池拿，只回設了的那個。
--- IPv4 與 IPv6 各自決定：只固定 IPv4 的線路，IPv6 前綴仍從池拿。
--- 比的是文字：IPv6 前綴請一律寫成小寫、壓縮的寫法。
+-- One row per line. The primary key is (remote_id, circuit_id); both ids are stored in normalized form (see line.lua).
+--   lock_mac     0: only record the last MAC seen; 1: the first login binds the MAC, and later a different MAC is rejected.
+-- Fixed data (a NULL field means not fixed):
+--   ipv4         fixed IPv4 address; if set, this line's IPv4 is not taken from the pool. When netmask is not set, 255.255.255.255 is returned.
+--   routed_v4    subnet routed to the user, returned as Framed-Route; set it together with ipv4.
+--   wan_v6       the prefix of the connection itself (Framed-IPv6-Prefix), for example 2001:db8:1:1::/64.
+--   pd_v6        delegated prefix (Delegated-IPv6-Prefix), for example 2001:db8:f00::/56.
+-- If either wan_v6 or pd_v6 is set, this line's IPv6 is not taken from the prefix pool; only the one that is set is returned.
+-- IPv4 and IPv6 are decided separately: for a line with only a fixed IPv4, the IPv6 prefix is still taken from the pool.
+-- Comparison is by text: always write IPv6 prefixes in lowercase, compressed form.
 CREATE TABLE lines (
   remote_id TEXT NOT NULL DEFAULT '',
   circuit_id TEXT NOT NULL,
@@ -38,21 +38,21 @@ CREATE TABLE lines (
   pd_v6 TEXT,
   PRIMARY KEY (remote_id, circuit_id)
 );
--- 池和計費用 subscriber 當鍵，所以一個 subscriber 只能有一條線。
+-- The pools and accounting use subscriber as the key, so a subscriber can have only one line.
 CREATE UNIQUE INDEX lines_subscriber ON lines (subscriber);
 CREATE UNIQUE INDEX lines_ipv4 ON lines (ipv4);
 CREATE UNIQUE INDEX lines_wan_v6 ON lines (wan_v6);
 CREATE UNIQUE INDEX lines_pd_v6 ON lines (pd_v6);
 
--- IPv4 位址池：每個位址一列。主鍵是 (pool, ip)。
---   free      沒人用
---   reserved  認證時預留了，還沒收到 Accounting-Start；expires 到了還沒確認就放回
---   active    NAS 回報在用；每個 Interim-Update 延長 expires，到期沒收到就放回
--- last_user 與 released 是黏著用的：位址放回時記下上一個用的人和時間。
+-- IPv4 address pool: one row per address. The primary key is (pool, ip).
+--   free      nobody is using it
+--   reserved  reserved at authentication, Accounting-Start not yet received; put back if not confirmed by expires
+--   active    reported in use by the NAS; each Interim-Update extends expires, and it is put back if none arrives by then
+-- last_user and released are for stickiness: when an address is put back, the previous user and the time are recorded.
 CREATE TABLE ip_pool (
   pool TEXT NOT NULL,
   ip TEXT NOT NULL,
-  n INTEGER NOT NULL,                     -- 位址在池裡的序號，同一個池內從 1 起連續編號
+  n INTEGER NOT NULL,                     -- -- the address's sequence number in the pool, numbered consecutively from 1 within a pool
   state TEXT NOT NULL DEFAULT 'free' CHECK (state IN ('free', 'reserved', 'active')),
   username TEXT,
   session_id TEXT,
@@ -68,8 +68,8 @@ CREATE INDEX ip_pool_state ON ip_pool (pool, state, n);
 CREATE INDEX ip_pool_last_user ON ip_pool (last_user, pool, state, released);
 CREATE INDEX ip_pool_expiry ON ip_pool (state, expires);
 
--- IPv6 前綴池：每個池只由三個常數決定，不存每個前綴（說明見手冊第 14 章〈IPv6 前綴池〉）。
---   base  前綴的高 64 位元，整數；plen 池的長度；dlen 委派給每個用戶的長度，不超過 64。
+-- IPv6 prefix pool: each pool is determined by three constants only, and individual prefixes are not stored (see manual chapter 14, "IPv6 prefix pool").
+--   base  the high 64 bits of the prefix, an integer; plen the pool's length; dlen the length delegated to each user, at most 64.
 CREATE TABLE prefix_pools (
   pool TEXT PRIMARY KEY,
   base INTEGER NOT NULL,
@@ -79,11 +79,11 @@ CREATE TABLE prefix_pools (
   CHECK ((base & ((1 << (64 - plen)) - 1)) = 0)
 );
 
--- 只放已經分配出去的前綴：沒有那一列就是空閒。
---   reserved  認證時預留了，還沒收到 Accounting-Start；expires 到了還沒確認就刪掉
---   active    NAS 回報在用；每個 Interim-Update 延長 expires，到期沒收到就改成 released
---   released  用戶離線了：前綴暫時留給他，expires（釋放時間加 HOLD_SECONDS）到了才刪
--- prefix 必須和伺服器把 NAS 回報的 Delegated-IPv6-Prefix 解碼出來的文字一樣（壓縮、小寫）。
+-- Only prefixes already handed out are stored: no row means free.
+--   reserved  reserved at authentication, Accounting-Start not yet received; deleted if not confirmed by expires
+--   active    reported in use by the NAS; each Interim-Update extends expires, and it becomes released if none arrives by then
+--   released  the user went offline: the prefix is kept for them temporarily, and deleted only when expires (release time plus HOLD_SECONDS) is reached
+-- prefix must be the same text the server produces when it decodes the Delegated-IPv6-Prefix reported by the NAS (compressed, lowercase).
 CREATE TABLE prefix_leases (
   pool TEXT NOT NULL,
   n INTEGER NOT NULL,
@@ -103,6 +103,6 @@ CREATE INDEX prefix_leases_nas ON prefix_leases (nas, state);
 CREATE INDEX prefix_leases_released ON prefix_leases (pool, updated) WHERE state = 'released';
 CREATE INDEX prefix_leases_pool_state ON prefix_leases (pool, state);
 
--- 請求觸發的定期工作用：每個工作一列，記著上次什麼時候跑（見 docs/manual.zh-TW/18-operations.md〈清除舊資料〉）。
+-- For periodic work triggered by requests: one row per job, recording when it last ran (see docs/manual/18-operations.md "Purging old data").
 CREATE TABLE housekeeping (name TEXT PRIMARY KEY, last_run INTEGER NOT NULL);
 INSERT INTO housekeeping VALUES ('reap-ip-pool', 0), ('reap-prefix-pool', 0);

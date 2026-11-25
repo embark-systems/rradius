@@ -1,10 +1,10 @@
-# rradiusd 使用文件
+# rradiusd usage reference
 
-rradiusd 是一個 AAA（認證、授權、計費）伺服器，支援 RADIUS 與 TACACS+。認證可以交給設定檔中的認證串接（SQL、LDAP、Lua），授權與計費由 Lua 腳本處理。資料存放在內嵌的 hiqlite（SQLite 加 Raft 複寫）叢集，可以單機執行，也可以組成多節點高可用叢集。
+rradiusd is an AAA (authentication, authorization, accounting) server that supports RADIUS and TACACS+. Authentication can be handed to the auth chains in the configuration file (SQL, LDAP, Lua); authorization and accounting are handled by Lua scripts. Data is stored in an embedded hiqlite (SQLite plus Raft replication) cluster, which can run as a single node or as a multi-node high-availability cluster.
 
-這份是參考文件，列出每個設定和行為。依主題的說明、部署情境和可以直接啟動的範例設定，見[使用手冊](manual.zh-TW/README.md)。
+This is a reference document that lists every setting and behavior. For explanations by topic, deployment scenarios and example configurations you can start as they are, see the [user manual](manual/README.md).
 
-## 1. 建置與啟動
+## 1. Building and starting
 
 ```bash
 cd rradius-server
@@ -12,53 +12,53 @@ cargo build --release
 ./target/release/rradiusd serve --config /etc/rradius/rradius.toml
 ```
 
-`rradiusd --version` 印出版本和預設設定檔，例如：
+`rradiusd --version` prints the version and the default configuration file, for example:
 
 ```
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
 ```
 
-**預設設定檔：** 沒有給 `--config` 時，`serve`、`check` 和所有管理指令（`user`，以及企業版的指令）都讀預設設定檔。它在建置時決定：建置時設了環境變數 `RRADIUS_PREFIX` 就是 `$RRADIUS_PREFIX/etc/rradius/rradius.toml`，沒有設（或是空字串、`/`）就是 `/etc/rradius/rradius.toml`。前綴要給絕對路徑，結尾的 `/` 會去掉。執行時的環境變數不影響它，要確認建出來的是哪一個，看 `--version` 的第二行。例如裝在 `/usr/local`：
+**Default configuration file:** When `--config` is not given, `serve`, `check` and all management commands (`user`, and the enterprise edition's commands) read the default configuration file. It is fixed at build time: if the environment variable `RRADIUS_PREFIX` was set when you built, it is `$RRADIUS_PREFIX/etc/rradius/rradius.toml`; if it was not set (or was an empty string or `/`), it is `/etc/rradius/rradius.toml`. The prefix must be an absolute path, and a trailing `/` is removed. Environment variables at run time do not affect it. To check which one a build uses, look at the second line of `--version`. For example, installed under `/usr/local`:
 
 ```bash
 RRADIUS_PREFIX=/usr/local cargo build --release
-./target/release/rradiusd        # 讀 /usr/local/etc/rradius/rradius.toml
+./target/release/rradiusd        # reads /usr/local/etc/rradius/rradius.toml
 ```
 
-用 cargo 建置時，改了 `RRADIUS_PREFIX` 會自動重新編譯；企業版建置時設的值一樣有效。字典也跟著這個前綴：設定檔沒寫 `dictionary` 時，讀 `$RRADIUS_PREFIX/share/rradius/dictionary`（上面的例子是 `/usr/local/share/rradius/dictionary`）。
+When you build with cargo, changing `RRADIUS_PREFIX` triggers a rebuild automatically; a value set when building the enterprise edition works the same way. The dictionary follows this prefix too: when the configuration file has no `dictionary`, it reads `$RRADIUS_PREFIX/share/rradius/dictionary` (in the example above, `/usr/local/share/rradius/dictionary`).
 
-**發行檔：** `rradius-<版本>-<平台>.tar.gz`，平台是 `macos-aarch64`、`linux-x86_64` 或 `linux-aarch64`，旁邊的 `.sha256` 可以用 `shasum -a 256 -c` 檢查。解開後的目錄結構和 repo 相同，所以範例設定和文件裡的相對路徑都照樣成立：
+**Release archive:** `rradius-<version>-<platform>.tar.gz`, where the platform is `macos-aarch64`, `linux-x86_64` or `linux-aarch64`. The `.sha256` file next to it can be checked with `shasum -a 256 -c`. The unpacked directory layout is the same as the repo, so the example configurations and the relative paths in the documents all work as they are:
 
-| 路徑 | 內容 |
+| Path | Contents |
 | --- | --- |
-| `bin/rradiusd` | 伺服器和管理指令 |
-| `share/dictionary*` | RADIUS 字典 |
-| `rradius-server/examples/` | 範例，含使用手冊的九個情境 |
-| `docs/usage.md`、`docs/manual.zh-TW/` | 這份文件和使用手冊 |
-| `README.md`、`VERSION` | 說明，以及版本和建置它的 commit；Linux 版另外寫出需要的 glibc 版本 |
+| `bin/rradiusd` | The server and the management commands |
+| `share/dictionary*` | RADIUS dictionaries |
+| `rradius-server/examples/` | Examples, including the nine scenarios of the user manual |
+| `docs/usage.md`, `docs/manual/` | This document and the user manual |
+| `README.md`, `VERSION` | Notes, and the version and the commit it was built from; the Linux builds also state the glibc version they need |
 
-- **Linux 版的 glibc：** 它在 Debian 12（bookworm）建置，需要的版本寫在壓縮檔的 `VERSION` 和 `README.md`。0.1.0 需要 glibc 2.34 以上，2026-11-08 在 Debian 12、Ubuntu 22.04（2.35）和 Rocky Linux 9（2.34）上確認過可以執行。更舊的發行版請用 Docker 映像（1.1 節）或自己建置。
-- **正式部署時，** 把 `share/` 放到固定的位置（例如 `/usr/share/rradius`），設定檔的 `dictionary` 指向那裡（放在預設字典路徑，也就是 `$RRADIUS_PREFIX/share/rradius/dictionary` 時可以不寫）；執行檔放到 `PATH` 裡。
-- **自己產生發行檔：** `packages/tarball/release.sh [--target <平台>]... [--out <目錄>] [--commit <rev>]`。沒有給 `--target` 時只建本機的平台；Linux 版用專案 `Dockerfile` 的建置階段在 Docker 裡建置，和 Docker 映像相同（arm64 一樣支援 64 KiB 分頁）。內容只取自指定的 commit，未提交的修改和被忽略的檔案不會打包。打包後會解開壓縮檔，用裡面的執行檔對各情境的設定執行 `check`（有 `make-certs.sh` 或 `setup.sh` 的情境要先產生憑證或金鑰，不在檢查之內），失敗就不留下壓縮檔。
+- **glibc of the Linux builds:** They are built on Debian 12 (bookworm), and the required version is written in the archive's `VERSION` and `README.md`. 0.1.0 needs glibc 2.34 or later, and was confirmed to run on 2026-11-08 on Debian 12, Ubuntu 22.04 (2.35) and Rocky Linux 9 (2.34). On older distributions, use the Docker image (section 1.1) or build it yourself.
+- **For a production deployment,** put `share/` in a fixed location (for example `/usr/share/rradius`) and point `dictionary` in the configuration file there (you can leave it out when the dictionary is at the default dictionary path, `$RRADIUS_PREFIX/share/rradius/dictionary`); put the executable in your `PATH`.
+- **Making a release archive yourself:** `packages/tarball/release.sh [--target <platform>]... [--out <directory>] [--commit <rev>]`. Without `--target` it builds only the local platform; the Linux builds are made inside Docker with the build stage of the project's `Dockerfile`, the same as the Docker image (arm64 also supports 64 KiB pages). The contents come only from the given commit; uncommitted changes and ignored files are not packaged. After packaging, the script unpacks the archive and runs `check` with the executable inside it against each scenario's configuration (scenarios that have `make-certs.sh` or `setup.sh` need their certificates or keys generated first, so they are not part of the check). If any check fails, the archive is not kept.
 
-- **啟動服務要用 `serve` 子命令：** `rradiusd serve [--config <path>]`。不給 `--config` 時讀預設設定檔（見上方）；讀不到時錯誤訊息會寫出路徑，並提示用 `--config` 指定別的檔案，狀態碼 2。`serve` 後面接其他參數時印出它的用法，狀態碼 2。
-- **不帶參數只印用法：** `rradiusd`、`rradiusd help`（或 `-h`、`--help`）把所有子命令的用法印到 stdout，最後一行寫出預設設定檔，狀態碼 0，不讀設定檔也不啟動任何東西。參數不對時印出同樣的用法到 stderr，狀態碼 2；第一個參數是 `--config` 或 `--check` 時（舊的寫法）多一行提示改用 `serve --config <path>` 或 `check --config <path>`，不會啟動也不會檢查。
-- `rradiusd check [--config <path>]` 只檢查設定，見下方。`[radius.accounting_spool] dir` 也會檢查：要是目錄且寫得進去，還不存在時最近的上層目錄要寫得進去。只寫一個暫時檔再刪除，不會建立目錄或動到暫存內容。這是用執行 `check` 的帳號判斷，和實際執行服務的帳號不同時結果可能不同。
-- 設定檔錯誤（欄位拼錯、缺少必填項、腳本語法錯誤等）一律在啟動時失敗，狀態碼 2，錯誤訊息會指出設定檔路徑與出錯的欄位或檔案。
-- 設定檔中的相對路徑都以設定檔所在目錄為準，與啟動時的工作目錄無關。
-- 建置不需要另外安裝 Lua 或 LuaJIT：Luau 會隨程式一起編譯。
-- **SQLite 以 `SQLITE_ENABLE_QPSG` 建置。** 資料庫用的 SQLite 隨程式一起編譯，repo 的 `.cargo/config.toml` 設了 `LIBSQLITE3_FLAGS="-DSQLITE_ENABLE_QPSG"`，在 repo 裡用 `cargo` 建置就會套用；`Dockerfile` 和 `packages/tarball/release.sh` 也一樣。在 repo 外建置（例如只複製 `rradius-server/` 目錄）時要自己設這個環境變數；shell 裡已經有 `LIBSQLITE3_FLAGS` 時，`.cargo/config.toml` 不會蓋掉它，要自己把 `-DSQLITE_ENABLE_QPSG` 加進去。`packages/tarball/release.sh` 會檢查發行檔裡的執行檔有沒有開，沒有就不打包。原因：SQLite 3.54 起，有 JOIN 又用參數篩選的查詢（例如寬頻情境的 `session-limit.lua`）、以及 `LIMIT ?`，每次綁定參數都會重新規劃，而每次讀取都會重新綁定。2026-11-08 在 Apple M4 Max 上量測寬頻情境的 PAP 登入（併發 64），沒有這個旗標時每秒約 17,000 次，有的話約 46,000–47,000 次，和 SQLite 3.53 相同。這個旗標讓查詢計畫不依參數值改變，只有在跑過 `ANALYZE`、有統計資料時才看得出差別，伺服器不會產生統計資料。`cargo test` 裡的 `test_sqlite_built_to_keep_query_plans` 會確認建出來的 SQLite 有開。
+- **Start the service with the `serve` subcommand:** `rradiusd serve [--config <path>]`. Without `--config` it reads the default configuration file (see above); if the file cannot be read, the error message gives the path and suggests using `--config` to point to another file, with exit status 2. When `serve` is followed by other arguments, it prints its usage, with exit status 2.
+- **With no arguments it only prints the usage:** `rradiusd` and `rradiusd help` (or `-h`, `--help`) print the usage of all subcommands to stdout, with the default configuration file on the last line, and exit with status 0; they read no configuration file and start nothing. With wrong arguments, the same usage is printed to stderr with exit status 2; when the first argument is `--config` or `--check` (the old form), one more line suggests using `serve --config <path>` or `check --config <path>` instead, and nothing is started or checked.
+- `rradiusd check [--config <path>]` only checks the configuration, see below. `[radius.accounting_spool] dir` is also checked: it must be a directory you can write to, and when it does not exist yet, its nearest existing parent directory must be writable. It writes one temporary file and deletes it, and does not create the directory or touch the spooled contents. The check uses the account that runs `check`, so the result can differ when that is not the account that runs the service.
+- A configuration error (a misspelled field, a missing required item, a script syntax error and so on) always fails at startup with exit status 2, and the error message names the configuration file path and the field or file that is wrong.
+- Relative paths in the configuration file are all relative to the directory that contains the configuration file, whatever the working directory at startup is.
+- The build does not need a separate Lua or LuaJIT installation: Luau is compiled together with the program.
+- **SQLite is built with `SQLITE_ENABLE_QPSG`.** The SQLite used by the database is compiled together with the program. The repo's `.cargo/config.toml` sets `LIBSQLITE3_FLAGS="-DSQLITE_ENABLE_QPSG"`, which applies when you build with `cargo` inside the repo; the `Dockerfile` and `packages/tarball/release.sh` do the same. When you build outside the repo (for example by copying only the `rradius-server/` directory), you must set this environment variable yourself; when `LIBSQLITE3_FLAGS` is already set in your shell, `.cargo/config.toml` does not override it, so add `-DSQLITE_ENABLE_QPSG` to it yourself. `packages/tarball/release.sh` checks whether the executable in the archive has it enabled, and does not package it if not. Reason: since SQLite 3.54, queries that have a JOIN and also filter by a parameter (for example `session-limit.lua` in the broadband scenario), and `LIMIT ?`, are planned again on every parameter binding, and every read binds again. On 2026-11-08, PAP logins of the broadband scenario (concurrency 64) measured on an Apple M4 Max were about 17,000 per second without this flag and about 46,000-47,000 with it, the same as SQLite 3.53. The flag keeps the query plan from changing with the parameter values; the difference only shows when `ANALYZE` has been run and statistics exist, and the server does not generate statistics. `test_sqlite_built_to_keep_query_plans` in `cargo test` checks that the SQLite that was built has it enabled.
 
-**只檢查設定：**
+**Checking the configuration only:**
 
 ```bash
 ./target/release/rradiusd check --config /etc/rradius/rradius.toml
 ```
 
-做和啟動相同的檢查：設定檔、字典、migration 目錄、腳本語法、LDAP 的 `ca_file`。全部通過時 stdout 印 `configuration ok`，狀態碼 0；有問題時錯誤寫到 stderr，狀態碼 2。不開埠、不建立資料目錄，也不連線到 LDAP 或其他節點，所以 LDAP 帳號密碼錯誤、SQL 查詢寫錯這類問題查不出來。
+It runs the same checks as startup: the configuration file, the dictionary, the migration directory, script syntax, and the LDAP `ca_file`. When everything passes, it prints `configuration ok` to stdout and exits with status 0; when there is a problem, the error is written to stderr and the exit status is 2. It does not open ports, create the data directory, or connect to LDAP or other nodes, so problems such as a wrong LDAP account password or a wrong SQL query cannot be found this way.
 
-範例設定在 `rradius-server/examples/rradius.toml`，可以直接啟動：
+The example configuration is in `rradius-server/examples/rradius.toml` and can be started as it is:
 
 ```bash
 cd rradius-server
@@ -67,87 +67,87 @@ cargo run -- serve --config examples/rradius.toml
 
 ### 1.1 Docker
 
-映像檔由專案根目錄的 `Dockerfile` 建置。範例設定在 `docker/config/`，使用 `sql` 處理器驗證，計費寫入 `accounting` 表。
+The image is built from the `Dockerfile` in the project root. The example configuration is in `docker/config/`; it authenticates with the `sql` handler and writes accounting to the `accounting` table.
 
-單一節點：
+A single node:
 
 ```bash
 docker/init-secrets.sh
 docker compose up --build
 ```
 
-三個節點，各自用不同的主機連接埠（`1812`/`1813`、`2812`/`2813`、`3812`/`3813`）：
+Three nodes, each with different host ports (`1812`/`1813`, `2812`/`2813`, `3812`/`3813`):
 
 ```bash
 docker/init-secrets.sh
 docker compose -f compose.cluster.yaml up --build
 ```
 
-確認服務是否回應（Status-Server、不存在的使用者會收到 Access-Reject，以及計費腳本能寫入；每次執行會在 `accounting` 資料表留下一筆 `o'brien` 的測試紀錄）：
+To check that the service responds (Status-Server, an Access-Reject for a user that does not exist, and that the accounting script can write; each run leaves one test record for `o'brien` in the `accounting` table):
 
 ```bash
 docker/smoke-test.py --auth-port 1812 --acct-port 1813
 ```
 
-- **密鑰：** `docker/init-secrets.sh` 產生 `docker/secrets/` 下的三個密鑰，這個目錄不進 git。NAS 要使用 `radius.secret` 的內容。
-- **新增使用者：** 在 `docker/config/migrations/` 新增編號的 SQL 檔（已套用的檔案不能修改，見 2.5 節），再重新啟動。
-- **client：** 範例允許三個私有網段，因為容器看到的來源位址由 Docker 決定。請改成你的設備位址。
-- **TACACS+：** 範例沒有啟用。要用時在設定加上 `[tacacs]`，並在 Compose 發布 `49/tcp`。
-- **統計：** 範例沒有啟用。要用時加上 `[metrics]`，並把 `bind` 改成容器可從外部連到的位址（見 2.8 節）。RadSec（`[radius.tls]`）需要 rradius-enterprise。
-- **看狀態：** 範例設定開了 `[metrics]`（容器內的 `127.0.0.1:9812`，沒有對外開埠），用 `docker compose exec rradius rradiusd status --config /etc/rradius/rradius.toml --watch` 看這個節點在做什麼（見 2.8 節）。
-- **重新載入：** 修改 `docker/config/` 的腳本或 client 後，執行 `docker compose kill -s HUP rradius` 就會套用，不必重啟（見 2.9 節）。
-- **資料：** 放在 Compose 的具名 volume。`docker compose down --volumes` 會刪除資料。
-- **容器的權限：** 範例 Compose 的每個服務都設了 `read_only: true`（根檔案系統唯讀）、`tmpfs: [/tmp]`、`cap_drop: [ALL]` 與 `no-new-privileges`。伺服器以一般使用者（uid 10001）執行，只寫資料 volume（`/var/lib/rradius`）和 `/tmp`，所以這些限制不影響運作；單節點與三節點的 smoke test 都在這些設定下通過。自己加的東西（例如記錄檔、計費暫存、憑證檔的輸出）若要寫別的路徑，要掛一個 volume 給它，否則會因為唯讀而失敗。已部署的容器要用 `docker compose up --detach` 重新建立才會套用。
-- **EAP：** 範例沒有啟用。要用時加上 `[radius.eap]`，憑證放在 `docker/config/`（見 2.12 節）。
-- **計費暫存：** 範例沒有啟用。要用時，`[radius.accounting_spool].dir` 要指向 volume 裡的路徑（例如 `/var/lib/rradius/spool`；`/etc/rradius` 是唯讀的），否則換掉容器就遺失已確認的計費（見 2.11 節）。
-- **停止：** `docker stop` 送的 SIGTERM 和 Ctrl+C 的 SIGINT 都會依序：先讓 `/readyz` 回 503、照常回應一段時間，再停止接收新的請求、等處理中的請求回應完，然後正常關閉資料庫，並等還在緩衝的記錄寫出，最多 5 秒（細節與兩段等待的設定見 2.16 節）。SIGKILL 不會，下次啟動時本機資料庫會重建。啟動途中也一樣能停止：等待叢集或套用 migration 時收到，會關閉節點後以狀態碼 0 結束，下次啟動接著做。正在跑超過 25 秒的 migration 檔時，等滿 25 秒就結束，這次不算乾淨關閉，下次啟動會重建本機資料庫；節點還沒起來時收到，會先等它起來（最多 25 秒）再正常關閉；25 秒內起不來（例如叢集沒有多數節點）就直接結束，這時無法乾淨關閉，資料目錄可能留下 `lock` 檔，下次啟動會重建本機資料庫。
-- **多節點的關閉要 15 秒左右：** 預設先等 5 秒讓負載平衡器移出這個節點（`[shutdown] ready_delay_ms`），處理中的請求通常很快做完（最多等 `drain_ms`，預設 5 秒），之後 hiqlite 關閉叢集成員前還會再等 9.5 秒（這段時間它還是 leader），其他節點才選出新 leader。所以 `docker stop` 要多給時間（`docker stop -t 30`，或 Compose 的 `stop_grace_period: 30s`，`compose.cluster.yaml` 已經設了），systemd 的預設 90 秒足夠。時間不夠被 SIGKILL 時，下次啟動會重建本機資料庫。
-- **節點壞掉時自己結束：** 節點的 Raft 核心因錯誤停止時（例如下方 2.2 節的 follower 落後太多），或 hiqlite 內部 panic 時，程序記錄 `exiting so that a restart recovers it` 後以狀態碼 1 結束。所以一定要讓它自動重新啟動：systemd 設 `Restart=on-failure`，Docker 設 `restart: unless-stopped`（範例 Compose 都設了）。
+- **Secrets:** `docker/init-secrets.sh` generates the three secrets under `docker/secrets/`; this directory is not in git. The NAS must use the contents of `radius.secret`.
+- **Adding users:** add a numbered SQL file in `docker/config/migrations/` (files that have already been applied cannot be changed, see section 2.5), then restart.
+- **client:** The example allows three private networks, because the source address the container sees is decided by Docker. Change it to your devices' addresses.
+- **TACACS+:** Not enabled in the example. To use it, add `[tacacs]` to the configuration and publish `49/tcp` in Compose.
+- **Metrics:** Not enabled in the example. To use it, add `[metrics]` and change `bind` to an address the container can be reached on from outside (see section 2.8). RadSec (`[radius.tls]`) needs rradius-enterprise.
+- **Viewing status:** The example configuration turns on `[metrics]` (`127.0.0.1:9812` inside the container, with no port opened to the outside); use `docker compose exec rradius rradiusd status --config /etc/rradius/rradius.toml --watch` to see what this node is doing (see section 2.8).
+- **Reload:** After you change the scripts or clients in `docker/config/`, run `docker compose kill -s HUP rradius` to apply them without a restart (see section 2.9).
+- **Data:** Kept in a named Compose volume. `docker compose down --volumes` deletes the data.
+- **Container privileges:** Every service in the example Compose files sets `read_only: true` (read-only root file system), `tmpfs: [/tmp]`, `cap_drop: [ALL]` and `no-new-privileges`. The server runs as an ordinary user (uid 10001) and writes only to the data volume (`/var/lib/rradius`) and `/tmp`, so these restrictions do not get in the way; the single-node and three-node smoke tests both pass with these settings. If something you add yourself (for example log files, the accounting spool, or generated certificate files) must write to another path, mount a volume for it, or it fails because the file system is read-only. A container that is already deployed must be recreated with `docker compose up --detach` for this to apply.
+- **EAP:** Not enabled in the example. To use it, add `[radius.eap]` and put the certificates in `docker/config/` (see section 2.12).
+- **Accounting spool:** Not enabled in the example. To use it, `[radius.accounting_spool].dir` must point to a path inside a volume (for example `/var/lib/rradius/spool`; `/etc/rradius` is read-only), or replacing the container loses accounting that was already acknowledged (see section 2.11).
+- **Stopping:** Both the SIGTERM sent by `docker stop` and the SIGINT from Ctrl+C do the following in order: make `/readyz` return 503 and keep answering normally for a while, then stop accepting new requests and wait for the requests in progress to be answered, then close the database cleanly and wait for the records still in the buffer to be written, for at most 5 seconds (see section 2.16 for the details and the settings of the two waits). SIGKILL does none of this, and the local database is rebuilt at the next start. Stopping also works during startup: if the signal arrives while it waits for the cluster or applies migrations, it shuts the node down and exits with status 0, and the next start continues the work. While a migration file that has been running for more than 25 seconds is in progress, it waits the full 25 seconds and then exits; this does not count as a clean shutdown, and the next start rebuilds the local database. If the signal arrives before the node is up, it first waits for the node to come up (at most 25 seconds) and then shuts down cleanly; if the node cannot come up within 25 seconds (for example the cluster has no majority), it exits right away, which is not a clean shutdown, and the data directory may be left with a `lock` file, and the next start rebuilds the local database.
+- **Shutting down a multi-node cluster takes about 15 seconds:** By default it first waits 5 seconds for the load balancer to take this node out (`[shutdown] ready_delay_ms`); requests in progress usually finish quickly (it waits at most `drain_ms`, 5 seconds by default); after that hiqlite waits another 9.5 seconds before leaving the cluster (it is still the leader during this time), so that the other nodes can elect a new leader. So give `docker stop` more time (`docker stop -t 30`, or `stop_grace_period: 30s` in Compose, which `compose.cluster.yaml` already sets); the systemd default of 90 seconds is enough. If SIGKILL arrives because the time ran out, the next start rebuilds the local database.
+- **A broken node exits by itself:** When the node's Raft core stops because of an error (for example a follower that has fallen too far behind, see section 2.2 below), or when hiqlite panics internally, the process logs `exiting so that a restart recovers it` and exits with status 1. So make sure it restarts automatically: set `Restart=on-failure` in systemd, and `restart: unless-stopped` in Docker (the example Compose files both set it).
 
-## 2. 設定檔總覽
+## 2. Configuration overview
 
-設定檔是 TOML 格式，由以下區段組成：
+The configuration file is in TOML format and is made of the following sections:
 
-| 區段 | 必填 | 用途 |
+| Section | Required | Purpose |
 | --- | --- | --- |
-| `dictionary` | 否 | RADIUS 字典檔路徑（FreeRADIUS 格式，例如專案中的 `share/dictionary`），相對路徑以設定檔所在的目錄為準。沒寫時是建置時決定的預設字典路徑：`$RRADIUS_PREFIX/share/rradius/dictionary`，沒設前綴（或是空字串、`/`）就是 `/usr/share/rradius/dictionary`；用 `--version` 看實際的值。deb、rpm 與 FreeBSD 套件都把字典裝在這個位置 |
-| `include` | 否 | 一起讀的其他檔案，例如 `conf.d/*.toml`（下方〈把設定拆成多個檔案〉） |
-| `[lua]` | 是 | 最上層 Lua 腳本與 Lua 的時限 |
-| `[cluster]` | 是 | 內嵌資料庫節點與叢集 |
-| `[auth]` | 否 | 認證串接；沒有時由 `[lua].script` 認證 |
-| `[radius]` | 否 | 啟用 RADIUS |
-| `[radius.accounting_spool]` | 否 | 資料庫失敗時先把計費寫到本機（2.11 節） |
-| `[radius.accounting_log]` | 否 | 每一筆回覆過的計費寫成一行 JSON 到文字檔（2.18 節） |
-| `[sessions]` | 否 | `session list`、`session show` 查線上 session 用的 SQL（2.19 節） |
-| `[queries.<名稱>]` | 否 | 命名的唯讀查詢：每個節點在背景定期執行，結果成為 gauge 指標，也能用 `query` 指令執行一次（2.20 節） |
-| `[radius.eap]` | 否 | EAP，給 802.1X 和 WPA-Enterprise 用（2.12 節） |
-| `[tacacs]` | 否 | 啟用 TACACS+ |
-| `[metrics]` | 否 | 啟用統計端點（2.8 節） |
-| `[log]` | 否 | 記錄的等級、格式與認證紀錄（2.10 節） |
-| `[accounts]` | 否 | `rradiusd user` 管理帳號時執行的 SQL（2.14 節） |
-| `[shutdown]` | 否 | 收到 SIGTERM 後的兩段等待（2.16 節） |
-| `[databases.<name>]` | 否 | 外部的 MySQL、PostgreSQL，給 `sql` 處理器和 `db_query` 用（2.17 節） |
-| `[runtime]` | 否 | `pin_threads`：把工作執行緒各綁在一顆 CPU 上，只在 Linux（2.4 節） |
+| `dictionary` | No | Path of the RADIUS dictionary file (FreeRADIUS format, for example `share/dictionary` in the project); a relative path is relative to the directory of the configuration file. When it is not written, it is the default dictionary path fixed at build time: `$RRADIUS_PREFIX/share/rradius/dictionary`, or `/usr/share/rradius/dictionary` when no prefix is set (or it is an empty string or `/`); use `--version` to see the actual value. The deb, rpm and FreeBSD packages all install the dictionary at this location |
+| `include` | No | Other files to read together, for example `conf.d/*.toml` ("Splitting the configuration into several files" below) |
+| `[lua]` | Yes | The top-level Lua script and the Lua time limits |
+| `[cluster]` | Yes | The embedded database node and the cluster |
+| `[auth]` | No | Auth chains; when absent, `[lua].script` authenticates |
+| `[radius]` | No | Enables RADIUS |
+| `[radius.accounting_spool]` | No | Writes accounting to local disk first when the database fails (section 2.11) |
+| `[radius.accounting_log]` | No | Writes every accounting request that was answered as one line of JSON to a text file (section 2.18) |
+| `[sessions]` | No | The SQL that `session list` and `session show` use to look up online sessions (section 2.19) |
+| `[queries.<name>]` | No | Named read-only queries: every node runs them periodically in the background, the results become gauge metrics, and the `query` command can also run one once (section 2.20) |
+| `[radius.eap]` | No | EAP, for 802.1X and WPA-Enterprise (section 2.12) |
+| `[tacacs]` | No | Enables TACACS+ |
+| `[metrics]` | No | Enables the metrics endpoint (section 2.8) |
+| `[log]` | No | Log level, format and the authentication log (section 2.10) |
+| `[accounts]` | No | The SQL that runs when `rradiusd user` manages accounts (section 2.14) |
+| `[shutdown]` | No | The two waits after SIGTERM is received (section 2.16) |
+| `[databases.<name>]` | No | External MySQL and PostgreSQL databases, for the `sql` handler and `db_query` (section 2.17) |
+| `[runtime]` | No | `pin_threads`: pin each worker thread to one CPU, on Linux only (section 2.4) |
 
-`[radius]` 與 `[tacacs]` 至少要有一個。所有區段都拒絕不認得的欄位，拼錯的欄位會讓啟動失敗並指出欄位名稱。
+At least one of `[radius]` and `[tacacs]` is required. All sections reject fields they do not recognize; a misspelled field makes startup fail and names the field.
 
-**企業版功能：** 下列功能需要 rradius-enterprise，說明在 rradius-enterprise 使用文件。設定檔用到這些區段或欄位時，rradiusd 啟動、SIGHUP 和 `check` 都會失敗，訊息寫明需要 rradius-enterprise。
+**Enterprise edition features:** The following features need rradius-enterprise, and are described in the rradius-enterprise usage document. When the configuration file uses these sections or fields, rradiusd fails at startup, on SIGHUP and in `check`, and the message says rradius-enterprise is needed.
 
-| 功能 | 設定或指令 | 用途 |
+| Feature | Setting or command | Purpose |
 | --- | --- | --- |
-| RadSec | `[radius.tls]`；`[[radius.clients]]` 的 `tls_name`、`coa_sender`、`max_radsec_connections` | RADIUS over TLS（RFC 6614） |
-| 代理 | `[proxy]` | 依 realm 把 RADIUS 請求轉給其他伺服器，包括 RadSec 上游、依 DNS 尋找上游和上游全掛時暫存計費 |
-| 中斷連線與變更權限 | `send_disconnect`、`send_coa`、`disconnect` 和 `coa` 指令、`[radius.coa]` | 要求 NAS 中斷連線或變更權限（RFC 5176），以及接收其他系統的請求轉給 NAS |
-| 動態 client | `[radius.dynamic_clients]`、`[accounts.clients]`、`client` 指令 | 從資料庫查不在設定檔裡的 UDP client |
-| 從四次交握找出 WPA-PSK | `[radius.dpsk]`、`[accounts.dpsk]`、`dpsk` 和 `dpsk-seal` 指令 | 每人一把 WPA-PSK，設備不必先登記 |
-| EAP-AKA' | `methods` 的 `aka-prime`、`[radius.eap.aka]`、`[accounts.aka]`、`aka` 和 `aka-seal` 指令 | 自己發的 USIM 卡 |
-| EAP session resumption | `[radius.eap]` 的 `resumption_ms`、`shared_tickets`、`ticket_seal_file` | 用戶端重新連線時省掉完整握手 |
-| OCSP | `[radius.eap]`、`[radius.tls]`、`[tacacs.tls]` 的 `ocsp`、`ocsp_url` | CA 只提供 OCSP、不發 CRL 時檢查撤銷 |
-| TACACS+ over TLS | `[tacacs.tls]`；`[[tacacs.clients]]` 的 `tls_name` | RFC 9887 |
-| 雙因素 | `[mfa]`；`[[radius.clients]]`、`[[tacacs.clients]]` 的 `mfa`；`otp` 指令 | 密碼之後再要驗證器 App（TOTP）或 HOTP token 的 6 位數驗證碼 |
-| Diameter 與 SWx | `[diameter]` | EAP-AKA' 的認證向量向電信商的 HSS 取得（3GPP SWx） |
+| RadSec | `[radius.tls]`; `tls_name`, `coa_sender` and `max_radsec_connections` of `[[radius.clients]]` | RADIUS over TLS (RFC 6614) |
+| Proxy | `[proxy]` | Forwards RADIUS requests to other servers by realm, including RadSec upstreams, finding upstreams through DNS, and spooling accounting when all upstreams are down |
+| Disconnect and change of authorization | `send_disconnect`, `send_coa`, the `disconnect` and `coa` commands, `[radius.coa]` | Asks a NAS to disconnect a session or change its authorization (RFC 5176), and receives requests from other systems and forwards them to the NAS |
+| Dynamic clients | `[radius.dynamic_clients]`, `[accounts.clients]`, the `client` command | Looks up UDP clients that are not in the configuration file from the database |
+| Finding the WPA-PSK from the four-way handshake | `[radius.dpsk]`, `[accounts.dpsk]`, the `dpsk` and `dpsk-seal` commands | One WPA-PSK per person, with no need to register devices first |
+| EAP-AKA' | `aka-prime` in `methods`, `[radius.eap.aka]`, `[accounts.aka]`, the `aka` and `aka-seal` commands | USIM cards you issue yourself |
+| EAP session resumption | `resumption_ms`, `shared_tickets` and `ticket_seal_file` in `[radius.eap]` | Skips the full handshake when a client reconnects |
+| OCSP | `ocsp` and `ocsp_url` in `[radius.eap]`, `[radius.tls]` and `[tacacs.tls]` | Checks revocation when the CA only offers OCSP and does not publish a CRL |
+| TACACS+ over TLS | `[tacacs.tls]`; `tls_name` of `[[tacacs.clients]]` | RFC 9887 |
+| Two-factor | `[mfa]`; `mfa` of `[[radius.clients]]` and `[[tacacs.clients]]`; the `otp` command | After the password, asks for a 6-digit code from an authenticator app (TOTP) or an HOTP token |
+| Diameter and SWx | `[diameter]` | Gets the authentication vectors of EAP-AKA' from the operator's HSS (3GPP SWx) |
 
-最小設定：
+The minimal configuration:
 
 ```toml
 dictionary = "/usr/share/rradius/dictionary"
@@ -166,88 +166,88 @@ address = "127.0.0.1"
 secret_file = "local.secret"
 ```
 
-**在編輯器裡檢查設定檔：** `rradiusd schema` 把設定檔的 JSON Schema 印到標準輸出，不讀設定檔、不啟動任何東西。
+**Checking the configuration file in your editor:** `rradiusd schema` prints the JSON Schema of the configuration file to standard output; it reads no configuration file and starts nothing.
 
 ```bash
-rradiusd schema > rradius.schema.json                  # 欄位說明用英文
-rradiusd schema --lang zh-TW > rradius.schema.json     # 欄位說明用繁體中文
+rradiusd schema > rradius.schema.json                  # field descriptions in English
+rradiusd schema --lang zh-TW > rradius.schema.json     # field descriptions in Traditional Chinese
 ```
 
-在 `rradius.toml` 第一行寫 `#:schema ./rradius.schema.json`，支援 TOML schema 的編輯器（例如 Taplo，以及 VS Code 的 Even Better TOML）就會在編輯時補全區段和欄位，並標出拼錯的欄位、型別錯誤和不在列舉裡的值。
+Write `#:schema ./rradius.schema.json` on the first line of `rradius.toml`, and editors that support TOML schemas (for example Taplo, and Even Better TOML for VS Code) complete sections and fields as you edit, and mark misspelled fields, type errors and values that are not in an enumeration.
 
-- **schema 由讀設定的程式產生，** 和程式的規則一致；換版本後重新產生一次。
-- **企業版的區段不在 rradiusd 的 schema 裡，** 寫了會標成不認得的欄位；企業版的 `rradiusd schema` 的 schema 包含它們。上表列的幾個欄位（例如 `[radius.eap]` 的 `resumption_ms`、`[[radius.clients]]` 的 `tls_name`）在兩邊的 schema 裡都有，用 rradiusd 時由 `check` 指出需要 rradius-enterprise。
-- **schema 不能取代 `check`。** 它只看結構和型別；SQL 的參數規則（2.14 節）、檔案是否存在和權限、欄位之間的條件（例如 `secret` 和 `secret_file` 只能有一個）、憑證和金鑰的內容、數值的上下限等，仍然只有 `check` 和啟動時檢查。
-- **每個欄位都有一句說明，** 編輯器在補全和滑過欄位時顯示。預設是英文，`--lang zh-TW` 改用繁體中文，其他值以狀態 2 結束。說明只講用途和單位，細節和限制仍以這份文件為準；每個最上層區段的說明是連到這份文件對應章節的網址。
+- **The schema is generated by the program that reads the configuration,** so it matches the program's rules; generate it again after you change versions.
+- **Enterprise edition sections are not in the rradiusd schema,** and writing them is marked as an unrecognized field; the schema from the enterprise edition's `rradiusd schema` includes them. A few fields listed in the table above (for example `resumption_ms` of `[radius.eap]` and `tls_name` of `[[radius.clients]]`) are in the schema of both editions; with rradiusd, `check` reports that rradius-enterprise is needed.
+- **The schema does not replace `check`.** It only looks at structure and types; the SQL parameter rules (section 2.14), whether files exist and their permissions, conditions between fields (for example only one of `secret` and `secret_file` may be set), the contents of certificates and keys, the upper and lower limits of numbers and so on are still checked only by `check` and by the startup checks.
+- **Every field has a one-sentence description,** which the editor shows during completion and when you hover over a field. The default is English, `--lang zh-TW` switches to Traditional Chinese, and any other value exits with status 2. The description only gives the purpose and the unit; the details and limits are still those of this document; the description of each top-level section is a URL that links to the matching section of this document.
 
-**把設定拆成多個檔案：** 主設定檔最上層可以有 `include`，列出要一起讀的檔案；沒有它的設定檔完全不受影響。
+**Splitting the configuration into several files:** The top level of the main configuration file can have `include`, which lists the files to read together; a configuration file without it is not affected at all.
 
 ```toml
-include = ["conf.d/*.toml"]     # 在第一個表之前，和 dictionary 一樣是最上層的設定
+include = ["conf.d/*.toml"]     # before the first table; a top-level setting like dictionary
 dictionary = "/usr/share/rradius/dictionary"
 ```
 
-- **讀起來像文字接在主檔後面。** 路徑相對於主設定檔所在的目錄（絕對路徑也可以）；檔名那一段可以用 `*`（任意字元）和 `?`（一個字元），目錄那幾段不行。依路徑的位元組順序載入，名單裡多個項目時依名單的順序。檔名以 `.` 開頭的不會被 `*` 或 `?` 比對到（編輯器的暫存檔、隱藏檔），除非樣式本身那一段以 `.` 開頭。
-- **沒有符合的檔案不是錯誤**（空的或不存在的 `conf.d/`）；沒有萬用字元的名稱指到讀不了的檔案是錯誤。
-- **引入的檔案第一個有意義的行（不是空行、不是註解）要以 `[` 開頭**，也就是表（`[radius]`、`[[radius.clients]]`）；最上層的設定（`dictionary`）只能寫在主檔，不然它會落進前一個檔案最後一個表裡，意思悄悄改變，所以載入時直接拒絕。引入的檔案不能再有 `include`。
-- **不能覆蓋。** 同一個設定、同一個表出現在兩個檔案是錯誤（和寫在同一個檔案裡相同：`duplicate key`），不是後者蓋前者；`[[radius.clients]]` 這類陣列的元素依檔案順序累加。
-- **相對路徑一律以主設定檔所在的目錄為準，** 包括引入檔裡的 `key_file`、`secret_file`。
-- **密碼檔的權限太寬會警告。** 用戶端的 `secret_file`、叢集的 `secret_raft_file`、`secret_api_file`、資料庫的 `password_file`、LDAP 的 `bind_password_file`、`machine_password_file`，以及 `[radius.eap]` 的 `key_file`（EAP-TLS、PEAP、TTLS 伺服器憑證的私鑰，讀到的人可以冒充這台伺服器）讀進來時，檔案的權限若讓群組可寫、或讓其他人有任何權限（例如 0644），啟動和每次重新載入（SIGHUP）都記一行 WARN，寫出設定名稱、路徑和權限，不寫內容。只警告、不拒絕：範例和 Docker 的密碼檔是 0644，照樣能啟動。權限收到 0600 或 0640 就不再警告。私鑰檔建議 0600 或 0640。保護資料表內容的金鑰（`ticket_seal_file`、EAP-AKA' 的 `key_file` 等）是另一回事，權限不對仍然拒絕啟動。
-- **語法與型別錯誤指到引入的檔案和檔內的行：** `/etc/rradius/conf.d/20-radius.toml: line 3: ...`，不顯示設定的值。合併後才做的檢查（例如重複的用戶端名稱）訊息只寫主設定檔名稱；訊息有單引號括起的名稱時，後面附上 `(in <檔案> line <行>)`，列出以引號字串寫著該名稱的行（最多三處，其餘 `and N more`），名稱只在主檔或找不到時不附。
-- **`config show` 印出所有檔案合併後的設定（包括 `include` 這一行本身，所以輸出不是設定檔，不要存起來當設定檔用）；** `check`、`config diff`、重新載入（SIGHUP）都讀引入的檔案：改了引入的檔案要送 SIGHUP 才生效，有錯時整份維持原狀。
-- **每個引入的檔案自己要是完整的 TOML**（沒有關閉的字串或陣列會被拒絕，錯誤指到那個檔案），檔案開頭的位元組順序記號（BOM）會被忽略；檔案要小於 1 MiB，`include` 最多對應 1000 個檔案；同一個檔案被兩個名稱符合只讀一次，符合到主設定檔本身的會被略過。
-- **引入的檔案或它所在的目錄對群組或其他人可寫時，** 記一行 WARN，因為它能改變誰可以登入；主設定檔本身或它所在的目錄對群組或其他人可寫時，啟動、reload 與 `check` 也各記一行 WARN（`configuration file … can be written by its group or by others`），只可讀不警告；檔案和主檔一樣要保護，要放密碼就用 `*_file`。
-- **舊版的伺服器不認得 `include`**（未知欄位，拒絕載入）；新舊版本混用時要注意。
+- **It reads as if the text were appended to the main file.** Paths are relative to the directory of the main configuration file (absolute paths also work); the file-name part can use `*` (any characters) and `?` (one character), but the directory parts cannot. Files are loaded in byte order of the path; when the list has several entries, in the order of the list. A file name that starts with `.` is not matched by `*` or `?` (editor temporary files, hidden files), unless that part of the pattern itself starts with `.`.
+- **No matching file is not an error** (an empty or missing `conf.d/`); a name without wildcards that points to a file that cannot be read is an error.
+- **The first meaningful line of an included file (not a blank line, not a comment) must start with `[`,** that is, a table (`[radius]`, `[[radius.clients]]`); top-level settings (`dictionary`) can only be written in the main file, otherwise they would fall into the last table of the previous file and quietly change the meaning, so they are rejected at load time. An included file cannot have `include` itself.
+- **No overriding.** The same setting or the same table appearing in two files is an error (the same as within one file: `duplicate key`), and the later one does not override the earlier one; the elements of arrays such as `[[radius.clients]]` accumulate in file order.
+- **Relative paths are always relative to the directory of the main configuration file,** including `key_file` and `secret_file` inside included files.
+- **Password files with permissions that are too open produce a warning.** When the client's `secret_file`, the cluster's `secret_raft_file` and `secret_api_file`, the database's `password_file`, LDAP's `bind_password_file` and `machine_password_file`, and `key_file` of `[radius.eap]` (the private key of the EAP-TLS, PEAP and TTLS server certificate; whoever can read it can impersonate this server) are read, and the file permissions let the group write or give others any access (for example 0644), startup and every reload (SIGHUP) log one WARN line that gives the setting name, the path and the permissions, and not the contents. It only warns and does not refuse: the password files of the examples and of Docker are 0644 and still start. Once the permissions are tightened to 0600 or 0640, the warning stops. 0600 or 0640 is recommended for private key files. The keys that protect table contents (`ticket_seal_file`, `key_file` of EAP-AKA' and so on) are a different matter, and wrong permissions there still refuse startup.
+- **Syntax and type errors point to the included file and the line in it:** `/etc/rradius/conf.d/20-radius.toml: line 3: ...`, without showing the setting's value. For checks that run after merging (for example a duplicate client name), the message only names the main configuration file; when the message has a name in single quotes, `(in <file> line <line>)` is added after it, listing the lines where that name is written as a quoted string (at most three, the rest as `and N more`); when the name is only in the main file or is not found, nothing is added.
+- **`config show` prints the merged settings of all files (including the `include` line itself, so the output is not a configuration file; do not save it and use it as one);** `check`, `config diff` and reload (SIGHUP) all read the included files: after you change an included file you must send SIGHUP for it to take effect, and when there is an error the whole configuration stays as it was.
+- **Every included file must be complete TOML by itself** (an unclosed string or array is rejected, and the error points to that file); a byte order mark (BOM) at the start of a file is ignored; a file must be smaller than 1 MiB, and `include` can match at most 1000 files; a file matched by two names is read only once, and a match on the main configuration file itself is skipped.
+- **When an included file or the directory it is in is writable by the group or others,** one WARN line is logged, because it can change who is allowed to log in; when the main configuration file itself or its directory is writable by the group or others, startup, reload and `check` also each log one WARN line (`configuration file … can be written by its group or by others`); being readable only does not warn; the files must be protected like the main file, and to put passwords in them use `*_file`.
+- **Older servers do not recognize `include`** (an unknown field, and loading is refused); keep this in mind when you mix old and new versions.
 
-**看生效的設定、比較節點、產生起始設定：** `config` 的三個子指令都依同一份 schema 運作，不啟動任何東西、不寫檔案，rradius-enterprise 也有，並包含企業版的區段。
+**Viewing the effective configuration, comparing nodes, generating a starter configuration:** The three `config` subcommands all work from the same schema, start nothing and write no files; rradius-enterprise has them too, and they include the enterprise edition's sections.
 
 ```bash
-rradiusd config show --config /etc/rradius/rradius.toml   # 補上預設值後的生效設定
-rradiusd config diff node1.toml node2.toml                 # 比較兩個節點的設定
-rradiusd config init --lang zh-TW > rradius.toml           # 最小的起始設定檔（約 30 行），說明用繁體中文
-rradiusd config init --full > rradius.toml                 # 完整註解版，列出每個設定與預設值
+rradiusd config show --config /etc/rradius/rradius.toml   # effective settings with defaults filled in
+rradiusd config diff node1.toml node2.toml                 # compare the settings of two nodes
+rradiusd config init --lang zh-TW > rradius.toml           # a minimal starter configuration file (about 30 lines), comments in Traditional Chinese
+rradiusd config init --full > rradius.toml                 # the full commented version, listing every setting and default
 ```
 
-- **`config show`：** 先和 `check` 一樣載入設定（有錯時印出相同訊息，狀態 2），再把檔案裡已有的區段中省略的欄位補上預設值，以 TOML 印出。檔案沒寫的區段（例如沒有 `[tacacs]`）不會加上。啟動時才算出的預設值（`[radius] sockets`、`[cluster] read_connections`）用執行這個指令的機器算出的值，並在第一行註明。沒有 `--config` 時讀預設的設定檔。
-- **密碼一律顯示成 `<hidden>`，** 例如用戶端的 `secret`、`secret_raft`、`secret_api`、LDAP 的 `bind_password`。輸出可以貼給別人看，但檔案路徑（例如 `secret_file`）照樣顯示。
-- **`config diff`：** 兩個檔案都先補上預設值再比，所以一邊寫出預設值、另一邊省略不算差異。每行一個不同的欄位：`radius.max_auth_inflight: 4096 | 8192`，只有一邊有時寫 `(absent)`。`radius.clients`、`tacacs.clients` 依 `name`（沒有時依 `address`）配對，順序不同不算差異，路徑寫成 `radius.clients[core-switches].secret`；其他清單（例如 `auth.handlers`）依位置比較，因為順序有意義。密碼不同時只寫 `differs (hidden)`。`cluster.node_id` 和 `cluster.listen` 列在最後的 `node-specific:`，不算差異。相同時印 `no differences`，狀態 0；有差異時狀態 1；設定有錯或參數不對時狀態 2。它不讀設定檔引用的檔案（Lua 腳本、密碼檔、憑證），只比路徑。
-- **`config init`：** 印出一份最小的起始設定檔（約 30 行），可以直接存檔使用：`dictionary`（值是這個版本預設的字典位置，與 `--version` 第三行相同；字典放在別處就改它）、`include = ["conf.d/*.toml"]`、`[lua] script`、`[cluster]`（沒有 `[[cluster.nodes]]`，所以是監聽 `127.0.0.1` 的單節點）、`[radius]` 和一個範例用戶端，以及開在 `127.0.0.1:9812` 的 `[metrics]`（`status` 指令要用，見 2.8 節；這個埠沒有認證，不要改綁對外位址）。`secret_raft`、`secret_api` 和範例用戶端的 `secret` 是每次不同的 32 個隨機英數字元；叢集的其他節點要用同樣的叢集密碼，用戶端的 `secret` 也要設在 NAS 上。其他欄位不列出。加上 `--full` 會印出完整註解版：同樣的工作設定，其餘欄位都以註解列出，附預設值和說明，拿掉 `#` 就能設定。`--lang` 選英文或繁體中文，兩種都適用。存檔後建立 `auth.lua`（字典不在預設位置時也改 `dictionary`），`check` 就會通過。
+- **`config show`:** First loads the configuration the same way as `check` (when there is an error, it prints the same message and exits with status 2), then fills in the defaults of the omitted fields in the sections the file already has, and prints it as TOML. Sections the file does not have (for example no `[tacacs]`) are not added. Defaults that are computed at startup (`[radius] sockets`, `[cluster] read_connections`) use the values computed on the machine where this command runs, and the first line says so. Without `--config` it reads the default configuration file.
+- **Passwords are always shown as `<hidden>`,** for example the client's `secret`, `secret_raft`, `secret_api` and LDAP's `bind_password`. The output can be pasted to other people, but file paths (for example `secret_file`) are still shown.
+- **`config diff`:** Both files get their defaults filled in before they are compared, so a default written on one side and omitted on the other is not a difference. One differing field per line: `radius.max_auth_inflight: 4096 | 8192`, and `(absent)` when only one side has it. `radius.clients` and `tacacs.clients` are paired by `name` (by `address` when there is no name), so a different order is not a difference, and the path is written like `radius.clients[core-switches].secret`; other lists (for example `auth.handlers`) are compared by position, because the order matters. When passwords differ, it only writes `differs (hidden)`. `cluster.node_id` and `cluster.listen` are listed at the end under `node-specific:` and do not count as differences. When they are the same it prints `no differences` with status 0; when there are differences the status is 1; when the configuration has an error or the arguments are wrong, the status is 2. It does not read the files the configuration refers to (Lua scripts, password files, certificates), and only compares the paths.
+- **`config init`:** Prints a minimal starter configuration file (about 30 lines) that you can save and use as it is: `dictionary` (the value is the default dictionary location of this version, the same as the third line of `--version`; change it if the dictionary is somewhere else), `include = ["conf.d/*.toml"]`, `[lua] script`, `[cluster]` (without `[[cluster.nodes]]`, so it is a single node listening on `127.0.0.1`), `[radius]` with one example client, and `[metrics]` open on `127.0.0.1:9812` (the `status` command needs it, see section 2.8; this port has no authentication, so do not bind it to an outside address). `secret_raft`, `secret_api` and the example client's `secret` are 32 random alphanumeric characters, different every time; the other nodes of the cluster must use the same cluster secrets, and the client's `secret` must also be set on the NAS. Other fields are not listed. With `--full` it prints the full commented version: the same working settings, and all other fields listed as comments with their defaults and descriptions, which you set by removing the `#`. `--lang` selects English or Traditional Chinese, and applies to both. After you save the file, create `auth.lua` (and change `dictionary` too if the dictionary is not at the default location), and `check` passes.
 
 ### 2.1 `[lua]`
 
-| 欄位 | 預設 | 說明 |
+| Field | Default | Description |
 | --- | --- | --- |
-| `script` | （必填） | 最上層腳本 |
-| `query_timeout_ms` | 5000 | 一個請求的所有 `sql_query`／`sql_execute` 合計可以等資料庫多久，必須大於 0。每次呼叫拿剩下的時間，用完後的呼叫立刻以逾時失敗；算的是等資料庫的時間，等執行名額的時間不算 |
-| `max_execution_ms` | 1000 | 腳本在一個請求中的執行時間上限（不含等待資料庫的時間），必須大於 0 |
-| `max_memory_mb` | 256 | 每個 Lua VM 最多使用的記憶體（MiB），必須大於 0，改了要重啟。VM 數量等於 CPU 核心數，所以最壞情況是兩者相乘（4.1 節） |
+| `script` | (required) | The top-level script |
+| `query_timeout_ms` | 5000 | How long all `sql_query`/`sql_execute` calls of one request can wait for the database in total; it must be greater than 0. Each call gets the time that is left, and calls after it is used up fail at once with a timeout; it counts time waiting for the database, and time waiting for an execution slot is not counted |
+| `max_execution_ms` | 1000 | The upper limit of a script's execution time in one request (not counting time waiting for the database); it must be greater than 0 |
+| `max_memory_mb` | 256 | The most memory each Lua VM may use (MiB); it must be greater than 0, and a change needs a restart. The number of VMs equals the number of CPU cores, so the worst case is the product of the two (section 4.1) |
 
-兩個時限同時套用於最上層腳本與認證串接中的 `lua` 處理器。
+The two time limits apply to both the top-level script and the `lua` handler in the auth chains.
 
-最上層腳本負責：
-- RADIUS 計費（Accounting-Request）
-- TACACS+ 授權與計費
-- 沒有被認證串接涵蓋的認證：設定中沒有 `[auth]`，或 `[auth]` 只有具名串接而用戶端沒有指定 `auth` 時
+The top-level script is responsible for:
+- RADIUS accounting (Accounting-Request)
+- TACACS+ authorization and accounting
+- Authentication that no auth chain covers: there is no `[auth]` in the configuration, or `[auth]` has only named chains and the client does not specify `auth`
 
-舊版設定中的最上層 `script = "…"` 與 `[cluster]` 的 `query_timeout_ms` 已不再接受；啟動時會提示新位置（`[lua].script`、`[lua].query_timeout_ms`）。
+The top-level `script = "…"` and `query_timeout_ms` of `[cluster]` from older configurations are no longer accepted; at startup the message points to the new locations (`[lua].script`, `[lua].query_timeout_ms`).
 
 ### 2.2 `[cluster]`
 
-| 欄位 | 預設 | 說明 |
+| Field | Default | Description |
 | --- | --- | --- |
-| `data_dir` | （必填） | 資料目錄 |
-| `secret_raft` / `secret_raft_file` | （二擇一） | Raft 通訊密碼，至少 16 個字元 |
-| `secret_api` / `secret_api_file` | （二擇一） | API 通訊密碼，至少 16 個字元 |
-| `node_id` | 1 | 本節點編號，必須 ≥ 1 並出現在 `nodes` 中 |
-| `listen` | 沒有 `[[cluster.nodes]]` 時 `127.0.0.1`，有時 `0.0.0.0` | 監聽位址（IPv4 或 IPv6）。單節點沒有其他節點要連，資料庫 API 又只靠共用密碼保護，所以預設不對外。有 `[[cluster.nodes]]` 而沒有寫 `listen` 時，載入設定（啟動、重新載入、`check`）會記一行警告（`cluster.listen is not set`）：改成這台的私網或 WireGuard 位址，要保留 `0.0.0.0` 就明確寫 `listen = "0.0.0.0"`，警告就消失 |
-| `migrations_dir` | （無） | 啟動時套用的 SQL 檔目錄，見 2.5 節 |
-| `migrations_wait_ms` | 60000 | 啟動時等待叢集就緒、本機副本追上的時限（每段各自計時），必須大於 0，見下方〈啟動時追上叢集〉 |
-| `stop_without_leader_ms` | （不設） | 沒有 leader 超過這段時間時，認證和 Status-Server 都不回應，必須大於 0，改了要重啟，見下方〈資料庫不能用時〉 |
-| `snapshot_every` | 100000 | 兩次快照之間的 Raft 紀錄數，必須大於 0，見下方 |
-| `read_connections` | 工作執行緒數的兩倍，最多 32 | 讀本機資料庫的連線數，1 到 128，見下方 |
-| `[[cluster.nodes]]` | 單節點：id 1、Raft `127.0.0.1:8100`、API `127.0.0.1:8200` | 叢集成員，每個有 `id`、`raft`、`api`（`host:port`） |
+| `data_dir` | (required) | Data directory |
+| `secret_raft` / `secret_raft_file` | (one of the two) | Password for Raft traffic, at least 16 characters |
+| `secret_api` / `secret_api_file` | (one of the two) | Password for API traffic, at least 16 characters |
+| `node_id` | 1 | This node's id. Must be ≥ 1 and appear in `nodes` |
+| `listen` | `127.0.0.1` without `[[cluster.nodes]]`, `0.0.0.0` with it | Listen address (IPv4 or IPv6). A single node has no other nodes to connect to, and the database API is protected only by a shared secret, so by default it is not exposed. When `[[cluster.nodes]]` is present and `listen` is not set, loading the configuration (startup, reload, `check`) logs a warning (`cluster.listen is not set`). Change it to this host's private or WireGuard address. To keep `0.0.0.0`, write `listen = "0.0.0.0"` explicitly and the warning goes away |
+| `migrations_dir` | (none) | Directory of SQL files applied at startup, see section 2.5 |
+| `migrations_wait_ms` | 60000 | Time limit at startup for the cluster to become ready and for the local replica to catch up (each stage is timed separately). Must be greater than 0, see "Catching up with the cluster at startup" below |
+| `stop_without_leader_ms` | (not set) | When there has been no leader for longer than this, authentication and Status-Server requests are not answered. Must be greater than 0. Restart after changing it, see "When the database is unavailable" below |
+| `snapshot_every` | 100000 | Number of Raft log entries between two snapshots. Must be greater than 0, see below |
+| `read_connections` | twice the worker threads, at most 32 | Number of connections that read the local database, 1 to 128, see below |
+| `[[cluster.nodes]]` | single node: id 1, Raft `127.0.0.1:8100`, API `127.0.0.1:8200` | Cluster members. Each has `id`, `raft` and `api` (`host:port`) |
 
-密碼檔讀取時會去掉結尾的換行。多節點叢集的每個節點都列出全部成員（包含自己），必須有編號 1 的節點，編號不可重複：
+Password files are read with the trailing newline removed. In a multi-node cluster every node lists all members (itself included). A node with id 1 must exist, and ids must not repeat:
 
 ```toml
 [cluster]
@@ -270,74 +270,74 @@ raft = "10.0.0.3:8100"
 api = "10.0.0.3:8200"
 ```
 
-本節點監聽自己在 `nodes` 中 `raft` 與 `api` 的埠。寫入（`sql_execute`）經由 Raft 複寫到所有節點，需要叢集有多數節點可用；讀取（`sql_query`）讀本機的副本。
+This node listens on the `raft` and `api` ports of its own entry in `nodes`. Writes (`sql_execute`) are replicated to all nodes through Raft and need a majority of the cluster to be available. Reads (`sql_query`) read the local replica.
 
-**節點不需要系統的 CA 憑證。** 節點之間的連線是明文 HTTP（見下方），用不到憑證；但建立這個連線用的 HTTP client 時，系統一張 CA 憑證都沒有就會失敗，所以 rradius 編入了一份內建的根憑證。沒裝 `ca-certificates` 的主機或極簡容器也能組叢集。LDAP over TLS（3.5 節）和腳本的 `http_request`（4.11 節）不用這份內建憑證，仍然讀系統的憑證或 `ca_file`。
+**Nodes do not need the system's CA certificates.** Connections between nodes are plain HTTP (see below) and use no certificates. But building the HTTP client for those connections fails if the system has no CA certificate at all, so rradius includes a built-in set of root certificates. A host without `ca-certificates`, or a minimal container, can still form a cluster. LDAP over TLS (section 3.5) and the script function `http_request` (section 4.11) do not use the built-in certificates. They still read the system certificates or `ca_file`.
 
-**三節點叢集的吞吐。** 2026-11-08 在同一台 Apple M4 Max 上 Docker 的 Linux（arm64）量測：三個節點各限定 3 顆 CPU（0–2、3–5、6–8），以 127.0.0.11 到 .13 互連；`rradius-bench` 開三個程式各打一個節點，共用 CPU 9–13，各兩次。登入是寬頻情境的 PAP（`sql` 加 `lua` 處理器），計費是每筆 Accounting-Start 寫一次資料庫（`acct-sql.toml`）。單節點的兩欄是同樣的設定、同樣三個壓測程式都打同一個節點：
+**Three-node cluster throughput.** Measured on 2026-11-08 on one Apple M4 Max, on Linux (arm64) in Docker. Each of the three nodes was limited to 3 CPUs (0–2, 3–5, 6–8) and connected over 127.0.0.11 to .13. Three `rradius-bench` programs each hit one node, sharing CPUs 9–13, two runs each. Logins are the broadband scenario's PAP (`sql` plus `lua` handlers). Accounting writes the database once per Accounting-Start (`acct-sql.toml`). The two single-node columns use the same configuration, with all three load programs hitting the same node:
 
-| 情況 | 單節點 3 顆 CPU（次/秒） | 單節點 9 顆 CPU（次/秒） | 三節點各 3 顆 CPU（次/秒） |
+| Case | One node, 3 CPUs (per second) | One node, 9 CPUs (per second) | Three nodes, 3 CPUs each (per second) |
 | --- | --- | --- | --- |
-| 登入，併發 192 | 54,900–55,800，p99 5.4–5.7 ms | 73,000–73,200，p99 4.2–4.3 ms | 110,600–118,000，p99 3.2–3.8 ms |
-| 登入，併發 768 | 51,600–54,500，p99 18–19 ms | 66,000–66,200，p99 14–15 ms | 105,000–113,600，p99 9–12 ms |
-| 計費，併發 192 | 68,000–68,100，p99 6.6–6.8 ms | 116,400–116,500，p99 5.2–5.4 ms | 73,700–74,100，p99 8.5–9.6 ms |
-| 計費，併發 768 | 66,000–66,700，p99 13–14 ms，每輪 480–630 個逾時 | 98,600–100,900，p99 13–14 ms | 102,400–107,200，p99 20 ms |
+| Login, concurrency 192 | 54,900–55,800, p99 5.4–5.7 ms | 73,000–73,200, p99 4.2–4.3 ms | 110,600–118,000, p99 3.2–3.8 ms |
+| Login, concurrency 768 | 51,600–54,500, p99 18–19 ms | 66,000–66,200, p99 14–15 ms | 105,000–113,600, p99 9–12 ms |
+| Accounting, concurrency 192 | 68,000–68,100, p99 6.6–6.8 ms | 116,400–116,500, p99 5.2–5.4 ms | 73,700–74,100, p99 8.5–9.6 ms |
+| Accounting, concurrency 768 | 66,000–66,700, p99 13–14 ms, 480–630 timeouts per round | 98,600–100,900, p99 13–14 ms | 102,400–107,200, p99 20 ms |
 
-- **登入在每個節點各自處理，** 讀的是本機副本，所以三節點約是單節點 3 顆 CPU 的兩倍，也比單節點用同樣 9 顆 CPU 多五到七成。三個節點的 CPU 都用滿了，但沒有到三倍：同時忙碌的 CPU 越多，每次登入用的 CPU 時間越多（單節點 3 顆約 54 µs，三節點約 74 µs，單節點 9 顆約 97 µs），這台機器有效能核心和節能核心，虛擬機的 CPU 可能落在兩種核心上，沒有確認。
-- **計費寫入都要經過 leader，** 並等多數節點寫進紀錄，所以多節點不會提高寫入上限：併發 192 時只比單節點 3 顆 CPU 多一點、p99 較高，併發 768 時和單節點 9 顆 CPU 差不多，也沒有單節點 3 顆 CPU 的逾時。
-- **三個節點在同一台機器的 loopback 上，沒有網路延遲。** 分開的主機之間，每筆寫入都要多等節點之間的往返（跨機房更久），計費的數字會比這裡低；登入不受影響。
+- **Logins are handled on each node separately** and read the local replica, so three nodes give about twice one node with 3 CPUs, and 50 to 70 percent more than one node with the same 9 CPUs. The CPUs of all three nodes were fully used, but the gain is not threefold. The more CPUs are busy at the same time, the more CPU time each login takes (about 54 µs on one node with 3 CPUs, about 74 µs on three nodes, about 97 µs on one node with 9 CPUs). This machine has performance cores and efficiency cores, and the virtual machine's CPUs may land on either kind. This was not checked.
+- **Accounting writes all go through the leader** and wait for a majority of nodes to write the log entry, so more nodes do not raise the write ceiling. At concurrency 192 it is only a little above one node with 3 CPUs, with a higher p99. At concurrency 768 it is about the same as one node with 9 CPUs, and it has none of the timeouts of one node with 3 CPUs.
+- **The three nodes were on the loopback of one machine, so there was no network delay.** Between separate hosts, every write also waits for round trips between nodes (longer across data centers), and the accounting numbers will be lower than here. Logins are not affected.
 
-**讀取連線 `read_connections`：** `sql` 處理器查帳號、腳本的 `sql_query` 這些讀取，都要先拿到一條讀取連線。連線不夠時，請求要排隊等別人讀完。預設是工作執行緒數（程序可用的 CPU 數）的兩倍，最多 32 條：每條連線都有自己的頁面快取和檔案，CPU 很多的主機不該預設開上百條，量測也看不到 14 條以上的好處。可以設 1 到 128。寫入不受影響，仍然只有一條寫入連線。
+**Read connections `read_connections`:** Reads such as the `sql` handler's account lookup and a script's `sql_query` must first get a read connection. When there are not enough connections, requests queue until others finish reading. The default is twice the worker threads (the CPUs available to the process), at most 32. Each connection has its own page cache and files, so a host with many CPUs should not open hundreds by default, and the measurements showed no benefit beyond 14. You can set 1 to 128. Writes are not affected and still use a single write connection.
 
-- 2026-11-08 在 Docker 的 Linux（arm64，伺服器用 CPU 0–6、`rradius-bench` 用 7–13，各 2 次）量測寬頻情境的 PAP 登入（每次讀兩次資料庫）：4 條（以前的值）時併發 64 每秒 46,800–47,100 次、p50 1.32–1.33 ms，預設的 14 條時 74,500–75,300 次、p50 0.76–0.77 ms；併發 1024 時從 44,200–44,400 次升到 57,400–58,200 次。開了綁核（2.4 節）時，14 條在併發 64 可到每秒約 9 萬次。用實驗版本加到 28 條，和 14 條幾乎一樣。
-- 代價是記憶體：每條連線有自己的頁面快取，同樣的負載後，14 條比 4 條多用約 27–47 MB（159–185 MB 比 112–158 MB）。記憶體很緊時可以調低，改了要重新啟動。
+- Measured on 2026-11-08 on Linux (arm64) in Docker (server on CPUs 0–6, `rradius-bench` on 7–13, 2 runs each), with the broadband scenario's PAP login (two database reads per login): with 4 connections (the former value), concurrency 64 gave 46,800–47,100 per second and p50 1.32–1.33 ms. With the default of 14 connections it gave 74,500–75,300 and p50 0.76–0.77 ms. At concurrency 1024 it rose from 44,200–44,400 to 57,400–58,200. With pinning on (section 2.4), 14 connections reach about 90,000 per second at concurrency 64. An experimental build with 28 connections was almost the same as 14.
+- The cost is memory: each connection has its own page cache, and after the same load 14 connections use about 27–47 MB more than 4 (159–185 MB against 112–158 MB). You can lower it when memory is tight. Restart after changing it.
 
-**快照間隔 `snapshot_every`：** 每累積這麼多筆 Raft 紀錄（一筆是一次寫入，或一批一起提交的寫入），節點就把整個資料庫複製一份當快照，之後就可以丟掉這之前的紀錄。複製時寫入都要等，資料庫越大越久，所以太頻繁會拖慢服務；但兩次快照之間的紀錄要保留，異常結束後重新啟動也要從上一次快照重播這些紀錄。
+**Snapshot interval `snapshot_every`:** Each time this many Raft log entries have accumulated (one entry is one write, or one batch of writes committed together), the node copies the whole database as a snapshot, after which the entries before it can be discarded. Writes wait during the copy, and the larger the database, the longer it takes, so snapshots that are too frequent slow the service down. But the entries between two snapshots must be kept, and after an abnormal exit the restart must replay them from the last snapshot.
 
-- 2026-11-08 在 Docker 的 Linux（arm64）量測，寬頻情境 PAP 併發 256 加每秒 2,000 筆計費，12 分鐘：設成 10,000 時，快照最後每 5–6 秒一次，每次複製 150–350 MB，有 4 個 10 秒區段的吞吐量掉到每秒 1.5–4.3 萬次、p99 42–54 ms；設成 100,000 時只做了 10 次快照，平均每秒 57,273 次（10,000 時 54,365 次），最低的區段 54,232 次，p99 沒有超過 15 ms。
-- 代價（同樣的機器，寫入 90,000 筆後停止再啟動）：正常停止（SIGTERM）再啟動，兩種設定都在 0.1 秒內；**異常結束（SIGKILL、斷電）再啟動，10,000 時 0.95 秒，100,000 時 10.3 秒**，因為要重播上次快照以來的紀錄，大約每筆 0.1 ms。資料目錄也比較大（75 MB 比 26 MB）。
-- 寫入不多、更在意異常結束後多快恢復時，調低到例如 10,000 或 20,000。改了要重新啟動。
-- hiqlite 也用這個值決定落後多少筆的節點改收快照、而不是逐筆補上紀錄（這個值的兩倍，預設 200,000 筆，hiqlite 自己的預設是 20,000）。
+- Measured on 2026-11-08 on Linux (arm64) in Docker, with the broadband scenario's PAP at concurrency 256 plus 2,000 accounting writes per second, for 12 minutes. With 10,000, snapshots ended up every 5–6 seconds, each copying 150–350 MB, and in 4 ten-second intervals throughput fell to 15,000–43,000 per second with p99 42–54 ms. With 100,000 only 10 snapshots were taken, the average was 57,273 per second (54,365 with 10,000), the lowest interval was 54,232, and p99 never went above 15 ms.
+- The cost (same machine, stop after 90,000 writes, then start again): after a normal stop (SIGTERM) both settings restart within 0.1 seconds. **After an abnormal exit (SIGKILL, power loss) the restart takes 0.95 seconds with 10,000 and 10.3 seconds with 100,000**, because the entries since the last snapshot must be replayed, about 0.1 ms each. The data directory is also larger (75 MB against 26 MB).
+- When there are few writes and you care more about recovering quickly after an abnormal exit, lower it to, for example, 10,000 or 20,000. Restart after changing it.
+- hiqlite also uses this value to decide how far behind a node must be before it receives a snapshot instead of catching up entry by entry (twice this value, 200,000 entries by default; hiqlite's own default is 20,000).
 
-**節點之間的連線沒有加密，也沒有 TLS 設定可以開。** 多節點叢集的 `raft` 和 `api` 埠都是明文：
+**Connections between nodes are not encrypted, and there is no TLS setting to turn on.** In a multi-node cluster the `raft` and `api` ports are plain text:
 
-- **能監聽這段網路的人，讀得到複寫中的資料：** 包含 `users` 資料表裡的密碼、計費紀錄。
-- **`secret_api` 會以明文送出：** 節點查詢成員時放在 HTTP 標頭裡。側錄到它的人，連得到 `api` 埠就能在資料庫執行 SQL，例如新增或修改使用者。
-- **`secret_raft` 不會直接送出，但連線內容不受保護：** 能攔截連線的人可以竄改握手之後的內容。
+- **Anyone who can listen on that network can read the data being replicated,** including the passwords in the `users` table and accounting records.
+- **`secret_api` is sent in plain text:** a node puts it in an HTTP header when it asks for the members. Anyone who captures it, and can reach the `api` port, can run SQL on the database, for example add or change users.
+- **`secret_raft` is not sent directly, but the contents of the connection are not protected:** anyone who can intercept the connection can tamper with what follows the handshake.
 
-所以節點之間要走你信任的網路。跨機房或跨不信任的網段時，把這段連線放進 WireGuard 或 IPsec，並把 `raft` 和 `api` 的位址設成那個網路上的位址。不論哪一種，都用防火牆把這兩個埠限制成只有其他節點連得到，並用 `listen` 綁定到那個介面。預設的 `0.0.0.0` 會監聽所有介面，所以沒有明確寫 `listen` 時會記一行警告。
+So run the connections between nodes over a network you trust. Across data centers or untrusted segments, put these connections inside WireGuard or IPsec and set the `raft` and `api` addresses to addresses on that network. Either way, use a firewall to limit both ports to the other nodes, and bind them to that interface with `listen`. The default `0.0.0.0` listens on all interfaces, so a warning is logged when `listen` is not written explicitly.
 
-**用 WireGuard 保護節點之間的連線。** 以下是三個節點的例子：實體位址 `192.0.2.1` 到 `192.0.2.3`，WireGuard 網路 `10.99.0.0/24`，介面 `wg0`，以 Linux 和 `wg-quick` 為例。NAS 照樣連各節點的實體位址，`[radius]` 和 `[tacacs]` 不用改。
+**Protect the connections between nodes with WireGuard.** Here is an example with three nodes: physical addresses `192.0.2.1` to `192.0.2.3`, WireGuard network `10.99.0.0/24`, interface `wg0`, using Linux and `wg-quick`. NAS devices still connect to each node's physical address, and `[radius]` and `[tacacs]` need no change.
 
-1. 每個節點產生自己的金鑰，私鑰只留在本機：
+1. Each node generates its own keys. The private key stays on that host:
 
    ```sh
    umask 077
    wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
    ```
 
-2. 每個節點寫 `/etc/wireguard/wg0.conf`，把其他兩個節點列為 peer。節點 1 的寫法：
+2. Each node writes `/etc/wireguard/wg0.conf` and lists the other two nodes as peers. For node 1:
 
    ```ini
    [Interface]
    Address = 10.99.0.1/24
    ListenPort = 51820
-   PrivateKey = <節點 1 private.key 的內容>
+   PrivateKey = <contents of node 1's private.key>
 
-   [Peer]   # 節點 2
-   PublicKey = <節點 2 public.key 的內容>
+   [Peer]   # node 2
+   PublicKey = <contents of node 2's public.key>
    Endpoint = 192.0.2.2:51820
    AllowedIPs = 10.99.0.2/32
 
-   [Peer]   # 節點 3
-   PublicKey = <節點 3 public.key 的內容>
+   [Peer]   # node 3
+   PublicKey = <contents of node 3's public.key>
    Endpoint = 192.0.2.3:51820
    AllowedIPs = 10.99.0.3/32
    ```
 
-   `AllowedIPs` 只寫對方的一個位址，WireGuard 就只接受用那把金鑰加密、來源是那個位址的封包，其他節點冒用不了。啟用：`systemctl enable --now wg-quick@wg0`。
+   With `AllowedIPs` set to just the peer's one address, WireGuard accepts only packets encrypted with that peer's key and coming from that address, so no other node can impersonate it. Enable it with `systemctl enable --now wg-quick@wg0`.
 
-3. `[cluster]` 改用 WireGuard 位址，`listen` 寫明本節點的 WireGuard 位址，不要用預設的 `0.0.0.0`。節點 1 的寫法：
+3. In `[cluster]`, use the WireGuard addresses, and set `listen` to this node's WireGuard address instead of the default `0.0.0.0`. For node 1:
 
    ```toml
    [cluster]
@@ -361,7 +361,7 @@ api = "10.0.0.3:8200"
    api = "10.99.0.3:8200"
    ```
 
-4. 用防火牆讓 `raft` 和 `api` 的埠只收 `wg0` 進來的連線。只靠 `listen` 不夠：Linux 預設也會收下從實體網卡進來、目的地是 `10.99.0.1` 的封包。以 nftables 為例，節點 1：
+4. Use a firewall so the `raft` and `api` ports accept connections only from `wg0`. `listen` alone is not enough: by default Linux also accepts packets that arrive on the physical interface with `10.99.0.1` as the destination. With nftables, for node 1:
 
    ```
    table inet rradius_cluster {
@@ -375,9 +375,9 @@ api = "10.0.0.3:8200"
    }
    ```
 
-   `lo` 是本機連自己的位址時走的介面。
+   `lo` is the interface used when the host connects to its own address.
 
-5. rradius 要在 `wg0` 起來之後才啟動，否則綁不到 `listen` 的位址。用 systemd 時，在 rradius 的服務加上（`systemctl edit <服務名稱>`）：
+5. rradius must start after `wg0` is up, otherwise it cannot bind the `listen` address. With systemd, add this to the rradius service (`systemctl edit <service name>`):
 
    ```ini
    [Unit]
@@ -385,63 +385,63 @@ api = "10.0.0.3:8200"
    After=wg-quick@wg0.service
    ```
 
-6. 確認：在實體網卡上抓不到 `8100` 和 `8200`，只看得到 WireGuard 的 UDP。`wg0` 上看得到明文是正常的，那是解密之後的內容。
+6. Check: on the physical interface you should not capture `8100` and `8200`, only WireGuard's UDP. Seeing plain text on `wg0` is normal, because that is the decrypted content.
 
    ```sh
-   tcpdump -ni eth0 'tcp port 8100 or tcp port 8200'   # 應該沒有封包
-   tcpdump -ni eth0 udp port 51820                     # 節點之間的流量
-   wg show wg0                                          # 每個 peer 都有最近的 latest handshake
+   tcpdump -ni eth0 'tcp port 8100 or tcp port 8200'   # should show no packets
+   tcpdump -ni eth0 udp port 51820                     # traffic between the nodes
+   wg show wg0                                          # every peer has a recent latest handshake
    ```
 
-要注意的地方：
+Things to watch:
 
-- **增減節點時，每台都要改。** 新節點要加進其他每台的 peer 和防火牆的來源位址，`[[cluster.nodes]]` 也一樣。改完設定檔可以用 `wg syncconf wg0 <(wg-quick strip wg0)` 套用，不必中斷現有連線。
-- **金鑰沒有撤銷機制。** 換金鑰時，先在該節點產生新金鑰，再更新其他每台 peer 的 `PublicKey`。期間這個節點連不上其他節點，所以一次換一台，等它重新跟上再換下一台，叢集才能一直保有多數節點。
-- **MTU 不必調整。** `wg-quick` 會自動把 `wg0` 設小一點，TCP 會自己配合。
-- **已經有 IPsec 的環境也可以用，原則相同：** 節點位址放在受保護的網路上，`listen` 綁那個位址，防火牆只收受保護的流量。
+- **When you add or remove a node, change every host.** The new node must be added to every other host's peers and firewall source addresses, and to `[[cluster.nodes]]` as well. After editing the files you can apply them with `wg syncconf wg0 <(wg-quick strip wg0)` without interrupting existing connections.
+- **There is no key revocation.** To replace a key, first generate the new key on that node, then update the `PublicKey` of that peer on every other host. During that time this node cannot reach the others, so change one at a time and wait for it to catch up before the next, so the cluster keeps a majority throughout.
+- **You do not need to adjust the MTU.** `wg-quick` sets `wg0` a little smaller automatically, and TCP adapts.
+- **An environment that already has IPsec can use it too, with the same principle:** put the node addresses on the protected network, bind `listen` to that address, and let the firewall accept only the protected traffic.
 
-#### 啟動時追上叢集
+#### Catching up with the cluster at startup
 
-節點啟動後，不論有沒有 `migrations_dir`，都先等到有 leader，再經 leader 寫一個自己的標記（資料表 `rradius_nodes`），等本機副本讀到它才開始監聽。寫入依序套用，所以讀到標記就代表停機期間叢集寫入的帳號、NAS、金鑰都已經在本機，第一個回應就看得到。完成時記錄 `cluster node N has caught up with the cluster`。
+After a node starts, with or without `migrations_dir`, it first waits for a leader, then writes a marker of its own through the leader (the table `rradius_nodes`), and starts listening only when its local replica has read it. Writes are applied in order, so reading the marker means the accounts, NAS devices and keys written to the cluster during the downtime are already local, and the first response can see them. When this is done it logs `cluster node N has caught up with the cluster`.
 
-- 兩段等待各自以 `migrations_wait_ms` 為上限。等不到可用的 leader 時，見下方〈沒有多數節點時重新啟動〉；有 leader 卻追不上時，有 `migrations_dir` 就以狀態碼 1 結束，和 migration 失敗相同，沒有時記一行 WARN（`serving before catching up`）後照常服務，這時答案可能來自舊資料。先服務的節點會在背景繼續追上，完成時同樣記錄 `has caught up with the cluster`。
-- 停機很久、要補的資料很多時，追上要比較久。
+- Each of the two waits is limited by `migrations_wait_ms`. When no usable leader appears, see "Restarting with no majority" below. When there is a leader but the node cannot catch up, it exits with status 1 if there is a `migrations_dir` (the same as a failed migration). Without one it logs a WARN line (`serving before catching up`) and serves as usual, and in that case answers may come from old data. A node that has started serving keeps catching up in the background and logs `has caught up with the cluster` when done.
+- After a long downtime with a lot of data to apply, catching up takes longer.
 
-#### 資料庫不能用時
+#### When the database is unavailable
 
-- **不回應，而不是拒絕。** 登入因為叢集資料庫逾時、找不到 leader，或等待寫入的數量滿了而無法決定時，RADIUS 不回覆，計入 `rradius_radius_discarded_total{reason="database"}`；TACACS+ 的認證和授權回 ERROR，設備會改問下一台伺服器（RFC 8907）。`ldap` 處理器的目錄不能用（所有 URL 都連不上或逾時、服務帳號登入被拒絕或出錯、搜尋出錯），以及密碼驗證逾時（`sql`、`ldap` 的 `attribute` 模式，含等慢雜湊輪次超過 `timeout_ms`），也同樣處理，也計入 `reason="database"`：這個標籤涵蓋資料庫、LDAP、網域控制站和驗證逾時，名稱不變。這適用於 `sql` 處理器、回 `reject` 或出錯的 `lua` 處理器（回 `ignore` 時照常交給下一個處理器）和沒有接受的最上層腳本，以及 EAP 對話。確定是帳號不存在、密碼錯，或腳本的資料庫呼叫都成功後才拒絕，照樣回 Access-Reject（FAIL）。
-- **寫入有上限。** 等著交給叢集的寫入最多 16384 個，滿了直接失敗；交出去的一批最多等 30 秒，到時放開名額、回報失敗；沒有可用的 leader 超過 5 秒時，新的寫入立刻失敗，不排隊。所以被隔開的節點不會因為一直排隊而耗光記憶體。
-- **交給叢集的寫入等到結果才回報。** 合併提交的 `sql_execute`（不回傳資料列的 INSERT、UPDATE、DELETE、REPLACE）還在排隊時，請求的資料庫時限一到就放棄，之後也不會交出去；一旦交給叢集（leader 在做快照、換 leader 時可能要等），就等叢集回覆結果，不再中途放棄，最多等 30 秒。所以「回報失敗、之後卻寫進去」只剩 30 秒內都沒有結果這種情況，這時呼叫回報結果不明（記錄寫 `may have been committed`），不算資料庫不能用：計費不進暫存也不回覆，由 NAS 重送，重送時可能重複一次，所以計費腳本仍要能重複執行。登入沒回應時，腳本已經做的寫入（配出的 IP、用掉的驗證碼）在這種情況下也可能留下來。代價是 leader 很慢時，一個請求最多多等 30 秒，占著它的名額；等待的時間照樣算進這個請求的資料庫時限，所以同一個請求之後的呼叫可能立刻逾時，計費可能因此進暫存、重放時再跑一次。帶 `RETURNING` 和其他不合併提交的語句照舊以時限為準，逾時後仍可能寫入。
-- **被隔開的節點讀的是舊資料。** 讀取用本機副本，不需要多數節點，所以只讀的登入照常回應；但在另一側停用的帳號、刪掉的 NAS、撤掉的金鑰，在它這裡都還有效，SIGHUP 也沒用，直到網路恢復。
-- **`stop_without_leader_ms`：** 設了之後，節點沒有可用的 leader 超過這段時間，就不回應任何 Access-Request 和送到認證埠的 Status-Server（`reason="no_leader"`），TACACS+ 的認證和授權回 ERROR，讓 NAS 和負載平衡器把它當成故障、改問其他節點。計費照常（有暫存時進暫存）。代價是叢集只剩這一台時，它也不再服務只讀的登入，所以預設不設。
-- **沒有多數節點時重新啟動。** 三台剩一台時，正在跑的那台照常服務只讀的登入。它重新啟動時，hiqlite 先等 leader 約 6 秒，rradius 再等可用的 leader 到 `migrations_wait_ms`；都等不到時：
-  - 沒設 `stop_without_leader_ms`、本機副本已經套用 `migrations_dir` 裡的每個檔案（編號、名稱、內容都相符），或沒有 `migrations_dir`：記一行 WARN（`serving without a leader before catching up`）後用本機副本服務，`rradius_cluster_caught_up` 為 0；其他節點回來、選出 leader 後在背景追上，記錄 `has caught up with the cluster`，指標變 1。
-  - 目錄有本機沒套用的檔案：以狀態碼 1 結束（`not ready`，訊息點名檔案），因為沒有 leader 套用不了；已套用的檔案被改過或改名：以狀態碼 2 結束。
-  - 設了 `stop_without_leader_ms`：以狀態碼 1 結束，有沒有 `migrations_dir` 都一樣。
-  - 有 `migrations_dir` 時，啟動節點本身也受 `migrations_wait_ms` 限制，所以它要大於約 6 秒（預設 60 秒），否則在 hiqlite 返回前就逾時結束。
-  - 代價：停機很久的節點在網路分割時重新啟動，會用停機前的資料服務，例如這段期間停用的帳號還能登入。在意這點時設 `stop_without_leader_ms`。
-- **落後太多的 follower 會壞掉，要重新啟動。** follower 停住或斷線期間，叢集寫入超過 `snapshot_every`（預設 10 萬筆）、leader 做了快照並丟掉舊日誌時，follower 回來後 hiqlite 0.16 讀不到自己的日誌，Raft 核心停止（記錄 `quit RaftCore ... Integrity: Attempt to read non-existent data`）。2026-11-10 在三節點上用預設設定、暫停一台時寫入 13 萬筆重現；`snapshot_every = 50` 時每次都重現。這時節點會用不再跟隨叢集的副本回答，所以 rradius 偵測到後會乾淨關閉並以狀態碼 1 結束（見 1. 節〈停止〉），重新啟動後它會追上、恢復正常。沒有自動重啟時，要手動啟動它。
-- **停掉 leader 時不會先交出 leader。** hiqlite 0.16 在關閉前先等 9.5 秒（仍是 leader），之後其他節點要 1.5 到 3 秒選出新的，選舉期間寫入逾時；用戶端重連還會拖長中斷（強制停掉 leader 時量到約 15 秒，見[手冊第 16 章](manual.zh-TW/16-cluster.md#跨機房)；正常停止的情形沒有量）。所以升級時最後才停 leader（`rradius_cluster_is_leader` 為 1 的那台）。
-- **錯誤怎麼分類。** 逾時、找不到 leader、連不到節點、內部通道關閉、快照失敗都算資料庫不能用；SQL 寫錯、違反限制（例如 UNIQUE）算語句的錯，照樣拒絕或回錯誤。管理指令 `user` 遇到前者以狀態碼 3 結束。
-- **可用的 leader：** follower 知道 leader 是誰；leader 在 5 秒內得到多數節點確認（被隔開的 leader 仍自認是 leader，用這個分辨）。
+- **No response, rather than a rejection.** When a login cannot be decided because the cluster database timed out, no leader was found, or the number of waiting writes is full, RADIUS sends no reply and counts it in `rradius_radius_discarded_total{reason="database"}`. TACACS+ authentication and authorization return ERROR, and the device asks the next server (RFC 8907). The same applies when the `ldap` handler's directory is unavailable (every URL cannot be reached or times out, the service account's bind is refused or fails, the search fails), and when password verification times out (`sql`, the `ldap` `attribute` mode, including waiting for slow hash rounds beyond `timeout_ms`). These are also counted in `reason="database"`: this label covers the database, LDAP, domain controllers and verification timeouts, and the name does not change. This applies to the `sql` handler, a `lua` handler that returns `reject` or fails (when it returns `ignore`, the next handler is tried as usual), a top-level script that has no accept, and EAP conversations. When it is certain that the account does not exist, the password is wrong, or the script's database calls all succeeded, the request is still rejected with Access-Reject (FAIL).
+- **Writes have a limit.** At most 16384 writes can wait to be handed to the cluster, and when that is full they fail immediately. A batch that has been handed over waits at most 30 seconds, and then its slots are released and failure is reported. When there has been no usable leader for more than 5 seconds, new writes fail immediately and are not queued. So an isolated node does not run out of memory from queuing forever.
+- **A write handed to the cluster is reported only when its result is known.** While a combined-commit `sql_execute` (an INSERT, UPDATE, DELETE or REPLACE that returns no rows) is still queued, it is abandoned when the request's database time limit is reached, and it is never handed over afterwards. Once it has been handed to the cluster (it may wait while the leader takes a snapshot or when the leader changes), it waits for the cluster's reply and is no longer abandoned midway, for at most 30 seconds. So "failure reported, but written later" remains only when there was no result within those 30 seconds. In that case the call reports an unknown result (the log says `may have been committed`) and it does not count as the database being unavailable: accounting is neither spooled nor answered, and the NAS retransmits. The retransmit may duplicate it once, so accounting scripts must still be safe to run repeatedly. When a login gets no response, writes the script has already made (an assigned IP, a used verification code) may also remain in this case. The cost is that when the leader is very slow, a request waits up to 30 seconds longer and holds its slot. The waiting time still counts toward that request's database time limit, so later calls in the same request may time out at once, and accounting may therefore go to the spool and run again on replay. Statements with `RETURNING` and others that are not committed together still follow the time limit as before, and may still be written after the timeout.
+- **An isolated node reads old data.** Reads use the local replica and do not need a majority, so read-only logins are still answered. But an account disabled on the other side, a deleted NAS or a revoked key is still valid on this node, and SIGHUP does not help, until the network recovers.
+- **`stop_without_leader_ms`:** When it is set and the node has had no usable leader for longer than this, it answers no Access-Request and no Status-Server sent to the authentication port (`reason="no_leader"`), and TACACS+ authentication and authorization return ERROR, so that the NAS and load balancers treat it as failed and ask other nodes. Accounting continues as usual (it goes to the spool when there is one). The cost is that when only this one node of the cluster is left, it also stops serving read-only logins, so it is not set by default.
+- **Restarting with no majority.** When one of three nodes is left, the running node keeps serving read-only logins. When it restarts, hiqlite first waits about 6 seconds for a leader, then rradius waits for a usable leader up to `migrations_wait_ms`. If neither finds one:
+  - Without `stop_without_leader_ms`, and with a local replica that has applied every file in `migrations_dir` (number, name and content all match), or without a `migrations_dir`: it logs a WARN line (`serving without a leader before catching up`) and serves from the local replica, with `rradius_cluster_caught_up` at 0. After the other nodes return and a leader is elected, it catches up in the background, logs `has caught up with the cluster`, and the metric becomes 1.
+  - When the directory has files the local replica has not applied: it exits with status 1 (`not ready`, the message names the file), because without a leader they cannot be applied. When an applied file has been changed or renamed: it exits with status 2.
+  - With `stop_without_leader_ms` set: it exits with status 1, whether or not there is a `migrations_dir`.
+  - With a `migrations_dir`, the starting node itself is also limited by `migrations_wait_ms`, so it must be greater than about 6 seconds (the default is 60 seconds), otherwise it times out and exits before hiqlite returns.
+  - The cost: a node that was down for a long time and restarts during a network partition serves with the data from before it stopped. For example, an account disabled in the meantime can still log in. If this matters, set `stop_without_leader_ms`.
+- **A follower that has fallen too far behind breaks and must be restarted.** When, while a follower is stopped or disconnected, the cluster writes more than `snapshot_every` entries (100,000 by default), and the leader takes a snapshot and discards the old log, hiqlite 0.16 cannot read its own log after the follower returns, and the Raft core stops (it logs `quit RaftCore ... Integrity: Attempt to read non-existent data`). This was reproduced on 2026-11-10 on three nodes with the default settings by writing 130,000 entries while one node was paused. With `snapshot_every = 50` it reproduces every time. The node would then answer from a replica that no longer follows the cluster, so rradius detects this, shuts down cleanly and exits with status 1 (see section 1, "Stopping"). After it restarts it catches up and recovers. Without an automatic restart, start it by hand.
+- **Stopping the leader does not hand over leadership first.** hiqlite 0.16 waits 9.5 seconds before shutting down (still as leader). After that the other nodes need 1.5 to 3 seconds to elect a new one, and writes time out during the election. Clients reconnecting can extend the outage further (about 15 seconds was measured when the leader was stopped by force, see [chapter 16 of the manual](manual/16-cluster.md#across-data-centers); a normal stop was not measured). So during an upgrade, stop the leader last (the node where `rradius_cluster_is_leader` is 1).
+- **How errors are classified.** Timeouts, no leader found, nodes that cannot be reached, an internal channel that is closed, and snapshot failures all count as the database being unavailable. A wrongly written SQL statement or a constraint violation (for example UNIQUE) is a statement error and is still rejected or returned as an error. The `user` admin command exits with status 3 for the former.
+- **A usable leader:** a follower knows who the leader is. A leader gets confirmation from a majority within 5 seconds (an isolated leader still thinks it is the leader, and this tells them apart).
 
-#### 叢集狀態指標
+#### Cluster state metrics
 
-節點每秒讀一次自己的 Raft 狀態，在 `/metrics` 提供（2.8 節）：
+Each node reads its own Raft state once per second and provides it at `/metrics` (section 2.8):
 
-| 指標 | 意思 |
+| Metric | Meaning |
 | --- | --- |
-| `rradius_cluster_leader` | 有可用的 leader 時 1，否則 0 |
-| `rradius_cluster_is_leader` | 這台是 leader 時 1 |
-| `rradius_cluster_applied_index` | 本機副本最後套用的紀錄編號；和其他節點比，看出落後多少 |
-| `rradius_cluster_seconds_without_leader` | 沒有可用 leader 的秒數，有時是 0 |
-| `rradius_cluster_caught_up` | 啟動後本機副本已追上叢集時 1；沒有 leader 而先用本機副本服務、還沒追上時 0 |
+| `rradius_cluster_leader` | 1 when there is a usable leader, otherwise 0 |
+| `rradius_cluster_is_leader` | 1 when this node is the leader |
+| `rradius_cluster_applied_index` | Number of the last entry the local replica applied. Compare it with other nodes to see how far behind it is |
+| `rradius_cluster_seconds_without_leader` | Seconds without a usable leader, sometimes 0 |
+| `rradius_cluster_caught_up` | 1 when, after startup, the local replica has caught up with the cluster. 0 when it is serving from the local replica without a leader and has not caught up |
 
-升級時最後才停 `rradius_cluster_is_leader` 為 1 的那台：停掉 leader 要重新選舉，約 15 秒內的寫入會逾時（見[手冊第 16 章](manual.zh-TW/16-cluster.md#跨機房)）。
+During an upgrade, stop the node where `rradius_cluster_is_leader` is 1 last. Stopping the leader requires a new election, and writes time out for about 15 seconds (see [chapter 16 of the manual](manual/16-cluster.md#across-data-centers)).
 
-#### 增減節點：`cluster` 指令
+#### Adding and removing nodes: the `cluster` command
 
-執行中加節點不需要指令：新節點的 `[[cluster.nodes]]` 列出目前所有成員（包含自己）、`data/` 是空的，啟動後會自己加入。清單裡一定要有現在的 leader，否則加不進去（見[手冊第 16 章](manual.zh-TW/16-cluster.md#加入節點)）。移除節點和查看成員用 `cluster` 指令，步驟和注意事項見[手冊第 16 章](manual.zh-TW/16-cluster.md#加入節點)。
+Adding a node while running needs no command: the new node's `[[cluster.nodes]]` lists all current members (itself included) and its `data/` is empty, and after it starts it joins by itself. The list must include the current leader, otherwise it cannot join (see [chapter 16 of the manual](manual/16-cluster.md#add-a-node)). To remove a node and to view the members, use the `cluster` command. For the steps and notes, see [chapter 16 of the manual](manual/16-cluster.md#add-a-node).
 
 ```sh
 rradiusd cluster members --config /etc/rradius/rradius.toml
@@ -449,90 +449,90 @@ rradiusd cluster remove --config /etc/rradius/rradius.toml 4
 rradiusd cluster remove --force --config /etc/rradius/rradius.toml 3
 ```
 
-- **`members`** 依編號列出每個成員：`voter`（投票成員）或 `learner`（只複製資料，加入中的節點會短暫是這個）、`leader`、Raft 和 API 位址。這份設定沒列的成員標 `(not in this configuration)`；設定有列、叢集裡沒有的編號另列一行 `not in the cluster (listed in this configuration)`。有差異時結束碼仍是 0。
-- **`remove`** 先找到 leader，確認編號是成員、那台已經停機（它的 API 位址 2 秒內沒有回應）、移除後還留夠投票成員，才請 leader 移除它，等叢集確認後印出 `removed node N`。移除後只剩 1 或 2 台投票成員時要加 `--force`；最後一台不能移除；還在回應的節點沒有辦法移除。
-- **找 leader：** 依設定的順序問每個節點，只採用自己看得到 leader 的節點的回答，所以被移除但還在執行的節點（它看不到 leader）不會誤導指令。完全沒有回應的節點（例如主機關機、封包被丟）在下一輪改到最後才問，不必每輪都等它的 5 秒。
-- **結束碼 3 不一定代表什麼都沒做。** 移除請求送出後才連不上或逾時，叢集可能已經移除那台；先用 `cluster members` 看，再決定要不要重跑。
-- 指令經 API 埠（`api` 位址）和 `secret_api` 連線，不需要 rradius 在本機執行。
+- **`members`** lists every member by id: `voter` (a voting member) or `learner` (only replicates data, and a node that is joining is briefly this), `leader`, and the Raft and API addresses. A member this configuration does not list is marked `(not in this configuration)`. An id this configuration lists but the cluster does not have gets its own line, `not in the cluster (listed in this configuration)`. The exit code is still 0 when there are differences.
+- **`remove`** first finds the leader, confirms that the id is a member, that the node is already down (its API address does not answer within 2 seconds), and that enough voters remain after the removal. Only then does it ask the leader to remove it, wait for the cluster to confirm, and print `removed node N`. When only 1 or 2 voters would remain, add `--force`. The last one cannot be removed. A node that is still answering cannot be removed.
+- **Finding the leader:** it asks each node in the configured order and uses only the answer of a node that can see a leader, so a node that was removed but is still running (it cannot see a leader) does not mislead the command. A node that does not answer at all (for example a host that is off, or packets being dropped) is moved to the end in the next round, so the command need not wait its 5 seconds every round.
+- **Exit code 3 does not always mean nothing was done.** If the connection fails or times out after the remove request was sent, the cluster may already have removed that node. Check with `cluster members` first, then decide whether to run it again.
+- The command connects through the API port (the `api` address) with `secret_api`, and rradius does not need to run locally.
 
-| 情況 | 標準輸出 | 結束碼 |
+| Case | Standard output | Exit code |
 | --- | --- | --- |
-| 列出成員 | 每個成員一行 | 0 |
-| 移除完成 | `removed node 4` | 0 |
-| 編號不是叢集成員 | `no node 9 in the cluster` | 1 |
-| leader 拒絕移除 | （無；錯誤在標準錯誤） | 1 |
-| 指令或設定有誤、那台還在回應、剩下太少投票成員、`secret_api` 和叢集不同 | （無；原因在標準錯誤） | 2 |
-| 30 秒內沒有節點回報 leader | （無；標準錯誤說叢集沒有回應） | 3 |
-| 移除請求送出後沒有回應，或 30 秒內還沒看到它生效 | （無；標準錯誤說移除可能已經完成，請用 `cluster members` 確認） | 3 |
+| List members | One line per member | 0 |
+| Removal done | `removed node 4` | 0 |
+| The id is not a cluster member | `no node 9 in the cluster` | 1 |
+| The leader refuses the removal | (none; the error is on standard error) | 1 |
+| Wrong command or configuration, that node still answers, too few voters would remain, `secret_api` differs from the cluster | (none; the reason is on standard error) | 2 |
+| No node reports a leader within 30 seconds | (none; standard error says the cluster did not respond) | 3 |
+| No response after the remove request was sent, or it did not take effect within 30 seconds | (none; standard error says the removal may have completed, check with `cluster members`) | 3 |
 
-### 2.3 `[radius]` 與 `[tacacs]`
+### 2.3 `[radius]` and `[tacacs]`
 
 ```toml
 [radius]
-bind = "0.0.0.0"     # 預設 0.0.0.0；也可以是列表，例如 ["192.0.2.1", "2001:db8::1"]
-auth_port = 1812     # 預設 1812
-acct_port = 1813     # 預設 1813
-max_auth_inflight = 4096  # 預設 4096，同時處理的認證請求數
-max_acct_inflight = 4096  # 預設 4096，同時處理的計費請求數
-# sockets = 7       # 每個位址和 port 開幾個 socket；Linux 預設等於工作執行緒數，其他平台只能 1
-# recv_buffer_bytes = 4194304  # 每個 socket 的接收緩衝（SO_RCVBUF）；省略時用系統預設值
+bind = "0.0.0.0"     # default 0.0.0.0; can also be a list, for example ["192.0.2.1", "2001:db8::1"]
+auth_port = 1812     # default 1812
+acct_port = 1813     # default 1813
+max_auth_inflight = 4096  # default 4096, authentication requests handled at the same time
+max_acct_inflight = 4096  # default 4096, accounting requests handled at the same time
+# sockets = 7       # sockets opened per address and port; on Linux the default equals the number of worker threads, other platforms allow only 1
+# recv_buffer_bytes = 4194304  # receive buffer of each socket (SO_RCVBUF); the system default is used when omitted
 
 [[radius.clients]]
-name = "core-switches"          # 選填；沒有時以 address 當名稱；同一張清單內不能重複
-address = "192.168.2.0/24"      # IP 或 CIDR 網段
-secret_file = "core.secret"     # 或 secret = "..."，二擇一
-auth = "vpn"                    # 選填；指定具名認證串接
+name = "core-switches"          # optional; address is used as the name when absent; must be unique within the list
+address = "192.168.2.0/24"      # an IP or a CIDR network
+secret_file = "core.secret"     # or secret = "...", choose one
+auth = "vpn"                    # optional; selects a named auth chain
 
 [tacacs]
-bind = "0.0.0.0"     # 預設 0.0.0.0
-port = 49            # 預設 49（需要權限）
-max_body_len = 65536 # 預設 65536，超過的封包會中斷連線；必須大於 0
-max_connections = 1024 # 預設 1024，同時開啟的連線數
-max_connections_per_source = 64 # 預設 64，同一個來源位址同時開啟的連線數，必須大於 0
-idle_timeout_ms = 300000 # 預設，這段時間沒有收到完整封包就關閉，必須大於 0
-enable = "deny"      # 預設；enable 請求直接 FAIL。"login" 時和登入一樣驗證（4.6 節）
-# TACACS+ over TLS（[tacacs.tls]）需要 rradius-enterprise
+bind = "0.0.0.0"     # default 0.0.0.0
+port = 49            # default 49 (needs privileges)
+max_body_len = 65536 # default 65536, a larger packet closes the connection; must be greater than 0
+max_connections = 1024 # default 1024, connections open at the same time
+max_connections_per_source = 64 # default 64, connections open at the same time from one source address, must be greater than 0
+idle_timeout_ms = 300000 # default; the connection is closed when no complete packet arrives within this time, must be greater than 0
+enable = "deny"      # default; an enable request gets FAIL directly. With "login" it is authenticated like a login (section 4.6)
+# TACACS+ over TLS ([tacacs.tls]) needs rradius-enterprise
 
 [[tacacs.clients]]
 name = "router-1"
 address = "10.0.0.5"
 secret_file = "router-1.secret"
-# authorize_group = "group15"   # 選填；授權改由規則決定，見下方〈TACACS+ 授權群組〉
+# authorize_group = "group15"   # optional; authorization is decided by rules instead, see "TACACS+ authorize groups" below
 ```
 
-**`bind` 用列表時：**
+**When `bind` is a list:**
 
-- 每個位址都服務認證和計費，回覆從收到請求的 socket 送出。列明確位址時，來源就是那個位址。萬用位址的來源由路由決定，主機有多個位址時 NAS 可能因來源不符而丟棄回應，這時要改列明確位址。
-- 超過一個位址時，IPv6 位址只收 IPv6，所以 `["0.0.0.0", "::"]` 可以同時收兩種。**`["::", "10.0.0.1"]` 只有 `10.0.0.1` 收 IPv4。** 只有一個位址時，不論是不是列表都和以前相同：`"::"` 能不能收 IPv4 由系統決定。
-- 萬用位址不能和同家族的其他位址並列，例如 `["0.0.0.0", "192.0.2.1"]` 啟動時就會失敗，因為它已經占用了該家族所有位址的埠。IPv4 對應位址（`::ffff:10.0.0.1`）在多個位址的列表裡也不行，請寫成 IPv4。
-- **綁定失敗時程序會結束，** 狀態碼 1，訊息寫出位址和埠。`[tacacs]`、`[metrics]` 綁定失敗仍然只記一行錯誤，這些也只能有一個位址。
+- Every address serves authentication and accounting, and the reply is sent from the socket that received the request. When you list an explicit address, that address is the source. The source of a wildcard address is decided by routing; when the host has several addresses, the NAS may drop the reply because the source does not match. In that case list explicit addresses.
+- With more than one address, an IPv6 address receives IPv6 only, so `["0.0.0.0", "::"]` receives both. **`["::", "10.0.0.1"]` receives IPv4 only on `10.0.0.1`.** With a single address, behavior is the same as before whether or not it is written as a list: whether `"::"` also receives IPv4 is decided by the system.
+- A wildcard address cannot be listed together with another address of the same family. For example, `["0.0.0.0", "192.0.2.1"]` fails at startup, because the wildcard already holds the port on every address of that family. An IPv4-mapped address (`::ffff:10.0.0.1`) is also not allowed in a list of several addresses; write it as IPv4.
+- **When binding fails, the process exits** with status 1 and a message that gives the address and port. For `[tacacs]` and `[metrics]`, a bind failure is still only one error line, and these can have only one address.
 
-**`sockets`：每個 port 有幾個接收迴圈。**
+**`sockets`: how many receive loops each port has.**
 
-- Linux 上每個位址的認證和計費 port 各開 `sockets` 個 SO_REUSEPORT socket，各有自己的接收迴圈。核心依來源位址和 port 把封包分給其中一個，同一個來源一直落在同一個，所以重送還是由同一個迴圈處理，去重和回覆都不受影響；回覆從收到請求的那個 socket 送出。預設等於工作執行緒數（程序可用的 CPU 數），啟動時記錄 `RADIUS: <N> sockets on each address and port`。
-- **其他平台只能是 1。** macOS 等系統不會把封包分散到多個 socket，設大於 1 時啟動失敗。0 也會失敗。
-- **同一個使用者的另一個程序也能綁同一個 port。** SO_REUSEPORT 讓有效 UID 相同、也開了這個選項的程序共用 port，封包會分給兩邊。用同一份設定再啟動一個 rradius 時，它會先在叢集的 port 失敗而結束，碰不到 RADIUS port；但叢集 port 不同、RADIUS port 相同的另一份設定就會分走流量。請用專用帳號執行，需要以前的行為時設 `sockets = 1`（這時 port 被占用就啟動失敗）。
-- 改了要重新啟動，SIGHUP 時會記錄需要重啟的設定。
-- 量測見 2.4 節。
+- On Linux, each authentication and accounting port of each address opens `sockets` SO_REUSEPORT sockets, each with its own receive loop. The kernel assigns each packet to one of them by source address and port, and the same source always lands on the same one, so a retransmission is handled by the same loop and de-duplication and replies are not affected; the reply is sent from the socket that received the request. The default equals the number of worker threads (the number of CPUs available to the process), and the startup log records `RADIUS: <N> sockets on each address and port`.
+- **On other platforms it can only be 1.** macOS and similar systems do not spread packets over several sockets, and a value above 1 makes startup fail. 0 also fails.
+- **Another process of the same user can bind the same port.** SO_REUSEPORT lets processes with the same effective UID that also set this option share the port, and packets are split between them. When you start a second rradius with the same configuration, it fails first on the cluster port and exits, so it never touches the RADIUS port; but another configuration with a different cluster port and the same RADIUS port takes part of the traffic. Run it under a dedicated account, and set `sockets = 1` if you need the earlier behavior (then startup fails when the port is in use).
+- A change needs a restart; SIGHUP records the settings that need a restart.
+- For measurements see section 2.4.
 
-**`recv_buffer_bytes`：每個 socket 的接收緩衝。**
+**`recv_buffer_bytes`: the receive buffer of each socket.**
 
-- 省略時不設定 `SO_RCVBUF`，每個 socket 拿到系統預設值（Linux `net.core.rmem_default`，macOS、FreeBSD `net.inet.udp.recvspace`），和以前相同。
-- 設定後，每個位址的認證和計費 port、每一個 `sockets`，都以這個大小設定 `SO_RCVBUF`。系統只需允許這個上限（Linux `net.core.rmem_max`，macOS、FreeBSD `kern.ipc.maxsockbuf`），不必調高影響所有程式的系統預設值。範圍 4096 到 1073741824，超出時啟動失敗。
-- 啟動時記錄 `RADIUS: receive buffer <實際大小> bytes on each socket (asked <設定值>)`。Linux 讀回的是設定值的兩倍（核心把記帳空間算在內），這是正常的。
-- **拿不到時只記警告，伺服器照常服務。** Linux 會把它截到 `rmem_max`，macOS、FreeBSD 超過上限時拒絕、socket 維持系統預設值；兩者都記一行 WARN，寫出要調的 sysctl。同一份設定部署到上限較低的機器也能啟動，`rradiusd tuning`（8.1 節）會列出上限不足。
-- 記憶體用量的上限是 `recv_buffer_bytes` × `sockets` × 位址數 × 2 個 port，例如 14 個 socket、一個位址、8 MiB 是 224 MiB。緩衝區只在封包堆積時才實際占用。
-- 改了要重新啟動，SIGHUP 時會記錄需要重啟的設定。
+- When omitted, `SO_RCVBUF` is not set and each socket gets the system default (`net.core.rmem_default` on Linux, `net.inet.udp.recvspace` on macOS and FreeBSD), the same as before.
+- When set, `SO_RCVBUF` is set to this size on the authentication and accounting port of every address and on every one of the `sockets`. The system only needs to allow this limit (`net.core.rmem_max` on Linux, `kern.ipc.maxsockbuf` on macOS and FreeBSD); you do not have to raise the system default that affects every program. The range is 4096 to 1073741824, and startup fails outside it.
+- The startup log records `RADIUS: receive buffer <actual size> bytes on each socket (asked <configured value>)`. On Linux the value read back is twice the configured value (the kernel counts its bookkeeping space), which is normal.
+- **If the size cannot be obtained, only a warning is logged and the server keeps serving.** Linux truncates it to `rmem_max`; macOS and FreeBSD refuse a value above the limit and the socket keeps the system default; both log one WARN line that names the sysctl to change. The same configuration deployed to a machine with a lower limit still starts, and `rradiusd tuning` (section 8.1) lists limits that are too low.
+- The upper bound of memory use is `recv_buffer_bytes` × `sockets` × number of addresses × 2 ports; for example 14 sockets, one address and 8 MiB is 224 MiB. A buffer is actually occupied only while packets pile up.
+- A change needs a restart; SIGHUP records the settings that need a restart.
 
-- 用戶端以「最長前綴」比對來源位址，與列出順序無關；同一網段重複列出會啟動失敗。
-- 同一張清單（`[[radius.clients]]` 或 `[[tacacs.clients]]`）內的 `name` 不能重複，沒寫 `name` 時 `address` 也算；重複時啟動與 `check` 以結束碼 2 失敗，訊息是 `duplicate client name '…'`。名稱用來分指標與日誌，以及計費 spool 重放時找用戶端。舊版接受重名的設定，升級前要先改名。大小寫不同算不同名稱，RADIUS 與 TACACS+ 兩張清單之間可以同名。
-- 不在任何用戶端網段內的來源會被忽略（RADIUS 不回應，TACACS+ 直接關閉連線）。
-- 密碼檔去掉結尾換行後不可為空。
-- 區段存在但沒有用戶端時啟動失敗。
+- A client is matched to the source address by the longest prefix, regardless of the order in which clients are listed; listing the same network twice makes startup fail.
+- `name` must be unique within one list (`[[radius.clients]]` or `[[tacacs.clients]]`), and when `name` is not written, `address` counts as the name; a duplicate makes startup and `check` fail with exit code 2 and the message `duplicate client name '…'`. The name is used to separate metrics and logs, and to find the client when the accounting spool is replayed. Earlier versions accepted configurations with duplicate names, so rename them before upgrading. Names that differ in case are different names, and the RADIUS and TACACS+ lists may use the same name.
+- A source that is inside no client network is ignored (RADIUS does not reply, and TACACS+ closes the connection immediately).
+- A secret file must not be empty after the trailing newline is removed.
+- Startup fails when a section exists but has no clients.
 
-#### TACACS+ 授權群組 `[tacacs.authorize_groups]`
+#### TACACS+ authorize groups `[tacacs.authorize_groups]`
 
-不寫腳本，用一行一條的規則決定 TACACS+ 授權。規則依連線過來的設備套用：`[[tacacs.clients]]` 設了 `authorize_group` 的設備，授權只看該群組的規則。
+Decide TACACS+ authorization with one rule per line, without writing a script. Rules apply by the device that connects: for a device whose `[[tacacs.clients]]` sets `authorize_group`, authorization looks only at the rules of that group.
 
 ```toml
 [tacacs.authorize_groups]
@@ -553,145 +553,145 @@ secret_file = "tacacs.secret"
 authorize_group = "group15"
 ```
 
-- **格式：** `permit|deny <樣式> ... [{<AV> <AV> ...}]`，以空白分隔。`{}` 裡的 AV pair 寫成 `name=value`（或選填的 `name*value`），`permit` 時原樣回給設備；`deny` 不能帶 `{}`。
-- **值含空白時用雙引號包住，** 例如 `{shell:roles="network-admin vdc-admin"}`。引號之間的空白和 `}` 都算值的一部分，引號本身也照樣送給設備：寫什麼就送什麼，上例送出的就是 `shell:roles="network-admin vdc-admin"` 一個 AV pair。設備不要引號時就不要寫。樣式部分不支援引號。
-- **一定要用單引號。** TOML 的雙引號字串不接受 `\*` 這類寫法，會在讀設定時就失敗。
-- **樣式是正規表示式，整串比對** 請求中的一個 AV pair，包括中間的 `=` 或 `*`。所以 `cmd=show` 不會符合 `cmd=showx`，`cmd\*` 符合設備開 shell（EXEC 授權）時送的 `cmd*`。比對以位元組進行，`.` 符合任何位元組。`user`、`port`、`rem_addr` 不參與比對。
-- **一條規則的每個樣式都至少符合一個 AV pair 時成立。** 沒有樣式的規則什麼都符合。
-- **第一條成立的規則決定：** `permit` 回 PASS_ADD，`deny` 回 FAIL。全部都不成立時回 FAIL，空的群組（`[]`）所有授權都 FAIL。要排除特定指令，把 `deny` 放在較寬的 `permit` 之前。
-- **要限制設備能下哪些指令，寫白名單，不要靠 `deny` 清單。** 規則只比對設備送來的指令與參數：設備上的縮寫（`show run`）和沒列出的子命令（`show tech-support`）不會被 `deny cmd=show cmd-arg=running-config` 擋到，卻符合 `permit cmd=show`。上例的 `readonly` 只放行列出的指令，其餘落到「全都不成立」而被拒絕。另外，一條規則的每個樣式只要符合請求的某一個 AV pair 就成立，`cmd-arg=interfaces` 也會放行 `show interfaces` 後面再加的參數；真正的唯讀要靠設備上該權限等級（`priv-lvl`）本身能做什麼，授權規則是第二道。
-- **設了 `authorize_group` 的設備不執行腳本授權。** 認證和計費照舊。同一群組的設備，每個使用者得到的授權都一樣；要依使用者或角色決定時，那些設備不要設 `authorize_group`，改用腳本（4.6 節）。
-- **限制：** 沒有「值含空白但不送引號」的寫法，也沒有跳脫字元；只回 PASS_ADD，沒有 PASS_REPL 和 `server_msg`。
-- **檢查：** 啟動、SIGHUP 和 `check` 時，規則開頭不是 `permit`/`deny`、正規表示式寫錯、`{}` 不成對或 `}` 後還有內容、`{}` 裡的雙引號不成對、AV pair 沒有 `=`/`*` 或名稱為空、超過 255 octets 或超過 255 個、群組名稱為空、`authorize_group` 指向不存在的群組、在 `[[radius.clients]]` 設 `authorize_group`，都會失敗，訊息指出 `tacacs.authorize_groups.<名稱>` 和第幾條規則。
-- 規則隨 SIGHUP 套用，已開啟的連線下一個請求就用新規則（2.9 節）。
-- **量測：規則比腳本快。** 2026-11-09 在 Apple M4 Max 上 OrbStack 的 Linux（arm64）量測，`main` `5ef8248`，伺服器限定 CPU 0–6、`rradius-bench` 7–13，`tacacs-author,concurrency=64,threads=7`（`service=shell`、`cmd=show`、`cmd-arg=version`），每列三次，都沒有逾時和 `invalid`：
+- **Format:** `permit|deny <pattern> ... [{<AV> <AV> ...}]`, separated by spaces. An AV pair inside `{}` is written as `name=value` (or the optional `name*value`); for `permit` it is returned to the device unchanged; `deny` cannot have `{}`.
+- **When a value contains spaces, wrap it in double quotes,** for example `{shell:roles="network-admin vdc-admin"}`. Spaces between the quotes and `}` are part of the value, and the quotes themselves are also sent to the device: what you write is what is sent, so the example above sends the single AV pair `shell:roles="network-admin vdc-admin"`. If the device does not want the quotes, do not write them. Quotes are not supported in the pattern part.
+- **Always use single quotes.** A TOML double-quoted string does not accept sequences such as `\*`, and reading the configuration fails.
+- **A pattern is a regular expression that must match the whole** of one AV pair in the request, including the `=` or `*` in the middle. So `cmd=show` does not match `cmd=showx`, and `cmd\*` matches the `cmd*` that a device sends when it opens a shell (EXEC authorization). Matching is done on bytes, and `.` matches any byte. `user`, `port` and `rem_addr` do not take part in matching.
+- **A rule holds when each of its patterns matches at least one AV pair.** A rule with no pattern matches everything.
+- **The first rule that holds decides:** `permit` returns PASS_ADD and `deny` returns FAIL. When no rule holds, the result is FAIL, and an empty group (`[]`) makes every authorization FAIL. To exclude specific commands, put `deny` before the broader `permit`.
+- **To limit which commands a device may run, write an allow list; do not rely on a `deny` list.** A rule compares only the commands and arguments the device sends: an abbreviation on the device (`show run`) and a subcommand that is not listed (`show tech-support`) are not caught by `deny cmd=show cmd-arg=running-config`, but they match `permit cmd=show`. The `readonly` group above permits only the listed commands, and the rest fall to "no rule holds" and are refused. Also, a rule holds as soon as each pattern matches some AV pair of the request, so `cmd-arg=interfaces` also permits further arguments added after `show interfaces`; real read-only access depends on what the privilege level on the device (`priv-lvl`) can do, and the authorization rules are a second barrier.
+- **A device that has `authorize_group` set does not run script authorization.** Authentication and accounting are unchanged. Every user of the same group's devices gets the same authorization; when you need to decide by user or role, do not set `authorize_group` on those devices and use a script instead (section 4.6).
+- **Limits:** there is no way to write a value that contains spaces without sending the quotes, and there are no escape characters; only PASS_ADD is returned, with no PASS_REPL and no `server_msg`.
+- **Checks:** at startup, on SIGHUP and in `check`, these fail: a rule that does not start with `permit`/`deny`, an invalid regular expression, `{}` that is not paired or has content after `}`, double quotes inside `{}` that are not paired, an AV pair without `=`/`*` or with an empty name, more than 255 octets or more than 255 AV pairs, an empty group name, an `authorize_group` that points to a group that does not exist, and `authorize_group` set on a `[[radius.clients]]`. The message names `tacacs.authorize_groups.<name>` and the number of the rule.
+- Rules are applied with SIGHUP, and the next request on an already open connection uses the new rules (section 2.9).
+- **Measurement: rules are faster than a script.** Measured on 2026-11-09 on Linux (arm64) in OrbStack on an Apple M4 Max, `main` `5ef8248`, with the server pinned to CPUs 0–6 and `rradius-bench` to 7–13, `tacacs-author,concurrency=64,threads=7` (`service=shell`, `cmd=show`, `cmd-arg=version`), three runs per row, none with timeouts or `invalid`:
 
-  | 授權方式 | 次/秒 | p50 / p99 | 每個請求的伺服器 CPU |
+  | Authorization method | requests/s | p50 / p99 | Server CPU per request |
   | --- | --- | --- | --- |
-  | 腳本一律接受 | 364,700–372,900 | 0.16 / 0.44–0.47 ms | 約 14 µs |
-  | 腳本依 `service`、`cmd` 判斷並設 `priv-lvl` | 311,800–317,900 | 0.19 / 0.50–0.51 ms | 約 17–18 µs |
-  | 規則 1 條，`permit service=shell cmd=show {priv-lvl=15}` | 439,700–469,400 | 0.12–0.13 / 0.37–0.38 ms | 約 7 µs |
-  | 規則 20 條，前 19 條不成立 | 407,600–429,600 | 0.13 / 0.40–0.45 ms | 約 8.4–9.0 µs |
+  | Script that always accepts | 364,700–372,900 | 0.16 / 0.44–0.47 ms | about 14 µs |
+  | Script that decides by `service` and `cmd` and sets `priv-lvl` | 311,800–317,900 | 0.19 / 0.50–0.51 ms | about 17–18 µs |
+  | 1 rule, `permit service=shell cmd=show {priv-lvl=15}` | 439,700–469,400 | 0.12–0.13 / 0.37–0.38 ms | about 7 µs |
+  | 20 rules, the first 19 do not hold | 407,600–429,600 | 0.13 / 0.40–0.45 ms | about 8.4–9.0 µs |
 
-  - 規則不必進 Lua，每個請求的 CPU 約是腳本的一半以下；多 19 條不成立的規則約多 1.5–2 µs。
-  - 這時伺服器只用了約 3 顆 CPU，吞吐受 64 個連線、每條一次一個請求的限制（64 除以 p50），不是 CPU 上限。
+  - Rules do not go through Lua, and the CPU per request is less than half of a script; 19 extra rules that do not hold cost about 1.5–2 µs more.
+  - The server used only about 3 CPUs here, and throughput was limited by 64 connections with one request at a time each (64 divided by p50), not by CPU.
 
-TACACS+ over TLS（`[tacacs.tls]`）需要 rradius-enterprise。
+TACACS+ over TLS (`[tacacs.tls]`) needs rradius-enterprise.
 
-動態 client（`[radius.dynamic_clients]`）需要 rradius-enterprise。
+Dynamic clients (`[radius.dynamic_clients]`) need rradius-enterprise.
 
-### 2.4 過載與重送
+### 2.4 Overload and retransmission
 
-**RADIUS 重送偵測**（依 RFC 5080）：相同來源 IP、來源埠、Identifier 與 Request Authenticator 的封包視為重送。
+**RADIUS retransmission detection** (per RFC 5080): packets with the same source IP, source port, Identifier and Request Authenticator are treated as retransmissions.
 
-- 原請求處理中：靜默丟棄。
-- 原請求已回覆，且在 10 秒內：重送原本的回應，不執行腳本也不查 LDAP 或 SQL。回應是 Access-Reject 時也一樣。
-- 未通過驗證的封包不影響判斷。
+- The original request is still being processed: the packet is dropped silently.
+- The original request was already answered, within the last 10 seconds: the original response is sent again, without running a script or querying LDAP or SQL. This is also true when the response was an Access-Reject.
+- Packets that fail verification do not affect the decision.
 
-**計費腳本仍要自己防止重複寫入。** 設備更新 `Acct-Delay-Time` 再送時會換新的 Identifier，對伺服器來說是新封包，偵測不到。請以 `Acct-Session-Id` 加 `Acct-Status-Type` 當唯一鍵，例如建立 `UNIQUE` 索引並用 `INSERT OR IGNORE`。
+**Accounting scripts must still prevent duplicate writes themselves.** When a device updates `Acct-Delay-Time` and sends again, it uses a new Identifier, so for the server it is a new packet and is not detected. Use `Acct-Session-Id` plus `Acct-Status-Type` as a unique key, for example by creating a `UNIQUE` index and using `INSERT OR IGNORE`.
 
-**過載保護**：
+**Overload protection:**
 
-- RADIUS 超過 `max_auth_inflight` 或 `max_acct_inflight` 時，封包會被靜默丟棄，不會回 Access-Reject，由設備重送。認證與計費的額度分開計算，所以計費不會佔掉認證的名額。
-- 同時**執行**的計費腳本（RADIUS 與 TACACS+ 都算）不超過 CPU 核心數減 2，至少 1 個，其餘依序等待；留下的工作執行緒用來處理登入和其他請求。腳本等資料庫時會讓出名額。等待名額的時間不計入 `max_execution_ms` 與 `query_timeout_ms`。所以計費暴增時，變慢的主要是計費本身，登入不會被拖到數秒。
-- 伺服器的每個記憶體配置至少佔一條快取線（macOS aarch64 是 128 位元組，其他平台是 64 位元組），避免不同 Lua VM 的資料共用一條快取線而互相拖慢：不對齊時，純運算的計費腳本在 macOS 上從每秒約 274 筆掉到 22 筆。代價是記憶體：小的配置也佔一整條快取線（以前用系統配置器時，在 macOS 量到比不對齊多最多約 3.8 倍）。記憶體向 jemalloc 要，不向系統配置器要。以前用系統配置器時，macOS 上的記憶體在穩定負載下一直增長、不會回收（每次登入都跑腳本的寬頻情境（rradius-enterprise 的範例）持續登入 40 秒長到 4.7 GB），Linux 上的封包路徑也比較慢。
+- When RADIUS exceeds `max_auth_inflight` or `max_acct_inflight`, packets are dropped silently without an Access-Reject, and the device retransmits. Authentication and accounting limits are counted separately, so accounting does not take places from authentication.
+- The accounting scripts that **run** at the same time (RADIUS and TACACS+ both count) do not exceed the number of CPU cores minus 2, and at least 1; the rest wait in turn. The worker threads that remain are used for logins and other requests. A script that is waiting for the database gives up its place. The time spent waiting for a place does not count toward `max_execution_ms` and `query_timeout_ms`. So when accounting surges, mainly accounting itself becomes slower, and logins are not delayed by seconds.
+- Every memory allocation of the server takes at least one cache line (128 bytes on macOS aarch64, 64 bytes on other platforms), so that the data of different Lua VMs does not share a cache line and slow each other down: when not aligned, a compute-only accounting script on macOS drops from about 274 to 22 records per second. The cost is memory: a small allocation also takes a whole cache line (with the system allocator used before, up to about 3.8 times more than unaligned was measured on macOS). Memory is requested from jemalloc, not from the system allocator. With the system allocator used before, memory on macOS kept growing under steady load and was not reclaimed (the broadband scenario in which every login runs a script (an example in rradius-enterprise) grew to 4.7 GB in 40 seconds of continuous logins), and the packet path on Linux was also slower.
 
-  **自己編譯給 arm64 Linux 用時，** jemalloc 在建置時就固定支援的分頁大小，預設取建置機器的值。在 4 KiB 分頁的機器建置、拿到 16 或 64 KiB 分頁的核心（例如部分 ARM 伺服器和 Raspberry Pi 5 的核心）執行，伺服器會在啟動時失敗。建置時設 `JEMALLOC_SYS_WITH_LG_PAGE=16` 就能在 4、16、64 KiB 分頁上執行；專案的 Dockerfile 在 arm64 上已經這樣做。
+  **When you build it yourself for arm64 Linux,** jemalloc fixes the page sizes it supports at build time, and by default it takes the value of the build machine. If you build on a machine with 4 KiB pages and run on a kernel with 16 or 64 KiB pages (for example some ARM servers and the Raspberry Pi 5 kernel), the server fails at startup. Setting `JEMALLOC_SYS_WITH_LG_PAGE=16` at build time makes it run on 4, 16 and 64 KiB pages; the project's Dockerfile already does this on arm64.
 
-  下表是 `rradius-bench` 的量測（見[效能量測](#9-效能量測)），兩種版本交錯各跑 3 次，伺服器和工具在同一台機器。macOS 是 14 核心的 Apple M4 Max；Linux 是同一台機器上 Docker 的 Linux（aarch64、14 個 CPU、Debian bookworm）。純運算是 `acct-cpu.toml` 併發 64，登入是 `accept.toml` 的 PAP 併發 64，記憶體是 `accept.toml` 持續登入 60 秒：
+  The table below is measured with `rradius-bench` (see [Performance measurements](#9-performance-measurements)), with the two versions interleaved and run 3 times each, the server and the tool on the same machine. macOS is a 14-core Apple M4 Max; Linux is Docker's Linux on the same machine (aarch64, 14 CPUs, Debian bookworm). Compute-only is `acct-cpu.toml` at concurrency 64, login is PAP in `accept.toml` at concurrency 64, and memory is `accept.toml` with continuous logins for 60 seconds:
 
-  | | macOS，系統配置器 | macOS，jemalloc | Linux，系統配置器 | Linux，jemalloc |
+  | | macOS, system allocator | macOS, jemalloc | Linux, system allocator | Linux, jemalloc |
   | --- | --- | --- | --- | --- |
-  | 純運算（筆/秒） | 232–287 | 236–276 | 227–268 | 240–260 |
-  | 登入（次/秒） | 約 72,100 | 70,900–75,500 | 102,900–103,900 | 123,500–125,800 |
-  | 60 秒後的記憶體（規格的「Steady load」） | 827 MB，還在增長 | 197 MB，15 秒後持平 | 172–268 MB | 271–490 MB，上下跳動 |
+  | Compute-only (records/s) | 232–287 | 236–276 | 227–268 | 240–260 |
+  | Login (requests/s) | about 72,100 | 70,900–75,500 | 102,900–103,900 | 123,500–125,800 |
+  | Memory after 60 seconds (the specification's "Steady load") | 827 MB, still growing | 197 MB, flat after 15 seconds | 172–268 MB | 271–490 MB, fluctuating |
 
-  Linux 上 jemalloc 會多留一些記憶體（量到 0.27–0.49 GB），閒置的記憶體依 jemalloc 預設的時間逐步還給系統，量測時停止負載 5 秒後還沒還完，但不會一直增長。表中 Linux 的 jemalloc 是以 4 KiB 分頁建置的；改用 Dockerfile 的 64 KiB 建置後，同樣的量測記憶體停在 286–291 MB，登入 126,500 次/秒，純運算 257–265 筆/秒（各 2 次）。
+  On Linux, jemalloc keeps some more memory (0.27–0.49 GB measured), and idle memory is returned to the system gradually over jemalloc's default time; 5 seconds after the load stopped it had not all been returned, but it does not keep growing. The Linux jemalloc in the table was built with 4 KiB pages; with the Dockerfile's 64 KiB build, the same measurement kept memory at 286–291 MB, with logins at 126,500 requests/s and compute-only at 257–265 records/s (2 runs each).
 
-  `cargo test --release --test scenarios_test -- --ignored` 會跑「Steady load」：寬頻情境持續登入一分鐘，30 秒到 60 秒之間記憶體不能多出兩成加 16 MiB。它要一分鐘，也需要機器閒著，所以預設不跑。量測次數少，而且機器越跑越熱，同一列的數字會一輪比一輪低，所以只適合比較兩種版本，不能當成伺服器的能力。
-- **多個接收 socket 和綁核。** Linux 上每個 port 預設有和工作執行緒一樣多的接收迴圈（`[radius] sockets`，2.3 節）。另外可以選擇把工作執行緒綁在 CPU 上：
+  `cargo test --release --test scenarios_test -- --ignored` runs "Steady load": the broadband scenario logs in continuously for one minute, and between 30 and 60 seconds memory must not grow by more than twenty percent plus 16 MiB. It takes one minute and needs an idle machine, so it does not run by default. The number of runs is small, and the machine gets hotter as it runs, so the numbers in one row get lower from round to round; they are only suitable for comparing two versions, not as the capability of the server.
+- **Several receive sockets and CPU pinning.** On Linux each port has by default as many receive loops as worker threads (`[radius] sockets`, section 2.3). You can also pin the worker threads to CPUs:
 
   ```toml
   [runtime]
-  pin_threads = true   # 預設 false，只在 Linux
+  pin_threads = true   # default false, Linux only
   ```
 
-  每個工作執行緒只在一顆 CPU 上跑，依程序可用的 CPU 輪流分配，啟動時記錄 `pinned <N> runtime worker threads to CPUs [...]`。之後才建立的執行緒（處理資料庫查詢、密碼雜湊的執行緒）恢復程序原本可用的全部 CPU，不會被綁在某個工作執行緒的 CPU 上。綁定失敗時記錄警告，照常不綁地執行。**預設關閉，** 因為和其他程序共用 CPU 時（共用主機、有 CPU 配額的容器）綁核可能更慢；只有這台機器專門跑 rradius、CPU 不受限時才建議開。其他平台設 `true` 會啟動失敗，改了要重新啟動。
+  Each worker thread runs on only one CPU, assigned in turn from the CPUs available to the process, and the startup log records `pinned <N> runtime worker threads to CPUs [...]`. Threads created later (the threads that handle database queries and password hashing) get all the CPUs the process could originally use again, and are not pinned to the CPU of some worker thread. When pinning fails, a warning is logged and the server runs unpinned as usual. **It is off by default,** because when CPUs are shared with other processes (a shared host, a container with a CPU quota) pinning can be slower; turn it on only when this machine runs only rradius and its CPUs are not limited. Setting `true` on other platforms makes startup fail, and a change needs a restart.
 
-  下表是 2026-11-08 在同一台 Apple M4 Max 上 Docker 的 Linux（arm64）量的，伺服器限定 CPU 0–6、`rradius-bench` 限定 7–13（`taskset`），各 2 次。這是虛擬機裡的數字，綁核特別容易受虛擬機排程影響，實體機要另外量：
+  The table below was measured on 2026-11-08 on Docker's Linux (arm64) on the same Apple M4 Max, with the server pinned to CPUs 0–6 and `rradius-bench` pinned to 7–13 (`taskset`), 2 runs each. These are numbers inside a virtual machine, where pinning is especially sensitive to virtual machine scheduling; measure real hardware separately:
 
-  | 設定 | `accept.toml` PAP 併發 64 | 併發 1024 | 寬頻情境 PAP 併發 1024 |
+  | Setting | `accept.toml` PAP, concurrency 64 | Concurrency 1024 | Broadband scenario PAP, concurrency 1024 |
   | --- | --- | --- | --- |
-  | `sockets = 1`（以前） | 181,000–189,000 次/秒，p99 1.46–1.52 ms | 193,000–207,000 次/秒，每次約 1,744 個逾時 | 43,800–43,900 次/秒 |
-  | 預設（7 個 socket） | 235,000–244,000 次/秒，p99 1.41–1.47 ms | 222,000–238,000 次/秒，0–9 個逾時 | 46,600 次/秒 |
-  | 預設加 `pin_threads = true` | 314,000–315,000 次/秒，p99 0.61–0.62 ms | 298,000–299,000 次/秒，0–11 個逾時 | 59,500–60,700 次/秒 |
+  | `sockets = 1` (before) | 181,000–189,000 requests/s, p99 1.46–1.52 ms | 193,000–207,000 requests/s, about 1,744 timeouts per run | 43,800–43,900 requests/s |
+  | Default (7 sockets) | 235,000–244,000 requests/s, p99 1.41–1.47 ms | 222,000–238,000 requests/s, 0–9 timeouts | 46,600 requests/s |
+  | Default plus `pin_threads = true` | 314,000–315,000 requests/s, p99 0.61–0.62 ms | 298,000–299,000 requests/s, 0–11 timeouts | 59,500–60,700 requests/s |
 
-  只有一個 socket 時伺服器只用了 84 CPU 秒裡的 42–46 秒，限制在只有一個接收迴圈，不在 CPU。併發 1024 時一個 socket 每次約有 1,744 個請求沒有回應，推測是同時湧進的封包超過一個 socket 的接收緩衝區；分散到多個 socket 後幾乎沒有。macOS 不會把封包分給多個 socket（實測 1 個和 7 個都是每秒約 80,000 次），所以只能用 1。
+  With one socket the server used only 42–46 seconds of 84 CPU seconds; the limit was the single receive loop, not the CPU. At concurrency 1024, about 1,744 requests per run with one socket got no response; the likely cause is that packets arriving at the same moment exceed the receive buffer of one socket, and spread over several sockets there are almost none. macOS does not spread packets over several sockets (measured: 1 and 7 sockets both give about 80,000 requests per second), so only 1 can be used.
 
-- 腳本可用的函式（`get_attr`、`set_attr`、`sql_query`、`log` 等）每個 VM、每個腳本只建立一次。每個請求只建立自己的全域表，表裡的函式是幾個小的 Lua 函式，把這個請求的資料交給共用的函式。所以腳本出錯時的 stack traceback 會多一行 `rradius:` 開頭的位置，那是這些小函式，不是腳本的錯誤位置。以前每個請求都重建十幾個函式，在只回 `accept` 的腳本裡佔伺服器忙碌時間約 18%，現在約 3%。下表用 `rradius-bench` 和改動前交錯量測，macOS 14 核心的 Apple M4 Max，伺服器和工具在同一台：
+- The functions available to scripts (`get_attr`, `set_attr`, `sql_query`, `log` and so on) are created only once per VM and per script. Each request creates only its own global table, and the functions in that table are a few small Lua functions that pass the data of this request to the shared functions. So the stack traceback of a script error has one more location that starts with `rradius:`; those are these small functions, not the location of the script's error. Before, a dozen functions were rebuilt for every request, which took about 18% of the server's busy time in a script that only returns `accept`; now it is about 3%. The table below was measured with `rradius-bench` interleaved with the version before the change, on a 14-core Apple M4 Max with macOS, the server and the tool on the same machine:
 
-  | 量測（各 4 次） | 改動前 | 改動後 |
+  | Measurement (4 runs each) | Before | After |
   | --- | --- | --- |
-  | `accept.toml` PAP 併發 64 | 66,300–68,400 次/秒，p99 1.50–2.00 ms | 67,500–80,400 次/秒，p99 1.06–1.66 ms |
-  | `accept.toml` 每次登入用的伺服器 CPU | 118–124 µs | 79–96 µs |
-  | 寬頻情境 PAP 每秒 30,000 次，12 秒的伺服器 CPU | 56.4–63.5 秒，p50 0.18–0.21 ms | 43.6–48.3 秒，p50 0.13–0.15 ms |
-  | 寬頻情境 PAP 併發 64 | 41,900–47,300 次/秒 | 43,700–46,700 次/秒 |
+  | `accept.toml` PAP, concurrency 64 | 66,300–68,400 requests/s, p99 1.50–2.00 ms | 67,500–80,400 requests/s, p99 1.06–1.66 ms |
+  | `accept.toml` server CPU per login | 118–124 µs | 79–96 µs |
+  | Broadband scenario PAP at 30,000 requests per second, server CPU over 12 seconds | 56.4–63.5 seconds, p50 0.18–0.21 ms | 43.6–48.3 seconds, p50 0.13–0.15 ms |
+  | Broadband scenario PAP, concurrency 64 | 41,900–47,300 requests/s | 43,700–46,700 requests/s |
 
-  寬頻情境併發 64 時，吞吐在量測的起伏內沒有變：它每次登入都要查資料庫，量的是等待的時間，不是 CPU。只回 `accept` 的腳本，在 macOS 上剩下的時間大多花在送出回覆（同一個 UDP socket 的 `sendto` 約佔 60%）。機器越跑越熱，同一列的數字會一輪比一輪低，所以只適合比較兩種版本。
+  In the broadband scenario at concurrency 64, throughput did not change within the spread of the measurement: every login needs a database query, so it measures waiting time, not CPU. For a script that only returns `accept`, most of the remaining time on macOS is spent sending the reply (`sendto` on the same UDP socket takes about 60%). The machine gets hotter as it runs, so the numbers in one row get lower from round to round; they are only suitable for comparing two versions.
 
-  **Linux 上送出回覆不是瓶頸。** 同一台機器上 Docker 的 Linux（aarch64、14 個 CPU、Debian bookworm）跑同樣的 `accept.toml` PAP：
+  **On Linux, sending the reply is not the bottleneck.** The same `accept.toml` PAP run on Docker's Linux (aarch64, 14 CPUs, Debian bookworm) on the same machine:
 
-  | 壓測 | 吞吐 | p50 | 伺服器每個工作執行緒的 CPU | 整台機器閒置 |
+  | Load | Throughput | p50 | CPU of each server worker thread | Whole machine idle |
   | --- | --- | --- | --- | --- |
-  | 併發 64 | 約 202,000 次/秒 | 0.25 ms | 約 25% | 70% |
-  | 併發 256 | 約 227,000 次/秒 | 0.57 ms | 約 24% | 67% |
-  | 併發 1024，工具 4 或 8 個執行緒 | 約 229,000–230,000 次/秒 | 0.56 ms | 約 30% | 85–87% |
+  | Concurrency 64 | about 202,000 requests/s | 0.25 ms | about 25% | 70% |
+  | Concurrency 256 | about 227,000 requests/s | 0.57 ms | about 24% | 67% |
+  | Concurrency 1024, tool with 4 or 8 threads | about 229,000–230,000 requests/s | 0.56 ms | about 30% | 85–87% |
 
-  `perf` 取樣裡 `sendto` 只佔忙碌時間約 11%。macOS 的核心在同一個 socket 上一個一個送出，Linux 沒有這個情形，所以回覆仍從收到請求的那個 socket 送出。吞吐停在約 23 萬次時，沒有哪個執行緒用滿 CPU，各執行緒卻有 30–40% 的時間在等 CPU（`pidstat` 的 `%wait`），應該是 Docker Desktop 虛擬機的排程，所以這個環境量不出伺服器的上限，要在獨立的 Linux 機器上、壓測工具放另一台量。另外，認證紀錄由一個日誌執行緒寫出，每秒 23 萬次時它用了約 37% 的 CPU，負載再高約 2.5 倍就會成為限制；認證紀錄不受日誌等級影響，不需要時用 `[log]` 的 `auth = false` 關掉（見 [2.10 節](#210-記錄-log)）。
-- 額度分開不代表完全隔離：認證與計費仍共用 CPU 與資料庫，計費腳本還是越輕量越好。認證與授權腳本沒有這個限制，吃 CPU 的認證腳本仍會互相影響。下表用 `rradius-bench` 量測（見[效能量測](#9-效能量測)）：本機 14 核心的 macOS、loopback，各 3 次，登入以每秒 100 次送入：
+  In `perf` samples, `sendto` takes only about 11% of the busy time. The macOS kernel sends one at a time on the same socket and Linux does not have this, so the reply is still sent from the socket that received the request. When throughput stopped at about 230,000 requests per second, no thread had used up its CPU, yet each thread spent 30–40% of its time waiting for a CPU (`%wait` in `pidstat`), which is probably the scheduling of the Docker Desktop virtual machine; so this environment cannot measure the upper limit of the server, and that needs a separate Linux machine with the load tool on another machine. Also, the authentication record is written by one log thread, which used about 37% of a CPU at 230,000 requests per second and becomes the limit at about 2.5 times more load; the authentication record does not depend on the log level, and when you do not need it, turn it off with `auth = false` in `[log]` (see [section 2.10](#210-logging-log)).
+- Separate limits do not mean complete isolation: authentication and accounting still share CPU and the database, and accounting scripts are still better when they are light. Authentication and authorization scripts do not have this limit, and an authentication script that uses a lot of CPU still affects the others. The table below was measured with `rradius-bench` (see [Performance measurements](#9-performance-measurements)): a local 14-core macOS machine over loopback, 3 runs each, with logins sent at 100 per second:
 
-  | 計費負載 | 同時的請求 | 計費吞吐 | 登入 p50 | 登入最大值 |
+  | Accounting load | Concurrent requests | Accounting throughput | Login p50 | Login maximum |
   | --- | --- | --- | --- | --- |
-  | 無 | 0 | 無 | 0.36–0.48 ms | 1.8–3.5 ms |
-  | 每次寫一筆資料庫 | 256 | 40,900–41,500 次/秒 | 0.95–1.02 ms | 9.3–10.5 ms |
-  | 每次寫一筆資料庫 | 4096 | 40,900–41,700 次/秒 | 1.13–1.24 ms | 22–43 ms |
-  | 每次約 30 ms 的純運算 | 256 | 283–300 次/秒 | 0.19–0.28 ms | 486–667 ms |
-  | 每次約 30 ms 的純運算 | 4096 | 280–289 次/秒 | 0.20–0.31 ms | 593–660 ms |
+  | None | 0 | none | 0.36–0.48 ms | 1.8–3.5 ms |
+  | One database write each | 256 | 40,900–41,500 requests/s | 0.95–1.02 ms | 9.3–10.5 ms |
+  | One database write each | 4096 | 40,900–41,700 requests/s | 1.13–1.24 ms | 22–43 ms |
+  | About 30 ms of compute-only work each | 256 | 283–300 requests/s | 0.19–0.28 ms | 486–667 ms |
+  | About 30 ms of compute-only work each | 4096 | 280–289 requests/s | 0.20–0.31 ms | 593–660 ms |
 
-  寫資料庫這兩列是同時寫入合併提交（見下一項）之後重量的；以前每次寫入各自提交時，計費吞吐約 21,000 次/秒，登入 p50 0.41–0.76 ms、最大值 7.1–17 ms。現在計費多了一倍，伺服器也比較忙，所以登入稍慢。純運算這兩列在 6 次中有 5 次出現 `rate_not_met` 警告，所以登入的數字只能當參考。併發 4096 在 3 次中有 2 次丟掉 1 個請求（`server_discarded_overload`），那個請求逾時，所以這兩次的結束碼是 2。
+  The two database-write rows were measured again after concurrent writes were merged into one commit (see the next item); when every write was committed on its own, accounting throughput was about 21,000 requests/s, login p50 0.41–0.76 ms and maximum 7.1–17 ms. Now accounting does twice as much and the server is busier, so logins are slightly slower. In the two compute-only rows, a `rate_not_met` warning appeared in 5 of 6 runs, so the login numbers are for reference only. At concurrency 4096, 1 request was dropped in 2 of 3 runs (`server_discarded_overload`), and that request timed out, so the exit code of those two runs was 2.
 
-- **同時的寫入會一起提交。** 各個請求同時等著的 `sql_execute`，只要是不回傳資料列的 INSERT、UPDATE、DELETE 或 REPLACE，就會合成一批，在一個交易、一筆 Raft 紀錄裡提交，每批最多 256 個，同時最多 4 批在路上。資料庫套用寫入只用一個執行緒，每次提交都有固定成本，所以各自提交時，計費寫入在上表的 macOS 機器上約每秒 21,000 次就到頂，合併後約 41,000 次（Linux 上高得多，見下一項），併發 256 時 p99 從 47–74 ms 降到 12–15 ms；每秒 1,000 次的輕負載下延遲和以前相同（p50 0.18 ms）。每個呼叫照樣拿到自己的受影響列數。同一批有一個陳述式失敗時，這批會對半拆開、各自再提交，直到出錯的那個單獨提交，所以只有它的呼叫失敗，次數記在 `rradius_db_split_batches_total`。這個數字一直增加，代表有陳述式常常失敗（例如重送的計費撞到 UNIQUE），可以改成 `INSERT OR IGNORE` 這類不會失敗的寫法。其他陳述式（帶 `RETURNING`、`SELECT`、`COMMIT`、`ROLLBACK` 等）照舊各自提交。叢集無法使用時，整批的呼叫都回同一個錯誤，不會再試。呼叫已經逾時的寫入，還沒交給叢集的就不寫入，因為呼叫端已經被告知失敗，計費請求也可能已經進了暫存；**已經交給叢集的，會等到叢集回覆結果才回報**（見 2.2 節〈資料庫不能用時〉）。代價是**同一批裡很慢的陳述式（例如大量 DELETE）會讓其他寫入一起等**，這種工作要分小批做（見[使用手冊第 18 章](manual.zh-TW/18-operations.md#清除舊資料)）。一個腳本的多個 `sql_execute` 不會在同一批，因為腳本會等每次寫入完成。
-- **Linux 上的計費寫入上限。** 2026-11-08 在同一台 Apple M4 Max 上 Docker 的 Linux（arm64）量測，伺服器限定 CPU 0–6、`rradius-bench` 限定 7–13，`acct-sql.toml`（每筆 Accounting-Start 寫一次資料庫），各兩次：
+- **Concurrent writes are committed together.** `sql_execute` calls that wait at the same time in different requests are merged into one batch, if they are INSERT, UPDATE, DELETE or REPLACE statements that return no rows, and are committed in one transaction and one Raft record, up to 256 per batch and up to 4 batches in flight at the same time. The database applies writes with only one thread, and every commit has a fixed cost, so when each was committed on its own, accounting writes topped out at about 21,000 per second on the macOS machine of the table above, and after merging at about 41,000 (much higher on Linux, see the next item); at concurrency 256, p99 fell from 47–74 ms to 12–15 ms; under a light load of 1,000 per second the latency is the same as before (p50 0.18 ms). Each call still gets its own number of affected rows. When one statement in a batch fails, the batch is split in half and each half is committed again, until the one that fails is committed alone, so only its call fails; the number of times is recorded in `rradius_db_split_batches_total`. If this number keeps rising, some statements fail often (for example a retransmitted accounting request hits a UNIQUE), and you can change them to a form that does not fail, such as `INSERT OR IGNORE`. Other statements (with `RETURNING`, `SELECT`, `COMMIT`, `ROLLBACK` and so on) are still committed one by one as before. When the cluster is unavailable, all calls of the batch return the same error and are not retried. For a write whose call has already timed out, what has not yet been handed to the cluster is not written, because the caller has already been told that it failed and the accounting request may already have gone into the spool; **what has already been handed to the cluster is reported only after the cluster returns the result** (see section 2.2, "When the database is unavailable"). The cost is that **a very slow statement in a batch (for example a large DELETE) makes the other writes in the same batch wait with it**, so such work should be done in small batches (see [chapter 18 of the user manual](manual/18-operations.md#purging-old-data)). Several `sql_execute` calls of one script are not in the same batch, because the script waits for each write to finish.
+- **The accounting write limit on Linux.** Measured on 2026-11-08 on Docker's Linux (arm64) on the same Apple M4 Max, with the server pinned to CPUs 0–6 and `rradius-bench` pinned to 7–13, `acct-sql.toml` (one database write for each Accounting-Start), two runs each:
 
-  | 情況 | 併發 256（次/秒） | 併發 1024（次/秒） |
+  | Case | Concurrency 256 (requests/s) | Concurrency 1024 (requests/s) |
   | --- | --- | --- |
-  | 資料目錄在 Docker Desktop 從 Mac 分享的資料夾 | 91,800–92,200，p99 13 ms | 88,600–89,700，p99 22 ms |
-  | 資料目錄在容器自己的磁碟 | 95,700–108,200，p99 6–8 ms | 82,700–94,400，p99 15–19 ms |
-  | 同上，計費腳本同時執行數從 5 改成 7（實驗版本） | 115,200 | 111,300–112,800 |
+  | Data directory in a folder that Docker Desktop shares from the Mac | 91,800–92,200, p99 13 ms | 88,600–89,700, p99 22 ms |
+  | Data directory on the container's own disk | 95,700–108,200, p99 6–8 ms | 82,700–94,400, p99 15–19 ms |
+  | Same, with the number of accounting scripts running at the same time changed from 5 to 7 (experimental build) | 115,200 | 111,300–112,800 |
 
-  - **每批上限和同時的批次不是限制：** 實驗版本把同時的批次從 4 改成 16、每批從 256 改成 1,024，四種組合都在每秒 74,000–88,000 次之間，沒有差別。
-  - **資料放在分享資料夾時，** 唯一的 SQLite 寫入執行緒有一大段時間花在經過 FUSE 寫 WAL，所以比放在容器磁碟慢、p99 約加倍。正式部署的資料目錄應該放在本機磁碟。
-  - **計費腳本的同時執行數（CPU 數減 2，見上面）在高併發時最多影響約兩成，** 改成和 VM 一樣多以後就沒有差別。這個限制是刻意留工作執行緒給登入的，所以沒有調整。
-  - **上限不在叢集的提交流程。** 2026-11-15 在同一個環境逐層量測：同樣的 pragma 下，純 SQLite 循序鍵約 180 萬列/秒，隨機的 TEXT 主鍵約 15 萬列/秒（每列幾乎弄髒一個 4 KB 頁）；單獨的 hiqlite 測試程式寫入約 50–93 萬列/秒；rradius 的請求路徑不寫資料庫時約 36 萬次/秒。所以 Raft 提交不是限制。
-  - **加上資料庫寫入後約 11 萬次/秒，是延遲受限，不是 CPU 受限。** 併發 256 時每個請求約 2.2 ms：等計費位置約 0.2 ms，資料庫呼叫約 1.3 ms（交易約 0.5、佇列約 0.3、結果送回約 0.5），拿回位置約 0.2 ms；平均每批只有約 22 列，7 顆 CPU 只用了約 2 顆。伺服器限定 2、4、7、10 顆 CPU 時依序是 6.8 萬、9.1 萬、11 萬、12.6 萬次/秒。併發 1024 以上，等計費位置佔掉大半延遲。
-  - **資料表的主鍵會影響上限。** 計費表若用隨機的字串當主鍵，單一寫入執行緒的上限約每秒 15 萬列；改成遞增的整數主鍵，伺服器端仍只到約 12 萬，所以這不是目前的瓶頸，但要更高的寫入率時主鍵要選遞增的。
-  - 這些是 OrbStack VM 裡的數字，跨 CPU 的喚醒成本在 VM 裡偏高，實體機可能不同。一般的負載遠低於這個上限：100 萬個上線中的 session 每 5 分鐘回報一次，大約是每秒 3,300 筆計費。
-- TACACS+ 封包的序號是偶數或 255 時，連線會直接關閉且不回覆（RFC 8907 第 4.1 節）。
-- TACACS+ 封包解密後格式不對（通常是共用密碼不同）時，回 ERROR 後關閉連線，記錄 `a body did not decode, so the shared secret may be wrong`，並計入 `rradius_tacacs_malformed_total`。依 RFC 8907 第 10.5.2 節，這條連線不再接受新的請求；設備會重新連線。序號不符這類和密碼無關的錯誤只回 ERROR，連線保持開啟。
-- **single-connection：** 設備在連線的第一個封包設了 single-connection 旗標時，回覆也設這個旗標，表示接受在同一條連線上處理多個 session（RFC 8907 第 4.3 節），設備就不必每次重新連線。沒有設旗標的設備也可以沿用連線，rradius 不會在 session 結束時主動關閉。
-- TACACS+ 超過 `max_connections` 時，新連線會被立刻關閉。同一個來源位址同時開著的連線超過 `max_connections_per_source`（預設 64）時，它的新連線也會被立刻關閉，而且不佔 `max_connections` 的名額，所以網段內一台主機開滿連線時，其他主機仍連得上；來源位址以正規形式比較，IPv4-mapped IPv6 位址與它對應的 IPv4 位址算同一個來源，IPv6 不依前綴合併，每個位址各算一個來源。一個位址後面藏很多設備（NAT、跳板）時，要把 `max_connections_per_source` 調高到比它們同時開的連線數多。設定內用戶端的閒置連線也佔額度，超過 `idle_timeout_ms` 沒有收到完整封包，或回應 10 秒寫不出去，就會關閉並釋放。腳本執行的時間不算閒置。長時間不送封包的設備要重新連線，通常不影響服務。
-- 丟棄或關閉時，每個連接埠最多每秒記錄一行，例如 `RADIUS accounting overloaded: discarded 37 packets`。
+  - **The limit per batch and the number of batches at the same time are not the limit:** an experimental build changed the batches at the same time from 4 to 16 and each batch from 256 to 1,024, and all four combinations were between 74,000 and 88,000 requests per second, with no difference.
+  - **When the data is in a shared folder,** the only SQLite write thread spends a large part of its time writing the WAL through FUSE, so it is slower than on the container's disk and p99 is about double. In a production deployment the data directory should be on a local disk.
+  - **The number of accounting scripts running at the same time (CPUs minus 2, see above) affects the result by up to about twenty percent at high concurrency,** and with as many as VMs there is no difference. This limit deliberately leaves worker threads for logins, so it was not changed.
+  - **The limit is not in the cluster's commit flow.** Measured layer by layer in the same environment on 2026-11-15: with the same pragmas, plain SQLite with a sequential key does about 1.8 million rows/s and with a random TEXT primary key about 150,000 rows/s (almost every row dirties one 4 KB page); a standalone hiqlite test program writes about 500,000–930,000 rows/s; and when the request path of rradius does not write to the database, about 360,000 requests/s. So the Raft commit is not the limit.
+  - **With database writes added, about 110,000 requests/s is limited by latency, not by CPU.** At concurrency 256 each request takes about 2.2 ms: waiting for an accounting place about 0.2 ms, the database call about 1.3 ms (transaction about 0.5, queue about 0.3, result sent back about 0.5), and getting the place back about 0.2 ms; a batch averages only about 22 rows, and of 7 CPUs only about 2 were used. With the server limited to 2, 4, 7 and 10 CPUs the results were 68,000, 91,000, 110,000 and 126,000 requests per second in that order. At concurrency 1024 and above, waiting for an accounting place takes most of the latency.
+  - **The primary key of the table affects the limit.** If the accounting table uses a random string as its primary key, the limit of the single write thread is about 150,000 rows per second; with an increasing integer primary key the server side still reaches only about 120,000, so this is not the bottleneck today, but when you need a higher write rate, choose an increasing primary key.
+  - These are numbers inside an OrbStack VM, where the cost of waking a thread on another CPU is high, and real hardware may differ. Normal loads are far below this limit: 1 million online sessions reporting every 5 minutes is about 3,300 accounting requests per second.
+- When the sequence number of a TACACS+ packet is even or 255, the connection is closed directly with no reply (RFC 8907 section 4.1).
+- When a TACACS+ packet does not have the right format after decryption (usually because the shared secret differs), the server replies with ERROR and then closes the connection, logs `a body did not decode, so the shared secret may be wrong`, and counts it in `rradius_tacacs_malformed_total`. Per RFC 8907 section 10.5.2, this connection accepts no new requests; the device reconnects. An error that has nothing to do with the secret, such as a mismatched sequence number, gets only an ERROR reply and the connection stays open.
+- **single-connection:** when the device sets the single-connection flag on the first packet of the connection, the reply also sets this flag, meaning that the server accepts several sessions on the same connection (RFC 8907 section 4.3), so the device does not have to reconnect each time. A device that did not set the flag can also keep using the connection, and rradius does not close it by itself when a session ends.
+- When TACACS+ exceeds `max_connections`, the new connection is closed immediately. When connections open at the same time from one source address exceed `max_connections_per_source` (default 64), its new connections are also closed immediately and do not take places from `max_connections`, so when one host in a network opens its full number of connections, other hosts can still connect; source addresses are compared in canonical form, an IPv4-mapped IPv6 address and the IPv4 address it maps to count as the same source, IPv6 is not merged by prefix, and each address counts as one source. When many devices hide behind one address (NAT, a jump host), raise `max_connections_per_source` above the number of connections they open at the same time. An idle connection from a client in the configuration also takes quota; it is closed and released when no complete packet arrives within `idle_timeout_ms`, or when a response cannot be written within 10 seconds. The time a script runs does not count as idle. A device that does not send packets for a long time has to reconnect, which usually does not affect service.
+- When packets are dropped or connections closed, at most one line per port per second is logged, for example `RADIUS accounting overloaded: discarded 37 packets`.
 
-這三個設定都必須大於 0。預設值是估計值。適合的值大約是「吞吐 × 設備的重送逾時」，再大也沒有幫助，因為設備已經放棄等待。
+These three settings must be greater than 0. The defaults are estimates. A suitable value is roughly "throughput × the retransmission timeout of the device"; a larger value does not help, because the device has already stopped waiting.
 
-### 2.5 資料表 migration
+### 2.5 Table migrations
 
-rradius 本身沒有資料表。`sql` 處理器和腳本用到的資料表，可以寫成 SQL 檔放在 `[cluster].migrations_dir`，由伺服器在啟動時套用到整個叢集。
+rradius itself has no tables. The tables used by the `sql` handler and scripts can be written as SQL files and placed in `[cluster].migrations_dir`, and the server applies them to the whole cluster at startup.
 
 ```toml
 [cluster]
-migrations_dir = "migrations"   # 以設定檔所在目錄解析
-migrations_wait_ms = 60000      # 等待叢集就緒的時限，預設 60000，必須大於 0
+migrations_dir = "migrations"   # resolved against the directory of the configuration file
+migrations_wait_ms = 60000      # time limit for waiting for the cluster to be ready, default 60000, must be greater than 0
 ```
 
 ```
@@ -700,184 +700,184 @@ migrations/
   2_reply.sql
 ```
 
-**檔名規則：** `<編號>_<名稱>.sql`，編號從 1 開始、連續不重複。目錄裡不能有其他檔案，也不能有子目錄。
+**File name rule:** `<number>_<name>.sql`, with numbers that start at 1, are consecutive and do not repeat. The directory must not contain other files or subdirectories.
 
-**套用時機：** 開始處理 RADIUS／TACACS+ 請求之前。流程是先檢查目錄和檔名（這時還沒有啟動節點，所以錯誤會立刻顯示），等待叢集就緒，套用尚未套用的檔案，再等本機副本追上。所以腳本和處理器可以假設資料表已存在。沒有設定 `migrations_dir` 時，不會執行這些步驟，也不會多等待；不過不論有沒有設定，節點第一次啟動時都要等到加入叢集才會開始服務。
+**When they are applied:** before RADIUS/TACACS+ requests are handled. The flow is to check the directory and file names first (the node is not started yet, so errors show immediately), wait for the cluster to be ready, apply the files that are not applied yet, and then wait for the local replica to catch up. So scripts and handlers can assume that the tables exist. When `migrations_dir` is not set, these steps are not run and there is no extra waiting; however, whether or not it is set, a node that starts for the first time has to wait until it joins the cluster before it begins to serve.
 
-**重啟：** 已套用的檔案會跳過，只執行新增的檔案。紀錄存放在 `_migrations` 表，每個檔案一筆，包含內容的 SHA-256。
+**Restart:** files that are already applied are skipped and only new files are run. The record is kept in the `_migrations` table, one row per file, including the SHA-256 of the content.
 
-**單一檔案不能超過 2,000,000 位元組：** migration 檔是放資料表的結構（`CREATE TABLE`、`ALTER TABLE`、索引）和少量的初始資料，一般的檔案只有幾 KB，不會遇到這個限制。啟動時待套用的檔案會依編號分批送給叢集，每批合計不超過 2,000,000 位元組（一批是叢集的一筆寫入，hiqlite 的日誌一個項目最多 2,097,118 位元組，超過時節點的資料庫會 panic；2026-11-18 實測：2,090,000 位元組可以，2,100,000 會 panic，上限留一點給檔名和雜湊），所以很多檔案加起來超過也沒關係。**但一個檔案本身超過 2,000,000 位元組沒辦法拆**：節點以狀態碼 2 結束，訊息點名那個檔案和大小，什麼都不會送到叢集。那樣的檔案通常是把大量資料（幾萬列以上）寫成 `INSERT`：把檔案拆開，或不要放進 migration，用程式或管理指令寫入。
+**A single file must not exceed 2,000,000 bytes:** a migration file holds the structure of tables (`CREATE TABLE`, `ALTER TABLE`, indexes) and a small amount of initial data; a normal file is only a few KB and never meets this limit. At startup, the files that are waiting to be applied are sent to the cluster in batches in order of number, with a total of no more than 2,000,000 bytes per batch (a batch is one write of the cluster, and one entry of the hiqlite log is at most 2,097,118 bytes, and a larger one makes the database of the node panic; measured on 2026-11-18: 2,090,000 bytes works and 2,100,000 panics, and the limit leaves a little room for the file name and hash), so it does not matter if many files add up to more. **But a single file larger than 2,000,000 bytes cannot be split:** the node exits with status 2, the message names that file and its size, and nothing is sent to the cluster. Such a file is usually a large amount of data (tens of thousands of rows or more) written as `INSERT`: split the file, or do not put it in a migration and write it with a program or an admin command.
 
-**不能修改已套用的檔案：** 修改內容或改名都會讓啟動失敗。要變更結構時，請新增一個檔案。不支援回滾。
+**Applied files cannot be changed:** changing the content or renaming makes startup fail. To change the structure, add a new file. Rollback is not supported.
 
-**每個檔案一個交易：** 檔案出錯時，那個檔案的變更全部復原，也不會留下紀錄；它之前的檔案維持已套用。修正該檔案後重啟即可。
+**One transaction per file:** when a file fails, all changes of that file are rolled back and no record is left; the files before it stay applied. Fix that file and restart.
 
-**多節點：**
+**Multiple nodes:**
 
-- 每個節點的目錄內容必須一致。新增檔案時，**先更新所有節點的檔案，再逐台重啟**。
-- 節點的檔案比已套用的少時（還沒拿到新檔案），會記錄一行警告並照常啟動。
-- 不要讓內容不同的目錄同時啟動。hiqlite 遇到不一致會在寫入執行緒中 panic，該節點的寫入會全部失敗。rradius 啟動時會先檢查，但同時啟動時無法完全排除。
+- The directory content of every node must be the same. When you add a file, **update the files on all nodes first, then restart them one by one**.
+- When a node has fewer files than were applied (it has not yet got the new files), it logs one warning line and starts as usual.
+- Do not start nodes with different directory contents at the same time. When hiqlite meets an inconsistency, it panics in the write thread, and all writes of that node fail. rradius checks at startup, but it cannot exclude this completely when nodes start at the same time.
 
-**狀態碼：**
+**Status codes:**
 
-| 狀態碼 | 原因 |
+| Status code | Cause |
 | --- | --- |
-| 2 | 目錄不存在、檔名或編號錯誤、已套用的檔案被修改或改名、單一待套用的檔案超過 2,000,000 位元組、檔案執行失敗；訊息會指出檔案，只有執行失敗後又讀不到 `_migrations` 時無法指出，這時訊息會說明並保留 SQL 錯誤 |
-| 1 | 叢集在 `migrations_wait_ms` 內沒有就緒（例如多數節點尚未啟動）、套用時遇到叢集錯誤，或本機副本沒有追上 |
+| 2 | The directory does not exist, a file name or number is wrong, an applied file was changed or renamed, a single pending file exceeds 2,000,000 bytes, or a file failed to run; the message names the file, except when `_migrations` cannot be read after a failed run, where the message explains this and keeps the SQL error |
+| 1 | The cluster was not ready within `migrations_wait_ms` (for example most nodes are not started yet), a cluster error occurred while applying, or the local replica did not catch up |
 
-`migrations_wait_ms` 分別限制三段時間：連上叢集、套用檔案、本機副本追上，每段各自計時。連上叢集之後讀「已套用的 migration」時，叢集剛好在選舉（沒有 leader）不算失敗：節點每 200 ms 重讀一次，等到 leader 回答，上限仍是 `migrations_wait_ms`，到期才以狀態碼 1 結束並帶最後一次的錯誤。**它必須大於最長的 SQL 檔執行時間**：不只是本節點，其他節點在跑慢的檔案時，本節點一樣要等；重新加入的節點也要花差不多的時間重播。逾時會以狀態碼 1 結束，已送出的檔案仍會在叢集中執行完，調高後重啟即可。大型資料變更前，請先調高這個值。
+`migrations_wait_ms` limits three stages separately: connecting to the cluster, applying the files, and the local replica catching up, and each stage is timed on its own. After connecting to the cluster, when "applied migrations" is read while the cluster is in the middle of an election (no leader), this is not a failure: the node re-reads every 200 ms until a leader answers, and the limit is still `migrations_wait_ms`; only when it expires does the node exit with status 1 and the last error. **It must be greater than the run time of the longest SQL file:** not only on this node; when other nodes run a slow file, this node also has to wait, and a node that rejoins needs about the same time to replay it. A timeout ends with status 1, and files that were already sent still finish running in the cluster; raise the value and restart. Raise this value before a large data change.
 
-**單一檔案超過 30 秒：** 叢集節點對一次寫入只等 30 秒，不論 `migrations_wait_ms` 設多大，所以單一檔案跑超過 30 秒時，第一次啟動一定會在約 30 秒後以狀態碼 1 結束，訊息是 `local client write timed out`，並說明這個限制。檔案已經送進叢集，會繼續跑完，不會因為這次結束而取消；等它跑完後再啟動一次、並把 `migrations_wait_ms` 設得比檔案耗時長，就會看到它已套用、正常服務。2026-11-15 在 Apple M4 Max 上量：4 億列的 `CREATE TABLE ... AS WITH RECURSIVE` 第一次啟動約 55 秒後結束，調高 `migrations_wait_ms` 到 180000 後第二次啟動約 116 秒（當時機器有其他負載）就服務；1.2 億列約 20 秒內套用完，沒有逾時。單節點重啟時節點還要重放那個寫入，所以第二次啟動花的時間和檔案耗時相近。能拆成幾個較小的檔案時，拆開比較不會碰到這個限制。
+**A single file that takes more than 30 seconds:** a cluster node waits only 30 seconds for one write, no matter how large `migrations_wait_ms` is, so when a single file runs longer than 30 seconds, the first start always exits with status 1 after about 30 seconds, with the message `local client write timed out` and an explanation of this limit. The file has already been sent to the cluster and keeps running to the end; it is not cancelled because of this exit. After it finishes, start again with `migrations_wait_ms` set longer than the file takes, and you will see that it is already applied and the server serves normally. Measured on 2026-11-15 on an Apple M4 Max: for a `CREATE TABLE ... AS WITH RECURSIVE` of 400 million rows, the first start exited after about 55 seconds, and after raising `migrations_wait_ms` to 180000 the second start served after about 116 seconds (the machine had other load at that time); 120 million rows were applied in about 20 seconds with no timeout. When a single node restarts, it also has to replay that write, so the second start takes about as long as the file. When the file can be split into several smaller files, splitting is less likely to meet this limit.
 
-已經手動建立的資料表，可以放進 `1_*.sql`，用 `CREATE TABLE IF NOT EXISTS` 寫法納入管理。
+A table that was already created by hand can be put into `1_*.sql` and brought under management by writing it with `CREATE TABLE IF NOT EXISTS`.
 
-### 2.6 RADIUS 安全設定
+### 2.6 RADIUS security settings
 
 ```toml
 [radius]
-require_message_authenticator = "yes"  # 預設 yes
-limit_proxy_state = "yes"              # 預設 yes
-status_server = true                   # 預設 true
+require_message_authenticator = "yes"  # default yes
+limit_proxy_state = "yes"              # default yes
+status_server = true                   # default true
 
 [[radius.clients]]
 address = "10.0.0.9"
 secret_file = "old-switch.secret"
-require_message_authenticator = "no"   # 覆寫 [radius] 的值
+require_message_authenticator = "no"   # overrides the value of [radius]
 ```
 
-**短共用密碼：** RADIUS 或 TACACS+ client的密碼少於 16 octets 時，啟動、SIGHUP 和 `check` 都會記錄警告（`has a shared secret shorter than 16 octets`），但不會拒絕啟動。16 是 RFC 8907 第 10.5.1 節和 RFC 2865 建議的下限；以前的門檻是 12 octets，所以 13–15 octets 的密碼升級後開始出現警告。建議至少 24 個隨機 octets。TACACS+ 的封包內容完全靠這個密碼保護。
+**Short shared secrets:** when the secret of a RADIUS or TACACS+ client is shorter than 16 octets, startup, SIGHUP and `check` all log a warning (`has a shared secret shorter than 16 octets`), but startup is not refused. 16 is the lower limit that RFC 8907 section 10.5.1 and RFC 2865 recommend; the earlier threshold was 12 octets, so secrets of 13–15 octets start to show the warning after the upgrade. We recommend at least 24 random octets. The content of TACACS+ packets is protected only by this secret.
 
-**範例附的密碼：** RADIUS 或 TACACS+ client 的共用密碼，以及叢集的 `secret_raft`、`secret_api`，含 `change-me`（不分大小寫）時，啟動、SIGHUP 和 `check` 都會記錄警告（`has the public shared secret shipped with the examples`，叢集的是 `cluster.secret_raft is the public value shipped with the examples`），指名 client 或設定名稱，不含密碼，也不會拒絕啟動。這些是範例附的公開值，任何人都知道；換成隨機值（例如 `openssl rand -hex 32`）警告就消失。照著範例或手冊的教學環境會看到這個警告，是預期的。
+**Secrets shipped with the examples:** when the shared secret of a RADIUS or TACACS+ client, or the cluster's `secret_raft` or `secret_api`, contains `change-me` (case-insensitive), startup, SIGHUP and `check` all log a warning (`has the public shared secret shipped with the examples`; for the cluster it is `cluster.secret_raft is the public value shipped with the examples`) that names the client or the setting, does not contain the secret, and does not refuse startup. These are public values shipped with the examples that everyone knows; replace them with random values (for example `openssl rand -hex 32`) and the warning goes away. A tutorial environment that follows the examples or the manual shows this warning, which is expected.
 
-**升級注意：預設會丟棄不帶 Message-Authenticator 的 Access-Request。** 不會送這個屬性的舊設備，升級後要設定 `no` 或 `auto`，否則認證會失敗，記錄中會出現 `lacking a Message-Authenticator`。
+**Upgrade note: by default an Access-Request without Message-Authenticator is dropped.** An old device that does not send this attribute must be set to `no` or `auto` after the upgrade, or authentication fails and the log shows `lacking a Message-Authenticator`.
 
-| 設定 | `yes` | `no` | `auto` |
+| Setting | `yes` | `no` | `auto` |
 | --- | --- | --- | --- |
-| `require_message_authenticator` | 沒帶就丟棄 | 允許沒帶，再看 `limit_proxy_state` | 由第一個請求決定：有帶就變 `yes`，沒帶就變 `no`，變成 `no` 時記一行警告 |
-| `limit_proxy_state` | 帶 Proxy-State 但沒帶 Message-Authenticator 就丟棄 | 允許，**有 BlastRADIUS 風險** | 由第一個請求決定：帶 Proxy-State 但沒帶 Message-Authenticator 就變 `no`（記一行警告），否則變 `yes` |
+| `require_message_authenticator` | Drop when absent | Allow absent, then look at `limit_proxy_state` | Decided by the first request: it becomes `yes` if the attribute is present and `no` if absent, and one warning line is logged when it becomes `no` |
+| `limit_proxy_state` | Drop when Proxy-State is present but Message-Authenticator is absent | Allow, **with BlastRADIUS risk** | Decided by the first request: it becomes `no` (one warning line is logged) if Proxy-State is present but Message-Authenticator is absent, and `yes` otherwise |
 
-- `limit_proxy_state` 只在不要求 Message-Authenticator 時才有作用。
-- `auto` 只能用在單一主機的 client，用在網段時啟動失敗。學到的值在重啟後重新學習。
-- `auto` 的第一個封包如果沒帶 Message-Authenticator，來源就無法驗證，攻擊者可以偽造這個封包把 client 降級。所以學成 `no` 的那一刻，伺服器對該來源記一行警告（`the first request had no Message-Authenticator, so ... (auto) became no`，指名 client 與來源位址，每個來源每個行程一次）。可以的話請明確設定 `yes`，不行就明確設 `no`。
-- 這些設定是緩解措施。設成 `no` 或 `auto` 的 client 仍有風險，根本解法是 RadSec（RADIUS over TLS，需要 rradius-enterprise）；用不了 RadSec 的設備跨不受信任的網路時，請用 VPN。
+- `limit_proxy_state` takes effect only when Message-Authenticator is not required.
+- `auto` can be used only for a client that is a single host; for a network, startup fails. The learned value is learned again after a restart.
+- If the first packet of `auto` has no Message-Authenticator, the source cannot be verified, and an attacker can forge this packet to downgrade the client. So at the moment it is learned as `no`, the server logs one warning line for that source (`the first request had no Message-Authenticator, so ... (auto) became no`, naming the client and the source address, once per source per process). If you can, set `yes` explicitly, and if not, set `no` explicitly.
+- These settings are mitigations. A client set to `no` or `auto` is still at risk, and the real fix is RadSec (RADIUS over TLS, which needs rradius-enterprise); for a device that cannot use RadSec across an untrusted network, use a VPN.
 
-**回應：** Access-Accept 和 Access-Reject 一律帶 Message-Authenticator，放在第一個屬性。Access 和 Accounting 的回應會依序複製請求中的 Proxy-State。回應超過 4096 octets 時改回 Access-Reject 並記錄（EAP 的 Access-Challenge 也一樣，會結束這段對話），連 Access-Reject 都放不下時不回應。
+**Response:** Access-Accept and Access-Reject always carry Message-Authenticator, as the first attribute. Access and Accounting responses copy Proxy-State from the request in order. When a response exceeds 4096 octets, an Access-Reject is sent instead and the event is logged (the same for an EAP Access-Challenge, which ends that conversation), and when even the Access-Reject does not fit, no response is sent.
 
-**Status-Server**（RFC 5997）：供負載平衡器做健康檢查，不必建立測試帳號。不會執行腳本，也不經過重送偵測。認證埠回 Access-Accept，計費埠回 Accounting-Response。請求一定要帶有效的 Message-Authenticator，不受上面的設定影響。達到同時處理上限時不回應。
+**Status-Server** (RFC 5997): for health checks by a load balancer, without creating a test account. It does not run scripts and does not go through retransmission detection. The authentication port returns Access-Accept and the accounting port returns Accounting-Response. The request must carry a valid Message-Authenticator, regardless of the settings above. When the limit of requests handled at the same time is reached, there is no response.
 
-### 2.7 RadSec（RADIUS over TLS）
+### 2.7 RadSec (RADIUS over TLS)
 
-RadSec（`[radius.tls]`）需要 rradius-enterprise。
+RadSec (`[radius.tls]`) needs rradius-enterprise.
 
-### 2.8 統計 `[metrics]`
+### 2.8 Metrics `[metrics]`
 
 ```toml
 [metrics]
-bind = "127.0.0.1"  # 預設
-port = 9812         # 預設
+bind = "127.0.0.1"  # default
+port = 9812         # default
 ```
 
-`GET /metrics` 回傳 Prometheus 文字格式。沒有這個區段時不開這個埠。**這個埠沒有認證也沒有 TLS**，請只綁定內部位址。
+`GET /metrics` returns the Prometheus text format. Without this section the port is not opened. **This port has no authentication and no TLS**, so bind it only to an internal address.
 
-埠被別的程式佔用時，伺服器不結束：日誌記一行 `ERROR … metrics: cannot listen on <位址>: …`，RADIUS 與 TACACS+ 照常服務，但沒有 `/metrics`、`/livez`、`/readyz`。TACACS+ 的埠被佔用則和 RADIUS 一樣，啟動以結束碼 1 結束（`TACACS+ server error: …`）。
+If another program already uses the port, the server does not exit: the log gets one line, `ERROR … metrics: cannot listen on <address>: …`, and RADIUS and TACACS+ keep serving, but there is no `/metrics`, `/livez` or `/readyz`. If the TACACS+ port is in use, it behaves like RADIUS: startup ends with exit code 1 (`TACACS+ server error: …`).
 
-同一個埠也回答兩個健康檢查，給 Kubernetes 的探針或負載平衡器用（範例見 `deploy/kubernetes/` 與手冊第 16 章）：
+The same port also answers two health checks, for Kubernetes probes or load balancers (for examples see `deploy/kubernetes/` and chapter 16 of the manual):
 
-| 路徑 | 回應 |
+| Path | Response |
 | --- | --- |
-| `GET /livez` | 一律 200 `ok`：程序還在回應。不看資料庫或叢集 |
-| `GET /readyz` | 收到 SIGTERM 或 SIGINT、正在停止時是 503 `stopping`（2.16 節）；設了 `[cluster] stop_without_leader_ms`、而且沒有可用的 leader 超過這段時間時是 503 `no leader`，也就是節點故意不回應認證的時候（2.2 節〈資料庫不能用時〉）；設了 `required_for_ready` 的外部資料庫連不上時是 503 `database <名稱> unreachable`，多個時名稱依字母排序、以 `, ` 分隔（2.17 節）；其他時候 200 `ok`。三者同時成立時依序只回 `stopping`、`no leader`、資料庫 |
+| `GET /livez` | Always 200 `ok`: the process is still responding. It does not look at the database or the cluster |
+| `GET /readyz` | 503 `stopping` when SIGTERM or SIGINT has been received and the server is stopping (section 2.16); 503 `no leader` when `[cluster] stop_without_leader_ms` is set and there has been no usable leader for longer than that, that is, when the node deliberately does not answer authentication (section 2.2, "When the database is unavailable"); 503 `database <name> unreachable` when an external database with `required_for_ready` cannot be reached, with several names sorted alphabetically and separated by `, ` (section 2.17); otherwise 200 `ok`. When all three apply at once, only `stopping`, `no leader` or the database one is returned, in that order |
 
-- 內容都是 `text/plain` 的一行字。查詢字串不影響結果；GET 以外的方法回 405，其他路徑回 404。連線數、逾時和標頭大小的限制和 `/metrics` 共用。
-- 沒設 `stop_without_leader_ms` 時，除了停止中以外 `/readyz` 一直是 200：這時節點沒有 leader 也會用本機副本回應只讀的登入，算成未就緒反而會讓負載平衡器把所有節點都移出。
-- metrics 埠在節點追上叢集、協定埠開好之後才開，所以啟動中兩個路徑都連不上；Kubernetes 要用 startupProbe 等它。
+- The body is always one line of `text/plain`. The query string does not change the result; methods other than GET get 405, and other paths get 404. The limits on connections, timeouts and header size are shared with `/metrics`.
+- Without `stop_without_leader_ms`, `/readyz` stays 200 except while stopping: a node with no leader still answers read-only logins from its local replica, and counting it as not ready would make the load balancer take every node out.
+- The metrics port is opened only after the node has caught up with the cluster and the protocol ports are open, so during startup neither path can be reached; in Kubernetes, use a startupProbe to wait for it.
 
-| 項目 | 說明 |
+| Item | Description |
 | --- | --- |
-| `rradius_radius_packets_total{kind="auth\|acct"}` | 通過檢查與重送偵測、實際處理的請求 |
-| `rradius_radius_responses_total{code="access_accept\|access_reject\|access_challenge\|accounting_response"}` | 送出的回應，不含重送快取與 Status-Server |
-| `rradius_radius_client_responses_total{client="...",code="access_accept\|access_reject\|access_challenge\|accounting_response"}` | 送給每個 client 的回應，口徑和上一行相同。設定裡的每個 client 從 0 開始；重新載入時新增新的，移除不在設定裡的。一個 client 四個序列，client 很多時要留意 |
-| `rradius_radius_status_server_total` | 回應的 Status-Server |
-| `rradius_radius_duplicates_total` | 由重送快取回覆，或因為還在處理而丟棄的重送 |
-| `rradius_radius_discarded_total{reason="overload\|unknown_client\|invalid\|database\|no_leader"}` | 沒有回應的封包；`invalid` 包含格式錯誤、驗證失敗和不符合 Message-Authenticator 政策；`database` 是叢集資料庫不能用而沒有決定的登入，`no_leader` 是 `stop_without_leader_ms` 讓它不回應的（2.2 節〈資料庫不能用時〉） |
-| `rradius_radius_response_seconds{kind="auth\|acct"}` | 處理一個請求到送出回應的時間，Prometheus histogram（`_bucket{le}`、`_sum` 秒、`_count`）。從封包通過重送檢查開始算，到回應交給傳送端為止；企業版經 RadSec 進來的請求也算在內。bucket 的上限固定為 0.05、0.1、0.25、0.5、1、2.5、5、10、25、50、100、250、500 ms 與 1、2.5、5、10 s，再加 `+Inf`。重送快取的回覆、Status-Server 和沒有回應的封包都不計，所以 `_count` 會比 `rradius_radius_packets_total` 少 |
-| `rradius_cluster_leader`、`rradius_cluster_is_leader`、`rradius_cluster_applied_index`、`rradius_cluster_seconds_without_leader` | 這個節點看到的叢集狀態，見 2.2 節〈叢集狀態指標〉 |
-| `rradius_tacacs_connections_total{result="accepted\|refused"}` | TACACS+ 連線 |
-| `rradius_tacacs_connections_open` | 目前的 TACACS+ 連線數 |
-| `rradius_tacacs_requests_total{type="authen\|author\|acct"}` | TACACS+ 請求 |
-| `rradius_tacacs_malformed_total` | 解密後欄位不合 RFC 8907 而回 ERROR 的 START、授權和計費請求。持續增加通常是密碼設錯 |
-| `rradius_tacacs_response_seconds{type="authen\|author\|acct"}` | 讀完一個 TACACS+ 封包到回應寫出的時間，histogram，bucket 和上一個 RADIUS 指標相同。只計成功寫出的回應；連線在回應前斷掉、或不回應就關閉的不計 |
-| `rradius_log_dropped_lines_total` | 輸出跟不上或寫入失敗而遺失的記錄行數（2.10 節） |
-| `rradius_db_batched_writes_total` | 和其他寫入在同一個交易裡提交的 `sql_execute`（2.4 節） |
-| `rradius_db_split_batches_total` | 因為其中一個陳述式失敗而拆開的寫入交易（2.4 節） |
-| `rradius_script_http_requests_total{result="ok\|timeout\|error\|denied\|too_large\|busy"}` | 腳本的 `http_request`（4.11 節） |
-| `rradius_eap_sessions_open` | 進行中的 EAP 對話（2.12 節） |
-| `rradius_eap_sessions_total{method="tls\|peap\|ttls",result="accept\|reject\|timeout\|overload\|replaced\|evicted"}` | 結束的 EAP 對話。已計入 `reject` 的對話之後逾時或被踢掉，不再計數；`overload` 是 `max_sessions_per_device` 滿了而沒有回應，`replaced` 是同一台設備重新開始而取代的舊對話，`evicted` 是表滿時踢掉的對話，先踢還停在 EAP Identity 的 |
-| `rradius_acct_spool_written_total` | 寫入暫存的計費請求（2.11 節） |
-| `rradius_acct_spool_replayed_total` | 重放時腳本接受的請求 |
-| `rradius_acct_spool_rejected_total` | 重放時再跑一次結果也相同，移到 `rejected.log` 的請求 |
-| `rradius_acct_spool_full_total` | 暫存已滿或寫入失敗，沒有回覆的請求 |
-| `rradius_acct_spool_corrupt_total` | 損壞而改名保留的暫存檔 |
-| `rradius_acct_spool_bytes` | 等待重放的位元組數；持續大於 0 代表資料庫的資料落後 |
-| `rradius_accounting_log_written_total` | 寫進計費紀錄檔的筆數（2.18 節） |
-| `rradius_accounting_log_dropped_total` | 佇列滿了而沒寫進計費紀錄檔的筆數 |
-| `rradius_accounting_log_failures_total{stage="open\|write"}` | 計費紀錄檔重新開檔（`open`）或寫入（`write`）失敗的次數；`write` 每次是一批 |
-| `rradius_netlogon_logons_total`、`rradius_netlogon_channel_setups_total`、`rradius_netlogon_open_connections` | `netlogon` 處理器（3.7 節） |
-| `rradius_external_db_failures_total{database="...",reason="unavailable\|mistake\|unknown"}` | 每個外部資料庫失敗的呼叫（2.17 節），`sql` 處理器和 `db_query`、`db_execute` 都算。`unavailable` 是資料庫無法使用（含逾時），`mistake` 是陳述式或值的錯（含送出前就被拒的，例如值的數量不符），`unknown` 是其他。`db_query` 寫了不存在的名稱不算；請求的時間（`[lua].query_timeout_ms`）已經用完後才呼叫的 `db_query`、`db_execute` 沒有送到資料庫，也不算；`required_for_ready` 的檢查也不算。沒有 `[databases]` 時不輸出 |
-| `rradius_query_<名稱>{<標籤>="..."}` | 有 `[queries.<名稱>]` 時，每個查詢一個 gauge：查詢最後一次成功的結果，每一列一個樣本，數值是 `value` 欄位，標籤是 `labels` 的欄位（2.20 節） |
-| `rradius_query_failures_total{query="...",reason="timeout\|error\|shape"}` | 每個查詢失敗的次數：`timeout` 逾時，`error` 資料庫拒絕或連不上，`shape` 結果的欄位或型別不對。失敗時 gauge 保留上一次的值。沒有 `[queries]` 時不輸出 |
-| `rradius_query_dropped_rows_total{query="...",reason="null_value\|over_limit"}` | 成功的執行中沒有進 gauge 的列：數值欄位是 NULL，或超過 `max_rows`。沒有 `[queries]` 時不輸出 |
-| `rradius_query_last_success_timestamp_seconds{query="..."}` | 每個查詢最後一次成功的時間（Unix 秒），還沒有成功過是 0。沒有 `[queries]` 時不輸出 |
-| `rradius_external_db_connections{database="...",state="in_use\|idle"}` | 每個外部資料庫連線池的連線：`in_use` 是交給呼叫正在用的，加上正在建立的（還沒連上的連線也佔一個名額），`idle` 是開著閒置的。不含 `required_for_ready` 的檢查連線 |
-| `rradius_external_db_connections_max{database="..."}` | 連線池的上限，也就是 `pool_size`。`in_use` 一直等於它時，呼叫在排隊等連線 |
-| `rradius_external_db_reachable{database="..."}` | 只有設了 `required_for_ready` 的資料庫才有：檢查連得上是 1，否則 0（2.17 節） |
-| `rradius_reload_total{result="ok\|error"}` | 重新載入的結果 |
-| `rradius_password_checks_total{scheme="...",result="ok\|failed"}` | 登入與儲存的密碼比對的次數，依儲存值的格式與結果分開；格式的固定集合與怎麼用它淘汰舊格式見第 5 節 |
-| `rradius_reload_last_success_timestamp_seconds` | 上次成功重新載入的時間，還沒有時是 0 |
-| `rradius_radius_requests_in_progress{kind="auth\|acct"}` | 目前正在處理的登入、計費請求數 |
-| `rradius_radius_requests_limit{kind="auth\|acct"}` | 同時處理的上限，也就是 `max_auth_inflight`、`max_acct_inflight`（2.4 節）。正在處理的數量接近它時，再來的封包會以 `overload` 丟棄 |
-| `rradius_build_info{version="..."}` | 一律是 1，`version` 是這個程式的版本，和 `--version` 第一行相同 |
-| `rradius_start_time_seconds` | 程序啟動的時間（Unix 秒） |
+| `rradius_radius_packets_total{kind="auth\|acct"}` | Requests that passed the checks and the retransmission detection and were actually handled |
+| `rradius_radius_responses_total{code="access_accept\|access_reject\|access_challenge\|accounting_response"}` | Responses sent, not counting retransmission-cache replies and Status-Server |
+| `rradius_radius_client_responses_total{client="...",code="access_accept\|access_reject\|access_challenge\|accounting_response"}` | Responses sent to each client, counted the same way as the line above. Every client in the configuration starts at 0; a reload adds new ones and removes those no longer in the configuration. Each client has four series, so watch this when you have many clients |
+| `rradius_radius_status_server_total` | Status-Server requests answered |
+| `rradius_radius_duplicates_total` | Retransmissions answered from the retransmission cache, or dropped because the request is still being handled |
+| `rradius_radius_discarded_total{reason="overload\|unknown_client\|invalid\|database\|no_leader"}` | Packets that got no response; `invalid` covers malformed packets, failed verification and packets that do not meet the Message-Authenticator policy; `database` is a login with no decision because the cluster database could not be used, and `no_leader` is a request that `stop_without_leader_ms` made the server leave unanswered (section 2.2, "When the database is unavailable") |
+| `rradius_radius_response_seconds{kind="auth\|acct"}` | The time from starting to handle a request to sending the response, as a Prometheus histogram (`_bucket{le}`, `_sum` in seconds, `_count`). It is counted from when the packet passes the retransmission check until the response is handed to the sender; in the enterprise edition, requests that arrive over RadSec are included. The bucket upper bounds are fixed at 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500 ms and 1, 2.5, 5, 10 s, plus `+Inf`. Retransmission-cache replies, Status-Server and packets that get no response are not counted, so `_count` is lower than `rradius_radius_packets_total` |
+| `rradius_cluster_leader`, `rradius_cluster_is_leader`, `rradius_cluster_applied_index`, `rradius_cluster_seconds_without_leader` | The cluster state as seen by this node; see section 2.2, "Cluster state metrics" |
+| `rradius_tacacs_connections_total{result="accepted\|refused"}` | TACACS+ connections |
+| `rradius_tacacs_connections_open` | Current number of TACACS+ connections |
+| `rradius_tacacs_requests_total{type="authen\|author\|acct"}` | TACACS+ requests |
+| `rradius_tacacs_malformed_total` | START, authorization and accounting requests that were answered with ERROR because the decrypted fields do not follow RFC 8907. A count that keeps rising usually means a wrong shared secret |
+| `rradius_tacacs_response_seconds{type="authen\|author\|acct"}` | The time from reading a whole TACACS+ packet to writing the response, as a histogram with the same buckets as the RADIUS metric above. Only responses that were written successfully are counted; connections that drop before the response, or that are closed without a response, are not |
+| `rradius_log_dropped_lines_total` | Log lines lost because the output could not keep up or a write failed (section 2.10) |
+| `rradius_db_batched_writes_total` | `sql_execute` calls committed in the same transaction as other writes (section 2.4) |
+| `rradius_db_split_batches_total` | Write transactions that were split because one of the statements failed (section 2.4) |
+| `rradius_script_http_requests_total{result="ok\|timeout\|error\|denied\|too_large\|busy"}` | `http_request` calls from scripts (section 4.11) |
+| `rradius_eap_sessions_open` | EAP conversations in progress (section 2.12) |
+| `rradius_eap_sessions_total{method="tls\|peap\|ttls",result="accept\|reject\|timeout\|overload\|replaced\|evicted"}` | EAP conversations that have ended. A conversation already counted as `reject` is not counted again when it later times out or is evicted; `overload` is a conversation left unanswered because `max_sessions_per_device` was full, `replaced` is an old conversation replaced because the same device started again, and `evicted` is a conversation evicted because the table was full, starting with those still waiting at EAP Identity |
+| `rradius_acct_spool_written_total` | Accounting requests written to the spool (section 2.11) |
+| `rradius_acct_spool_replayed_total` | Requests that the script accepted during replay |
+| `rradius_acct_spool_rejected_total` | Requests moved to `rejected.log` because running them again during replay gave the same result |
+| `rradius_acct_spool_full_total` | Requests left without a reply because the spool was full or a write failed |
+| `rradius_acct_spool_corrupt_total` | Spool files that were corrupted and renamed to keep them |
+| `rradius_acct_spool_bytes` | Bytes waiting to be replayed; a value that stays above 0 means the data in the database is behind |
+| `rradius_accounting_log_written_total` | Records written to the accounting log file (section 2.18) |
+| `rradius_accounting_log_dropped_total` | Records not written to the accounting log file because the queue was full |
+| `rradius_accounting_log_failures_total{stage="open\|write"}` | Number of failures reopening (`open`) or writing (`write`) the accounting log file; each `write` is one batch |
+| `rradius_netlogon_logons_total`, `rradius_netlogon_channel_setups_total`, `rradius_netlogon_open_connections` | The `netlogon` handler (section 3.7) |
+| `rradius_external_db_failures_total{database="...",reason="unavailable\|mistake\|unknown"}` | Failed calls for each external database (section 2.17), counting the `sql` handler and also `db_query` and `db_execute`. `unavailable` means the database could not be used (including timeouts), `mistake` means an error in the statement or the values (including those rejected before sending, for example a wrong number of values), and `unknown` is anything else. A `db_query` that names a database that does not exist is not counted; a `db_query` or `db_execute` called after the request's time (`[lua].query_timeout_ms`) has already run out never reached the database and is not counted either; the `required_for_ready` check is not counted. It is not output when there is no `[databases]` |
+| `rradius_query_<name>{<label>="..."}` | With `[queries.<name>]`, one gauge per query: the result of the last successful run, one sample per row, where the value is the `value` column and the labels are the columns of `labels` (section 2.20) |
+| `rradius_query_failures_total{query="...",reason="timeout\|error\|shape"}` | Number of failures for each query: `timeout` is a timeout, `error` is the database refusing or being unreachable, and `shape` is a result whose columns or types are wrong. On a failure the gauge keeps its previous value. Not output when there is no `[queries]` |
+| `rradius_query_dropped_rows_total{query="...",reason="null_value\|over_limit"}` | Rows of a successful run that did not make it into the gauge: the value column is NULL, or the row is beyond `max_rows`. Not output when there is no `[queries]` |
+| `rradius_query_last_success_timestamp_seconds{query="..."}` | The time of each query's last success (Unix seconds); 0 if it has never succeeded. Not output when there is no `[queries]` |
+| `rradius_external_db_connections{database="...",state="in_use\|idle"}` | Connections in each external database's pool: `in_use` are those handed to a call that is using them, plus those being set up (a connection that is not yet established also takes a slot), and `idle` are open and unused. The `required_for_ready` check connection is not included |
+| `rradius_external_db_connections_max{database="..."}` | The pool's limit, which is `pool_size`. When `in_use` is always equal to it, calls are queuing for a connection |
+| `rradius_external_db_reachable{database="..."}` | Only for databases with `required_for_ready`: 1 if the check can connect, otherwise 0 (section 2.17) |
+| `rradius_reload_total{result="ok\|error"}` | Result of reloads |
+| `rradius_password_checks_total{scheme="...",result="ok\|failed"}` | Number of comparisons between a login and a stored password, split by the format of the stored value and the result; for the fixed set of formats and how to use it to retire old formats, see section 5 |
+| `rradius_reload_last_success_timestamp_seconds` | The time of the last successful reload, or 0 if there has been none |
+| `rradius_radius_requests_in_progress{kind="auth\|acct"}` | Number of login and accounting requests being handled now |
+| `rradius_radius_requests_limit{kind="auth\|acct"}` | The limit on concurrent handling, which is `max_auth_inflight` and `max_acct_inflight` (section 2.4). When the number being handled gets close to it, further packets are dropped with `overload` |
+| `rradius_build_info{version="..."}` | Always 1; `version` is the version of this program, the same as the first line of `--version` |
+| `rradius_start_time_seconds` | The time the process started (Unix seconds) |
 
-數值是每個節點從啟動開始計算，重新載入不會歸零，叢集的總和由 Prometheus 彙總。例外是 `rradius_radius_client_responses_total`：重新載入移除的 client 序列會消失，之後再加回來時從 0 開始。
+Values are counted per node from startup and are not reset by a reload; Prometheus adds them up for the cluster. The exception is `rradius_radius_client_responses_total`: the series of a client removed by a reload disappears, and starts again from 0 if the client is added back later.
 
-#### 看這台節點現在在做什麼：`status` 指令
+#### What this node is doing right now: the `status` command
 
-沒有 Prometheus 時，`status` 直接讀這台節點自己的 `/readyz` 與 `/metrics`，相隔 1 秒取兩次，列出每秒的量和目前的值：
+Without Prometheus, `status` reads this node's own `/readyz` and `/metrics` directly, takes two samples 1 second apart, and lists the per-second rates and the current values:
 
 ```bash
 rradiusd status [--config <path>] [--cluster] [--watch | --json | --tui]
 ```
 
-- **要有 `[metrics]`。** 指令照設定檔的 `bind` 與 `port` 連線；`bind` 是 `0.0.0.0` 或 `::` 時改連 `127.0.0.1` 或 `::1`。所以要在節點本機執行，用同一個設定檔。
-- **不帶參數**時取兩次樣本、印一次就結束，大約 1 秒。**`--watch`** 每秒印一次，直到 Ctrl-C；輸出到終端機時每次覆蓋前一次，導到檔案或管線時一次接一次。
-- **位元組項目的單位。** `In bytes`、`Out bytes` 這類位元組項目在文字、`--watch` 與 `--tui` 顯示成 B、KiB、MiB、GiB、TiB（1024 進位，一位小數），例如 `58.6 KiB/s (1.0 MiB)`；`--json` 與 `/metrics` 不換算，`rate` 是每秒位元組、`total` 是位元組。
-- **`--tui`** 開全螢幕畫面，內容就是上面各段，一次顯示一段，每秒更新。**左右方向鍵或 Tab** 換段，**上下方向鍵**選段裡的項目（有速率的項目在下方畫出最近 60 秒的折線圖），**`p`** 暫停與繼續，**`q`、Esc 或 Ctrl-C** 離開並把終端機還原。和 `--cluster` 一起用時上方多一張成員表，**`[` 與 `]`** 選「all」（全部成員加總，起始選這個）或某個成員，下面的段落顯示選到的那一個；連不上的成員在表裡標 unreachable，畫面不會結束。不能和 `--json`、`--watch` 並用，標準輸出不是終端機時以狀態 2 結束且不寫任何東西。企業版加的段落（RadSec、Proxy 等）會自動成為畫面的一段。RADIUS 與 TACACS+ 段另有 `In bytes`、`Out bytes`，是協定封包的位元組速率（不含 IP、UDP、TCP、TLS 標頭，也不含 RadSec 與 proxy 的流量）。
-- **計數器變小**（兩次樣本之間程序重啟）時，那一項的每秒量顯示 0，輸出開頭註明計數器已重設。
-- **沒有的指標不列，** 某一段一個值都沒有時整段省略，例如還沒重新載入過時 Reload 的上次成功時間。多數功能的指標不論有沒有設定都會輸出（值是 0），所以沒用到的功能也可能出現一段 0；不要用「有沒有這一段」判斷功能有沒有開。
+- **`[metrics]` is required.** The command connects using `bind` and `port` from the configuration file; if `bind` is `0.0.0.0` or `::`, it connects to `127.0.0.1` or `::1` instead. So run it on the node itself, with the same configuration file.
+- **With no options** it takes two samples, prints once and exits, in about 1 second. **`--watch`** prints once a second until Ctrl-C; on a terminal each output overwrites the previous one, and when redirected to a file or pipe the outputs follow one another.
+- **Units of byte items.** Byte items such as `In bytes` and `Out bytes` are shown in text, `--watch` and `--tui` as B, KiB, MiB, GiB and TiB (powers of 1024, one decimal place), for example `58.6 KiB/s (1.0 MiB)`; `--json` and `/metrics` do not convert: `rate` is bytes per second and `total` is bytes.
+- **`--tui`** opens a full-screen display with the sections above, one section at a time, updated every second. **The left and right arrow keys or Tab** switch sections, **the up and down arrow keys** select an item in a section (an item that has a rate gets a line chart of the last 60 seconds below), **`p`** pauses and resumes, and **`q`, Esc or Ctrl-C** quits and restores the terminal. Used together with `--cluster`, a member table is added at the top, and **`[` and `]`** select "all" (the sum of all members, selected at the start) or one member, and the sections below show the selected one; a member that cannot be reached is marked unreachable in the table and the display does not end. It cannot be combined with `--json` or `--watch`, and when standard output is not a terminal it exits with status 2 and writes nothing. Sections added by the enterprise edition (RadSec, Proxy and so on) automatically become a section of the display. The RADIUS and TACACS+ sections also have `In bytes` and `Out bytes`, the byte rates of protocol packets (not including IP, UDP, TCP or TLS headers, and not including RadSec and proxy traffic).
+- **When a counter gets smaller** (the process restarted between the two samples), that item's per-second rate is shown as 0, and the start of the output notes that the counters were reset.
+- **Metrics that do not exist are not listed,** and a section with no value at all is left out, for example the last-success time of Reload before any reload has happened. The metrics of most features are output whether or not the feature is configured (with the value 0), so a section of zeros can appear for a feature you do not use; do not use the presence of a section to decide whether a feature is on.
 
-依序列出這些段落：
+These sections are listed in order:
 
-| 段落（`key`） | 內容 |
+| Section (`key`) | Contents |
 | --- | --- |
-| Node（`node`） | `/readyz` 的回答（`ok`、`stopping`、`no leader`、`database ... unreachable`）、叢集狀態（是不是 leader、有沒有 leader、追上了沒、applied index、沒有 leader 的秒數）、版本、已執行秒數 |
-| Reload（`reload`） | 重新載入成功與失敗的次數、上次成功的時間 |
-| RADIUS（`radius`） | 登入與計費請求、四種回應、重送、五種丟棄原因的每秒量，正在處理的請求數與上限，以及這段時間登入與計費回應時間的 p50、p99（毫秒） |
-| Busiest RADIUS clients（`radius_top_clients`） | 這段時間回應最多的 5 個 client 與它們的每秒回應量 |
-| External databases（`databases`） | 有 `[databases]` 時才有。每個資料庫（依名稱）的連線使用中、閒置、上限（`<名稱>.in_use`、`.idle`、`.max`），三類失敗的每秒量（`<名稱>.failures_unavailable`、`.failures_mistake`、`.failures_unknown`），以及設了 `required_for_ready` 時連不連得上（`<名稱>.reachable`，`yes` 或 `no`） |
-| Queries（`queries`） | 有 `[queries]` 時才有。每個查詢（依名稱）最後一次成功是幾秒前（`<名稱>.last_success_age_seconds`，還沒有成功過是 `never`）、現在有幾個樣本（`<名稱>.rows`）、失敗的每秒量與總數（`<名稱>.failures`，三種原因加總） |
-| TACACS+（`tacacs`） | 開著的連線、三種請求與格式錯誤的每秒量，以及三種請求這段時間回應時間的 p50、p99（毫秒） |
-| EAP（`eap`） | 進行中的 EAP 對話 |
-| Accounting spool（`acct_spool`） | 等待重放的位元組、重放、放棄與沒寫入暫存的每秒量 |
-| Accounting log（`acct_log`） | 計費紀錄檔寫入、丟棄、開檔失敗與寫入失敗的每秒量（`written`、`dropped`、`failures_open`、`failures_write`）；沒有 `[radius.accounting_log]` 時不列 |
-| Netlogon（`netlogon`） | 開著的連線、四種登入結果的每秒量 |
-| Log（`log`） | 遺失記錄行的每秒量 |
+| Node (`node`) | The `/readyz` answer (`ok`, `stopping`, `no leader`, `database ... unreachable`), the cluster state (whether it is the leader, whether there is a leader, whether it has caught up, the applied index, the seconds without a leader), the version, the seconds running |
+| Reload (`reload`) | The number of successful and failed reloads, the time of the last success |
+| RADIUS (`radius`) | Per-second rates of login and accounting requests, the four kinds of response, retransmissions and the five discard reasons, the number of requests being handled and the limit, and the p50 and p99 (in milliseconds) of the login and accounting response times over the interval |
+| Busiest RADIUS clients (`radius_top_clients`) | The 5 clients with the most responses over the interval and their per-second response rates |
+| External databases (`databases`) | Only with `[databases]`. For each database (by name), connections in use, idle and the limit (`<name>.in_use`, `.idle`, `.max`), the per-second rates of the three kinds of failure (`<name>.failures_unavailable`, `.failures_mistake`, `.failures_unknown`), and, when `required_for_ready` is set, whether it can be reached (`<name>.reachable`, `yes` or `no`) |
+| Queries (`queries`) | Only with `[queries]`. For each query (by name), how many seconds ago the last success was (`<name>.last_success_age_seconds`, `never` if it has never succeeded), how many samples there are now (`<name>.rows`), and the per-second rate and total of failures (`<name>.failures`, the three reasons added together) |
+| TACACS+ (`tacacs`) | Open connections, the per-second rates of the three kinds of request and of malformed packets, and the p50 and p99 (in milliseconds) of the response times of the three kinds of request over the interval |
+| EAP (`eap`) | EAP conversations in progress |
+| Accounting spool (`acct_spool`) | Bytes waiting to be replayed, and the per-second rates of replayed, given up and not written to the spool |
+| Accounting log (`acct_log`) | Per-second rates of accounting log writes, drops, open failures and write failures (`written`, `dropped`, `failures_open`, `failures_write`); not listed when there is no `[radius.accounting_log]` |
+| Netlogon (`netlogon`) | Open connections, the per-second rates of the four logon results |
+| Log (`log`) | The per-second rate of lost log lines |
 
-企業版另有自己的段落，接在最後（見企業版文件）。每秒量的後面括號是從啟動到現在的累計值。
+The enterprise edition has sections of its own, at the end (see the enterprise edition documentation). The number in parentheses after a per-second rate is the total since startup.
 
-**回應時間的 p50、p99**（`auth_p50_ms`、`auth_p99_ms`、`acct_p50_ms`、`acct_p99_ms`；TACACS+ 是 `authen_`、`author_`、`acct_` 開頭）是用兩次樣本之間 `rradius_radius_response_seconds`、`rradius_tacacs_response_seconds` 各 bucket 增加的數量估出來的：找到落在哪個 bucket，在它的上下限之間線性內插，四捨五入到 0.001 ms（1 µs）。所以是估計值，精確度受 bucket 寬度限制（例如落在 2.5 到 5 ms 的值只知道在這個範圍內）；超過 10 s 的顯示 10000。這段時間沒有那一種請求、或計數器重設時，那一項不列。
+**The p50 and p99 of response times** (`auth_p50_ms`, `auth_p99_ms`, `acct_p50_ms`, `acct_p99_ms`; for TACACS+ they start with `authen_`, `author_` and `acct_`) are estimated from the number each bucket of `rradius_radius_response_seconds` and `rradius_tacacs_response_seconds` grew by between the two samples: the bucket that the value falls into is found, the value is interpolated linearly between its lower and upper bounds, and rounded to 0.001 ms (1 µs). So they are estimates, and the accuracy is limited by the bucket width (for example, for a value in the 2.5 to 5 ms bucket you only know it is in that range); anything above 10 s is shown as 10000. If there was no request of that kind in the interval, or the counters were reset, that item is not listed.
 
-文字輸出的樣子（節錄，數字只是示意）：
+What the text output looks like (an excerpt; the numbers are only illustrative):
 
 ```text
 rradius status of 127.0.0.1:9812 over 1.0 s
@@ -896,7 +896,7 @@ RADIUS
   Auth limit                4096
 ```
 
-**`--json`** 每次印一行 JSON，給腳本或監控程式用：
+**`--json`** prints one line of JSON each time, for scripts or monitoring programs:
 
 ```json
 {"address": "127.0.0.1:9812", "interval_seconds": 1.0, "ready": {"status": 200, "text": "ok"}, "counter_reset": false,
@@ -905,25 +905,25 @@ RADIUS
    {"key": "auth_limit", "label": "Auth limit", "value": 4096}]}]}
 ```
 
-（實際輸出在同一行。）每一項有 `value`，或者 `rate` 與 `total`。段落與項目的順序和文字輸出相同；`key` 在之後的版本保持不變（項目被移除除外），程式請用 `key` 而不是 `label` 或 `title`。
+(The real output is on one line.) Each item has either `value`, or `rate` and `total`. The order of sections and items is the same as in the text output; a `key` stays the same in later versions (except when an item is removed), so programs should use `key` and not `label` or `title`.
 
-| 結束碼 | 意思 |
+| Exit code | Meaning |
 | --- | --- |
-| 0 | 印出了結果。`/readyz` 回 503（停止中、沒有 leader、必要的資料庫連不上）也是 0，狀態寫在輸出裡 |
-| 2 | 參數錯誤、設定檔讀不了，或設定檔沒有 `[metrics]` |
-| 3 | 連不上 metrics 埠、2 秒內沒有回答，或回答不像 rradius 的格式。`--watch` 時不會因此結束，而是每秒重試並在 stderr 說明；恢復後第一次的每秒量是從上一次成功取樣起算的平均，開頭的秒數就是這段時間 |
+| 0 | The result was printed. A 503 from `/readyz` (stopping, no leader, a required database unreachable) is also 0, and the state is written in the output |
+| 2 | A wrong option, the configuration file cannot be read, or the configuration file has no `[metrics]` |
+| 3 | The metrics port cannot be reached, there was no answer within 2 seconds, or the answer does not look like the rradius format. With `--watch` it does not exit because of this; it retries every second and explains on stderr; the first per-second rate after recovery is the average from the last successful sample, so the seconds shown at the start are that period |
 
-不帶 `--cluster` 時 `status` 只看一台節點。
+Without `--cluster`, `status` looks at one node only.
 
-**`--cluster`** 一次看整個叢集，可以和 `--watch`、`--json`、`--config` 一起用：
+**`--cluster`** looks at the whole cluster at once, and can be used together with `--watch`, `--json` and `--config`:
 
-- **成員從哪裡來：** 依 `[[cluster.nodes]]` 的順序問各台的叢集管理 API（用 `secret_api`），每台最多等 2 秒，用第一台回答者的成員清單和它看到的 leader；不需要有 leader。全部沒回答時改用設定檔列的節點，輸出開頭註明。`secret_api` 被拒絕時結束碼 2。
-- **每台的 metrics 位址：** 成員 api 位址的主機，配上這台設定檔 `[metrics]` 的 port（`10.0.0.2:8200` → `10.0.0.2:9812`；IPv6 保留方括號；名稱照常解析）。執行指令的這台用自己的位址，和不帶 `--cluster` 時相同。
-- **前提：** 每台的 `[metrics] bind` 要綁其他節點連得到的內部位址（例如 WireGuard 位址），port 各台一樣；預設的 `127.0.0.1` 其他台連不到，會列為 unreachable。port 不一致時只能在各台分別執行。`/metrics` 沒有認證，綁內部位址時要用防火牆或 WireGuard 限制來源。Kubernetes 用 hostNetwork 時，`bind = "0.0.0.0"` 即可。
-- **取樣：** 所有成員同時取兩次樣本，相隔 1 秒，每台的數字和單台 `status` 算法相同。連不到的成員列為 unreachable，原因列在表下，不計入合計。
-- **`--watch`：** 和單台一樣，每台上一次的樣本當下一次的起點，每秒印一次；成員清單每 10 秒重新查一次。剛連上的成員那一次顯示 unreachable 並註明「下一次取樣才有每秒量」。
+- **Where the members come from:** it asks each node's cluster management API in the order of `[[cluster.nodes]]` (using `secret_api`), waiting at most 2 seconds for each, and uses the member list and the leader as seen by the first one that answers; a leader is not required. If none answers, it uses the nodes listed in the configuration file, and the start of the output says so. If `secret_api` is rejected, the exit code is 2.
+- **Each node's metrics address:** the host of the member's api address, combined with the port of `[metrics]` in this node's configuration file (`10.0.0.2:8200` → `10.0.0.2:9812`; IPv6 keeps its square brackets; names are resolved as usual). The node the command runs on uses its own address, the same as without `--cluster`.
+- **Prerequisite:** every node's `[metrics] bind` has to be an internal address that the other nodes can reach (for example a WireGuard address), with the same port on every node; the default `127.0.0.1` cannot be reached by the others and is listed as unreachable. If the ports differ, you can only run it on each node separately. `/metrics` has no authentication, so when you bind an internal address, limit the sources with a firewall or WireGuard. With hostNetwork in Kubernetes, `bind = "0.0.0.0"` is enough.
+- **Sampling:** all members are sampled twice at the same time, 1 second apart, and each node's numbers are calculated the same way as for a single-node `status`. A member that cannot be reached is listed as unreachable, the reason is listed under the table, and it is not counted in the total.
+- **`--watch`:** as with a single node, each node's previous sample is the starting point of the next one, and it prints once a second; the member list is queried again every 10 seconds. A member that has just become reachable shows unreachable that time, with the note "per-second rates are available from the next sample".
 
-文字輸出每台一列，最後是合計（數字只是示意）：
+The text output has one row per node, and the total at the end (the numbers are only illustrative):
 
 ```text
 rradius cluster status over 1.0 s, members from the cluster
@@ -938,9 +938,9 @@ node 3: cannot reach the metrics port at 10.99.0.3:9812: Connection refused (os 
 (every node's [metrics] bind has to be an address this host can reach, on the same port as here)
 ```
 
-`role` 是 `leader`、`follower` 或 `learner`：連得到的成員看它自己的指標，連不到的看成員清單。`discarded/s` 是五種丟棄原因的合計，`in progress` 是登入加計費正在處理的請求。
+`role` is `leader`, `follower` or `learner`: for a member that can be reached it comes from its own metrics, and for one that cannot, from the member list. `discarded/s` is the total of the five discard reasons, and `in progress` is the login and accounting requests being handled.
 
-`--cluster --json` 每次印一行 JSON：
+`--cluster --json` prints one line of JSON each time:
 
 ```json
 {"cluster": true, "members_from": "cluster", "interval_seconds": 1.0,
@@ -949,53 +949,53 @@ node 3: cannot reach the metrics port at 10.99.0.3:9812: Connection refused (os 
  "total": {"auth_per_second": 3008.0, "acct_per_second": 58.0, "discarded_per_second": 0.0, "in_progress": 21, "reachable": 2, "nodes": 3}}
 ```
 
-`members_from` 是 `cluster` 或 `configuration`。每台的 `status` 就是那台 `status --json` 的物件（企業版的段落也在裡面）；連不到的成員沒有 `status`，改為 `error`。這些 `key` 之後保持不變。
+`members_from` is `cluster` or `configuration`. Each node's `status` is the object that `status --json` prints on that node (including the enterprise edition's sections); a member that cannot be reached has `error` instead of `status`. These `key` values stay the same in later versions.
 
-`--cluster` 的結束碼：0 是至少一台取樣成功（其他台連不到也是 0）；2 是參數錯誤、設定檔讀不了、沒有 `[metrics]`、`secret_api` 被拒；3 是一台都連不到（`--watch` 時不結束，每秒再看一次）。
+Exit codes for `--cluster`: 0 means at least one node was sampled successfully (also 0 if the others cannot be reached); 2 is a wrong option, a configuration file that cannot be read, no `[metrics]`, or `secret_api` rejected; 3 means no node could be reached (with `--watch` it does not exit, and looks again every second).
 
-### 2.9 重新載入（SIGHUP）
+### 2.9 Reload (SIGHUP)
 
 ```bash
 kill -HUP <pid>
 docker compose kill -s HUP rradius
 ```
 
-收到 SIGHUP 時重讀設定檔（包含 `secret_file`）並套用，結果寫一行到記錄：`configuration reloaded from ...` 或 `reload failed, keeping the running configuration: ...`。
+On SIGHUP the server rereads the configuration file (including `secret_file`) and applies it, and writes one line with the result to the log: `configuration reloaded from ...` or `reload failed, keeping the running configuration: ...`.
 
-- **會套用：** 最上層腳本、認證串接與其腳本、`[lua]` 的時限、RADIUS 與 TACACS+ 的 client 名單與設定（包含 `[tacacs.authorize_groups]` 與 `[tacacs].enable`）、`[radius.eap]`（只影響新的對話）、`[lua.http]`，以及 `[radius.accounting_log]` 的 `file`（重新開檔，見 2.18 節）。
-- **要重啟才會套用：** `dictionary`（字典檔的內容也不會重讀；內容和啟動時不同時，記錄會多一行 `dictionary files changed since the server started; restart to apply: ...`，每次 reload 都有）、`[lua].max_memory_mb`、`[tacacs].idle_timeout_ms`、`[cluster]`（包含 migration）、`[log]`（`[log.trace]` 除外）、所有監聽位址與埠、`max_auth_inflight`、`max_acct_inflight`、`max_connections`、`max_connections_per_source`、`max_body_len`、`status_server`、`idle_timeout_ms`、`[metrics]`、`[radius.accounting_spool]`、`[databases]`、`[queries]`、`[radius.accounting_log]` 的 `queue`，以及新增或移除 `[radius]`、`[tacacs]`、`[radius.accounting_log]`。這些設定有變動時，記錄會列出名稱，其餘照常套用。
-- **全部成功才會套用。** 檢查和啟動時相同，任何一項有誤就全部維持原狀，程序繼續服務；修正後再送一次 SIGHUP 即可。
-- 進行中的請求用舊內容做完，不會中斷。已開啟的 TACACS+ 連線不會因此斷線，但下一個封包會依新名單處理：client 被移除時關閉連線，密碼更換後要用新密碼。
-- `auto` 學到的值和重送快取會保留。每次重新載入都會重建 LDAP 連線池。
-- 每個節點各自重新載入，要更新整個叢集時，請對每個節點更新檔案並送出信號。
+- **Applied:** the top-level script, auth chains and their scripts, the time limits in `[lua]`, the client lists and settings for RADIUS and TACACS+ (including `[tacacs.authorize_groups]` and `[tacacs].enable`), `[radius.eap]` (affecting new conversations only), `[lua.http]`, and `file` in `[radius.accounting_log]` (the file is reopened; see section 2.18).
+- **Applied only after a restart:** `dictionary` (the contents of dictionary files are not reread either; when the contents differ from what they were at startup, the log gets an extra line, `dictionary files changed since the server started; restart to apply: ...`, on every reload), `[lua].max_memory_mb`, `[tacacs].idle_timeout_ms`, `[cluster]` (including migration), `[log]` (except `[log.trace]`), all listen addresses and ports, `max_auth_inflight`, `max_acct_inflight`, `max_connections`, `max_connections_per_source`, `max_body_len`, `status_server`, `idle_timeout_ms`, `[metrics]`, `[radius.accounting_spool]`, `[databases]`, `[queries]`, `queue` in `[radius.accounting_log]`, and adding or removing `[radius]`, `[tacacs]` and `[radius.accounting_log]`. When any of these settings has changed, the log lists their names, and everything else is applied as usual.
+- **Applied only if everything succeeds.** The checks are the same as at startup; if any one fails, everything stays as it was and the process keeps serving. Fix the problem and send SIGHUP again.
+- Requests in progress finish with the old contents and are not interrupted. TACACS+ connections that are already open are not dropped by this, but the next packet is handled by the new list: if a client is removed the connection is closed, and after a secret change the new secret has to be used.
+- Values learned by `auto` and the retransmission cache are kept. Every reload rebuilds the LDAP connection pools.
+- Each node reloads on its own; to update a whole cluster, update the file on each node and send the signal on each.
 
-### 2.10 記錄 `[log]`
+### 2.10 Logging `[log]`
 
 ```toml
 [log]
-level = "info"   # error、warn、info（預設）、debug
-format = "text"  # text（預設）、json
-auth = true      # 預設 true，寫認證紀錄
+level = "info"   # error, warn, info (default), debug
+format = "text"  # text (default), json
+auth = true      # default true, write authentication records
 ```
 
-**升級注意：所有訊息都寫到 stderr，每行都有時間和等級。** 以前寫到 stdout 的啟動訊息也移到 stderr，讀取 stdout 或比對整行內容的外部腳本要跟著修改。
+**Upgrade note: all messages are written to stderr, and every line has a time and a level.** Startup messages that used to go to stdout also moved to stderr, so external scripts that read stdout or match whole lines have to be changed accordingly.
 
-| 格式 | 範例 |
+| Format | Example |
 | --- | --- |
-| `text` | `2026-11-05T01:02:03.000000Z  INFO rradius_server::radius: RADIUS Server listening on ...`，沒有色碼 |
-| `json` | 每行一個物件，有 `timestamp`、`level`、`target`、`message`，其他欄位在同一層 |
+| `text` | `2026-11-05T01:02:03.000000Z  INFO rradius_server::radius: RADIUS Server listening on ...`, with no color codes |
+| `json` | One object per line, with `timestamp`, `level`, `target` and `message`, and other fields at the same level |
 
-- **`level`** 只影響 rradius 自己的訊息。其他函式庫固定只留 `warn` 以上，叢集正常啟動和關閉時也會有少量這類訊息，例如 `No metadata exists inside the DB yet`；節點加入前可能有 `Raft node has not been initialized`，加入後就會停止。三節點啟動 25 秒後關閉，實測共 27 行，其中 13 行是 `hiqlite` 的 `ERROR`。
-- **設定載入前的錯誤和啟動失敗的致命錯誤** 直接寫到 stderr，沒有時間和等級前綴，方便在程序結束前一定寫出來。
-- 外部來的值如果含有換行或控制字元，`text` 格式會跳脫，`json` 格式由 JSON 跳脫，所以一筆記錄一定只佔一行。腳本的 `log()` 也一樣。
+- **`level`** affects only rradius's own messages. Other libraries are fixed at `warn` and above, and a normal cluster start and shutdown also produces a few such messages, for example `No metadata exists inside the DB yet`; before a node has joined there may be `Raft node has not been initialized`, which stops after it joins. A three-node start shut down after 25 seconds measured 27 lines in total, 13 of them `ERROR` from `hiqlite`.
+- **Errors before the configuration is loaded and fatal startup errors** are written directly to stderr, without the time and level prefix, so that they are always written before the process ends.
+- If a value from outside contains a newline or control characters, the `text` format escapes them and the `json` format uses JSON escaping, so one record always takes exactly one line. The same applies to `log()` in scripts.
 
-**追蹤單一使用者或 client：** 不必開全域 `debug`，也不必重啟。
+**Tracing a single user or client:** no need to turn on global `debug`, and no restart.
 
 ```toml
 [log.trace]
-users = ["alice"]    # 比對請求的 User-Name，完全相同才算
-clients = ["nas1"]   # 比對 client 名稱，要是 [[radius.clients]] 裡有的名稱
-minutes = 30         # 必填，1 到 1440
+users = ["alice"]    # matches the request's User-Name, exact match only
+clients = ["nas1"]   # matches the client name, which must be a name in [[radius.clients]]
+minutes = 30         # required, 1 to 1440
 ```
 
 ```text
@@ -1003,158 +1003,158 @@ minutes = 30         # 必填，1 到 1440
 2026-11-05T01:02:03.000000Z  INFO rradius_trace: response client="nas1" source=10.0.0.1 user="alice" code=2 attributes="Filter-Id = staff"
 ```
 
-- **需要 `[radius]`。** `clients` 打錯名稱時啟動和重新載入都會失敗。
-- **到期自動停止，** 從載入或重新載入設定開始算。留在設定檔裡的話，每次 SIGHUP 都會重新計時，用完請刪掉。每個節點各自計時，要查的請求可能在別的節點，請對有關的節點都設定。
-- **SIGHUP 就會套用，** 不受 `[log]` 其他設定要重啟的限制，也不受 `level` 影響。
-- **會寫進個人資料，** 保存多久、誰能讀取由部署方負責。字典標了 `encrypt` 或 `secret` 的屬性、名稱含 `pass`、`secret`、`key`、`token`、`chap`、`arap`、`-pw`、`-cpw`、`digest`、`signature`、`psk`、`pmk`、`credential`（不分大小寫）的屬性，以及標準屬性 2、3、24、60、69、70、79、80（`User-Password`、`CHAP-Password`、`State`、`CHAP-Challenge`、`Tunnel-Password`、`ARAP-Password`、`EAP-Message`、`Message-Authenticator`，不論字典怎麼命名）顯示 `<hidden>`。**只看屬性，不看值的內容：** 自訂屬性用了別的名稱放秘密，或把秘密放在值裡（例如 `Cisco-AVPair = "vpdn:l2tp-tunnel-password=..."`）都擋不到，腳本會送這種值時，不要對那個使用者開追蹤。使用者把密碼打進帳號欄位時，它會出現在 `user`。
-- **範圍：** 只有 RADIUS，不含 TACACS+。重送快取回覆的封包、驗證失敗的封包和 Status-Server 不會寫。比對的是外層名稱，所以 PEAP、TTLS 的匿名名稱要改用 `clients`，或列出外層實際用的名稱。文字值最多顯示 128 個字元，其他值最多 64 octets 的十六進位。 字典沒有的屬性不會出現。兩行都在處理完才寫，所以時間相同，也不代表處理花了多久；腳本卡住時，連請求那行都要等它結束才會出現。
-- **流量大時用 `clients` 要小心：** 每個請求兩行，輸出跟不上時會被丟棄，和其他記錄一樣。
+- **`[radius]` is required.** A mistyped name in `clients` makes both startup and reload fail.
+- **It stops automatically when time is up,** counted from when the configuration was loaded or reloaded. If you leave it in the configuration file, every SIGHUP starts the timer again, so delete it when you are done. Each node keeps its own timer, and the request you want to look at may be on another node, so set it on every node involved.
+- **SIGHUP applies it,** without the restriction that the other `[log]` settings need a restart, and it is not affected by `level`.
+- **It writes personal data,** so how long it is kept and who can read it are the deployer's responsibility. Attributes that the dictionary marks `encrypt` or `secret`, attributes whose name contains `pass`, `secret`, `key`, `token`, `chap`, `arap`, `-pw`, `-cpw`, `digest`, `signature`, `psk`, `pmk` or `credential` (case-insensitive), and the standard attributes 2, 3, 24, 60, 69, 70, 79 and 80 (`User-Password`, `CHAP-Password`, `State`, `CHAP-Challenge`, `Tunnel-Password`, `ARAP-Password`, `EAP-Message`, `Message-Authenticator`, whatever the dictionary calls them) are shown as `<hidden>`. **It looks only at the attribute, not at the contents of the value:** a custom attribute that carries a secret under another name, or a secret inside a value (for example `Cisco-AVPair = "vpdn:l2tp-tunnel-password=..."`), is not caught, so if a script can send such values, do not turn tracing on for that user. When a user types a password into the account field, it appears in `user`.
+- **Scope:** RADIUS only, not TACACS+. Packets answered from the retransmission cache, packets that fail verification and Status-Server are not written. The match is on the outer name, so for the anonymous names of PEAP and TTLS use `clients` instead, or list the names actually used on the outside. Text values are shown up to 128 characters, and other values up to 64 octets in hexadecimal. Attributes that are not in the dictionary do not appear. Both lines are written after handling is finished, so their times are the same and do not show how long the handling took; when a script hangs, even the request line does not appear until it ends.
+- **Be careful using `clients` under heavy traffic:** each request produces two lines, and when the output cannot keep up they are dropped, like other log lines.
 
-**認證紀錄：** 每次認證決定寫一筆，不受 `level` 影響，`auth = false` 時不寫。
+**Authentication records:** one record is written for each authentication decision, regardless of `level`, and none is written when `auth = false`.
 
 ```text
 2026-11-05T01:02:03.000000Z  INFO rradius_auth: authentication protocol="radius" client="nas1" source=10.0.0.1 user="Alice@Corp" account="alice" chain="vpn" handler="sql" decision="accept"
 ```
 
-| 欄位 | 內容 |
+| Field | Contents |
 | --- | --- |
-| `protocol` | `radius` 或 `tacacs` |
-| `client` | 比對到的 client 名稱 |
-| `source` | 來源 IP 位址 |
-| `user` | 收到的名稱，沒有時是空字串 |
-| `account` | 查帳號用的名稱（3.6 節）。沒有名稱，或名稱被串接拒絕時是空字串 |
-| `chain` | 具名串接的名稱、`default`，沒有串接時的 `script`，或 EAP 對話的 `eap` |
-| `handler` | 做出決定的處理器：`sql`、`lua`、`ldap`、`script`，EAP 對話是 `eap-tls`、`eap-peap`、`eap-ttls`；全部略過時是 `none`；`all_accept` 沒有人比對過密碼而拒絕時是 `no_password_check`；名稱被拒絕時是 `normalization`。`all_accept` 接受時是最後一個接受的處理器 |
-| `decision` | 設備實際收到的結果：`accept`、`reject`、`challenge`。回應送不出去而改成拒絕時，這裡寫 `reject` |
+| `protocol` | `radius` or `tacacs` |
+| `client` | The name of the client that matched |
+| `source` | The source IP address |
+| `user` | The name received, or an empty string if there was none |
+| `account` | The name used to look up the account (section 3.6). An empty string if there is no name, or the name was rejected by the chain |
+| `chain` | The name of a named chain, `default`, `script` when there is no chain, or `eap` for an EAP conversation |
+| `handler` | The handler that made the decision: `sql`, `lua`, `ldap`, `script`, and for EAP conversations `eap-tls`, `eap-peap`, `eap-ttls`; `none` when all were skipped; `no_password_check` when `all_accept` rejects because no one compared a password; `normalization` when the name was rejected. When `all_accept` accepts, it is the last handler that accepted |
+| `decision` | The result the device actually received: `accept`, `reject`, `challenge`. When the response could not be sent and was turned into a reject, this says `reject` |
 
-- **只有做出決定的請求才有紀錄。** 重送快取的回覆、過載丟棄、驗證失敗和未知 client 的封包不會有，請看 2.8 節的指標。計費和 TACACS+ 授權也不會有。
-- **不會記錄密碼、CHAP 或 MS-CHAP 回應、TACACS+ 的 `data`。** 但使用者把密碼打進帳號欄位時，它會出現在 `user`，伺服器無法判斷。
-- **紀錄含有帳號等個人資料。** 保存多久、誰能讀取由部署方負責；不需要時可以設 `auth = false`。
+- **Only requests that reached a decision get a record.** Retransmission-cache replies, overload drops, failed verification and packets from unknown clients do not; see the metrics in section 2.8. Accounting and TACACS+ authorization do not get one either.
+- **Passwords, CHAP or MS-CHAP responses and the TACACS+ `data` are not recorded.** But when a user types a password into the account field, it appears in `user`, and the server cannot tell.
+- **The records contain personal data such as accounts.** How long they are kept and who can read them are the deployer's responsibility; set `auth = false` if you do not need them.
 
-**不是可靠的稽核來源：** 記錄由背景執行緒寫出，最多緩衝 128000 行。輸出跟不上時會直接丟棄，寫入失敗（例如接收的程序結束了或磁碟滿了）時也會遺失，兩者都計入 `rradius_log_dropped_lines_total`，不會拖慢認證，所以要留意這個指標。SIGTERM 和 SIGINT 會在結束前等緩衝寫出，最多 5 秒，超過時剩下的會遺失，也不會計數；SIGKILL 或當機時，緩衝中的內容同樣會遺失。
+**Not a reliable audit source:** the log is written by a background thread that buffers at most 128000 lines. When the output cannot keep up, lines are dropped, and lines are also lost when a write fails (for example the receiving process ended or the disk is full); both are counted in `rradius_log_dropped_lines_total` and do not slow down authentication, so watch that metric. SIGTERM and SIGINT wait up to 5 seconds before exiting for the buffer to be written; beyond that the rest is lost and not counted; on SIGKILL or a crash, the contents of the buffer are lost in the same way.
 
-**對吞吐的影響：** 在 Apple M4 Max（14 核心）的同一台機器上，用 release 建置和 `rradius-bench`（`accept.toml`、PAP、併發 64、10 秒），stderr 導到檔案，認證紀錄開關各跑兩次：
+**Effect on throughput:** on the same Apple M4 Max machine (14 cores), with a release build and `rradius-bench` (`accept.toml`, PAP, concurrency 64, 10 seconds), stderr redirected to a file, and the authentication record switched on and off, two runs each:
 
-| `auth` | 第一次（次/秒） | 第二次（次/秒） |
+| `auth` | First run (req/s) | Second run (req/s) |
 | --- | --- | --- |
 | `true` | 74732 | 74004 |
 | `false` | 74023 | 74569 |
 
-兩者的差異小於同設定兩次之間的差異，這次量不出影響。紀錄約每筆 190 octets，這個速率下每秒寫出約 14 MB。工具和伺服器在同一台機器，stderr 接到比本機檔案慢的地方時，可能會開始丟棄。
+The difference between the two is smaller than the difference between two runs of the same setting, so no effect could be measured this time. A record is about 190 octets, which at this rate is about 14 MB written per second. The tool and the server are on the same machine; if stderr goes somewhere slower than a local file, lines may start to be dropped.
 
-**更高的速率：** 2026-11-08 在同一台機器上 Docker 的 Linux（arm64）量測，伺服器限定 CPU 0–6 並開綁核（2.4 節）、`rradius-bench` 限定 7–13，`accept.toml` 的 PAP，各兩次：
+**At higher rates:** measured on 2026-11-08 on the same machine in Docker's Linux (arm64), with the server limited to CPUs 0–6 with core pinning on (section 2.4), `rradius-bench` limited to 7–13, PAP with `accept.toml`, two runs each:
 
-| 認證紀錄 | stderr 接到 | 併發 64（次/秒） | 併發 1024（次/秒） | 寫出紀錄的執行緒用掉的 CPU | 丟棄的紀錄 |
+| Authentication record | stderr goes to | Concurrency 64 (req/s) | Concurrency 1024 (req/s) | CPU used by the thread that writes the records | Dropped records |
 | --- | --- | --- | --- | --- | --- |
-| `auth = true` | 檔案 | 316,200–316,300 | 305,500–306,500 | 72% | 0 |
-| `auth = true` | 管線（像交給 journald） | 285,400–316,900 | 289,500–303,300 | 86–87% | 0 |
-| `auth = false` | 檔案 | 344,000–344,500 | 313,400–325,800 | 0 | — |
+| `auth = true` | file | 316,200–316,300 | 305,500–306,500 | 72% | 0 |
+| `auth = true` | pipe (as if handed to journald) | 285,400–316,900 | 289,500–303,300 | 86–87% | 0 |
+| `auth = false` | file | 344,000–344,500 | 313,400–325,800 | 0 | — |
 
-- **紀錄由一條執行緒寫出。** 這個速率下開紀錄大約慢 9%，約等於這條執行緒在這 7 顆 CPU 裡用掉的份量。
-- **接到管線時它已經用到約 87% 的 CPU，** 這台機器上再快一些（大約每秒 34 萬次以上）就會滿載。滿載時新的紀錄直接丟掉，伺服器照常運作，丟掉多少只看得到 `rradius_log_dropped_lines_total`（2.8 節）。登入量接近這個範圍時請監看這個指標；不需要每筆紀錄時設 `auth = false`。
-- 一般的部署很少有單台每秒數十萬次的登入。
+- **The records are written by one thread.** At this rate, turning the records on is about 9% slower, which is about the share this thread uses out of these 7 CPUs.
+- **With a pipe it already uses about 87% of a CPU,** and on this machine a little more speed (roughly 340,000 requests per second and above) would saturate it. When it is saturated, new records are simply dropped and the server keeps working; how many were dropped can be seen only in `rradius_log_dropped_lines_total` (section 2.8). When your login rate gets close to this range, watch that metric; set `auth = false` if you do not need every record.
+- Few ordinary deployments see hundreds of thousands of logins per second on a single node.
 
-### 2.11 計費暫存 `[radius.accounting_spool]`
+### 2.11 Accounting spool `[radius.accounting_spool]`
 
-叢集失去多數節點時，設備重送幾次就會放棄，那些計費就遺失了。設定這個區段後，資料庫失敗的計費請求會先寫到本機檔案、落盤後才回覆，之後由背景工作交回腳本重放。沒有這個區段時行為完全不變。
+When the cluster loses its majority of nodes, devices retransmit a few times and then give up, and that accounting is lost. With this section configured, an accounting request whose database write fails is first written to a local file, and only after it is on disk is the reply sent; a background task later hands it back to the script to replay. Without this section the behavior is completely unchanged.
 
 ```toml
 [radius.accounting_spool]
-dir = "spool"              # 必填，相對於設定檔
-max_bytes = 1073741824     # 預設 1 GiB
-replay_interval_ms = 5000  # 預設，重放遇到資料庫失敗時，隔多久再試
-replay_window = 1          # 預設，一次重放幾筆（1–1024）；見下方〈同時重放〉
+dir = "spool"              # required, relative to the configuration file
+max_bytes = 1073741824     # default 1 GiB
+replay_interval_ms = 5000  # default, how long to wait before trying again when replay meets a database failure
+replay_window = 1          # default, how many to replay at once (1–1024); see "Replaying at the same time" below
 ```
 
-- **只暫存資料庫造成的失敗。** 這個請求的 `sql_query` 或 `sql_execute` 因為逾時或叢集錯誤而失敗時才會暫存，不論腳本最後回傳什麼：腳本用 `pcall` 接住、之後回 `'accept'` 也暫存，因為那筆可能根本沒寫進去，重放時再判斷一次。腳本自己的 bug、SQL 語法錯誤、回傳 `'reject'` 都不暫存，和原本一樣不回覆，錯誤不會被藏起來。
-- **至少一次。** 程序在腳本完成和更新進度之間中斷時，同一筆會再跑一次，所以腳本要能重複執行（見 4.4 節）。另一個來源是不合併提交的寫入（例如帶 `RETURNING`）：它在逾時之後才完成時，這筆已經進了暫存，重放時再跑一次；合併提交的寫入交出後會等到結果，它本身不會這樣；但它等得比時限久時，同一個請求之後的資料庫呼叫會立刻逾時，這筆計費仍可能因此進暫存、重放時整支腳本再跑一次（2.2 節〈資料庫不能用時〉）。所以有多個資料庫呼叫的計費腳本一樣要能重複執行。斷電時可能重跑更多：進度在累計 64 筆以上完成時和換 segment 時才落盤，所以最多再跑 64 筆；`replay_window` 大於 1 時，一批結算完才更新進度，最多是 63 筆加一批。`position` 檔案損壞（例如斷電後變成空檔）時，會記錄一行 ERROR，從最舊的 segment 開頭重放，最多 16 MiB。`rradius-server/examples/` 的計費腳本都能重複執行，有測試；`disconnect-disabled.lua` 遇到重放不會送中斷，因為那已是舊的回報。
-- **重放。** 預設依寫入順序一次一筆（`replay_window` 大於 1 時見下一項），用當時的腳本和 client 設定。全域變數 `replayed` 是 `true`，`Acct-Delay-Time` 已加上暫存的時間。要計算時間的腳本應該用它，否則舊的回報看起來像剛發生。資料庫再次失敗時，隔 `replay_interval_ms` 重試同一筆，後面的請求繼續等。
-- **同時重放（`replay_window`）。** 預設 1。設成更大的值時，一次讀出最多這麼多筆（不跨暫存檔）同時交給腳本，依寫入順序結算到第一筆要重試的為止，之後先單獨重試那一筆、有結果才恢復整批；排在它後面、腳本已經接受的會再跑一次（本來就是「至少一次」）。同時執行的腳本照常受計費腳本的名額限制，會和即時計費共用。
-  - **預設不開的原因：** 同一批裡同一個 session 的 Start、Interim-Update、Stop 可能同時執行或順序顛倒。腳本只用 `INSERT OR IGNORE` 記下每筆、或依 `Acct-Status-Type` 分別處理而不依賴先後時，可以放心打開；腳本靠先後維護 session 狀態（例如 Stop 時更新 Start 新增的那一列）時，維持 1。
-  - **建議從 8 開始。** 2026-11-09 在 OrbStack 的 Linux（arm64）量測：伺服器 7 顆 CPU，計費腳本以 `INSERT OR IGNORE` 寫一列，`query_timeout_ms = 1` 送 `acct-start` 5 秒累積約 4.3–4.6 萬筆，再恢復正常逾時量重放到 `rradius_acct_spool_bytes` 為 0 的時間，各兩次：
+- **Only failures caused by the database are spooled.** A request is spooled only when its `sql_query` or `sql_execute` failed because of a timeout or a cluster error, whatever the script finally returns: if the script catches it with `pcall` and then returns `'accept'`, it is spooled too, because that write may never have happened, and it is judged again at replay. The script's own bugs, SQL syntax errors and returning `'reject'` are not spooled; as before, there is no reply, so errors are not hidden.
+- **At least once.** If the process is interrupted between the script finishing and the progress being updated, the same record runs again, so scripts must be safe to run repeatedly (see section 4.4). Another source is a write that is not committed in a batch (for example one with `RETURNING`): if it completes after the timeout, the request is already in the spool and runs again at replay; a batched write is waited for after it is handed over, so it does not do this by itself; but if it waits longer than the time limit, the database calls after it in the same request time out immediately, and that accounting can still end up in the spool and the whole script runs again at replay (section 2.2, "When the database is unavailable"). So an accounting script with several database calls must also be safe to run repeatedly. After a power failure more may run again: progress is written to disk only when 64 or more records have been completed in total and when switching segments, so up to 64 more records can run again; with `replay_window` greater than 1, progress is updated after a batch is settled, so it is at most 63 records plus one batch. If the `position` file is corrupted (for example it became empty after a power failure), one ERROR line is logged and replay starts again from the beginning of the oldest segment, up to 16 MiB. All accounting scripts in `rradius-server/examples/` are safe to run repeatedly, and have tests; `disconnect-disabled.lua` does not send a disconnect on replay, because that is already an old report.
+- **Replay.** By default it goes in the order written, one record at a time (see the next item when `replay_window` is greater than 1), using the script and client settings at that time. The global variable `replayed` is `true`, and `Acct-Delay-Time` has the time spent in the spool added to it. Scripts that compute times should use it, otherwise an old report looks as if it just happened. When the database fails again, the same record is retried after `replay_interval_ms`, and the requests behind it keep waiting.
+- **Replaying at the same time (`replay_window`).** Default 1. When set larger, up to that many records are read at a time (not crossing spool files) and handed to scripts together, and settled in the order written up to the first one that has to be retried; after that, that one is retried alone first, and the batch resumes only when it has a result; records behind it that the script already accepted run again (this is "at least once" anyway). Scripts running at the same time are limited by the accounting script slots as usual, and share them with live accounting.
+  - **Why it is off by default:** within one batch, the Start, Interim-Update and Stop of the same session may run at the same time or in reversed order. When the script only records each one with `INSERT OR IGNORE`, or handles them separately by `Acct-Status-Type` without depending on order, it is safe to turn on; when the script relies on order to maintain session state (for example updating on Stop the row that Start added), keep 1.
+  - **Starting from 8 is recommended.** Measured on 2026-11-09 in OrbStack's Linux (arm64): the server had 7 CPUs, the accounting script wrote one row with `INSERT OR IGNORE`, `query_timeout_ms = 1` sent `acct-start` for 5 seconds to accumulate about 43,000–46,000 records, and then the time to replay them with the normal timeout restored, until `rradius_acct_spool_bytes` was 0, two runs each:
 
-    | `replay_window` | 每秒重放筆數 |
+    | `replay_window` | Records replayed per second |
     | --- | --- |
     | 1 | 4,600–4,700 |
     | 8 | 16,300–17,200 |
     | 32 | 14,900–25,700 |
 
-    一次一筆時每筆約 0.2 ms，大多花在等資料庫寫入完成（叢集提交），不是暫存本身。視窗大時全部不到 3 秒就重放完，以 0.1 秒的間隔計時，32 的兩次差很多，只能看出比 8 快；真正累積更多筆時請在實際環境量。
-- **什麼時候放棄一筆。** 只有再跑一次結果也相同時：client 已不存在、腳本正常結束但沒有回傳 `'accept'`、腳本因 SQL 語法、參數錯誤或違反約束而結束。這些會移到 `rejected.log` 並記錄。腳本接住 SQL 錯誤後又因為別的原因出錯，算其他失敗；把這個請求接住過的 SQL 錯誤再丟出去則算放棄。外鍵的父列之後才會到的情況也會放棄，所以腳本要自己處理順序，或用 `INSERT ... ON CONFLICT` 讓重複的請求不出錯。檔案不會自動清理，也不會重放，請自行查看。
-- **其他失敗都會重試，佇列會卡住。** 資料庫不可用、Lua 錯誤、超過 `max_execution_ms`、腳本呼叫的 HTTP API 出錯而丟出錯誤，還有腳本接住資料庫不可用或原因不明的失敗卻回傳 `'accept'`，都會隔 `replay_interval_ms` 重試同一筆，因為已回覆的請求設備不會再送。腳本一直出錯時，`rradius_acct_spool_bytes` 會持續大於 0，修好腳本後自動恢復。腳本接住 SQL 語法這類錯誤後回傳 `'accept'` 算完成，因為再跑一次結果相同。
-- **啟動時的檔案結尾。** 最後一筆不完整時會截掉，因為它沒有回覆過。長度欄損壞、但值還像一筆記錄時看起來一模一樣，而那可能是回覆過的請求，所以截掉的內容會先附加到暫存目錄的 `truncated.log`，並記錄一行 WARN。這個檔案不會自動清理，也不會重放，通常只有一筆寫到一半的內容，請自行查看。`truncated.log` 寫不進去時（例如磁碟滿了）不會截掉，啟動照常，新請求寫到新檔案，舊檔案之後整個改名為 `.corrupt`，並記錄一行 ERROR。結尾全是零（斷電常見）直接移除，不會留下；零的後面還有內容就算損壞，整個檔案改名為 `.corrupt`。
-- **滿了或磁碟失敗。** 不回覆、記錄 `accounting spool ...`、計入 `rradius_acct_spool_full_total`，由設備重送，和沒有這個區段時相同。寫到一半失敗的內容會被截掉，不影響後面的請求。每筆大小見下方量測，可以換算撐多久。
-- **查詢會延遲。** 回覆之後資料才進資料庫，依賴它的政策（配額、同時上線）在恢復前都看不到這些計費。**先後也可能顛倒：** 叢集恢復後，新的計費直接寫入，暫存裡較舊的還在等重放，所以同一個 session 的 Stop 可能比 Start 先進資料庫；腳本不要假設先後，例如用 `Acct-Status-Type` 和時間判斷，而不是以最後一筆為準。`rradius_acct_spool_bytes` 大於 0 就代表有落後，可以用它告警。
-- **節點損毀會遺失。** 各節點只重放自己的檔案，沒有跨節點接手。磁碟永久損毀時，已確認但還沒重放的計費就遺失了，請放在持久儲存。多個節點同時恢復時可能一起寫入，由叢集處理。
-- **個人資料。** 檔案是原始封包，含 `User-Name`、位址等個人資料，保存期間由資料庫中斷多久決定。目錄和檔案權限是 0700、0600，備份和磁碟丟棄時要一併考慮。
-- **檔案。** `segment-<n>.log` 是資料，`position` 是重放進度，`.corrupt` 結尾是損壞而改名保留的檔案。尾端不完整的一筆是寫入中斷造成的，那筆還沒回覆，會被截斷並記錄。其他損壞會把檔案完整改名保留，之後的請求寫到新檔案。
-- **回覆時間由 `query_timeout_ms` 決定。** 叢集剛失去多數節點時，寫入要等到逾時才算失敗（一個請求的所有呼叫合計最多 `query_timeout_ms`），這段時間設備收不到回覆；沒有 leader 超過 5 秒後寫入立刻失敗。預設的 5 秒比許多設備的重送間隔長，重送的封包會被視為處理中而丟棄，請考慮調低。同時處理的上限是 `max_acct_inflight`，所以吞吐上限約為「上限 ÷ 逾時」。
-- **其他。** TACACS+ 不適用。SIGTERM 時停止重放，資料留在磁碟，下次啟動繼續。變更這個區段要重啟（2.9 節）。
+    With one at a time each record takes about 0.2 ms, mostly spent waiting for the database write to complete (the cluster commit), not on the spool itself. With a large window everything was replayed in under 3 seconds, timed at 0.1-second intervals, and the two runs at 32 differ a lot, so all you can tell is that it is faster than 8; if you really accumulate more records, measure in your real environment.
+- **When a record is given up.** Only when running it again gives the same result: the client no longer exists, the script ended normally but did not return `'accept'`, or the script ended because of a SQL syntax error, a wrong parameter or a constraint violation. These are moved to `rejected.log` and logged. If the script catches a SQL error and then fails for another reason, that counts as another kind of failure; rethrowing a SQL error that this request caught earlier counts as giving up. A case where the parent row of a foreign key arrives only later is also given up, so the script has to handle the order itself, or use `INSERT ... ON CONFLICT` so that a duplicate request does not fail. The file is not cleaned up automatically and is not replayed; look at it yourself.
+- **All other failures are retried, and the queue gets stuck.** An unavailable database, a Lua error, going over `max_execution_ms`, an error thrown because an HTTP API the script called failed, and a script that catches an unavailable database or an unknown failure but returns `'accept'` are all retried for the same record after `replay_interval_ms`, because the device does not send again a request that has been answered. When a script keeps failing, `rradius_acct_spool_bytes` stays above 0, and it recovers automatically once the script is fixed. A script that catches an error like a SQL syntax error and returns `'accept'` counts as completed, because running it again gives the same result.
+- **The end of a file at startup.** If the last record is incomplete, it is cut off, because it was never replied to. A damaged length field whose value still looks like a record looks exactly the same, and that could be a request that was replied to, so the cut-off content is first appended to `truncated.log` in the spool directory and one WARN line is logged. This file is not cleaned up automatically and is not replayed; it usually holds only one half-written record, so look at it yourself. If `truncated.log` cannot be written (for example the disk is full), nothing is cut off and startup goes on as usual, new requests are written to a new file, and the old file is later renamed whole to `.corrupt` with one ERROR line logged. An end that is all zeros (common after a power failure) is simply removed and nothing is kept; if there is content after the zeros it counts as corruption, and the whole file is renamed to `.corrupt`.
+- **When full, or when the disk fails.** There is no reply, `accounting spool ...` is logged, `rradius_acct_spool_full_total` is counted, and the device retransmits, the same as without this section. Content that failed partway through writing is cut off and does not affect later requests. For the size of each record see the measurements below, from which you can work out how long it will last.
+- **Queries are delayed.** The data gets into the database only after the reply, so policies that depend on it (quotas, concurrent sessions) do not see this accounting until recovery. **The order can also be reversed:** after the cluster recovers, new accounting is written directly while older records in the spool are still waiting to be replayed, so the Stop of a session can reach the database before its Start; scripts must not assume an order, for example by using `Acct-Status-Type` and times and not treating the last record as the one that counts. `rradius_acct_spool_bytes` above 0 means there is a lag, and you can alert on it.
+- **A node failure loses data.** Each node replays only its own files, and no other node takes over. If the disk is permanently damaged, accounting that was confirmed but not yet replayed is lost, so put it on persistent storage. When several nodes recover at the same time they may write at the same time, and the cluster handles that.
+- **Personal data.** The files are raw packets, containing personal data such as `User-Name` and addresses, and how long they are kept depends on how long the database outage lasts. The directory and file permissions are 0700 and 0600, which should be taken into account for backups and when disks are discarded.
+- **Files.** `segment-<n>.log` is the data, `position` is the replay progress, and a `.corrupt` ending marks a file that was corrupted and renamed to keep it. An incomplete record at the end is caused by an interrupted write; it was not yet replied to, and is cut off and logged. Any other corruption renames the whole file to keep it, and later requests are written to a new file.
+- **The reply time is decided by `query_timeout_ms`.** Right after the cluster loses its majority, writes fail only when they time out (all calls of one request together take at most `query_timeout_ms`), and during that time the device gets no reply; after there has been no leader for more than 5 seconds, writes fail immediately. The default 5 seconds is longer than the retransmission interval of many devices, and retransmitted packets are treated as being handled and dropped, so consider lowering it. The limit on concurrent handling is `max_acct_inflight`, so the throughput limit is about "the limit ÷ the timeout".
+- **Other.** Not applicable to TACACS+. SIGTERM stops the replay, the data stays on disk, and it continues at the next start. Changing this section needs a restart (section 2.9).
 
-**量測：** Apple M4 Max（14 核心），本機 SSD，release 建置與 `rradius-bench`，`acct-start`，10 秒。每筆約 106 octets（這個工具的封包，含每筆的表頭與 client 名稱；實際大小隨設備送的屬性增加），1 GiB 約 1000 萬筆。
+**Measurements:** Apple M4 Max (14 cores), local SSD, release build and `rradius-bench`, `acct-start`, 10 seconds. Each record is about 106 octets (a packet from this tool, including the header and client name of each record; the real size grows with the attributes a device sends), so 1 GiB is about 10 million records.
 
-| 情況 | 併發 | 吞吐（次/秒） | p50 |
+| Case | Concurrency | Throughput (req/s) | p50 |
 | --- | --- | --- | --- |
-| 沒有這個區段，第一、二次 | 64 | 74404、75578 | 0.8 ms |
-| 有這個區段，資料庫正常，第一、二次 | 64 | 74593、74430 | 0.8 ms |
-| 模擬中斷（每次查詢都以 1 ms 逾時），第一、二次 | 64 | 7979、7974 | 8 ms |
-| 模擬中斷 | 256 | 16894 | 15 ms |
-| 三節點失去兩個，`query_timeout_ms = 500` | 64 | 128 | 509 ms |
-| 三節點失去兩個，`query_timeout_ms = 100` | 64 | 588 | 108 ms |
-| 三節點失去兩個，`query_timeout_ms = 100` | 256 | 2260 | 113 ms |
+| Without this section, first and second run | 64 | 74404, 75578 | 0.8 ms |
+| With this section, database normal, first and second run | 64 | 74593, 74430 | 0.8 ms |
+| Simulated outage (every query times out at 1 ms), first and second run | 64 | 7979, 7974 | 8 ms |
+| Simulated outage | 256 | 16894 | 15 ms |
+| Three nodes, two lost, `query_timeout_ms = 500` | 64 | 128 | 509 ms |
+| Three nodes, two lost, `query_timeout_ms = 100` | 64 | 588 | 108 ms |
+| Three nodes, two lost, `query_timeout_ms = 100` | 256 | 2260 | 113 ms |
 
-資料庫正常時，有沒有這個區段的差異小於同設定兩次之間的差異，這次量不出影響。模擬中斷的數字是寫入暫存本身的上限，同時有多筆時併成一次 fsync，所以併發越高越快。實際中斷時限制來自逾時等待，吞吐約等於「併發 ÷ 逾時」，和磁碟無關。磁碟不同時 fsync 的數字也會不同，請在實際環境重量。
+When the database is normal, the difference between having this section and not is smaller than the difference between two runs of the same setting, so no effect could be measured this time. The simulated-outage numbers are the limit of writing to the spool itself; several at once are combined into one fsync, so the higher the concurrency, the faster it goes. In a real outage the limit comes from waiting for the timeout, and the throughput is about "concurrency ÷ timeout", independent of the disk. fsync numbers also differ between disks, so measure again in your real environment.
 
 ### 2.12 EAP `[radius.eap]`
 
-WPA2／WPA3-Enterprise 和有線 802.1X 要用 EAP。支援 EAP-TLS（用戶端憑證）、PEAP-MSCHAPv2（帳號密碼）和 EAP-TTLS（帳號密碼，內層 PAP 或 MS-CHAPv2）。沒有這個區段時，`EAP-Message` 和其他屬性一樣交給腳本。**這個功能還沒有在實體無線基地台、交換器或 Windows、iOS、Android 上測過，** 只用 wpa_supplicant 的 `eapol_test` 驗證過（見第 7 節）。
+WPA2/WPA3-Enterprise and wired 802.1X need EAP. rradius supports EAP-TLS (client certificate), PEAP-MSCHAPv2 (account and password) and EAP-TTLS (account and password, inner PAP or MS-CHAPv2). Without this section, `EAP-Message` is passed to the script like any other attribute. **This feature has not been tested on real wireless access points, switches, or Windows, iOS and Android,** only with wpa_supplicant's `eapol_test` (see section 7).
 
 ```toml
 [radius.eap]
-cert_file = "eap-server.pem"   # 必填，用戶端看到的伺服器憑證
-key_file = "eap-server.key"    # 必填
-client_ca_file = "eap-ca.pem"  # methods 有 tls 時必填（沒有 tls 時設定會啟動失敗），簽發用戶端憑證的 CA
-crl_file = "eap-ca.crl"        # 選填，只用於 tls（沒有 tls 時設定會啟動失敗），PEM，列出撤銷的憑證
-methods = ["tls"]              # 預設；可以列 "tls"、"peap"、"ttls"
-fragment_size = 1000           # 預設，256 到 1400
-session_timeout_ms = 30000     # 預設
-max_sessions = 4096            # 預設
-max_sessions_per_client = 1024 # 預設
-max_sessions_per_device = 4    # 預設
-match_identity = true          # 預設
+cert_file = "eap-server.pem"   # required, the server certificate the client sees
+key_file = "eap-server.key"    # required
+client_ca_file = "eap-ca.pem"  # required when methods has tls (setting it without tls fails startup), the CA that issues client certificates
+crl_file = "eap-ca.crl"        # optional, tls only (setting it without tls fails startup), PEM, lists revoked certificates
+methods = ["tls"]              # default; can list "tls", "peap", "ttls"
+fragment_size = 1000           # default, 256 to 1400
+session_timeout_ms = 30000     # default
+max_sessions = 4096            # default
+max_sessions_per_client = 1024 # default
+max_sessions_per_device = 4    # default
+match_identity = true          # default
 ```
 
-EAP-AKA'（`methods` 的 `aka-prime`）、session resumption（`resumption_ms`、`shared_tickets`）和 OCSP（`ocsp`）需要 rradius-enterprise。
+EAP-AKA' (`aka-prime` in `methods`), session resumption (`resumption_ms`, `shared_tickets`) and OCSP (`ocsp`) need rradius-enterprise.
 
-- **憑證通過不等於可以登入。** 握手成功後，名稱會交給這個 client 的認證串接，沒有串接的 client 交給最上層腳本。拒絕就是 Access-Reject，所以停用帳號不必等 CRL，也能依使用者回覆 VLAN 等屬性。
-- **串接怎麼決定。** 憑證通過後不比對密碼，所以處理器要另外判斷帳號能不能用。`all_accept` 裡有 `sql` 或 `ldap` 時，要它們其中一個接受才算通過（3.2 節），只有後面的腳本接受會被拒絕；`ldap` 沒設 `certificate_filter` 時不算接受。要只靠腳本判斷憑證，就不要把 `sql`、`ldap` 放進同一條串接，或改用 `first_match`：
-  - **`sql`：** 預設用 `user_query`，第一欄是 NULL、空值或只有 `{clear}`、`{nthash}` 這類前綴就拒絕，和密碼登入一樣，所以清空密碼也能停用憑證登入。只用憑證、不存密碼時，設 `certificate_query`，例如 `SELECT 1 FROM users WHERE username = ? AND enabled = 1`，查得到就接受。`default_user` 不適用。
-  - **`ldap`：** 只靠搜尋看不出帳號被鎖定，所以要設 `certificate_filter` 才接受憑證登入，並把停用條件寫進去，例如 OpenLDAP 的 `(&(uid={user})(!(pwdAccountLockedTime=*)))`、AD 的 `(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))`。這兩個例子依目錄的設定而定，請先在自己的目錄上確認。查得到且符合 `required_groups` 就接受，不做 bind。沒有設定時略過，交給下一個處理器，也不會連線到目錄。
-  - **`lua`：** 由腳本決定。腳本可以用全域變數 `eap_method`（`"tls"`）、`tls_subject`（憑證主體）和 `tls_subject_attrs`（依欄位分開的表）。**要判斷憑證的欄位時用 `tls_subject_attrs`，不要對 `tls_subject` 用 `find`：** CN 是 `x, OU=admins` 的憑證，文字是 `CN=x\, OU=admins`，仍然包含 `OU=admins`。
-- **記憶體裡的金鑰。** MSK、NT hash 和它導出的金鑰、PAP 密碼在 rradius 自己的程式裡用完就覆寫，`Debug` 也不會印出密碼。這只是縮小範圍：TLS、雜湊和 LDAP 函式庫內部的複本、腳本拿到的 `User-Password`、從資料庫讀出的密碼都清不到。要防 core dump 洩漏，請在系統層關閉 core dump。
-- **名稱怎麼來。** 憑證的名稱是它的 DNS SAN 和 email SAN；兩者都沒有時才用 CN。SAN 讀不出來，或裡面有不是文字的名稱時，這張憑證會被拒絕，不會改用 CN。當名稱的 CN 只接受 UTF8String、PrintableString、IA5String 和 NumericString，其他類型即使 `tls_subject` 讀得到，也不會拿來登入。EAP Identity 要符合其中一個，不分大小寫，不符合就拒絕。用戶端會把 Identity 填成匿名值時，設 `match_identity = false`，改用第一個名稱。名稱一律採憑證裡的拼法，腳本看到的 `User-Name` 就是它。腳本或串接沒有回 `User-Name` 時，Access-Accept 會帶上這個名稱，讓設備的記錄和計費用它，而不是用戶端自己填的值。
-- **憑證登入不去掉 realm。** 串接設了 `strip_realm` 時，名稱被改變的不只是大小寫就拒絕，例如 `alice@partner.example` 不會以 `alice` 登入，因為憑證證明的是完整名稱。資料庫要存完整名稱，或讓這些 client 用沒有設 `strip_realm` 的串接。`lowercase` 只放行 ASCII 字母的大小寫：非 ASCII 字元被改變時（例如 `É` 或 Kelvin 符號）也會拒絕，因為 Kelvin 符號轉小寫就是另一個帳號的 `k`。
-- **同一次認證要留在同一個節點。** 對話的 TLS 狀態只在收到它的節點，無法跨節點接手。一般的主備設定沒問題；切換節點時，用戶端重新認證即可。**放在負載平衡器後面時，要依來源固定節點，** 否則每輪落到不同節點就會失敗，因為 `State` 在別的節點找不到。
-- **一律需要 Message-Authenticator。** 帶 `EAP-Message` 而沒有這個屬性的封包會被丟棄，不看 client 的 `require_message_authenticator`（RFC 3579）。
-- **對話綁定設備。** 每輪要符合 `State`、client 和 `Calling-Station-Id`，別的設備不能接手。
-- **對話有總上限。** 一段對話最多 256 個請求，存活時間最多是 `session_timeout_ms` 的四倍（預設 2 分鐘），再忙也一樣。所以 SIGHUP 更新 CRL 後，用舊設定進行中的對話最晚在這段時間內結束。沒有資料卻帶 More 旗標的分段會結束對話。
-- **未認證的負擔有上限。** 握手前任何人都能開對話，所以 `max_sessions` 和 `max_sessions_per_client` 滿了，就踢掉該範圍內的一個對話，計入 `result="evicted"`：先從還停在 EAP Identity 的對話裡選，沒有才從全部裡選，都是選最久沒收到請求的。只送一個封包就能占位置的會先被踢，所以用隨機 MAC 洗滿時，已經回過一輪的使用者不受影響，等慢速 LDAP 的也一樣。這只能提高成本：攻擊者願意多回一輪，就和正常對話同一層。流量大到新使用者還沒回第一輪就被換掉時，要調高上限；`result="evicted"` 持續增加就是在提醒這件事。`max_sessions_per_device`（依 client 加 `Calling-Station-Id`）滿了則不回應，由設備重送，並計入 `result="overload"`。所有使用者經過同一個控制器或 RadSec 代理時，那就是一個 client，尖峰登入多的話要調高 `max_sessions_per_client`。
-- **Identifier 不符。** Response 的 Identifier 和等待中的 Request 不同時靜默丟棄（RFC 3748 第 4.1 節），對話照常繼續，只算一輪；開 debug 等級才看得到。
-- **設備重新開始。** 同一台設備開新對話時，它還停在 EAP Identity 的舊對話會被取代，計入 `result="replaced"`。已經開始握手的不受影響。沒有 `Calling-Station-Id` 的請求無法分辨設備，不會取代，也不套用 `max_sessions_per_device`。
-- **其他負擔。** TLS 訊息超過 64 KiB 就結束對話。閒置超過 `session_timeout_ms` 的對話會被丟棄。
-- **TLS。** EAP-TLS 支援 1.2 和 1.3，PEAP 和 TTLS 只用 1.2。不使用系統根憑證，撤銷檢查見下方 CRL。只支援 rustls 的安全加密套件，太舊的用戶端可能連不上。
-- **PEAP、TTLS 為什麼不用 TLS 1.3（評估，尚未在實機驗證）：** RFC 9427 定義了 TTLS（和 TEAP、EAP-FAST）在 TLS 1.3 上的金鑰匯出方式；PEAP 不在它的範圍，各家自己實作。Windows 11 22H2 起 PEAP 和 TTLS 預設用 TLS 1.3，但伺服器只提供 1.2 時會用 1.2，所以不影響連線（Microsoft 文件也寫 NPS 不支援 TLS 1.3）。社群回報 Windows 11 的 TTLS 搭配 TLS 1.3 和 session 恢復時會出問題；wpa_supplicant 2.10 起支援。TLS 1.3 對 PEAP、TTLS 的好處主要是少一個來回，前向保密在 TLS 1.2 的 ECDHE 已經有了，而內層密碼本來就在加密通道裡。因此目前不做，等有用戶端只支援 TLS 1.3，或實機測試發現需要時再評估。
-- **憑證。** 伺服器憑證的 EKU 建議包含 serverAuth，部分用戶端會檢查（依我的認知，尚未在實機驗證）。登入量大時用 ECDSA P-256 的憑證：每次登入都是完整的 TLS 握手，同樣的機器上 ECDSA 每次登入的 CPU 約是 RSA 2048 的三分之一，吞吐約 2 到 3 倍（第 9 節〈EAP 登入〉的量測）。ECDSA 的相容性（查資料整理，尚未在實機驗證）：
-  - **曲線用 P-256，不要用 P-384。** 有報告指出 Android 7.0 的橢圓曲線只支援 P-256，P-384 的憑證鏈在那個版本會失敗（社群回報，不是官方文件）。CA 和中繼憑證也一樣。
-  - **Windows 10 以後**預設啟用 `TLS_ECDHE_ECDSA_WITH_AES_128/256_GCM` 等套件，排在 RSA 套件之前（Microsoft 的 Schannel 文件）。
-  - **能用 RSA 憑證連上的用戶端，大多也能用 ECDSA：** rradius 的 TLS 1.2 只提供 ECDHE 搭配 AES-GCM 或 ChaCha20 的套件，用戶端一定要支援 ECDHE；目前查到有支援這些套件的 TLS 實作，也都支援 ECDSA 簽章。macOS、iOS、Android 是依我的認知。
-  - **不確定時先保留 RSA：** 伺服器一次只用一張憑證，換成 ECDSA 前，用各種設備連一次確認。
-- **金鑰。** 會以 `MS-MPPE-Recv-Key`、`MS-MPPE-Send-Key` 回給設備，MSK 和 TLS 內容不會寫進記錄。
-- **認證紀錄。** 每段以接受或拒絕結束的對話寫一筆，`chain` 是 `eap`，`handler` 依方法是 `eap-tls`、`eap-peap` 或 `eap-ttls`；中間每一輪不寫。不屬於任何對話的請求（例如未知的 `State`）一樣回 Access-Reject，但只寫 WARN 日誌。逾時的對話沒有紀錄，看 `result="timeout"`。PEAP 的密碼被拒時，當下就寫日誌和紀錄，不等用戶端走完，紀錄的 `account` 是正規化後的名稱。
-- **重新載入。** SIGHUP 會重讀這個區段和憑證，新對話用新設定，進行中的用舊設定做完，包括 `match_identity` 和 `session_timeout_ms`；移除這個區段時也一樣，進行中的對話走完 EAP 才結束。CRL 更新後要送 SIGHUP。
-- **CRL 要涵蓋每一層 CA。** 設了 `crl_file`，憑證鏈上每一個 CA 都要有對應的 CRL，查不到撤銷狀態就拒絕，日誌會寫 `UnknownRevocationStatus`。有中繼 CA 時，把根 CA 和中繼 CA 的 CRL 串接放進同一個檔案。
+- **A valid certificate does not mean the login is allowed.** After the handshake succeeds, the name is passed to this client's auth chain, or to the top-level script for a client without a chain. A rejection is an Access-Reject, so a disabled account does not have to wait for the CRL, and reply attributes such as the VLAN can depend on the user.
+- **How the chain decides.** The password is not compared after a certificate is accepted, so the handler has to decide separately whether the account can be used. When `all_accept` contains `sql` or `ldap`, one of them has to accept for the login to pass (section 3.2); a script after them accepting alone is rejected; `ldap` without `certificate_filter` does not count as accepting. To let only a script judge the certificate, do not put `sql` or `ldap` in the same chain, or use `first_match`:
+  - **`sql`:** By default it uses `user_query`, and rejects when the first column is NULL, empty, or only a prefix such as `{clear}` or `{nthash}`, the same as a password login, so clearing the password also disables certificate login. When you use only certificates and store no password, set `certificate_query`, for example `SELECT 1 FROM users WHERE username = ? AND enabled = 1`; it accepts when the query finds a row. `default_user` does not apply.
+  - **`ldap`:** A search alone cannot tell that an account is locked, so set `certificate_filter` to accept certificate logins, and write the disabling conditions into it, for example `(&(uid={user})(!(pwdAccountLockedTime=*)))` for OpenLDAP and `(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))` for AD. These two examples depend on how the directory is configured, so check them on your own directory first. It accepts when the search finds the entry and it matches `required_groups`, with no bind. Without the setting it is skipped and the next handler decides, and it does not connect to the directory.
+  - **`lua`:** The script decides. The script can use the global variables `eap_method` (`"tls"`), `tls_subject` (the certificate subject) and `tls_subject_attrs` (a table split by field). **To judge a certificate field, use `tls_subject_attrs`, not `find` on `tls_subject`:** a certificate whose CN is `x, OU=admins` has the text `CN=x\, OU=admins`, which still contains `OU=admins`.
+- **Keys in memory.** The MSK, the NT hash and the keys derived from it, and the PAP password are overwritten after use in rradius's own code, and `Debug` does not print the password. This only narrows the exposure: copies inside the TLS, hash and LDAP libraries, the `User-Password` that a script receives, and passwords read from the database cannot be cleared. To protect against core dump leaks, turn off core dumps at the system level.
+- **Where the name comes from.** The name of a certificate is its DNS SANs and email SANs; the CN is used only when it has neither. If the SAN cannot be read, or contains a name that is not text, the certificate is rejected and the CN is not used instead. A CN in the name is accepted only as UTF8String, PrintableString, IA5String or NumericString; other types are not used to log in even when `tls_subject` can read them. The EAP Identity has to match one of the names, ignoring case, or it is rejected. When clients fill the Identity with an anonymous value, set `match_identity = false` to use the first name. The name always uses the spelling in the certificate, and the `User-Name` the script sees is that name. When the script or chain does not return a `User-Name`, the Access-Accept carries this name, so the device's logs and accounting use it instead of the value the client filled in.
+- **Certificate login does not strip the realm.** When a chain sets `strip_realm`, a name that changes in more than case is rejected: for example `alice@partner.example` does not log in as `alice`, because the certificate proves the full name. Store the full name in the database, or let these clients use a chain without `strip_realm`. `lowercase` only lets ASCII letter case through: a change to a non-ASCII character (for example `É` or the Kelvin sign) is also rejected, because the Kelvin sign in lower case is the `k` of a different account.
+- **One authentication must stay on one node.** The TLS state of a conversation exists only on the node that received it and cannot be taken over by another node. A normal primary/standby setup is fine: when the node switches, the client authenticates again. **Behind a load balancer, pin the node by source,** otherwise each round lands on a different node and fails, because the `State` is not found on the other node.
+- **Message-Authenticator is always required.** A packet with `EAP-Message` and without this attribute is dropped, whatever the client's `require_message_authenticator` says (RFC 3579).
+- **A conversation is bound to the device.** Every round has to match the `State`, the client and the `Calling-Station-Id`; another device cannot take it over.
+- **A conversation has an overall limit.** A conversation has at most 256 requests and lives at most four times `session_timeout_ms` (2 minutes by default), however busy it is. So after a SIGHUP updates the CRL, conversations in progress under the old settings end within this time at the latest. A fragment with no data but the More flag ends the conversation.
+- **The load from unauthenticated conversations is limited.** Anyone can open a conversation before the handshake, so when `max_sessions` and `max_sessions_per_client` are full, one conversation in that scope is evicted and counted in `result="evicted"`: first from the conversations still at the EAP Identity, and only if there are none, from all of them, always the one that has gone longest without a request. A conversation that holds a place by sending one packet is evicted first, so when random MACs flood the table, users who have already answered one round are not affected, and neither are those waiting on a slow LDAP. This only raises the cost: an attacker who is willing to answer one more round is on the same level as a normal conversation. When the traffic is so heavy that new users are replaced before they answer the first round, raise the limits; a `result="evicted"` that keeps increasing is the reminder. When `max_sessions_per_device` (by client plus `Calling-Station-Id`) is full, the server does not answer and the device retransmits, and it is counted in `result="overload"`. When all users go through one controller or RadSec proxy, that is one client, so raise `max_sessions_per_client` if peak logins are high.
+- **Identifier mismatch.** A Response whose Identifier differs from the waiting Request is dropped silently (RFC 3748 section 4.1); the conversation continues as usual and it counts as one round; you can see it only at debug level.
+- **A device starts over.** When the same device opens a new conversation, its old conversation that is still at the EAP Identity is replaced and counted in `result="replaced"`. A conversation whose handshake has started is not affected. A request without `Calling-Station-Id` cannot be matched to a device, so it replaces nothing and `max_sessions_per_device` does not apply to it.
+- **Other limits.** A TLS message over 64 KiB ends the conversation. A conversation idle for longer than `session_timeout_ms` is dropped.
+- **TLS.** EAP-TLS supports 1.2 and 1.3; PEAP and TTLS use only 1.2. System root certificates are not used; see CRL below for revocation checking. Only the secure cipher suites of rustls are supported, so very old clients may not connect.
+- **Why PEAP and TTLS do not use TLS 1.3 (an evaluation, not yet verified on real hardware):** RFC 9427 defines how TTLS (and TEAP, EAP-FAST) export keys over TLS 1.3; PEAP is outside its scope, and each vendor implements it on its own. From Windows 11 22H2, PEAP and TTLS use TLS 1.3 by default, but use 1.2 when the server offers only 1.2, so connections are not affected (Microsoft's documentation also says NPS does not support TLS 1.3). The community reports problems with TTLS on Windows 11 over TLS 1.3 with session resumption; wpa_supplicant supports it from 2.10. The benefit of TLS 1.3 for PEAP and TTLS is mainly one fewer round trip; forward secrecy is already there with ECDHE in TLS 1.2, and the inner password is in an encrypted tunnel anyway. So it is not done for now; it will be evaluated when a client supports only TLS 1.3, or when testing on real hardware shows a need.
+- **Certificates.** The EKU of the server certificate should include serverAuth, which some clients check (to my knowledge, not yet verified on real hardware). For high login volumes, use an ECDSA P-256 certificate: every login is a full TLS handshake, and on the same machine ECDSA takes about one third of the CPU per login of RSA 2048, with about 2 to 3 times the throughput (the measurements in section 9, "EAP logins"). ECDSA compatibility (compiled from research, not yet verified on real hardware):
+  - **Use the P-256 curve, not P-384.** There are reports that Android 7.0 supports only P-256 among the elliptic curves, and a P-384 certificate chain fails on that version (community reports, not official documentation). The same applies to the CA and intermediate certificates.
+  - **Windows 10 and later** enable suites such as `TLS_ECDHE_ECDSA_WITH_AES_128/256_GCM` by default, ahead of the RSA suites (Microsoft's Schannel documentation).
+  - **Most clients that can connect with an RSA certificate can also use ECDSA:** the TLS 1.2 of rradius offers only suites with ECDHE and AES-GCM or ChaCha20, so the client has to support ECDHE; the TLS implementations found so far that support these suites also support ECDSA signatures. For macOS, iOS and Android this is to my knowledge.
+  - **When unsure, keep RSA for now:** the server uses one certificate at a time, so before switching to ECDSA, connect once with each kind of device to check.
+- **Keys.** They are returned to the device as `MS-MPPE-Recv-Key` and `MS-MPPE-Send-Key`; the MSK and TLS contents are not written to the logs.
+- **Authentication records.** Each conversation that ends in accept or reject writes one record, with `chain` set to `eap` and `handler` set to `eap-tls`, `eap-peap` or `eap-ttls` by method; the rounds in between write nothing. A request that belongs to no conversation (for example an unknown `State`) also gets an Access-Reject, but only a WARN log is written. A conversation that times out has no record; look at `result="timeout"`. When PEAP rejects a password, the log and record are written right then, without waiting for the client to finish, and the `account` of the record is the normalized name.
+- **Reload.** SIGHUP rereads this section and the certificates; new conversations use the new settings, and conversations in progress finish with the old ones, including `match_identity` and `session_timeout_ms`; the same applies when the section is removed, and conversations in progress finish EAP before ending. Send SIGHUP after the CRL is updated.
+- **The CRL must cover every CA.** When `crl_file` is set, every CA in the certificate chain needs a matching CRL, and the certificate is rejected when the revocation status cannot be found; the log says `UnknownRevocationStatus`. With an intermediate CA, concatenate the CRLs of the root CA and the intermediate CA into the same file.
 
-**每個 client 的方法**
+**Methods per client**
 
 ```toml
 [radius.eap]
@@ -1164,72 +1164,72 @@ methods = ["tls", "peap"]
 name = "wifi-corp"
 address = "10.0.0.1"
 secret_file = "wifi-corp.secret"
-eap_methods = ["tls"]          # 只用憑證，用戶端不能換成密碼
+eap_methods = ["tls"]          # certificates only, the client cannot switch to passwords
 
 [[radius.clients]]
 name = "wifi-guest"
 address = "10.0.0.2"
 secret_file = "wifi-guest.secret"
 auth = "guest"
-eap_methods = ["peap", "tls"]  # 先提供 peap，用戶端可以用 Nak 換 tls
+eap_methods = ["peap", "tls"]  # offers peap first, the client can switch to tls with a Nak
 ```
 
-- `methods` 有多個方法時，**每個 RADIUS client 都一定要設 `eap_methods`**，否則啟動失敗。用戶端可以用 Nak 換方法，所以加一個方法給某台 NAS，不能順便開放給所有 NAS，否則只用憑證的 NAS 也會接受密碼。
-- 列表的順序就是提供的順序，只能列 `methods` 裡有的方法。不跑 EAP 的 client 設 `eap_methods = []`，它的 EAP 請求會得到 EAP-Failure。
-- 只有一個方法時不用設。
+- When `methods` has more than one method, **every RADIUS client must set `eap_methods`,** or startup fails. A client can switch methods with a Nak, so adding a method for one NAS must not open it to all NAS, otherwise a NAS that uses only certificates would also accept passwords.
+- The order of the list is the order of the offer, and it can list only methods that are in `methods`. For a client that does not run EAP, set `eap_methods = []`; its EAP requests get an EAP-Failure.
+- With only one method, you do not have to set it.
 
-**要用哪一個？** 每台裝置都發得了憑證就用 `tls`。要用帳號密碼時，看密碼怎麼存：明文或 `{nthash}` 用 `peap`，各作業系統內建；只存雜湊（例如 `{argon2}`）或要 `ldap` 的 `bind` 模式就用 `ttls` 的內層 PAP。
+**Which one to use?** If every device can be issued a certificate, use `tls`. To use accounts and passwords, it depends on how the passwords are stored: for plain text or `{nthash}`, use `peap`, which every operating system has built in; for only a hash (for example `{argon2}`), or for the `bind` mode of `ldap`, use the inner PAP of `ttls`.
 
 **PEAP-MSCHAPv2**
 
-- **用戶端一定要驗證伺服器憑證。** MS-CHAPv2 本身很弱，保護全靠 TLS 通道。用戶端沒有設定驗證伺服器憑證時，假的基地台可以拿到密碼的雜湊，這是最常見的部署錯誤。
-- **一定要有串接。** `methods` 有 `peap` 而沒有 `[auth]` 時啟動失敗；client 沒有串接時，對話以 EAP-Failure 結束，日誌寫明原因。
-- **密碼要能讀到。** MS-CHAPv2 要比對明文或 NT 雜湊，所以 `sql` 處理器的密碼要是明文或 `{nthash}`；`ldap` 處理器要用 `password_check = "attribute"`，**`bind` 模式無法使用**。
-- **一定要真的比對過密碼。** 只有處理器比對過密碼才算通過；`lua` 處理器回 `accept` 時視為拒絕，它自己設的 `MS-CHAP2-Success` 也會被丟掉，所以腳本寫錯不會變成不驗密碼。內層的金鑰不會送出，設備拿到的金鑰來自 TLS 通道。
-- **名稱。** 串接和認證紀錄的 `account` 用內層名稱，認證紀錄的 `user` 是外層名稱，外層名稱可以是假的，不用來做任何決定。Access-Accept 帶串接正規化後的帳號名稱當 `User-Name`，除非串接自己回了一個。`default_user` 不適用。
-- **內層名稱。** 超過 253 octets 就拒絕，不會執行串接，和 TTLS 相同。
-- **範圍。** 只有 PEAPv0、內層 EAP-MSCHAPv2、TLS 1.2。沒有 PEAPv1、cryptobinding、內層 GTC、改密碼和用戶端憑證。TLS 1.3 不開放，因為各用戶端的支援情況沒有資料。內層最多 8 輪，正常是 4 輪。密碼錯誤不重試。
-- **腳本。** 串接裡的 `lua` 處理器看到 `eap_method` 是 `"peap"`，`tls_subject` 是 `nil`。
+- **The client must verify the server certificate.** MS-CHAPv2 itself is weak, and the protection comes entirely from the TLS tunnel. When a client is not set to verify the server certificate, a fake access point can get the hash of the password; this is the most common deployment mistake.
+- **A chain is required.** Startup fails when `methods` has `peap` and there is no `[auth]`; when a client has no chain, the conversation ends with an EAP-Failure and the log gives the reason.
+- **The password must be readable.** MS-CHAPv2 compares the plain text or the NT hash, so the password of the `sql` handler has to be plain text or `{nthash}`; the `ldap` handler has to use `password_check = "attribute"`, and **the `bind` mode cannot be used**.
+- **The password must really be compared.** The login passes only when a handler has compared the password; when a `lua` handler returns `accept`, it is treated as a rejection, and the `MS-CHAP2-Success` it sets itself is also dropped, so a script mistake does not turn into skipping the password check. The inner keys are not sent; the keys the device gets come from the TLS tunnel.
+- **Names.** The chain and the `account` of the authentication record use the inner name, and the `user` of the authentication record is the outer name; the outer name can be fake and is not used for any decision. The Access-Accept carries the account name normalized by the chain as `User-Name`, unless the chain returned one itself. `default_user` does not apply.
+- **Inner name.** Over 253 octets it is rejected and the chain is not run, the same as TTLS.
+- **Scope.** Only PEAPv0, inner EAP-MSCHAPv2 and TLS 1.2. There is no PEAPv1, cryptobinding, inner GTC, password change or client certificate. TLS 1.3 is not offered, because there is no data on how clients support it. The inner part has at most 8 rounds, normally 4. A wrong password is not retried.
+- **Script.** A `lua` handler in the chain sees `eap_method` as `"peap"` and `tls_subject` as `nil`.
 
 **EAP-TTLS**
 
-- **用戶端一定要驗證伺服器憑證，這裡比 PEAP 更重要。** 內層 PAP 把明文密碼送進 TLS 通道。用戶端沒有驗證伺服器憑證時，假的基地台直接拿到密碼，不只是雜湊。
-- **內層 PAP：** `sql` 處理器可以比對雜湊，`ldap` 處理器可以用 `bind` 模式，這是 PEAP 做不到的。名稱超過 253 octets 或密碼超過 128 octets 會直接拒絕。
-- **一定要真的比對過密碼。** 通過的處理器要是 `sql`、`ldap`，或設了 `verifies_password = true` 的 `lua`。沒有設定的 `lua` 處理器回 `accept` 視為拒絕，日誌寫 `without checking a password`。原因是給 EAP-TLS 用的腳本常常只檢查帳號是否啟用，把 `ttls` 加進 `eap_methods` 不該讓它變成任何密碼都通過，而且內層方法是用戶端自己選的。`all_accept` 串接裡，只要有一個比對過密碼的處理器接受就算數；`sql` 查不到名稱回「略過」，不算比對過。
-- **內層 MS-CHAPv2：** 和 PEAP 相同，密碼要是明文或 `{nthash}`，`lua` 處理器不能通過。challenge 要是 TLS 通道匯出的值，用戶端自己選的會被拒絕。
-- **腳本不要記錄密碼。** 內層 PAP 時，串接裡的 `lua` 處理器看得到 `User-Password`。腳本自己比對密碼時要設 `verifies_password = true`，也要自己負責不寫進日誌。伺服器本身不會記錄它。腳本看到 `eap_method` 是 `"ttls"`。
-- **其他和 PEAP 相同：** 一定要有串接，`default_user` 不適用，`account` 和 Access-Accept 的 `User-Name` 用內層名稱正規化後的結果，外層名稱不做任何決定，拒絕時立刻記錄一筆。內層沒有名稱就拒絕。
-- **範圍。** 只有 TTLSv0、TLS 1.2，內層只有 PAP 和 MS-CHAPv2。沒有內層 EAP、CHAP、MS-CHAPv1 和用戶端憑證。帶 M 旗標而不認得的 AVP 會結束對話。**沒有在實體設備上測試過**，各作業系統預設的內層方法不同，部署時要確認。
+- **The client must verify the server certificate, and here it matters more than for PEAP.** The inner PAP sends the plain text password into the TLS tunnel. When the client does not verify the server certificate, a fake access point gets the password directly, not only a hash.
+- **Inner PAP:** The `sql` handler can compare a hash and the `ldap` handler can use the `bind` mode, which PEAP cannot do. A name over 253 octets or a password over 128 octets is rejected directly.
+- **The password must really be compared.** The handler that passes must be `sql`, `ldap`, or a `lua` with `verifies_password = true`. A `lua` handler without that setting that returns `accept` is treated as a rejection, and the log says `without checking a password`. The reason is that a script written for EAP-TLS often only checks whether the account is enabled, and adding `ttls` to `eap_methods` must not make it pass any password; the inner method is also chosen by the client itself. In an `all_accept` chain, one handler that compared the password and accepted is enough; when `sql` cannot find the name, it returns "skip", which does not count as having compared.
+- **Inner MS-CHAPv2:** The same as PEAP: the password has to be plain text or `{nthash}`, and a `lua` handler cannot pass it. The challenge has to be the value exported from the TLS tunnel; one chosen by the client itself is rejected.
+- **A script must not log passwords.** With the inner PAP, a `lua` handler in the chain can see `User-Password`. A script that compares the password itself has to set `verifies_password = true` and has to make sure it does not write it to the log. The server itself does not log it. The script sees `eap_method` as `"ttls"`.
+- **Otherwise the same as PEAP:** a chain is required, `default_user` does not apply, the `account` and the `User-Name` of the Access-Accept use the normalized inner name, the outer name decides nothing, and a rejection writes a record right away. A missing inner name is rejected.
+- **Scope.** Only TTLSv0 and TLS 1.2, with only PAP and MS-CHAPv2 inside. There is no inner EAP, CHAP, MS-CHAPv1 or client certificate. An AVP with the M flag that is not recognized ends the conversation. **It has not been tested on real devices,** and the default inner method differs between operating systems, so check it when you deploy.
 
-量測（Docker Desktop，Linux aarch64 容器，14 核心，Apple M4 Max，release 建置，`eapol_test` 和 rradius 在同一台機器；2048 位元 RSA 憑證，`fragment_size` 預設 1000，`match_identity` 開啟）：
+Measurements (Docker Desktop, Linux aarch64 container, 14 cores, Apple M4 Max, release build, `eapol_test` and rradius on the same machine; 2048-bit RSA certificates, default `fragment_size` of 1000, `match_identity` on):
 
-| 項目 | TLS 1.2 | TLS 1.3 |
+| Item | TLS 1.2 | TLS 1.3 |
 |------|---------|---------|
-| 一次登入的 RADIUS 回合數 | 6 | 7 |
-| 一次登入的時間（連續 50 次的平均，含啟動 `eapol_test`） | 5.7 ms | 6.1 ms |
-| 伺服器 CPU（50 次共 4 個 10 ms 刻度，只是大略值） | 約 0.8 ms | 約 0.8 ms |
+| RADIUS round trips per login | 6 | 7 |
+| Time per login (average of 50 in a row, including starting `eapol_test`) | 5.7 ms | 6.1 ms |
+| Server CPU (4 ticks of 10 ms for 50 logins, only a rough value) | about 0.8 ms | about 0.8 ms |
 
-- **每個開啟中的對話占用的記憶體：** 剛回 EAP-TLS Start 時約 3.6 KB，收到 ClientHello、回出伺服器憑證後約 13.6 KB（各開 2000 個，看行程 RSS 的差）。所以預設的 `max_sessions` 全滿時約 56 MB。
-- **最壞情況：** 對方把分段送到接近 64 KiB 上限後就停下，每個對話約 85 KB（開 1000 個，看行程 RSS 的差），未認證也做得到。所以 `max_sessions` 全滿時約 350 MB，單一 client 達到 `max_sessions_per_client` 時約 87 MB，要以這個數字估記憶體。閒置逾時後記憶體會回到原本的水準。
-- **洗滿時的登入：** 用隨機 MAC 從同一個 client 開新對話（每秒 500、2000 和約 37000 個，後者是這個環境的極限），同時從那個 client 連續登入，三種流量各約 1500 次登入都成功。這個環境兩輪之間只隔幾毫秒。這些數字是改成先踢只送過 Identity 的對話之前量的。現在只有 Identity 到第一個回應之間要趕得上：間隔要短於 `max_sessions_per_client` 除以每秒新對話數，例如 1024 除以 2000 約 0.5 秒；這是計算值，無線網路的實際間隔沒有量過。
-- **未認證的負擔：** 回應一個 ClientHello 約 0.46 ms CPU（TLS 1.3，連續 2000 個）。
-- **憑證鏈長度：** 用戶端送 RSA-4096 的葉憑證（1442 位元組）和中繼 CA（1094 位元組），TLS 1.3 可以完成登入，遠低於 64 KiB 的上限。
+- **Memory per open conversation:** about 3.6 KB right after the EAP-TLS Start is sent, and about 13.6 KB after the ClientHello is received and the server certificate is sent (2000 of each opened, looking at the difference in process RSS). So the default `max_sessions` full is about 56 MB.
+- **Worst case:** when the peer sends fragments up to near the 64 KiB limit and then stops, each conversation takes about 85 KB (1000 opened, looking at the difference in process RSS), and this can be done unauthenticated. So with `max_sessions` full it is about 350 MB, and with a single client at `max_sessions_per_client` it is about 87 MB; use these numbers to estimate memory. After the idle timeout, memory returns to the original level.
+- **Logins during a flood:** new conversations were opened with random MACs from the same client (500, 2000 and about 37000 per second, the last being the limit of this environment) while logging in continuously from that client; in all three traffic levels about 1500 logins each succeeded. In this environment the gap between two rounds is only a few milliseconds. These numbers were measured before the change to evict conversations that sent only an Identity first. Now only the time from the Identity to the first response has to be caught: the gap has to be shorter than `max_sessions_per_client` divided by the new conversations per second, for example 1024 divided by 2000 is about 0.5 seconds; this is a calculated value, and the real gap on wireless networks has not been measured.
+- **Unauthenticated load:** answering one ClientHello takes about 0.46 ms of CPU (TLS 1.3, 2000 in a row).
+- **Certificate chain length:** with a client sending an RSA-4096 leaf certificate (1442 bytes) and an intermediate CA (1094 bytes), TLS 1.3 completes the login, far below the 64 KiB limit.
 
-這些數字只代表上述環境，不是效能保證，所以預設值維持不變。
+These numbers represent only the environment above and are not a performance guarantee, so the defaults stay unchanged.
 
-### 2.13 代理 `[proxy]`
+### 2.13 Proxy `[proxy]`
 
-代理（`[proxy]`）需要 rradius-enterprise。
+The proxy (`[proxy]`) needs rradius-enterprise.
 
-### 2.14 帳號管理 `[accounts]`
+### 2.14 Account management `[accounts]`
 
-帳號存在叢集的資料表時，用 `rradiusd user` 新增、改密碼、啟用、停用、刪除和查看帳號。寫入經過叢集，所有節點立刻一致，下一次登入就看得到，不必寫 migration、重啟或 SIGHUP。
+When accounts are kept in a cluster table, use `rradiusd user` to add, change the password of, enable, disable, delete and view accounts. Writes go through the cluster and all nodes agree immediately, so the next login sees them, with no migration, restart or SIGHUP.
 
-資料表的結構由你決定，所以每個動作執行哪一條 SQL 寫在 `[accounts]`：
+You decide the structure of the table, so the SQL to run for each action is written in `[accounts]`:
 
 ```toml
 [accounts]
-scheme = "bcrypt"   # 預設；見下表
+scheme = "bcrypt"   # default; see the table below
 add = "INSERT INTO users (username, password) VALUES (?1, ?2)"
 passwd = "UPDATE users SET password = ?2 WHERE username = ?1"
 enable = "UPDATE users SET enabled = 1 WHERE username = ?1"
@@ -1238,12 +1238,12 @@ delete = "DELETE FROM users WHERE username = ?1"
 show = "SELECT username, enabled FROM users WHERE username = ?1"
 ```
 
-- **`?1` 是帳號名稱，`?2` 是存放用的密碼值。** 只能用這兩個有編號的參數，不能用沒有編號的 `?`，以免順序寫錯把密碼存進帳號欄位。每條都一定要用 `?1`：少了它，例如 `UPDATE users SET password = ?2` 漏了 `WHERE`，會改到所有帳號。`add` 和 `passwd` 一定要用 `?2`，其他動作不能用。字串和註解裡的 `?` 不算。違反時啟動、`check` 和指令都會失敗並指出設定名稱。
-- 每個動作都可以省略；省略的動作執行時以狀態 2 結束，說明缺哪個設定。
-- `disable` 要搭配 `user_query` 一起設計：例如 `user_query` 只查 `enabled = 1` 的帳號，停用才會擋下登入。
-- `show` 選哪些欄位由你決定，會原樣印出，所以不要選密碼欄。
+- **`?1` is the account name and `?2` is the value stored for the password.** Only these two numbered parameters can be used, not an unnumbered `?`, so that a wrong order cannot store the password in the account column. Every statement has to use `?1`: without it, for example an `UPDATE users SET password = ?2` that is missing the `WHERE`, would change every account. `add` and `passwd` have to use `?2`, and the other actions must not. A `?` inside a string or comment does not count. When this is violated, startup, `check` and the commands all fail and name the setting.
+- Every action can be omitted; an omitted action ends with status 2 when run, saying which setting is missing.
+- `disable` has to be designed together with `user_query`: for example, `user_query` has to select only accounts with `enabled = 1`, otherwise disabling does not block the login.
+- You decide which columns `show` selects, and they are printed as they are, so do not select the password column.
 
-**指令：**
+**Commands:**
 
 ```bash
 rradiusd user add --config /etc/rradius/rradius.toml alice
@@ -1252,144 +1252,144 @@ rradiusd user disable --config /etc/rradius/rradius.toml alice
 rradiusd user show --config /etc/rradius/rradius.toml alice
 ```
 
-設定檔就是預設設定檔（第 1 節）時可以省略 `--config`，例如 `rradiusd user show alice`。
+When the configuration file is the default one (section 1), you can omit `--config`, for example `rradiusd user show alice`.
 
-- **密碼只從標準輸入讀，** 不放在命令列（會留在 shell 歷史和程序列表）。在終端機上會問兩次、不顯示輸入；兩次不同或空的密碼都會拒絕，什麼都不寫。從管線讀時用第一行，例如批次匯入：`printf '%s\n' "$PW" | rradiusd user add --config c.toml alice`。
-- **名稱和登入時一樣正規化：** 套用預設串接的 `[auth.username]`（去掉 realm、轉小寫、`allowed` 檢查），所以 `user add Alice@Corp` 在 `strip_realm = "suffix"`、`lowercase = true` 時存成 `alice`。具名串接自己的 `[auth.chains.<name>.username]` 不套用。
-- **經過叢集的 api 埠：** 用 `[cluster]` 的 `nodes` 位址和 `secret_api` 連線，所以叢集要在執行、多數節點要在線上，執行指令的主機要連得到 api 埠。指令不會啟動節點或建立資料目錄。
-- **`secret_api` 等於整個資料庫的鑰匙。** 能讀設定檔的人本來就能用它改任何資料表，請把設定檔和 `secret_api_file` 設成只有管理者能讀，並在節點上或經過 WireGuard（2.2 節）執行指令。
+- **The password is read only from standard input,** not placed on the command line (where it would stay in the shell history and the process list). On a terminal it asks twice and shows no input; two different passwords or an empty password are rejected and nothing is written. When reading from a pipe it uses the first line, for example for a batch import: `printf '%s\n' "$PW" | rradiusd user add --config c.toml alice`.
+- **Names are normalized the same way as at login:** the `[auth.username]` of the default chain is applied (strip the realm, lower case, the `allowed` check), so `user add Alice@Corp` is stored as `alice` with `strip_realm = "suffix"` and `lowercase = true`. The `[auth.chains.<name>.username]` of a named chain is not applied.
+- **The api port through the cluster:** it connects with the `nodes` addresses and `secret_api` of `[cluster]`, so the cluster has to be running with most nodes online, and the host running the command has to be able to reach the api port. The command does not start a node or create a data directory.
+- **`secret_api` is the key to the whole database.** Anyone who can read the configuration file can already use it to change any table, so make the configuration file and `secret_api_file` readable only by administrators, and run the commands on the node or over WireGuard (section 2.2).
 
-| `scheme` | 存成 | 適合 |
+| `scheme` | Stored as | Good for |
 | --- | --- | --- |
-| `bcrypt`（預設） | `{crypt}$2b$10$...` | 一般用途。驗證刻意很慢：2026-11-07 在 14 核心的 Apple M4 Max 上用 `rradius-bench`（PAP、併發 64）量到每秒約 281 次登入，登入量大時不夠 |
-| `sha512-crypt` | `{crypt}$6$...` | 登入量大、只用 PAP。仍有鹽和多輪雜湊，驗證快很多 |
-| `nthash` | `{nthash}...` | MS-CHAPv2、MS-CHAPv1、PEAP、EAP-TTLS 的 MS-CHAPv2（5.1、5.2 節）；PAP 也能用 |
-| `clear` | `{clear}...` | CHAP（例如 PPPoE），它只能比對明文。資料庫外洩就等於密碼外洩 |
+| `bcrypt` (default) | `{crypt}$2b$10$...` | General use. Verification is deliberately slow: measured on 2026-11-07 with `rradius-bench` (PAP, concurrency 64) on a 14-core Apple M4 Max at about 281 logins per second, which is not enough for high login volumes |
+| `sha512-crypt` | `{crypt}$6$...` | High login volumes with PAP only. It still has a salt and many hash rounds, and verification is much faster |
+| `nthash` | `{nthash}...` | MS-CHAPv2, MS-CHAPv1, PEAP, and MS-CHAPv2 in EAP-TTLS (sections 5.1 and 5.2); PAP also works |
+| `clear` | `{clear}...` | CHAP (for example PPPoE), which can only compare plain text. A database leak is a password leak |
 
-`scheme` 只影響之後寫入的密碼，已經存在的帳號保留原本的格式，伺服器照樣驗證（第 5 節）。
+`scheme` affects only passwords written afterwards; existing accounts keep their original format and the server still verifies them (section 5).
 
-| 結果 | 輸出 | 狀態碼 |
+| Result | Output | Status code |
 | --- | --- | --- |
-| 完成 | `added alice`、`password changed for alice`、`enabled alice`、`disabled alice`、`deleted alice`；`show` 印出每欄一行 `欄名=值`，多列之間空一行 | 0 |
-| 沒有符合的帳號（`passwd`、`enable`、`disable`、`delete` 改到 0 列，`show` 查無資料） | `no account alice` | 1 |
-| 資料庫拒絕，例如 `add` 已存在的帳號 | 錯誤訊息（stderr） | 1 |
-| 用法、設定、名稱或密碼有誤，沒有送出任何東西；節點拒絕 `[cluster] secret_api`（立刻回，訊息有 `refused the api secret` 與節點位址） | 錯誤訊息（stderr） | 2 |
-| 連不到叢集，或 30 秒內沒有回應 | 錯誤訊息（stderr） | 3 |
+| Done | `added alice`, `password changed for alice`, `enabled alice`, `disabled alice`, `deleted alice`; `show` prints one line `column=value` per column, with a blank line between rows | 0 |
+| No matching account (`passwd`, `enable`, `disable` and `delete` changed 0 rows, or `show` found nothing) | `no account alice` | 1 |
+| The database refuses, for example `add` for an account that already exists | An error message (stderr) | 1 |
+| The usage, configuration, name or password is wrong and nothing was sent; the node refuses the `[cluster] secret_api` (it answers immediately, and the message has `refused the api secret` and the node address) | An error message (stderr) | 2 |
+| The cluster cannot be reached, or does not answer within 30 seconds | An error message (stderr) | 3 |
 
-任何輸出和錯誤訊息都不包含密碼或存放值。
+No output or error message contains the password or the stored value.
 
-動態 client、DPSK 金鑰和 SIM 卡的管理指令（`client`、`dpsk`、`aka`，SQL 寫在 `[accounts.clients]`、`[accounts.dpsk]`、`[accounts.aka]`）需要 rradius-enterprise。
+The management commands for dynamic clients, DPSK keys and SIM cards (`client`, `dpsk`, `aka`, with the SQL written in `[accounts.clients]`, `[accounts.dpsk]` and `[accounts.aka]`) need rradius-enterprise.
 
-### 2.15 每人一把 WPA-PSK
+### 2.15 One WPA-PSK per person
 
-同一個 WPA2-PSK 的 SSID 上，讓每個使用者用自己的密碼（各廠商叫 DPSK、iPSK、MPSK、PPSK），就能在不支援 802.1X 的設備上分開每個人、撤銷單一個人的密碼、依人給 VLAN。AP 有兩種做法：
+On one WPA2-PSK SSID, giving every user their own password (vendors call it DPSK, iPSK, MPSK or PPSK) lets you tell people apart on devices that do not support 802.1X, revoke one person's password, and assign a VLAN per person. An AP does it in one of two ways:
 
-| 做法 | AP 送什麼 | rradius 怎麼做 |
+| Approach | What the AP sends | What rradius does |
 | --- | --- | --- |
-| **MAC 認證，回覆這台的 PSK** | 以設備的 MAC 當 `User-Name` 的 Access-Request | 腳本或 `sql` 處理器依 MAC 查出密碼放進回覆，見下方〈依 MAC 回覆 PSK〉 |
+| **MAC authentication, reply with this device's PSK** | An Access-Request with the device's MAC as `User-Name` | A script or the `sql` handler looks up the password by MAC and puts it in the reply, see "Replying with the PSK by MAC" below |
 
-另一種做法是從四次交握找出是哪一把（`[radius.dpsk]`），需要 rradius-enterprise。
+The other approach is to find out which key was used from the 4-way handshake (`[radius.dpsk]`), which needs rradius-enterprise.
 
-#### 依 MAC 回覆 PSK
+#### Replying with the PSK by MAC
 
-設備要先登記 MAC。AP 以 MAC 發 Access-Request，腳本依 MAC 查出密碼放進回覆。各廠商用的屬性：
+The device's MAC has to be registered first. The AP sends an Access-Request by MAC, and the script looks up the password by MAC and puts it in the reply. The attributes each vendor uses:
 
-| AP | 回覆屬性 | 寫法 |
+| AP | Reply attribute | How to write it |
 | --- | --- | --- |
 | Cisco iPSK | `Cisco-AVPair` | `set_attr('Cisco-AVPair', {'psk-mode=ascii', 'psk=' .. passphrase})` |
-| Aruba MPSK | `Aruba-MPSK-Passphrase` | `set_attr('Aruba-MPSK-Passphrase', passphrase)`，依字典自動加密 |
-| Meraki、Mist、hostapd（`wpa_psk_radius=1` 或 `2`） | `Tunnel-Password` | `set_attr('Tunnel-Password', passphrase)`，依 RFC 2868 自動加密 |
-| Ruckus | `Ruckus-DPSK` | `set_attr('Ruckus-DPSK', '\0' .. hex_to_bytes(wpa_pmk(passphrase, ssid)))`，PMK 前面加一個 0x00；`hex_to_bytes` 要自己寫 |
+| Aruba MPSK | `Aruba-MPSK-Passphrase` | `set_attr('Aruba-MPSK-Passphrase', passphrase)`, encrypted automatically according to the dictionary |
+| Meraki, Mist, hostapd (`wpa_psk_radius=1` or `2`) | `Tunnel-Password` | `set_attr('Tunnel-Password', passphrase)`, encrypted automatically according to RFC 2868 |
+| Ruckus | `Ruckus-DPSK` | `set_attr('Ruckus-DPSK', '\0' .. hex_to_bytes(wpa_pmk(passphrase, ssid)))`, with a 0x00 in front of the PMK; you have to write `hex_to_bytes` yourself |
 
-- 屬性名稱和值的格式以各廠商文件為準，上表沒有用實體設備驗證過。
-- `Cisco-AVPair` 的值會以明文送出，只在可信任的網路或 RadSec 上用。
-- `wpa_pmk` 每次都跑 4096 輪 PBKDF2，約數毫秒；設備多時把算好的 PMK 存起來，不要每次登入都算。
+- Go by each vendor's documentation for attribute names and value formats; the table above has not been verified on real devices.
+- The value of `Cisco-AVPair` is sent in plain text, so use it only on a trusted network or over RadSec.
+- `wpa_pmk` runs 4096 rounds of PBKDF2 each time, about a few milliseconds; with many devices, store the computed PMK instead of computing it at every login.
 
-### 2.16 停止 `[shutdown]`
+### 2.16 Shutdown `[shutdown]`
 
-收到第一個 SIGTERM 或 SIGINT 時，依序：
+When the first SIGTERM or SIGINT is received, it does these in order:
 
-1. **`/readyz` 回 503 `stopping`，** 但 RADIUS 和 TACACS+ 照常回應 `ready_delay_ms`，讓負載平衡器或 Kubernetes 有時間把這個節點移出、改送別台。`/livez` 不變。
-2. **停止接收：** 不再讀 RADIUS 的 UDP 埠，關閉 TACACS+ 的埠（新連線被拒），已開的 TACACS+ 連線送出手上請求的回應後關閉，不再讀下一個（進行中的 ASCII 登入可以做完，最多到它的 60 秒期限；這時連線上的其他請求不回應、直接關閉）；計費暫存停止重放，資料留在磁碟。
-3. **等處理中的請求，** 最多 `drain_ms`。全部回應完時記 `stopping: every request taken was answered`；時間到還沒做完時記 WARN，例如 `stopping: after 5000 ms, 1 RADIUS requests were still being handled and 0 TACACS+ connections open; they are cut off`，那些請求不會回應，設備會重送到別台。
-4. 設了 `[radius.accounting_log]` 時寫完它的佇列（最多 5 秒，見 2.18 節），再關閉資料庫（多節點時 hiqlite 還會等 9.5 秒，見 1. 節）、寫出記錄，以狀態碼 0 結束。
+1. **`/readyz` returns 503 `stopping`,** but RADIUS and TACACS+ answer as usual for `ready_delay_ms`, giving the load balancer or Kubernetes time to take this node out and send traffic elsewhere. `/livez` does not change.
+2. **It stops accepting:** it no longer reads the RADIUS UDP port, and closes the TACACS+ port (new connections are refused); TACACS+ connections that are already open close after sending the answer to the request in hand and do not read the next one (an ASCII login in progress can finish, up to its 60 second limit; during that time other requests on the connection are not answered, and the connection is closed directly); the accounting spool stops replaying and the data stays on disk.
+3. **It waits for requests in progress,** for at most `drain_ms`. When everything has been answered it logs `stopping: every request taken was answered`; when time runs out with work unfinished it logs a WARN, for example `stopping: after 5000 ms, 1 RADIUS requests were still being handled and 0 TACACS+ connections open; they are cut off`, and those requests get no answer, so the device retransmits to another server.
+4. When `[radius.accounting_log]` is set, it finishes writing its queue (at most 5 seconds, see section 2.18), then closes the database (with several nodes hiqlite also waits 9.5 seconds, see section 1), writes out the logs, and exits with status 0.
 
 ```toml
 [shutdown]
-ready_delay_ms = 5000 # 第 1 段；預設：[cluster].nodes 超過一個時 5000，否則 0
-drain_ms = 5000       # 第 3 段；預設 5000
+ready_delay_ms = 5000 # step 1; default: 5000 when [cluster].nodes has more than one node, otherwise 0
+drain_ms = 5000       # step 3; default 5000
 ```
 
-- 兩個值都是 0 到 60000（毫秒），超過時啟動失敗。重新載入（SIGHUP）會套用，停止時用收到訊號那一刻的設定。
-- **單節點預設不等第 1 段，** 因為沒有別台可以接手，多等只是多幾秒不回應的時間。前面有負載平衡器時，請設成至少「探針間隔 × 失敗次數」再加一點，例如 Kubernetes 範例的 readinessProbe 每 5 秒一次、失敗 1 次就移出，預設的 5 秒剛好。
-- **第二個 SIGTERM 或 SIGINT 會跳過還沒等完的第 1、3 段，** 記 `stopping: asked again; not waiting for the requests being handled`，直接進第 4 段；資料庫照樣正常關閉，不會因此縮短。
-- **寬限時間要夠：** 多節點時最多約 `ready_delay_ms` + `drain_ms` + 9.5 秒 + 記錄寫出（最多 5 秒），預設約 25 秒，所以 `docker stop -t 30`、`stop_grace_period: 30s`、Kubernetes 的 `terminationGracePeriodSeconds: 30` 都夠。調大這兩個值時一起調大寬限時間，否則被 SIGKILL，下次啟動要重建本機資料庫。
-- 啟動途中（等叢集或套用 migration 時）收到訊號不走這幾段，見 1. 節〈停止〉。
+- Both values are 0 to 60000 (milliseconds); a larger value fails startup. A reload (SIGHUP) applies them, and shutdown uses the settings from the moment the signal arrived.
+- **A single node does not wait in step 1 by default,** because no other server can take over, and waiting longer only adds seconds of no answers. With a load balancer in front, set it to at least "probe interval x number of failures" plus a little, for example the readinessProbe in the Kubernetes example runs every 5 seconds and takes the node out after 1 failure, so the default of 5 seconds is just enough.
+- **A second SIGTERM or SIGINT skips steps 1 and 3 that are not finished waiting,** logs `stopping: asked again; not waiting for the requests being handled`, and goes directly to step 4; the database still closes normally, and this does not shorten that.
+- **The grace period has to be long enough:** with several nodes it takes up to about `ready_delay_ms` + `drain_ms` + 9.5 seconds + writing the logs (at most 5 seconds), about 25 seconds by default, so `docker stop -t 30`, `stop_grace_period: 30s` and `terminationGracePeriodSeconds: 30` in Kubernetes are all enough. When you raise these two values, raise the grace period with them, otherwise a SIGKILL follows and the next startup has to rebuild the local database.
+- A signal during startup (while waiting for the cluster or applying migrations) does not go through these steps; see section 1, "Stopping".
 
-### 2.17 外部資料庫 `[databases]`
+### 2.17 External databases `[databases]`
 
-帳號表或計費表已經在 MySQL 或 PostgreSQL 裡，而且要繼續由別的系統維護時，不必搬進叢集：在這裡列出資料庫，`sql` 處理器用 `database` 指定它（3.3 節），腳本用 `db_query`、`db_execute`（4.3 節）。
+If the account table or accounting table is already in MySQL or PostgreSQL and another system keeps maintaining it, you do not need to move it into the cluster. List the database here. The `sql` handler selects it with `database` (section 3.3), and scripts use `db_query` and `db_execute` (section 4.3).
 
 ```toml
 [databases.billing]
-kind = "postgresql"              # 必填，"mysql" 或 "postgresql"
-host = "db.example.com"          # 必填
-port = 5432                      # 預設 mysql 3306、postgresql 5432
-database = "radius"              # 必填
-user = "rradius"                 # 必填
-password_file = "billing.secret" # 或 password = "..."，只能設一個
-tls = "verify"                   # 預設；"verify" 或 "off"
-ca_file = "db-ca.pem"            # 選填；沒有時信任系統的根憑證
-pool_size = 8                    # 預設，每個節點最多幾條連線
-connect_timeout_ms = 5000        # 預設，建立一條連線的時限
-required_for_ready = false       # 預設；true 時連不上就讓 /readyz 回 503
+kind = "postgresql"              # required, "mysql" or "postgresql"
+host = "db.example.com"          # required
+port = 5432                      # default: mysql 3306, postgresql 5432
+database = "radius"              # required
+user = "rradius"                 # required
+password_file = "billing.secret" # or password = "...", set only one
+tls = "verify"                   # default; "verify" or "off"
+ca_file = "db-ca.pem"            # optional; without it the system root certificates are trusted
+pool_size = 8                    # default, maximum connections per node
+connect_timeout_ms = 5000        # default, time limit for opening one connection
+required_for_ready = false       # default; when true, an unreachable database makes /readyz return 503
 ```
 
-- **名稱**只能有 ASCII 字母、數字和 `_`，例如 `billing`。不支援連線 URL。
-- **密碼。** `password_file` 去掉結尾的換行，不能是空的；相對路徑以設定檔所在目錄為準。`password` 和 `password_file` 都沒有時不送密碼。`rradiusd config show` 不顯示 `password`。PostgreSQL 不讀 `~/.pgpass`，但會讀 `PGPASSWORD` 這類環境變數：設定檔沒寫密碼而環境有 `PGPASSWORD` 時，會送出它。
-- **TLS。** `verify` 驗證憑證鏈和主機名稱（PostgreSQL 的 `verify-full`、MySQL 的 `VERIFY_IDENTITY`），憑證不是 `ca_file` 簽發的就連不上，算資料庫無法使用。`ca_file` 在 `check` 和啟動時就讀，讀不到或裡面沒有憑證時啟動失敗；`tls = "off"` 時不能設。`off` 不加密，`host` 不是本機時啟動會記 WARN，因為密碼和資料都以明文送出。
-- **MySQL 不用 TLS 時，帳號要用 `mysql_native_password`。** MySQL 8 預設的 `caching_sha2_password` 在沒有 TLS 時要用 RSA 交換密碼，rradius 沒有這部分。MySQL 8.4 預設關閉 `mysql_native_password`，要以 `--mysql-native-password=ON` 啟動，再用 `CREATE USER ... IDENTIFIED WITH mysql_native_password BY '...'` 建帳號。走 TLS 時沒有這個限制。
-- **連線池。** 啟動時只建立連線池、不連線，第一個用到的請求才連。所以資料庫沒開也能啟動，只有用到它的請求失敗。每個節點各有一個池，資料庫允許的連線數至少要是節點數 × `pool_size`。
-- **要重啟才套用。** 重新載入（SIGHUP）會列出 `[databases]` 需要重啟，執行中的連線池繼續用。處理器用到重啟前不存在的名稱時，重新載入失敗並說要重啟。
-- **`pool_size` 決定滿載時的吞吐，** 約為 `pool_size` ÷ 一次查詢的來回時間。量測（Apple M4 Max，PostgreSQL 17 在本機 Docker，`sql` 處理器的 PAP，明文密碼）：`pool_size = 8` 約 13300 次/秒，32 約 19900 次/秒；同一台機器用內建資料庫約 48000 次/秒。每秒 2000 次時兩者的 p99 都約 0.35 ms。網路較遠時每次來回較久，要更多連線才有同樣吞吐。
-- **`required_for_ready` 與 `/readyz`。** 設為 `true` 的資料庫，節點從啟動起在背景檢查：用一條不在連線池裡的連線，每 5 秒（從上一次開始算）執行 `SELECT 1`，沒有連線或上次失敗時先重新連線，每次以 `connect_timeout_ms` 為上限。連續 2 次失敗算連不上，1 次成功就恢復；啟動後第一次檢查成功前也算連不上，所以帳號資料庫連不上的新節點不會先收到流量。連不上時 `/readyz` 回 503 `database <名稱> unreachable`（2.8 節），`/livez` 不受影響，請求照常處理（用到它的照樣失敗）；狀態改變時記 WARN（連不上）或 INFO（恢復），其他失敗的檢查只在 debug 記錄。
-  - **多久會發現：** 最壞約 2 ×（5 秒 + `connect_timeout_ms`），預設約 20 秒；恢復最多 5 秒 + `connect_timeout_ms`。量測（OrbStack Docker 的 PostgreSQL 17，`connect_timeout_ms = 1000`，停止容器）：9.7 秒後回 503，資料庫回應後 0.4 秒回 200。資料庫主機斷線、封包被丟棄時每次檢查會用滿 `connect_timeout_ms`，接近最壞值。間隔與次數目前不能設定。
-  - **為什麼另開連線、在背景檢查：** 連線池滿了（流量大、查詢慢）不代表資料庫連不上，用池裡的連線檢查會讓所有節點在尖峰時一起變成未就緒；看請求的失敗則在負載平衡器停止送流量後就沒有機會恢復；在每次 `/readyz` 時才連線又可能超過 Kubernetes 探針預設的 1 秒。
-  - **何時該設：** 只有「沒有這個資料庫就無法正確回應」時。所有節點共用同一個資料庫，它停止時所有節點都會未就緒，負載平衡器沒有地方可送；只用在少數請求的資料庫不要設。每個節點會多佔它一條連線，資料庫允許的連線數要加上。
-  - **指標：** `rradius_external_db_failures_total`、`rradius_external_db_connections`、`rradius_external_db_connections_max` 每個資料庫都有，`rradius_external_db_reachable` 只有設了的才有（2.8 節）；`status` 的 External databases 段落也會列出。
-- **時限。** `sql` 處理器的 `timeout_ms` 包括等連線池給連線的時間。腳本的 `db_query`、`db_execute` 和 `sql_query`、`sql_execute` 共用一個請求的 `[lua] query_timeout_ms`。
-- **失敗時。** 連不上、逾時、TLS 失敗，以及表示資料庫忙的錯誤（PostgreSQL 的 SQLSTATE 08、53、57 類和 40001、40P01；MySQL 的 1040、1053、1205、1213、1317）算資料庫無法使用：登入不回應，讓設備重送或改送別台；設了計費暫存（2.11 節）時計費寫進暫存，恢復後重放。語法錯誤、約束違反（例如主鍵重複）這類陳述式本身的錯誤，登入時拒絕；計費時不回應，從暫存重放時移到 `rejected.log`。
-- **佔位符。** 只用 `?`，依序綁定；PostgreSQL 會改成 `$1`、`$2` 送出，MySQL 原樣送出。單引號字串、雙引號名稱和註解（`--`、`/* */`）裡的 `?` 不算；PostgreSQL 的 `::text` 轉型可以用。`?1`、`:name`、`$name` 啟動或呼叫時就會出錯。不支援的寫法：方括號裡的 `?`（例如 PostgreSQL 陣列的 `a[?]`，方括號會被當成名稱的引號，數量不符而出錯）、PostgreSQL 的 `$$` 字串（裡面的 `?` 會被當成佔位符）、PostgreSQL 的 `?` 運算子（jsonb 的 `?`、`?|`、`?&`，請改用 `jsonb_exists()` 這類函式）、MySQL 用反斜線跳脫的引號（`'it\'s'`，請寫成 `'it''s'`）。
-- **PostgreSQL 的參數有型別，不會自動轉換：** 字串綁成 `text`，整數和 `true`、`false` 綁成 `bigint`（1、0），其他數字綁成 `double precision`。欄位是 `boolean`、`inet`、`timestamp` 等型別時要在 SQL 裡轉，例如 `CAST(? AS inet)`、`?::inet`，布林欄位寫 `active = (? <> 0)`。不轉時 PostgreSQL 回型別錯誤，算陳述式的錯。MySQL 會自己轉換。
-- **值型別。** 整數（含 MySQL 的 `UNSIGNED`，超過 2^63−1 時出錯）、浮點數 → 數字；布林 → 1、0；文字 → 字串；二進位 → 字串；`NUMERIC`／`DECIMAL`（`SUM`、`AVG` 的結果）→ 十進位數字的字串，例如 `"12.50"`，要計算時用 `tonumber`；NULL → `nil`。其他型別（日期時間、幾何型別等）會出錯並指出欄名，請在 SQL 裡 `CAST` 成文字或數字。
+- **Name.** Only ASCII letters, digits and `_`, for example `billing`. Connection URLs are not supported.
+- **Password.** `password_file` has its trailing newline removed and must not be empty. A relative path is resolved against the directory of the configuration file. With neither `password` nor `password_file`, no password is sent. `rradiusd config show` does not display `password`. PostgreSQL does not read `~/.pgpass`, but it does read environment variables such as `PGPASSWORD`: if the configuration file has no password and the environment has `PGPASSWORD`, it is sent.
+- **TLS.** `verify` checks the certificate chain and the host name (PostgreSQL `verify-full`, MySQL `VERIFY_IDENTITY`). A certificate not issued by `ca_file` cannot connect and counts as the database being unavailable. `ca_file` is read by `check` and at startup; startup fails if it cannot be read or contains no certificate. It cannot be set when `tls = "off"`. `off` does not encrypt, and when `host` is not the local machine startup logs a WARN, because the password and the data are sent in clear text.
+- **Without TLS, MySQL accounts must use `mysql_native_password`.** The MySQL 8 default `caching_sha2_password` needs an RSA exchange of the password when there is no TLS, and rradius does not implement that. MySQL 8.4 disables `mysql_native_password` by default: start it with `--mysql-native-password=ON`, then create the account with `CREATE USER ... IDENTIFIED WITH mysql_native_password BY '...'`. Over TLS there is no such limit.
+- **Connection pool.** At startup only the pool is created and nothing connects; the first request that needs the database opens the connection. So the server starts even when the database is down, and only the requests that use it fail. Each node has its own pool, and the number of connections the database allows must be at least the number of nodes × `pool_size`.
+- **Needs a restart.** A reload (SIGHUP) reports that `[databases]` needs a restart, and the running pools keep being used. If a handler uses a name that did not exist before the restart, the reload fails and says a restart is needed.
+- **`pool_size` sets the throughput at full load,** roughly `pool_size` ÷ the round-trip time of one query. Measured (Apple M4 Max, PostgreSQL 17 in local Docker, PAP with the `sql` handler, clear-text passwords): `pool_size = 8` gives about 13300 per second and 32 gives about 19900 per second; on the same machine the built-in database gives about 48000 per second. At 2000 per second both have a p99 of about 0.35 ms. With a more distant network each round trip takes longer, so more connections are needed for the same throughput.
+- **`required_for_ready` and `/readyz`.** For a database set to `true`, the node checks in the background from startup: on a connection that is not in the pool, it runs `SELECT 1` every 5 seconds (counted from the start of the previous check), reconnects first when there is no connection or the last check failed, and each check is capped by `connect_timeout_ms`. 2 consecutive failures count as unreachable, and 1 success restores it. Before the first successful check after startup it also counts as unreachable, so a new node whose account database is unreachable does not receive traffic first. While unreachable, `/readyz` returns 503 `database <name> unreachable` (section 2.8), `/livez` is not affected, and requests are still handled (those that use the database fail as usual). A state change logs a WARN (unreachable) or INFO (restored); other failed checks are logged only at debug.
+  - **How soon it is noticed:** at worst about 2 × (5 seconds + `connect_timeout_ms`), which is about 20 seconds by default. Recovery takes at most 5 seconds + `connect_timeout_ms`. Measured (PostgreSQL 17 in OrbStack Docker, `connect_timeout_ms = 1000`, container stopped): 503 after 9.7 seconds, and 200 0.4 seconds after the database responded. When the database host is disconnected and packets are dropped, each check uses up the whole `connect_timeout_ms`, which is close to the worst case. The interval and the count cannot be configured at present.
+  - **Why a separate connection and a background check:** a full pool (heavy traffic, slow queries) does not mean the database is unreachable, and checking through a pooled connection would make all nodes unready together at peak load. Judging by request failures would leave no chance to recover once the load balancer stops sending traffic. Connecting on each `/readyz` could exceed the default 1-second Kubernetes probe timeout.
+  - **When to set it:** only when "without this database it cannot respond correctly". All nodes share the same database, so when it is down all nodes become unready and the load balancer has nowhere to send traffic. Do not set it for a database used by only a few requests. Each node holds one more connection to it, and the number of connections the database allows must be increased accordingly.
+  - **Metrics:** `rradius_external_db_failures_total`, `rradius_external_db_connections` and `rradius_external_db_connections_max` exist for every database, and `rradius_external_db_reachable` exists only for the ones that are set (section 2.8). The External databases section of `status` also lists them.
+- **Time limits.** The `timeout_ms` of the `sql` handler includes the time spent waiting for the pool to give a connection. A script's `db_query` and `db_execute` share one request's `[lua] query_timeout_ms` with `sql_query` and `sql_execute`.
+- **On failure.** Failure to connect, a timeout, a TLS failure and errors that mean the database is busy (PostgreSQL SQLSTATE classes 08, 53 and 57, and 40001 and 40P01; MySQL 1040, 1053, 1205, 1213 and 1317) count as the database being unavailable. Logins get no response, so the device retransmits or tries another server. When an accounting spool is set (section 2.11), accounting is written to the spool and replayed after recovery. Errors in the statement itself, such as a syntax error or a constraint violation (for example a duplicate primary key), are rejected for logins. For accounting they get no response, and when replayed from the spool they are moved to `rejected.log`.
+- **Placeholders.** Only `?`, bound in order. PostgreSQL sends them as `$1`, `$2`, and MySQL sends them unchanged. A `?` inside a single-quoted string, a double-quoted name or a comment (`--`, `/* */`) does not count. PostgreSQL `::text` casts can be used. `?1`, `:name` and `$name` cause an error at startup or at call time. Not supported: `?` inside square brackets (for example `a[?]` for a PostgreSQL array: the brackets are taken as name quotes, and the count does not match, which is an error), PostgreSQL `$$` strings (a `?` inside is taken as a placeholder), PostgreSQL `?` operators (jsonb `?`, `?|`, `?&`; use functions such as `jsonb_exists()` instead), and MySQL quotes escaped with a backslash (`'it\'s'`; write `'it''s'`).
+- **PostgreSQL parameters have types and are not converted automatically:** a string is bound as `text`, an integer and `true`, `false` are bound as `bigint` (1, 0), and other numbers are bound as `double precision`. When a column is of type `boolean`, `inet`, `timestamp` and so on, convert in the SQL, for example `CAST(? AS inet)` or `?::inet`, and for a boolean column write `active = (? <> 0)`. Without the conversion PostgreSQL returns a type error, which counts as an error of the statement. MySQL converts by itself.
+- **Value types.** Integers (including MySQL `UNSIGNED`, which is an error above 2^63−1) and floating-point numbers → number; boolean → 1, 0; text → string; binary → string; `NUMERIC`/`DECIMAL` (the result of `SUM`, `AVG`) → a string of decimal digits, for example `"12.50"`, so use `tonumber` when you need to calculate; NULL → `nil`. Other types (date and time, geometric types and so on) cause an error that names the column; `CAST` them to text or a number in the SQL.
 
-### 2.18 計費紀錄檔 `[radius.accounting_log]`
+### 2.18 Accounting log file `[radius.accounting_log]`
 
-把每一筆回覆過的計費請求寫成一行 JSON，附加到一個文字檔，給要直接讀檔的系統用（例如記錄收集程式或自己的帳務腳本）。不需要資料庫，也不影響腳本怎麼寫資料庫。沒有這個區段時不寫任何檔案。
+Writes every accounting request that was answered as one JSON line, appended to a text file, for systems that read the file directly (for example a log collector or your own billing script). It needs no database and does not affect how scripts write to a database. Without this section no file is written.
 
 ```toml
 [radius.accounting_log]
-file = "/var/log/rradius/accounting.jsonl"  # 必填，相對路徑以設定檔所在目錄為準
-queue = 65536                               # 預設；等著寫進檔案的筆數上限，1 到 16777216
+file = "/var/log/rradius/accounting.jsonl"  # required, a relative path is resolved against the directory of the configuration file
+queue = 65536                               # default; maximum number of entries waiting to be written to the file, 1 to 16777216
 ```
 
-- **檢查：** 欄位名稱拼錯、`queue` 超出範圍、`file` 的目錄不存在、檔案已經存在卻不能附加寫入時，啟動、SIGHUP 和 `check` 都失敗，並指出欄位。`check` 不會建立檔案。
-- **一行的內容：** 例如
+- **Checks:** if a field name is misspelled, `queue` is out of range, the directory of `file` does not exist, or the file already exists but cannot be appended to, startup, SIGHUP and `check` all fail and name the field. `check` does not create the file.
+- **Content of a line:** for example
 
   ```json
   {"time":"2026-11-15T08:00:00.123Z","client":"nas1","source":"10.0.0.5","transport":"udp","handling":"script","attributes":{"Acct-Status-Type":"Start","User-Name":"alice","Acct-Session-Id":"s-1","Class":["a","b"]}}
   ```
 
-  `time` 是收到的時間（RFC 3339、UTC、到毫秒），`client` 是 client 的名稱，`source` 是來源位址，`transport` 是 `udp`（企業版的 RadSec 是 `radsec`），`handling` 是 `script`（腳本收下）或 `spool`（放進計費暫存，2.11 節；企業版的代理是 `proxy`）。`attributes` 是一個物件，鍵是字典裡的屬性名稱，字典裡沒有的屬性寫成 `Attr-<編號>`、值是 `0x` 開頭的十六進位，出現不只一次的屬性寫成陣列。
-- **埠區段（RFC 8045）：** 請求帶 `IP-Port-Range` 屬性時（營運商把許多用戶放在同一個公網位址後面，NAS 或 CGN 用它回報分配與釋放的埠），`attributes` 的最後多一個鍵 `IP-Port-Range`：一個陣列，每個 `IP-Port-Range` 一個物件，鍵是子屬性的字典名稱（`IP-Port-Range-Alloc`、`IP-Port-Range-Ext-IPv4-Addr`、`IP-Port-Range-Range-Start`、`IP-Port-Range-Range-End`、`IP-Port-Range-Local-Id` 等），依封包的順序；只有一個也是陣列。原本攤平的鍵（`IP-Port-Range-Range-Start` 等，同名的寫成陣列）照舊保留，所以既有的讀法不變；沒有這個屬性的請求，行與以前相同。子屬性不合法的屬性兩邊都不出現，字典沒有的子屬性不寫。查詢用 `accounting find`（見下）。
-- **只記回覆過的請求。** 送出 Accounting-Response 的才記；NAS 重送、由重送快取回答的不再記一次；腳本拒絕或沒有回覆的不記。
-- **檔案：** 以附加模式開啟，不存在時建立，權限 0640（再受 umask 限制）。不壓縮、不依日期換檔、不上傳，也不刪舊檔，換檔交給 logrotate 這類工具（見下面的例子）。叢集裡每個節點各寫自己機器上的檔案，行裡沒有節點編號，要合併時請用路徑或檔名區分節點。
-- **不會拖慢回覆。** 回覆後只把這一筆放進佇列，由專門的執行緒每 10 ms 取出一批寫進檔案（不 fsync），所以一行最晚約 10 ms 後才出現在檔案裡。佇列滿了（超過 `queue` 筆）時，新的那一筆不寫，計入 `rradius_accounting_log_dropped_total`，計費照常回覆。寫入失敗時（例如磁碟滿了），那一批不寫，計入 `rradius_accounting_log_failures_total{stage="write"}` 並記一行 WARN（同樣的錯誤一分鐘最多一行），下一批照常再試。
-- **停止時寫完。** SIGTERM 時（2.16 節），處理中的請求都回應完之後，才把佇列裡的寫完再結束，所以 `ready_delay_ms` 和 `drain_ms` 期間回覆的計費也在檔案裡。最多等 5 秒，等不完時記 WARN，剩下的不寫。被 SIGKILL 時，還在佇列裡的（正常約 10 ms 的量）會遺失。
-- **重新載入：** SIGHUP 成功時，先寫完手上的一批，再以（可能是新的）`file` 重新開檔，所以改 `file` 不用重啟，logrotate 也靠這個。開不了時計入 `failures_total{stage="open"}`、記 WARN，繼續寫原來的檔案。新 `file` 的目錄不存在時，整個重新載入失敗（2.9 節）。新增、移除這個區段或改 `queue` 要重啟。
-- **個人資料：** 行裡有 `User-Name`、位址等個人資料，權限和保存期間請自行管理。
+  `time` is the time of receipt (RFC 3339, UTC, to the millisecond), `client` is the name of the client, `source` is the source address, `transport` is `udp` (`radsec` for RadSec in the enterprise edition), and `handling` is `script` (the script accepted it) or `spool` (put into the accounting spool, section 2.11; `proxy` for the proxy in the enterprise edition). `attributes` is an object whose keys are the attribute names in the dictionary. An attribute that is not in the dictionary is written as `Attr-<number>` with a value in hexadecimal starting with `0x`, and an attribute that appears more than once is written as an array.
+- **Port ranges (RFC 8045):** when a request carries the `IP-Port-Range` attribute (an operator puts many subscribers behind one public address, and the NAS or CGN uses it to report allocated and released ports), `attributes` gets one more key at the end, `IP-Port-Range`: an array with one object for each `IP-Port-Range`, whose keys are the dictionary names of the sub-attributes (`IP-Port-Range-Alloc`, `IP-Port-Range-Ext-IPv4-Addr`, `IP-Port-Range-Range-Start`, `IP-Port-Range-Range-End`, `IP-Port-Range-Local-Id` and so on), in packet order; it is an array even when there is only one. The original flattened keys (`IP-Port-Range-Range-Start` and so on, written as an array when a name repeats) are kept as before, so existing readers are unchanged. For a request without this attribute, the line is the same as before. A malformed attribute with invalid sub-attributes appears in neither place, and sub-attributes that are not in the dictionary are not written. Use `accounting find` to query (see below).
+- **Only answered requests are recorded.** Only a request for which an Accounting-Response was sent is recorded. A NAS retransmission answered from the retransmission cache is not recorded again, and a request the script rejected or did not answer is not recorded.
+- **File:** opened in append mode and created if it does not exist, with permissions 0640 (further limited by umask). There is no compression, no rotation by date, no upload and no deletion of old files; rotation is left to a tool such as logrotate (see the example below). In a cluster each node writes a file on its own machine, and a line has no node number, so to merge them tell the nodes apart by path or file name.
+- **Does not slow down replies.** After the reply, only this one entry is put on a queue, and a dedicated thread takes a batch every 10 ms and writes it to the file (no fsync), so a line appears in the file about 10 ms later at most. When the queue is full (more than `queue` entries), the new entry is not written and is counted in `rradius_accounting_log_dropped_total`, and accounting is still answered. When a write fails (for example the disk is full), that batch is not written and is counted in `rradius_accounting_log_failures_total{stage="write"}`, with one WARN line (at most one line per minute for the same error), and the next batch is tried as usual.
+- **Written out at shutdown.** On SIGTERM (section 2.16), after all requests in progress have been answered, the entries in the queue are written before exiting, so accounting answered during `ready_delay_ms` and `drain_ms` is in the file too. It waits at most 5 seconds; if it cannot finish, it logs a WARN and the rest is not written. On SIGKILL, what is still in the queue (normally about 10 ms of entries) is lost.
+- **Reload:** when SIGHUP succeeds, the current batch is written first, and then the file is opened again with the (possibly new) `file`, so changing `file` needs no restart, and logrotate relies on this. If it cannot be opened, it is counted in `failures_total{stage="open"}`, a WARN is logged, and the original file continues to be written. If the directory of the new `file` does not exist, the whole reload fails (section 2.9). Adding or removing this section or changing `queue` needs a restart.
+- **Personal data:** the lines contain personal data such as `User-Name` and addresses; manage the permissions and the retention period yourself.
 
-**換檔：** 用 logrotate 時，先搬走檔案，再送 SIGHUP 讓 rradius 開新檔：
+**Rotation:** with logrotate, first move the file away, then send SIGHUP so that rradius opens a new file:
 
 ```
 /var/log/rradius/accounting.jsonl {
@@ -1406,41 +1406,41 @@ queue = 65536                               # 預設；等著寫進檔案的筆�
 }
 ```
 
-- **`nocreate`：** 新檔由 rradius 重新開檔時建立，權限是 0640。
-- **`delaycompress`：** 搬走之後、SIGHUP 之前寫的幾行會進入搬走的檔案，不會遺失；延到下一次才壓縮，就不會壓到還在寫的檔案。SIGHUP 的重新載入因為設定檔有別的錯誤而失敗時，也不會重新開檔，會繼續寫搬走的檔案，所以要留意 `rradius_reload_total{result="error"}`。
-- **不要用 `copytruncate`。** 複製之後、截斷之前寫進去的行會遺失。
-- 不是用 systemd 時，把 `postrotate` 換成對 rradiusd 程序送 SIGHUP 的指令（2.9 節）。
+- **`nocreate`:** the new file is created when rradius opens it again, with permissions 0640.
+- **`delaycompress`:** the few lines written after the move and before SIGHUP go into the moved file and are not lost. Delaying the compression to the next rotation means a file that is still being written is not compressed. If the SIGHUP reload fails because of another error in the configuration file, the file is not opened again either and the moved file continues to be written, so watch `rradius_reload_total{result="error"}`.
+- **Do not use `copytruncate`.** Lines written after the copy and before the truncation are lost.
+- If you do not use systemd, replace `postrotate` with a command that sends SIGHUP to the rradiusd process (section 2.9).
 
-**反查誰用了某個公網位址與埠：`accounting find`。** 營運商用 CGNAT 時，要回答「某個時刻，這個公網位址與埠是誰」。`rradiusd accounting find` 只讀上面的記錄檔，不連叢集、不需要設定檔，所以可以對備份出來的檔案執行：
+**Finding who used a public address and port: `accounting find`.** When an operator uses CGNAT, the question is "at a given time, who had this public address and port". `rradiusd accounting find` reads only the log files above. It does not connect to the cluster and needs no configuration file, so it can run on files that were copied out as a backup:
 
 ```
-rradiusd accounting find --ip <公網 IPv4> --port <埠> --at <時間> [--file <路徑>]... [--json]
+rradiusd accounting find --ip <public IPv4> --port <port> --at <time> [--file <path>]... [--json]
 ```
 
-- `--at` 是 RFC 3339，要有時區，例如 `2026-11-25T10:00:00Z` 或 `2026-11-25T18:00:00+08:00`，可以帶小數秒。
-- `--file` 可以給多次；`-`，或完全不給 `--file`，讀標準輸入。檔名以 `.gz` 結尾的 `--file` 會自動解壓（可由幾個 gzip 串成；損毀或被截斷時結束碼 2 並指出檔名）；標準輸入不解壓，要用 `zcat accounting.jsonl.2.gz | rradiusd accounting find …`。檔案不必先依時間排好：命令依事件時間自己排序，但含 `IP-Port-Range` 與 `Stop` 的行會整批載入記憶體，所以先依日期選好檔案。
-- **持有規則（RFC 8045）：** `IP-Port-Range-Alloc` 是 `Allocation` 時開始持有該公網位址與 `Range-Start` 到 `Range-End` 的埠；`Deallocation` 時結束同一對象（同一個 `IP-Port-Range-Local-Id`，沒有的話同一個 client 與 `Acct-Session-Id`，再沒有的話同一個 client 與 `User-Name`、`Framed-IP-Address`）、同一位址且埠有重疊的持有，整筆結束（不拆分）；釋放沒有起訖埠時，結束該對象的全部持有。**同一個 client 與 `Acct-Session-Id` 的 `Stop` 也會結束它的全部持有**——RFC 沒有規定這一點，這是本命令的決定，結果的 `ended_by` 會標成 `stop`。沒有釋放也沒有 Stop 的，視為仍持有。
-- **時間：** 每一行的事件時間依序取 `Event-Timestamp`，否則取 `time` 減 `Acct-Delay-Time`，否則取 `time`；結果的 `time_source` 標明用的是 `Event-Timestamp`、`received-minus-delay` 或 `received`。
-- **輸出：** 每個持有一行；`--json` 輸出一個陣列（鍵 `ext_ip`、`port_start`、`port_end`、`allocated`、`released`、`ended_by`、`time_source`、`identity`、`attributes`）。`attributes` 只放那一行有的 `User-Name`、`Acct-Session-Id`、`Framed-IP-Address`、`NAS-Identifier`、`NAS-IP-Address` 與 `client`，**不假設一定有用戶名**。
-- **結束碼：** 0 是列出了至少一個持有，1 是沒有，2 是參數、檔案或某一行不是 JSON 物件（訊息指出檔名與行號）。
-- **看不到的：** 沒有 `Ext-IPv4-Addr` 或起訖埠的分配、沒有任何識別（`Local-Id`、`Acct-Session-Id`、`User-Name` 加 `Framed-IP-Address`）的區段無法比對，命令在標準錯誤印出這類區段的個數。只有內網位址、要再與 BNG 的 session 對起來的獨立 CGN，這一版不支援；IPv6 公網位址不支援。
-- **保存：** 這個命令不保存任何資料，記錄檔留多久由 logrotate 或 newsyslog 與（企業版）`keep_days` 決定，法定的保存期限由你自己決定，沒有預設值。
+- `--at` is RFC 3339 and must have a time zone, for example `2026-11-25T10:00:00Z` or `2026-11-25T18:00:00+08:00`. It can have fractional seconds.
+- `--file` can be given several times. `-`, or no `--file` at all, reads standard input. A `--file` whose name ends in `.gz` is decompressed automatically (it can be several gzip streams joined together; for a damaged or truncated file the exit code is 2 and the file name is named). Standard input is not decompressed, so use `zcat accounting.jsonl.2.gz | rradiusd accounting find …`. The files need not be sorted by time first: the command sorts by event time itself, but lines with `IP-Port-Range` and `Stop` are loaded into memory all at once, so choose the files by date first.
+- **Holding rules (RFC 8045):** when `IP-Port-Range-Alloc` is `Allocation`, holding of that public address and of the ports from `Range-Start` to `Range-End` begins. `Deallocation` ends the holding of the same subject (the same `IP-Port-Range-Local-Id`; if there is none, the same client and `Acct-Session-Id`; if there is none, the same client with `User-Name` and `Framed-IP-Address`), the same address and overlapping ports, as a whole (it is not split). When a release has no start and end ports, it ends all holdings of that subject. **A `Stop` with the same client and `Acct-Session-Id` also ends all its holdings.** The RFC does not specify this; it is a decision of this command, and the result's `ended_by` is marked `stop`. A holding with neither a release nor a Stop is considered still held.
+- **Time:** the event time of each line is taken from `Event-Timestamp` first, otherwise from `time` minus `Acct-Delay-Time`, otherwise from `time`. The result's `time_source` says which was used: `Event-Timestamp`, `received-minus-delay` or `received`.
+- **Output:** one line per holding. `--json` prints an array (keys `ext_ip`, `port_start`, `port_end`, `allocated`, `released`, `ended_by`, `time_source`, `identity`, `attributes`). `attributes` holds only the `User-Name`, `Acct-Session-Id`, `Framed-IP-Address`, `NAS-Identifier`, `NAS-IP-Address` and `client` that were in that line, and **does not assume a user name is always present**.
+- **Exit codes:** 0 means at least one holding was listed, 1 means none, and 2 means a bad argument or file, or a line that is not a JSON object (the message names the file and the line number).
+- **What it cannot see:** an allocation without `Ext-IPv4-Addr` or without start and end ports, and a range without any identity (`Local-Id`, `Acct-Session-Id`, or `User-Name` plus `Framed-IP-Address`), cannot be matched, and the command prints the number of such ranges on standard error. A standalone CGN that has only private addresses and must be matched with the BNG's sessions is not supported in this version, and neither are IPv6 public addresses.
+- **Retention:** this command stores no data. How long the log files are kept is decided by logrotate or newsyslog and (in the enterprise edition) `keep_days`. The legal retention period is for you to decide, and there is no default.
 
-**和企業版流水帳的差別：** rradius-enterprise 的 `[accounting_export.packets]` 記的是同樣的請求，每行的欄位相同，另外多了 `node`。兩個可以同時開，同一筆在兩邊都會寫。
+**Differences from the enterprise edition's packet journal:** `[accounting_export.packets]` in rradius-enterprise records the same requests with the same fields in each line, plus `node`. Both can be on at the same time, and the same request is then written in both places.
 
-| | 這一節 | 企業版流水帳 |
+| | This section | Enterprise packet journal |
 | --- | --- | --- |
-| 格式 | JSON Lines，不壓縮 | CSV 或 JSON Lines，gzip |
-| 換檔 | 外部工具搬檔加 SIGHUP | 每天自動換檔 |
-| 放到哪裡 | `file` 這一個檔案 | 目錄與 S3，依 `keep_days` 刪舊檔 |
-| `node` 欄位 | 沒有 | 有 |
-| 停止時最多等 | 5 秒 | 2 秒 |
+| Format | JSON Lines, not compressed | CSV or JSON Lines, gzip |
+| Rotation | external tool moves the file, plus SIGHUP | automatic daily rotation |
+| Where it goes | the one file `file` | a directory and S3, old files deleted by `keep_days` |
+| `node` field | no | yes |
+| Maximum wait at shutdown | 5 seconds | 2 seconds |
 
-**成本：** 2026-11-15 在 Apple M4 Max（14 核心，macOS）用 release 建置與 `rradius-bench` 量 `acct-start`（併發 64，腳本全收、不寫資料庫），開與不開交錯各量 4 次：吞吐 59414 → 59141 次/秒（約少 0.5%），伺服器每筆的 CPU 108.6 → 113.6 µs（約多 4.6%），沒有丟棄。這個工具的封包每行約 550 bytes，每秒 5.9 萬筆約 32 MB/s；實際大小隨 NAS 送的屬性變化。
+**Cost:** measured on 2026-11-15 on an Apple M4 Max (14 cores, macOS) with a release build and `rradius-bench` `acct-start` (concurrency 64, the script accepts everything and writes no database), alternating on and off, 4 runs each: throughput 59414 → 59141 per second (about 0.5% less), and the server's CPU per request 108.6 → 113.6 µs (about 4.6% more), with no drops. A packet from this tool is about 550 bytes per line, so 59 thousand per second is about 32 MB/s; the real size varies with the attributes the NAS sends.
 
-### 2.19 線上 session `[sessions]`
+### 2.19 Online sessions `[sessions]`
 
-要知道現在誰在線上，或某個使用者有哪些 session，用 `rradiusd session list` 與 `rradiusd session show`。rradius 本身沒有 session 表：session 是你的計費腳本寫進自己資料表的列，所以哪些列算「在線」、欄位叫什麼，都由你寫在查詢裡，和 `[accounts]`（2.14 節）一樣。**核心不內建 session 表，所以不會讓每一筆計費多寫一次。**
+To find out who is online now, or which sessions a user has, use `rradiusd session list` and `rradiusd session show`. rradius itself has no session table: a session is a row that your accounting script writes into your own table, so which rows count as "online" and what the columns are called are written by you in the query, as with `[accounts]` (section 2.14). **The core has no built-in session table, so it does not make every accounting request write once more.**
 
 ```toml
 [sessions]
@@ -1448,10 +1448,10 @@ list = "SELECT username, nas, session_id, started FROM accounting WHERE stopped 
 show = "SELECT username, nas, session_id, started FROM accounting WHERE username = ?1 AND stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
 ```
 
-- **兩條語句都只讀。** 必須以 `SELECT` 或 `WITH` 開頭（不分大小寫，前面可以有空白），所以這兩個指令不會改資料。`list` 沒有參數；`show` 恰好用一個 `?1`，是使用者名稱，不能用沒有編號的 `?`、`?2` 或具名參數。寫錯時啟動、SIGHUP 和 `check` 都會失敗並指出 `sessions.list` 或 `sessions.show`。兩條都可以省略；沒有設的那個指令以狀態 2 結束，說明缺哪個設定。
-- **名稱和登入時一樣正規化。** `show Alice@Corp` 在 `strip_realm = "suffix"`、`lowercase = true` 時查的是 `alice`，被 `[auth.username]` 的 `allowed` 拒絕的名稱以狀態 2 結束（和 `user` 指令相同）。
-- **`[sessions]` 只有指令讀，** 伺服器執行中不看它，所以改它不必重啟，也不必送 SIGHUP（SIGHUP 仍會檢查它，寫錯會讓重新載入失敗）。
-- **經叢集的 api 埠執行，** 用 `[cluster]` 的 `nodes` 位址和 `secret_api` 連線，一致讀取（看得到剛寫進去的計費），不啟動節點、不建立資料目錄；叢集要在執行、多數節點要在線上，執行指令的主機要連得到 api 埠。`secret_api` 等於整個資料庫的鑰匙，請把設定檔設成只有管理者能讀（2.14 節）。
+- **Both statements are read-only.** They must begin with `SELECT` or `WITH` (case-insensitive, with leading whitespace allowed), so these two commands do not change data. `list` has no parameters. `show` uses exactly one `?1`, which is the user name; `?` without a number, `?2` and named parameters cannot be used. If they are wrong, startup, SIGHUP and `check` all fail and name `sessions.list` or `sessions.show`. Both can be omitted; the command whose statement is not set exits with status 2 and says which setting is missing.
+- **The name is normalized as at login.** With `strip_realm = "suffix"` and `lowercase = true`, `show Alice@Corp` looks up `alice`. A name rejected by `allowed` in `[auth.username]` exits with status 2 (the same as the `user` command).
+- **Only the commands read `[sessions]`,** the running server does not look at it, so changing it needs no restart and no SIGHUP (SIGHUP still checks it, and a mistake makes the reload fail).
+- **Runs through the cluster's api port,** connecting with the `nodes` addresses and `secret_api` of `[cluster]`. It reads consistently (it sees accounting that was just written), and it does not start a node or create a data directory. The cluster must be running, a majority of the nodes must be online, and the host running the command must be able to reach the api port. `secret_api` is the key to the whole database, so make the configuration file readable only by administrators (section 2.14).
 
 ```bash
 rradiusd session list --config /etc/rradius/rradius.toml
@@ -1459,9 +1459,9 @@ rradiusd session show --config /etc/rradius/rradius.toml alice
 rradiusd session list --json
 ```
 
-設定檔就是預設設定檔（第 1 節）時可以省略 `--config`。
+When the configuration file is the default one (section 1), `--config` can be omitted.
 
-- **輸出：** 預設每列一個區塊，每行 `欄位=值`（和 `user show` 相同），區塊之間空一行，NULL 是空值：
+- **Output:** by default one block per row, each line `field=value` (the same as `user show`), with a blank line between blocks, and NULL is an empty value:
 
   ```
   username=alice
@@ -1475,20 +1475,20 @@ rradiusd session list --json
   started=1794729900
   ```
 
-  `--json` 印成一個 JSON 陣列，每列一個物件，鍵是欄位名稱（依選的順序）：NULL 是 `null`，整數和小數是數字，文字是字串，二進位是小寫十六進位字串。列數由查詢自己的 `LIMIT` 決定，指令不另設上限。
-- **結束狀態：**
+  `--json` prints a JSON array with one object per row, whose keys are the field names (in the order selected): NULL is `null`, integers and decimals are numbers, text is a string, and binary is a lower-case hexadecimal string. The number of rows is decided by the query's own `LIMIT`, and the command sets no limit of its own.
+- **Exit status:**
 
-  | 狀態 | 意思 |
+  | Status | Meaning |
   | --- | --- |
-  | 0 | 印出至少一列 |
-  | 1 | 沒有列：`list` 印 `no sessions`，`show` 印 `no sessions for <名稱>`；加 `--json` 時印 `[]` |
-  | 2 | 指令或設定有誤（沒有 `[sessions]`、缺語句、缺名稱、名稱被拒絕）、節點拒絕 `[cluster] secret_api`（立刻回，不等 30 秒）、或資料庫拒絕這條語句（例如表不存在），原因在標準錯誤 |
-  | 3 | 叢集連不上或 30 秒內沒有回答 |
+  | 0 | at least one row was printed |
+  | 1 | no rows: `list` prints `no sessions`, `show` prints `no sessions for <name>`; with `--json` it prints `[]` |
+  | 2 | the command or configuration is wrong (no `[sessions]`, a missing statement, a missing name, a rejected name), a node rejected `[cluster] secret_api` (returned at once, without waiting 30 seconds), or the database rejected the statement (for example the table does not exist); the reason is on standard error |
+  | 3 | the cluster cannot be reached or did not answer within 30 seconds |
 
-**兩個現成的查詢。** 都在測試裡對臨時叢集跑過（`rradius-server/tests/session_test.rs` 與 quick-start 情境）：
+**Two ready-made queries.** Both were run against a temporary cluster in the tests (`rradius-server/tests/session_test.rs` and the quick-start scenario):
 
-- **情境用的 `accounting` 表**（`rradius-server/examples/scenarios/*/migrations/1_schema.sql`，每個 session 一列，`stopped` 是結束時間）：就是上面的範例，並用 `updated` 排除 NAS 當機、沒送 Stop 的列（15 分鐘沒更新就不算在線）。quick-start 情境的設定檔已經帶著這一節。
-- **`examples/simultaneous-use.lua` 的 `active_sessions` 表**（Stop 會刪掉那一列，`last_seen` 是最後一次看到的時間）：
+- **The `accounting` table used by the scenarios** (`rradius-server/examples/scenarios/*/migrations/1_schema.sql`, one row per session, `stopped` is the end time): this is the example above, and it uses `updated` to leave out rows from a NAS that crashed and sent no Stop (a row not updated for 15 minutes does not count as online). The configuration file of the quick-start scenario already carries this section.
+- **The `active_sessions` table of `examples/simultaneous-use.lua`** (a Stop deletes the row, and `last_seen` is the time it was last seen):
 
   ```toml
   [sessions]
@@ -1496,16 +1496,16 @@ rradiusd session list --json
   show = "SELECT username, nas, session_id, last_seen FROM active_sessions WHERE username = ?1 AND last_seen > strftime('%s', 'now') - 900 ORDER BY last_seen, session_id"
   ```
 
-**寫自己的查詢時：**
+**When you write your own query:**
 
-- **查到的是計費資料的快照，不是 NAS 的即時狀態。** NAS 當機沒送 Stop、計費晚到都會讓列和實際不同，所以查詢要排除已停止和太久沒更新的列。指令不另外確認 session 還在不在。
-- **要讓企業版的 `disconnect --user`、`coa --user` 用同一條 `show`，** 結果要有 `nas` 和 `session_id` 兩個欄位：`nas` 是 client 的名稱，或符合某個 client 的位址（和 `[radius.coa]` 的 `session_query` 相同的約定，見企業版文件）。可以另外選 `username`，沒選時用指令列的名稱。Session ID 只在同一台 NAS 內唯一，所以兩個欄位要一起用。
-- **`[databases]` 的外部資料庫這一版不支援：** 指令只查叢集的資料庫。
-- **指令是讀取，** 不會踢人；踢人和送 CoA 在企業版（`disconnect`、`coa` 指令，見企業版文件的 4.8 節）。
+- **What you get is a snapshot of accounting data, not the live state of the NAS.** A NAS that crashed without sending a Stop, or accounting that arrives late, makes the rows differ from reality, so the query should leave out stopped rows and rows that have not been updated for too long. The command does not separately confirm that a session still exists.
+- **For the enterprise edition's `disconnect --user` and `coa --user` to use the same `show`,** the result needs the two fields `nas` and `session_id`: `nas` is the name of a client, or an address that matches a client (the same convention as `session_query` of `[radius.coa]`; see the enterprise edition documentation). `username` can be selected as well, and when it is not selected the name from the command line is used. A Session ID is unique only within one NAS, so the two fields are used together.
+- **External databases in `[databases]` are not supported in this version:** the commands query only the cluster's database.
+- **The commands only read;** they do not disconnect anyone. Disconnecting users and sending CoA are in the enterprise edition (the `disconnect` and `coa` commands; see section 4.8 of the enterprise edition documentation).
 
-### 2.20 命名查詢 `[queries]`
+### 2.20 Named queries `[queries]`
 
-核心不知道你的資料表：位址池、連線位、方案這些是範例裡的表，營運商會改名或換掉。要監控它們（池還剩幾個位址、有幾個連線位被佔住），在設定檔寫唯讀的 SQL，每個節點在背景定期執行，結果成為 Prometheus 的 gauge；同一份定義也能用 `rradiusd query` 執行一次。
+The core does not know your tables: the address pool, connection slots and plans are tables from the examples, and operators rename or replace them. To monitor them (how many addresses are left in a pool, how many connection slots are taken), write read-only SQL in the configuration file. Each node runs it periodically in the background and the result becomes a Prometheus gauge. The same definition can also be run once with `rradiusd query`.
 
 ```toml
 [queries.pool_usage]
@@ -1515,42 +1515,42 @@ labels = ["pool", "state"]
 value = "addresses"
 ```
 
-| 欄位 | 說明 |
+| Field | Description |
 | --- | --- |
-| 名稱（`[queries.<名稱>]` 的 `<名稱>`） | 小寫英文字母、數字與底線，以字母開頭；指標名是 `rradius_query_<名稱>`。`list`（指令）和 `failures_total`、`dropped_rows_total`、`last_success_timestamp_seconds`（會和彙總的指標撞名）不能用 |
-| `sql` | 必填。以 SELECT 或 WITH 開頭，沒有參數（`?`、`?1`） |
-| `help` | 指標的 HELP 說明；沒設時是一句寫著查詢名稱的文字 |
-| `labels` | 值當作標籤的欄位，標籤名稱就是欄位名稱，欄位必須是文字或整數；不能重複，也不能是數值欄位。預設沒有標籤 |
-| `value` | 數值欄位，整數或實數。預設 `value`。這個欄位是 NULL 的列會略過 |
-| `interval_ms` | 一次執行開始到下一次開始的間隔，毫秒，至少 5000，預設 30000 |
-| `timeout_ms` | 一次執行最久多久，毫秒，不能大於 `interval_ms`，預設 5000 |
-| `max_rows` | 一次執行最多有幾列成為樣本，1 到 10000，預設 200；多的丟掉，計入 `rradius_query_dropped_rows_total`。限制的是樣本數，不是資料庫做的工作：列是資料庫全部回傳之後才截斷，沒有 `GROUP BY` 的大結果要在 SQL 裡自己 `LIMIT` |
+| Name (the `<name>` of `[queries.<name>]`) | Lower-case letters, digits and underscores, starting with a letter. The metric name is `rradius_query_<name>`. `list` (the command) and `failures_total`, `dropped_rows_total`, `last_success_timestamp_seconds` (they would collide with the aggregate metrics) cannot be used |
+| `sql` | Required. Starts with SELECT or WITH and has no parameters (`?`, `?1`) |
+| `help` | The HELP text of the metric; when not set it is a sentence containing the query name |
+| `labels` | The columns whose values become labels; the label name is the column name, and the column must be text or an integer. They cannot repeat and cannot be the numeric column. There are no labels by default |
+| `value` | The numeric column, an integer or a real number. Default `value`. A row where this column is NULL is skipped |
+| `interval_ms` | The interval from the start of one run to the start of the next, in milliseconds, at least 5000, default 30000 |
+| `timeout_ms` | The longest one run may take, in milliseconds, not greater than `interval_ms`, default 5000 |
+| `max_rows` | The most rows that become samples in one run, 1 to 10000, default 200. The extra rows are dropped and counted in `rradius_query_dropped_rows_total`. This limits the number of samples, not the work the database does: rows are truncated after the database has returned all of them, so for a large result without `GROUP BY`, add your own `LIMIT` in the SQL |
 
-- **在背景執行：** 伺服器啟動、資料庫就緒後立即跑第一次，之後每個間隔一次，對**這個節點自己的副本**讀（和 `sql_query` 一樣）。上一次還沒跑完不會開始下一次；逾時（`timeout_ms`）只是不再等，資料庫那邊的讀取可能還在跑，所以查詢要有索引、要快。`/metrics` 只讀存好的結果，不查資料庫，所以不會拖慢指標端點。
-- **結果的形狀：** 每一列是 gauge 的一個樣本。同一組標籤不能出現在兩列（會算 `shape` 失敗），所以 SQL 要用 `GROUP BY` 或讓標籤欄位唯一。
-- **失敗時：** 逾時、資料庫拒絕、結果的欄位名稱或型別不對，這一次不更新，**保留上一次成功的值**，`rradius_query_failures_total{query,reason}` 加一，記一行 WARN（同一個查詢、同一個原因一分鐘最多一行）。過期的值用 `rradius_query_last_success_timestamp_seconds` 判斷：`time() - rradius_query_last_success_timestamp_seconds{query="pool_usage"} > 120` 就是兩分鐘沒有成功了。
-- **叢集：** 每個節點都讀自己的副本、輸出同樣的數字。Prometheus 的式子要用 `max()`，不要用 `sum()`（會把同一個數字重複算 N 次）：`max by (pool) (rradius_query_pool_usage{state="free"})`。
-- **成本：** 查詢要有索引可用，不然會掃整個表（SQLite 沒有統計資料時，索引只涵蓋條件的一部分可能改走主鍵）；用 `EXPLAIN QUERY PLAN` 檢查。範例的兩個查詢（第 14、15 章）都走覆蓋索引，在 11 萬位址、20 萬連線位的資料上每次不到 5 毫秒。對 11 萬位址的位址池範例送 64 並行的登入各跑 60 秒（每種設定 3 次，7 個 CPU 的伺服器），不開查詢的中位數是每秒 19,125 個登入，開了（30 秒或 5 秒間隔）是 19,254 和 19,251，沒有可量到的差別（p50 都約 2.9 毫秒）。
-- **要重啟才會套用：** 新增、移除或修改 `[queries]` 都要重啟（2.9 節）。
+- **Runs in the background:** the first run happens right after the server starts and the database is ready, and then once per interval, reading from **this node's own replica** (the same as `sql_query`). If the previous run has not finished, the next one does not start. A timeout (`timeout_ms`) only means it stops waiting; the read on the database side may still be running, so the query must use an index and be fast. `/metrics` reads only the stored result and does not query the database, so it does not slow down the metrics endpoint.
+- **Shape of the result:** each row is one sample of the gauge. The same set of labels cannot appear in two rows (that counts as a `shape` failure), so use `GROUP BY` in the SQL or make the label columns unique.
+- **On failure:** a timeout, a rejection by the database, or wrong column names or types in the result mean this run is not applied. **The last successful value is kept**, `rradius_query_failures_total{query,reason}` goes up by one, and one WARN line is logged (at most one line per minute for the same query and the same reason). To tell that a value is stale, use `rradius_query_last_success_timestamp_seconds`: `time() - rradius_query_last_success_timestamp_seconds{query="pool_usage"} > 120` means two minutes without a success.
+- **Cluster:** every node reads its own replica and outputs the same numbers. In Prometheus expressions use `max()`, not `sum()` (which counts the same number N times): `max by (pool) (rradius_query_pool_usage{state="free"})`.
+- **Cost:** the query must have an index it can use, or it scans the whole table (when SQLite has no statistics, an index that covers only part of the condition may lose to the primary key); check with `EXPLAIN QUERY PLAN`. The two example queries (chapters 14 and 15) both use a covering index and take under 5 milliseconds each on data with 110 thousand addresses and 200 thousand connection slots. Against the address pool example with 110 thousand addresses, logins at 64 concurrency were sent for 60 seconds each (3 runs per setting, a server with 7 CPUs). The median without queries is 19,125 logins per second, and with queries on (30 seconds or 5 seconds interval) it is 19,254 and 19,251, with no measurable difference (p50 about 2.9 milliseconds in all cases).
+- **Needs a restart to apply:** adding, removing or changing `[queries]` all need a restart (section 2.9).
 
-**指令：**
+**Commands:**
 
 ```bash
-rradiusd query list --config /etc/rradius/rradius.toml        # 有哪些查詢：名稱、說明、間隔、SQL（換行寫成 \n）
-rradiusd query pool_usage --config /etc/rradius/rradius.toml  # 執行一次，印成表格
-rradiusd query pool_usage --json                              # 同一份結果，JSON 陣列
+rradiusd query list --config /etc/rradius/rradius.toml        # which queries exist: name, help, interval, SQL (newlines written as \n)
+rradiusd query pool_usage --config /etc/rradius/rradius.toml  # run once, print as a table
+rradiusd query pool_usage --json                              # the same result as a JSON array
 ```
 
-`query <名稱>` 經叢集的 API 埠**即時**執行那個查詢，不讀快取，所以不受 `max_rows` 限制，也看得到 NULL；名稱不在設定檔、設定檔有誤、連不上叢集是非零的結束狀態和一行說明（和 `session` 指令相同）。`status` 有 Queries 段落（2.8 節）。
+`query <name>` runs that query **immediately** through the cluster's API port, without reading the cache, so it is not limited by `max_rows` and it can also show NULL. A name that is not in the configuration file, a wrong configuration file, or an unreachable cluster gives a non-zero exit status and one line of explanation (the same as the `session` command). `status` has a Queries section (section 2.8).
 
-## 3. 認證串接 `[auth]`
+## 3. Auth chains `[auth]`
 
-認證串接把多個處理器依設定順序執行，每個處理器回傳「接受」、「拒絕」、「略過」（交給下一個處理器）或「要求 challenge」（只有 `lua` 處理器，RADIUS 認證才有）。
+An auth chain runs several handlers in the configured order. Each handler returns "accept", "reject", "ignore" (hand over to the next handler) or "challenge" (only the `lua` handler, and only for RADIUS authentication).
 
-### 3.1 結構
+### 3.1 Structure
 
 ```toml
-# 預設串接：沒有指定 auth 的用戶端使用
+# Default chain: used by clients that do not set auth
 [auth]
 policy = "first_match"
 
@@ -1558,7 +1558,7 @@ policy = "first_match"
 type = "sql"
 user_query = "SELECT password FROM users WHERE username = ?"
 
-# 具名串接：用戶端以 auth = "vpn" 選擇
+# Named chain: a client selects it with auth = "vpn"
 [auth.chains.vpn]
 policy = "all_accept"
 
@@ -1571,85 +1571,85 @@ type = "lua"
 script = "vpn_rules.lua"
 ```
 
-- `[[auth.handlers]]` 是預設串接，可以省略；`[auth]` 底下的 `policy` 屬於預設串接，只在有 `[[auth.handlers]]` 時才能設定。
-- `[auth]` 至少要有預設串接或一條具名串接；具名串接至少要有一個處理器。
-- 用戶端的 `auth` 指向不存在的串接時啟動失敗，訊息含用戶端名稱與串接名稱。
-- 每條串接在啟動時只建立一次，引用同一條串接的用戶端（包括 RADIUS 與 TACACS+）共用它，LDAP 連線池也共用。
+- `[[auth.handlers]]` is the default chain and can be left out. The `policy` under `[auth]` belongs to the default chain and can be set only when there is an `[[auth.handlers]]`.
+- `[auth]` needs at least the default chain or one named chain. A named chain needs at least one handler.
+- If a client's `auth` points to a chain that does not exist, startup fails, and the message contains the client name and the chain name.
+- Each chain is built once at startup. Clients that use the same chain (RADIUS and TACACS+ alike) share it, and they share its LDAP connection pool too.
 
-選擇規則：用戶端有 `auth` → 該具名串接；沒有 `auth` → 預設串接；沒有預設串接 → `[lua].script`。
+Selection rule: a client with `auth` uses that named chain. A client without `auth` uses the default chain. With no default chain, `[lua].script` is used.
 
-串接只用於 RADIUS Access-Request 與 TACACS+ 認證（PAP 在 START，ASCII 登入在最後一個 CONTINUE）；授權與計費仍由 `[lua].script` 處理。
+Chains are used only for RADIUS Access-Request and TACACS+ authentication (PAP at START, ASCII login at the last CONTINUE). Authorization and accounting are still handled by `[lua].script`.
 
-### 3.2 合併規則 `policy`
+### 3.2 Combining rule `policy`
 
-| policy | 行為 |
+| policy | Behavior |
 | --- | --- |
-| `first_match`（預設） | 依序執行，第一個不略過的處理器決定結果；接受時只帶回該處理器的回應屬性 |
-| `all_accept` | 依序執行；任一拒絕或 challenge 就停止；至少一個接受才算通過；回應屬性依順序合併。串接裡有會比對密碼的處理器（`sql`、`ldap`、`netlogon`、設了 `verifies_password` 的 `lua`）時，至少要有一個接受，否則拒絕；在它們接受之前，不會比對密碼的腳本也不能回 `challenge`。沒有人接受、後面也沒有這種處理器時，腳本不會執行，所以查不到的名稱不會留下腳本的寫入。憑證也適用：憑證證明的是名稱，不是帳號可以用 |
+| `first_match` (default) | Runs the handlers in order. The first handler that does not ignore decides the result. On accept, only that handler's reply attributes are returned |
+| `all_accept` | Runs the handlers in order. Any reject or challenge stops the chain. At least one accept is needed to pass. Reply attributes are merged in order. If the chain has handlers that check the password (`sql`, `ldap`, `netlogon`, and a `lua` with `verifies_password` set), at least one of them must accept, otherwise the result is reject. Before they accept, a script that does not check the password cannot return `challenge` either. If nobody has accepted and no such handler comes later, the script does not run, so a name that is not found leaves none of the script's writes behind. This also applies to certificates: a certificate proves a name, not that the account may be used |
 
-兩種模式下，全部略過都視為拒絕。
+In both modes, if every handler ignores, the result is reject.
 
-`all_accept` 也適合「先驗密碼、再做一件事」：例如 `sql` 處理器之後接一個 `lua` 處理器，替通過驗證的用戶從資料表的池分配 IP 位址（`Framed-IP-Address`）。密碼錯的人不會執行到後面的處理器。範例與說明見[手冊第 14 章](manual.zh-TW/14-isp-recipes.md#ipv4-位址池ip-pool)。同樣的做法也用來限制每個用戶的同時連線數與流量上限（[第 14 章〈方案與用量控制〉](manual.zh-TW/14-isp-recipes.md#方案與用量控制usage-control)）。用戶沒有密碼、依 BNG 轉送的 DHCP Option 82 線路身分認證的情境，見[第 14 章〈依線路身分認證〉](manual.zh-TW/14-isp-recipes.md#依線路身分認證line-identity)；依用戶回固定的位址、路由網段與 IPv6 前綴，見[第 14 章〈固定位址與前綴〉](manual.zh-TW/14-isp-recipes.md#固定位址與前綴static-ip)；同一個速率方案依 BNG 的廠商送不同的屬性，見[第 14 章〈依 BNG 回速率〉](manual.zh-TW/14-isp-recipes.md#依-bng-回速率rate-limit)；IPv6 用戶的委派前綴從池動態分配，見[第 14 章〈IPv6 前綴池〉](manual.zh-TW/14-isp-recipes.md#ipv6-前綴池prefix-pool)。
+`all_accept` also fits "check the password first, then do one more thing": for example, a `lua` handler after a `sql` handler that allocates an IP address (`Framed-IP-Address`) from a table-based pool to a user who passed authentication. Someone with a wrong password never reaches the later handlers. For an example and explanation, see [manual chapter 14](manual/14-isp-recipes.md#ipv4-address-pool-ip-pool). The same approach is used to limit each user's simultaneous connections and traffic ([chapter 14, "Plans and usage control"](manual/14-isp-recipes.md#plans-and-usage-control-usage-control)). For the scenario where users have no password and are authenticated by the line identity from the DHCP Option 82 that the BNG relays, see [chapter 14, "Authenticate by line identity"](manual/14-isp-recipes.md#authenticate-by-line-identity-line-identity). For returning a fixed address, route network and IPv6 prefix for each user, see [chapter 14, "Fixed addresses and prefixes"](manual/14-isp-recipes.md#fixed-addresses-and-prefixes-static-ip). For sending different attributes for the same rate plan depending on the BNG vendor, see [chapter 14, "Return rates by BNG"](manual/14-isp-recipes.md#return-rates-by-bng-rate-limit). For allocating the delegated prefix of an IPv6 user dynamically from a pool, see [chapter 14, "IPv6 prefix pool"](manual/14-isp-recipes.md#ipv6-prefix-pool-prefix-pool).
 
-**`first_match` 不會替你檢查密碼：** `sql`、`ldap` 或 `netlogon` 查不到名稱時回「略過」，交給下一個處理器。後面接只檢查政策的腳本時，不存在的使用者不用密碼就能通過，所以政策腳本要放進 `all_accept`，或設定 `verifies_password` 並自己比對。
+**`first_match` does not check the password for you:** when `sql`, `ldap` or `netlogon` cannot find the name, it returns "ignore" and hands over to the next handler. If a script that only checks policy comes after it, a user that does not exist passes without a password. So put the policy script in `all_accept`, or set `verifies_password` and compare the password yourself.
 
-### 3.3 `sql` 處理器
+### 3.3 The `sql` handler
 
-| 欄位 | 預設 | 說明 |
+| Field | Default | Description |
 | --- | --- | --- |
-| `user_query` | （必填） | 取得使用者密碼的查詢，剛好一個 `?`（使用者名稱），回傳第一欄為密碼 |
-| `certificate_query` | 無 | EAP-TLS 憑證通過後改用這個查詢找使用者，剛好一個 `?`，查到就接受，不看第一欄。沒有設定時用 `user_query`，第一欄是 NULL、只有前綴或空值就拒絕（2.12 節） |
-| `reply_query` | 無 | 取得回應屬性的查詢，剛好一個 `?`，回傳 `(attribute, value)` 兩欄 |
-| `default_user` | 無 | 查無使用者時改用這個帳號的密碼驗證（知道該密碼的人都會通過，請謹慎使用）。通過時認證紀錄的 `account` 是這個帳號，`user` 是對方送來的名稱 |
-| `timeout_ms` | 5000 | 每次查詢的時限，必須大於 0；用 `database` 時包括等連線的時間 |
-| `database` | 無 | `[databases.<name>]` 的名稱（2.17 節），查詢在那個 MySQL 或 PostgreSQL 執行，佔位符一樣寫 `?`。沒有設定時查叢集自己的資料庫。名稱不存在時啟動失敗 |
+| `user_query` | (required) | The query that gets the user's password. Exactly one `?` (the user name). The first column of the result is the password |
+| `certificate_query` | none | After an EAP-TLS certificate has passed, this query is used to find the user instead. Exactly one `?`. If a row is found, the user is accepted and the first column is not looked at. When it is not set, `user_query` is used, and a NULL, prefix-only or empty first column is rejected (section 2.12) |
+| `reply_query` | none | The query that gets the reply attributes. Exactly one `?`. Returns two columns, `(attribute, value)` |
+| `default_user` | none | When the user is not found, the password of this account is used for verification (anyone who knows that password passes, so use it with care). On a pass, `account` in the auth record is this account, and `user` is the name that was sent |
+| `timeout_ms` | 5000 | Time limit for each query. Must be greater than 0. With `database`, it includes the time spent waiting for a connection |
+| `database` | none | The name of a `[databases.<name>]` (section 2.17). The query runs on that MySQL or PostgreSQL database, and the placeholder is still written `?`. When it is not set, the cluster's own database is queried. Startup fails if the name does not exist |
 
-- 查無使用者 → 略過；查到多筆 → 拒絕並記錄；密碼欄為 NULL、空字串或只有 `{clear}` 這類前綴 → 拒絕。
-- `?` 的數量以字元計算，不要在查詢的字串常值中使用 `?`。
-- 支援的密碼格式見第 5 節。
+- User not found: ignore. More than one row found: reject and log. A password column that is NULL, an empty string, or only a prefix such as `{clear}`: reject.
+- The number of `?` is counted in characters, so do not use `?` inside a string literal in the query.
+- For the supported password formats, see section 5.
 
-### 3.4 `lua` 處理器
+### 3.4 The `lua` handler
 
 ```toml
 [[auth.handlers]]
 type = "lua"
-script = "site_rules.lua"   # 以設定檔目錄解析
-# verifies_password = true  # 選填，預設 false：這個腳本會比對 User-Password，見 2.12 節 EAP-TTLS
+script = "site_rules.lua"   # resolved against the configuration file's directory
+# verifies_password = true  # optional, default false: this script compares User-Password, see EAP-TTLS in section 2.12
 ```
 
-腳本回傳 `'accept'`、`'reject'`、`'ignore'`（略過）或 `'challenge'`（RADIUS 認證才有）。腳本 API 見第 4 節；`phase` 為 `"authentication"`。
+The script returns `'accept'`, `'reject'`, `'ignore'` (skip) or `'challenge'` (only for RADIUS authentication). For the script API, see section 4. `phase` is `"authentication"`.
 
-### 3.5 `ldap` 處理器
+### 3.5 The `ldap` handler
 
-| 欄位 | 預設 | 說明 |
+| Field | Default | Description |
 | --- | --- | --- |
-| `urls` | （必填） | 一或多個 `ldaps://` 或 `ldap://` URL，依序嘗試 |
-| `bind_dn` | （必填） | 服務帳號 DN |
-| `bind_password` / `bind_password_file` | （二擇一） | 服務帳號密碼，不可為空，否則載入時報錯：空密碼等於匿名綁定 |
-| `base_dn` | （必填） | 搜尋起點 |
-| `filter` | （必填） | 搜尋條件，剛好一個 `{user}`，例如 `(uid={user})` |
-| `certificate_filter` | 無 | EAP-TLS 憑證通過後改用這個搜尋條件，剛好一個 `{user}`。沒有設定時，這個處理器略過憑證登入（2.12 節） |
-| `password_check` | `"bind"` | `"bind"`：以找到的 DN 與使用者密碼登入；`"attribute"`：讀取密碼屬性比對 |
-| `password_attribute` | 無 | `password_check = "attribute"` 時必填，例如 `userPassword` |
-| `reply_attributes` | 無 | 回應屬性名稱對 LDAP 屬性名稱，例如 `{ "Filter-Id" = "radiusFilterId" }`，依寫入順序 |
-| `timeout_ms` | 5000 | 每個 URL 從取得連線到最後一個操作的時限 |
-| `ca_file` | 無 | 額外信任的 CA（PEM），以設定檔目錄解析 |
-| `allow_plaintext` | `false` | 為 `false` 時 `ldap://` 一律以 StartTLS 升級；為 `true` 且用 `ldap://` 時，啟動、reload 與 `check` 都會警告不加密 |
-| `pool_size` | 4 | 每個 URL 保持的連線數上限 |
-| `required_groups` | 無 | 必須屬於其中一個群組，否則拒絕 |
-| `group_attribute` | `memberOf` | 從使用者項目的這個屬性讀群組 |
-| `group_base_dn`、`group_filter` | 無 | 兩者一起設定時改用搜尋。`group_filter` 有一個 `{dn}`，例如 `(member={dn})`。不能和 `group_attribute` 同時設定 |
-| `group_reply` | 無 | 屬於某群組時要加上的回應屬性，見下方 |
+| `urls` | (required) | One or more `ldaps://` or `ldap://` URLs, tried in order |
+| `bind_dn` | (required) | The DN of the service account |
+| `bind_password` / `bind_password_file` | (one of the two) | The service account password. It cannot be empty, or loading reports an error: an empty password is the same as an anonymous bind |
+| `base_dn` | (required) | Where the search starts |
+| `filter` | (required) | The search filter, with exactly one `{user}`, for example `(uid={user})` |
+| `certificate_filter` | none | After an EAP-TLS certificate has passed, this search filter is used instead, with exactly one `{user}`. When it is not set, this handler ignores certificate logins (section 2.12) |
+| `password_check` | `"bind"` | `"bind"`: bind with the DN that was found and the user's password. `"attribute"`: read the password attribute and compare |
+| `password_attribute` | none | Required when `password_check = "attribute"`, for example `userPassword` |
+| `reply_attributes` | none | Maps reply attribute names to LDAP attribute names, for example `{ "Filter-Id" = "radiusFilterId" }`, in the order written |
+| `timeout_ms` | 5000 | Time limit for each URL, from getting a connection to the last operation |
+| `ca_file` | none | An extra CA to trust (PEM), resolved against the configuration file's directory |
+| `allow_plaintext` | `false` | When `false`, `ldap://` is always upgraded with StartTLS. When `true` and `ldap://` is used, startup, reload and `check` all warn that the connection is not encrypted |
+| `pool_size` | 4 | Upper limit of connections kept for each URL |
+| `required_groups` | none | The user must belong to one of these groups, otherwise reject |
+| `group_attribute` | `memberOf` | The attribute of the user entry that the groups are read from |
+| `group_base_dn`, `group_filter` | none | When both are set, a search is used instead. `group_filter` has one `{dn}`, for example `(member={dn})`. Cannot be set together with `group_attribute` |
+| `group_reply` | none | Reply attributes to add when the user belongs to a group, see below |
 
-行為：
-- `{user}` 會依 RFC 4515 跳脫，使用者名稱無法改變搜尋條件的結構。
-- 查無 → 略過；多筆 → 拒絕並記錄。
-- `bind` 模式只接受 PAP，空密碼一律拒絕（避免被當成匿名登入）；`invalidCredentials` 為一般拒絕，其他登入錯誤視為伺服器錯誤。
-- `attribute` 模式支援 PAP，以及密碼以明文或 `{clear}` 儲存時的 CHAP，也支援 MS-CHAPv2 與 MS-CHAPv1（5.1、5.2 節）。
-- 連線失敗、連線中斷或逾時才換下一個 URL；連不上的 URL 在 30 秒內排到最後才試，之後再試一次（伺服器回了錯誤不算連不上；reload 後重新開始）。包含服務帳號登入、搜尋和使用者登入途中斷線；伺服器回應的錯誤，例如服務帳號密碼錯誤、搜尋失敗，一律拒絕並記錄，不會略過，也不換下一個 URL。
-- **目錄不能用時不回應，不算失敗。** 所有 URL 都連不上或逾時、服務帳號登入被拒絕或出錯、搜尋（含群組搜尋）出錯，以及 `password_check = "attribute"` 比對儲存密碼逾時，結果仍是拒絕並照常記錄，但標為「不能用」：RADIUS 不回應（計入 `rradius_radius_discarded_total{reason="database"}`），TACACS+ 回 ERROR，也不計入 `[auth.lockout]`（3.8 節）。使用者自己的登入被伺服器拒絕（密碼錯，或 invalidCredentials 以外的代碼，例如帳號停用；但 busy、unavailable、serverDown 這三個表示伺服器無法處理請求的代碼算目錄故障）、找不到使用者、不在 `required_groups`，是對這個使用者的答案，照常拒絕並計入失敗。單台伺服器遇到目錄故障時，NAS 看到的是逾時，不是 Access-Reject。
-- 憑證一律驗證（系統信任的 CA 加上 `ca_file`）。
-- 連線在認證之間重用：取用前確認連線仍開著，並在 `timeout_ms` 的一半內以服務帳號重新登入；出錯或逾時的連線會丟棄並改建新連線。
+Behavior:
+- `{user}` is escaped according to RFC 4515, so a user name cannot change the structure of the search filter.
+- Not found: ignore. More than one entry: reject and log.
+- `bind` mode accepts only PAP. An empty password is always rejected (so it is not treated as an anonymous login). `invalidCredentials` is an ordinary reject. Other bind errors are treated as server errors.
+- `attribute` mode supports PAP, CHAP when the password is stored in clear text or as `{clear}`, and also MS-CHAPv2 and MS-CHAPv1 (sections 5.1 and 5.2).
+- The next URL is tried only after a connection failure, a dropped connection or a timeout. A URL that cannot be reached is moved to the end for 30 seconds, then tried once more (an error reply from the server does not count as unreachable; this starts over after a reload). This covers a connection that drops during the service account bind, the search or the user's bind. An error returned by the server, for example a wrong service account password or a failed search, is always rejected and logged. It is not ignored, and the next URL is not tried.
+- **When the directory cannot be used, there is no reply, and it does not count as a failure.** This covers: every URL unreachable or timed out, the service account bind rejected or failing, an error in the search (including the group search), and a timeout while comparing the stored password with `password_check = "attribute"`. The result is still a reject and is logged as usual, but it is marked "unavailable". RADIUS does not reply (counted in `rradius_radius_discarded_total{reason="database"}`), TACACS+ replies ERROR, and it does not count towards `[auth.lockout]` (section 3.8). When the server rejects the user's own bind (a wrong password, or a code other than invalidCredentials such as a disabled account; but busy, unavailable and serverDown, which mean the server cannot handle the request, count as a directory failure), when the user is not found, or when the user is not in `required_groups`, that is the answer for this user. It is rejected as usual and counted as a failure. When a single server has a directory failure, the NAS sees a timeout, not an Access-Reject.
+- Certificates are always verified (the CAs the system trusts plus `ca_file`).
+- Connections are reused between authentications: before a connection is taken, it is checked to be still open, and the service account binds again within half of `timeout_ms`. A connection that errors or times out is discarded and replaced by a new one.
 
 ```toml
 [[auth.handlers]]
@@ -1662,7 +1662,7 @@ filter = "(uid={user})"
 reply_attributes = { "Filter-Id" = "radiusFilterId" }
 ```
 
-**群組：** 依群組限制登入，或給不同的屬性：
+**Groups:** limit logins by group, or give different attributes:
 
 ```toml
 [[auth.handlers]]
@@ -1675,64 +1675,64 @@ group = "cn=staff,ou=groups,dc=example,dc=com"
 attributes = { "Filter-Id" = "staff" }
 ```
 
-- **不在群組和密碼錯誤的回應相同，** 外部無法分辨。判斷在密碼驗證通過之後。
-- **`group_filter` 本身不是限制。** 沒有 `required_groups` 和 `group_reply` 時，設定 `group_attribute`、`group_base_dn` 或 `group_filter` 會啟動失敗，因為不會有任何查詢。
-- 沒有 `memberOf` 的目錄用 `group_base_dn`、`group_filter`。搜尋以服務帳號在使用者登入之前執行，每次認證多一次搜尋。在本機的 OpenLDAP 上，debug 建置實測每次認證從約 603 微秒變成約 662 微秒。
-- AD 要展開巢狀群組時，可以寫 `group_filter = "(member:1.2.840.113556.1.4.1941:={dn})"`。`group_attribute` 只看項目上的直接成員關係。這個寫法沒有在 AD 上測過。
-- **DN 比對不分大小寫（只處理 ASCII），也忽略逗號旁的空白，** 除此之外要和目錄回傳的寫法相同。寫法不同時比對不到，結果是拒絕或沒有加上屬性，不會多給權限。
-- 群組搜尋失敗視為伺服器錯誤，拒絕並記錄。
-- `group_reply` 依設定順序加在 `reply_attributes` 之後，可以同時符合多個。屬性名稱或值不正確時，該次認證會被拒絕並記錄 `RADIUS response attribute error`；`check` 會提早發現這類錯誤。
+- **Not being in the group and a wrong password get the same reply,** so an outsider cannot tell them apart. The decision is made after the password has been verified.
+- **`group_filter` is not a restriction by itself.** If neither `required_groups` nor `group_reply` is set, setting `group_attribute`, `group_base_dn` or `group_filter` fails at startup, because no query would ever be made.
+- For a directory without `memberOf`, use `group_base_dn` and `group_filter`. The search runs with the service account before the user's login, so each authentication makes one more search. On a local OpenLDAP, a debug build measured each authentication going from about 603 microseconds to about 662 microseconds.
+- To expand nested groups in AD, you can write `group_filter = "(member:1.2.840.113556.1.4.1941:={dn})"`. `group_attribute` looks only at direct membership on the entry. This form has not been tested on AD.
+- **DN comparison is not case-sensitive (ASCII only) and ignores spaces next to commas,** but otherwise it must be written the same way as the directory returns it. If the writing differs, there is no match, and the result is a reject or no attributes added. It never gives extra permissions.
+- A failed group search is treated as a server error: reject and log.
+- `group_reply` is added after `reply_attributes` in the configured order, and several entries can match at the same time. If an attribute name or value is wrong, that authentication is rejected and `RADIUS response attribute error` is logged. `check` finds this kind of error early.
 
-### 3.6 使用者名稱正規化 `username`
+### 3.6 Normalizing user names `username`
 
-設備送來的名稱常帶網域或大小寫不一，例如 `alice@corp.example`、`CORP\Alice`。每條串接可以設定如何從收到的名稱算出查帳號用的名稱：
+The name a device sends often carries a domain or differs in case, for example `alice@corp.example` or `CORP\Alice`. Each chain can set how the name used to look up the account is computed from the received name:
 
 ```toml
-[auth.username]          # 預設串接；具名串接用 [auth.chains.<name>.username]
-strip_realm = "suffix"   # 預設 none
-lowercase = true         # 預設 false
-allowed = "[a-z0-9._-]+" # 選填
+[auth.username]          # default chain; a named chain uses [auth.chains.<name>.username]
+strip_realm = "suffix"   # default none
+lowercase = true         # default false
+allowed = "[a-z0-9._-]+" # optional
 ```
 
-| `strip_realm` | 去除的部分 | `CORP\Alice@Corp` 的結果 |
+| `strip_realm` | What is removed | Result for `CORP\Alice@Corp` |
 | --- | --- | --- |
-| `none` | 不去除 | `CORP\Alice@Corp` |
-| `suffix` | 最後一個 `@` 起的內容 | `CORP\Alice` |
-| `prefix` | 最後一個反斜線以前的內容 | `Alice@Corp` |
-| `both` | 先做 `prefix` 再做 `suffix` | `Alice` |
+| `none` | Nothing | `CORP\Alice@Corp` |
+| `suffix` | Everything from the last `@` | `CORP\Alice` |
+| `prefix` | Everything up to the last backslash | `Alice@Corp` |
+| `both` | `prefix` first, then `suffix` | `Alice` |
 
-- **處理順序固定：** 去除 realm → 改小寫 → 檢查 `allowed`。所以 `allowed` 只要考慮處理後的名稱，不必列出 realm 或大寫。
-- **`allowed` 必須符合整個名稱，** 不必自己加 `^`、`$`。`[a-z]+` 不會放行 `a'; --`。
-- **結果為空或不符合 `allowed` 時，** 整條串接直接拒絕，不執行任何處理器，`first_match` 和 `all_accept` 都一樣。記錄只寫 client 和原因，不寫名稱，因為名稱可能含有控制字元。
-- **沒有名稱的請求** 照常交給處理器，和沒有這個區段時相同。
-- **不會繼承：** 預設串接的設定不會套用到具名串接。沒有這個區段的串接，直接用收到的名稱。
-- `[auth.username]` 要有 `[[auth.handlers]]` 才能設定，和 `policy` 相同。設定有誤時啟動失敗。SIGHUP 時和串接一起生效，不必重啟。
+- **The processing order is fixed:** strip the realm, lowercase, then check `allowed`. So `allowed` only has to consider the processed name, and does not need to list the realm or upper case.
+- **`allowed` must match the whole name,** so you do not need to add `^` or `$` yourself. `[a-z]+` does not let `a'; --` through.
+- **When the result is empty or does not match `allowed`,** the whole chain rejects at once and runs no handler, for `first_match` and `all_accept` alike. The log records only the client and the reason, not the name, because a name can contain control characters.
+- **A request with no name** is passed to the handlers as usual, the same as when this section is not present.
+- **Nothing is inherited:** the default chain's settings do not apply to named chains. A chain without this section uses the received name as it is.
+- `[auth.username]` can be set only when there is an `[[auth.handlers]]`, the same as `policy`. Startup fails if the settings are wrong. On SIGHUP it takes effect together with the chain, with no restart.
 
-各處理器如何使用：
+How each handler uses the names:
 
-| 處理器 | 用處理後的名稱 | 用收到的名稱 |
+| Handler | Uses the processed name | Uses the received name |
 | --- | --- | --- |
-| `sql` | `user_query`、`reply_query` | 驗證密碼 |
-| `ldap` | `filter` 的搜尋 | `attribute` 模式驗證密碼 |
-| `lua` | 全域變數 `auth_user` | `get_attr('User-Name')` |
-| `netlogon` | 向 DC 登入的帳號（再去掉 `網域\`） | 計算 challenge hash |
+| `sql` | `user_query`, `reply_query` | Verifying the password |
+| `ldap` | The search in `filter` | Verifying the password in `attribute` mode |
+| `lua` | The global variable `auth_user` | `get_attr('User-Name')` |
+| `netlogon` | The account that logs on to the DC (with `domain\` removed as well) | Computing the challenge hash |
 
-- **MS-CHAPv2 一律用收到的名稱驗證，** 因為用戶端是用它計算回應的（見 5.1 節）。回應裡的屬性和 `get_attr` 也不會改變。
-- **不經過這些設定：** 計費封包、TACACS+ 授權，以及沒有串接時的最上層腳本。它們要自己處理名稱，`auth_user` 在這些腳本中是 `nil`。
-- **開啟 `lowercase` 之前，先把資料統一成小寫。** 否則資料表裡的 `Alice` 會查不到；原本只差大小寫的不同帳號，也會指向同一筆。
-- **設定 `allowed` 之前，先在測試環境確認。** 樣式太嚴會擋掉合法使用者。
-- 不做 Unicode 正規化（NFC 等），也不依 realm 選擇串接。
+- **MS-CHAPv2 always verifies with the received name,** because the client computed its response with it (see section 5.1). The attributes in the response and `get_attr` do not change either.
+- **These settings are not applied to:** accounting packets, TACACS+ authorization, and the top-level script when there is no chain. They have to handle names themselves, and `auth_user` is `nil` in these scripts.
+- **Before turning on `lowercase`, make the data lower case.** Otherwise `Alice` in the table is not found. Accounts that differed only in case would also point to the same row.
+- **Before setting `allowed`, check it in a test environment.** A pattern that is too strict blocks legitimate users.
+- There is no Unicode normalization (NFC and so on), and no chain selection by realm.
 
-### 3.7 `netlogon` 處理器（Active Directory 的 MS-CHAPv2）
+### 3.7 The `netlogon` handler (MS-CHAPv2 for Active Directory)
 
-AD 不會透過 LDAP 給出 NT hash，所以 `sql`、`ldap` 處理器無法驗證 AD 帳號的 MS-CHAPv2。`netlogon` 處理器把 MS-CHAPv2 回應交給網域控制站（DC）驗證：以本節點的電腦帳號和 DC 建立 Netlogon secure channel（AES），再以網路登入（`NetrLogonSamLogonEx`）送出 challenge hash 和 NT-Response。DC 接受時回傳的 user session key 就是「NT hash 的雜湊」，`MS-CHAP2-Success` 和 MPPE 金鑰由它算出，和 `sql` 處理器以密碼算出的相同。所以 PEAP-MSCHAPv2、RADIUS MS-CHAPv2、TACACS+ MS-CHAPv2 都能用 AD 帳號登入，伺服器不必加入網域，也不用 Samba。
+AD does not give out the NT hash over LDAP, so the `sql` and `ldap` handlers cannot verify MS-CHAPv2 for an AD account. The `netlogon` handler gives the MS-CHAPv2 response to a domain controller (DC) to verify. It sets up a Netlogon secure channel (AES) with the DC using this node's computer account, and then sends the challenge hash and the NT-Response with a network logon (`NetrLogonSamLogonEx`). When the DC accepts, the user session key it returns is the "hash of the NT hash". `MS-CHAP2-Success` and the MPPE keys are computed from it, and they are the same as what the `sql` handler computes from the password. So PEAP-MSCHAPv2, RADIUS MS-CHAPv2 and TACACS+ MS-CHAPv2 can all log in with AD accounts. The server does not have to join the domain, and Samba is not needed.
 
 ```toml
 [[auth.handlers]]
 type = "netlogon"
-domain = "CORP"                               # NetBIOS 網域名稱
+domain = "CORP"                               # NetBIOS domain name
 servers = ["dc1.corp.example", "dc2.corp.example"]
-computer_name = "RRADIUS1"                    # 本節點的電腦帳號，不含 $
+computer_name = "RRADIUS1"                    # this node's computer account, without $
 machine_password_file = "netlogon-rradius1.secret"
 required_groups = ["S-1-5-21-1004336348-1177238915-682003330-1110"]
 
@@ -1741,188 +1741,188 @@ group = "S-1-5-21-1004336348-1177238915-682003330-1111"
 attributes = { "Filter-Id" = "staff" }
 ```
 
-| 欄位 | 預設 | 說明 |
+| Field | Default | Description |
 | --- | --- | --- |
-| `domain` | （必填） | 網域的 NetBIOS 名稱，例如 `CORP`，不是 DNS 名稱 |
-| `servers` | （必填） | DC 的 DNS 或 NetBIOS 名稱，依序使用，至少一個。不能用 IP 位址：登入請求要帶 DC 自己的名稱，Windows DC 收到位址會回 `STATUS_INVALID_COMPUTER_NAME`。節點要能解析這些名稱（通常用 AD 的 DNS） |
-| `port` | 無 | DC 固定的 Netlogon 埠。沒有設定時先問 135 埠的端點對應器，問到的埠會記住；DC 重新啟動後換了埠、舊埠連不上時，再問一次 |
-| `computer_name` | （必填） | 本節點的電腦帳號，不含結尾的 `$`，最多 15 個字元 |
-| `machine_password_file` | （必填） | 電腦帳號的密碼檔，以設定檔目錄解析，結尾換行會去掉。載入後只保留 NT hash |
-| `timeout_ms` | 2000 | 連線、建立 secure channel、一次登入各自的時限，必須大於 0 |
-| `connections` | 4 | 每台 DC 最多保持的連線數，必須大於 0 |
-| `required_groups` | 無 | SID 清單，使用者至少屬於其中一個才接受，否則拒絕 |
-| `group_reply` | 無 | 屬於某 SID 的群組時加上的回應屬性，依設定順序，可同時符合多個 |
+| `domain` | (required) | The NetBIOS name of the domain, for example `CORP`, not the DNS name |
+| `servers` | (required) | The DNS or NetBIOS names of the DCs, used in order, at least one. IP addresses cannot be used: the logon request must carry the DC's own name, and a Windows DC that receives an address replies `STATUS_INVALID_COMPUTER_NAME`. The node must be able to resolve these names (usually with AD's DNS) |
+| `port` | none | The DC's fixed Netlogon port. When it is not set, the endpoint mapper on port 135 is asked first, and the port it gives is remembered. If the DC restarts with a different port and the old port cannot be reached, it is asked again |
+| `computer_name` | (required) | This node's computer account, without the trailing `$`, at most 15 characters |
+| `machine_password_file` | (required) | The password file of the computer account, resolved against the configuration file's directory. A trailing newline is removed. Only the NT hash is kept after loading |
+| `timeout_ms` | 2000 | Time limit for the connection, for setting up the secure channel, and for one logon, each separately. Must be greater than 0 |
+| `connections` | 4 | The most connections kept for each DC. Must be greater than 0 |
+| `required_groups` | none | A list of SIDs. The user must belong to at least one of them to be accepted, otherwise reject |
+| `group_reply` | none | Reply attributes to add when the user belongs to a group with that SID, in the configured order. Several can match at the same time |
 
-**每台節點一個電腦帳號。** DC 對每個電腦帳號只保留一組 secure channel，兩台節點共用帳號會互相弄斷對方的 channel。叢集裡每台節點的設定要有自己的 `computer_name` 和密碼檔，建立方式見手冊第 08 章〈準備電腦帳號〉。
+**One computer account for each node.** A DC keeps only one secure channel for each computer account, so two nodes that share an account break each other's channel. In a cluster, each node's configuration needs its own `computer_name` and password file. For how to create them, see manual chapter 08, "Prepare the computer account".
 
-DC 回覆的對應：
+How DC replies are handled:
 
-| DC 回覆 | 結果 |
+| DC reply | Result |
 | --- | --- |
-| 成功 | 接受，帶 `MS-CHAP2-Success`、`MS-MPPE-Send-Key`、`MS-MPPE-Recv-Key` 和符合的 `group_reply` |
-| `STATUS_NO_SUCH_USER` | 略過，交給下一個處理器 |
-| `STATUS_WRONG_PASSWORD`、`STATUS_ACCOUNT_DISABLED`、`STATUS_ACCOUNT_LOCKED_OUT`、`STATUS_PASSWORD_EXPIRED`、`STATUS_PASSWORD_MUST_CHANGE`、`STATUS_ACCOUNT_EXPIRED`、`STATUS_INVALID_LOGON_HOURS`、`STATUS_INVALID_WORKSTATION` | 拒絕，INFO 記錄狀態名稱 |
-| 其他失敗 | 拒絕，INFO 記錄十六進位代碼 |
-| 以來賓帳號登入成功 | 拒絕。請求本身也要求 DC 不要改用來賓帳號 |
-| 回覆不是權威的（`Authoritative` 為 false） | 換下一台 DC |
+| Success | Accept, with `MS-CHAP2-Success`, `MS-MPPE-Send-Key`, `MS-MPPE-Recv-Key` and the matching `group_reply` |
+| `STATUS_NO_SUCH_USER` | Ignore, hand over to the next handler |
+| `STATUS_WRONG_PASSWORD`, `STATUS_ACCOUNT_DISABLED`, `STATUS_ACCOUNT_LOCKED_OUT`, `STATUS_PASSWORD_EXPIRED`, `STATUS_PASSWORD_MUST_CHANGE`, `STATUS_ACCOUNT_EXPIRED`, `STATUS_INVALID_LOGON_HOURS`, `STATUS_INVALID_WORKSTATION` | Reject, the status name is logged at INFO |
+| Other failures | Reject, the hexadecimal code is logged at INFO |
+| Logon succeeded as a guest account | Reject. The request itself also asks the DC not to fall back to the guest account |
+| The reply is not authoritative (`Authoritative` is false) | Try the next DC |
 
-- **只處理 MS-CHAPv2。** PAP、CHAP、憑證登入一律略過，不連 DC。PAP 要對 AD 驗證請用 `ldap` 處理器的 `bind` 模式。
-- **群組以 SID 表示，** 例如 `S-1-5-21-…-1110`。比對的是 DC 在登入回覆中給的群組：網域 SID 加上每個群組 RID，以及額外 SID（其他網域、通用群組）。不必另外查 LDAP。SID 可以用 PowerShell 的 `Get-ADGroup staff | Select SID` 查。不在群組和密碼錯誤的回應相同。
-- **帳號名稱：** 登入用串接處理後的名稱（3.6 節），再去掉 `網域\` 前綴，網域一律用 `domain`。challenge hash 用收到的名稱，和本機驗證相同。
-- **連線重用與換 DC：** 每台 DC 的連線共用同一組 secure channel，在請求之間重用。連線中斷，或 DC 表示 channel 已失效（`STATUS_ACCESS_DENIED`、密封或綁定被拒）時，重建 channel 並在新連線上重試一次，仍失敗就換下一台。在 `timeout_ms` 內沒有回應的連線會關閉：若是閒置後重用的連線（可能已被防火牆或 NAT 悄悄丟掉），一併關掉其他閒置連線，在新連線上重試一次；新連線也沒有回應就換下一台。
-- **全部 DC 都不能用時，** 和 `sql` 處理器的資料庫不能用時相同：RADIUS 不回應，計入 `rradius_radius_discarded_total{reason="database"}`，TACACS+ 回 ERROR，讓設備重送或換伺服器（2.2 節〈資料庫不能用時〉），並記錄 ERROR。電腦帳號密碼錯誤、DC 不支援 AES 這類設定問題也記錄 ERROR。
-- **秘密不進記錄：** 電腦帳號密碼、session key、user session key、NT-Response 和 MPPE 金鑰在任何記錄層級都不會出現，用完即清除。
-- `check` 和啟動只檢查設定與密碼檔，不連 DC。channel 在第一個請求時才建立。
-- **Samba AD DC 要允許 MS-CHAPv2：** Samba 預設的 `ntlm auth = ntlmv2-only` 不接受 MS-CHAPv2，密碼正確也回 `STATUS_WRONG_PASSWORD`。在每台 DC 的 `smb.conf` `[global]` 加上 `ntlm auth = mschapv2-and-ntlmv2-only` 後重新啟動。
-- **效能：** 在同一台 Mac 上對容器裡的 Samba 4.17 DC 量測，`connections` 為 1、4、16 時約每秒 1600、3700、8300 次登入，瓶頸在 DC。DC 承受得了時可以調高 `connections`。
+- **Only MS-CHAPv2 is handled.** PAP, CHAP and certificate logins are always ignored, without connecting to the DC. To verify PAP against AD, use the `bind` mode of the `ldap` handler.
+- **Groups are given as SIDs,** for example `S-1-5-21-…-1110`. The comparison uses the groups the DC gives in the logon reply: the domain SID plus each group RID, and the extra SIDs (other domains, universal groups). No separate LDAP query is needed. You can look up a SID with PowerShell's `Get-ADGroup staff | Select SID`. Not being in the group and a wrong password get the same reply.
+- **Account name:** the logon uses the name processed by the chain (section 3.6), with any `domain\` prefix removed. The domain is always the `domain` setting. The challenge hash uses the received name, the same as local verification.
+- **Connection reuse and DC failover:** the connections to each DC share one secure channel and are reused between requests. When a connection drops, or the DC says the channel is no longer valid (`STATUS_ACCESS_DENIED`, or a seal or bind that is refused), the channel is rebuilt and the request is retried once on the new connection. If that also fails, the next DC is used. A connection that does not reply within `timeout_ms` is closed. If it was a connection reused after sitting idle (it may have been dropped silently by a firewall or NAT), the other idle connections are closed too and the request is retried once on a new connection. If the new connection does not reply either, the next DC is used.
+- **When no DC can be used,** it is the same as when the `sql` handler's database cannot be used: RADIUS does not reply and it is counted in `rradius_radius_discarded_total{reason="database"}`, TACACS+ replies ERROR so that the device retransmits or switches server (section 2.2, "When the database is unavailable"), and an ERROR is logged. Setup problems such as a wrong computer account password or a DC that does not support AES also log an ERROR.
+- **Secrets stay out of the log:** the computer account password, the session key, the user session key, the NT-Response and the MPPE keys never appear at any log level, and they are cleared after use.
+- `check` and startup only check the configuration and the password file, and do not connect to a DC. The channel is built at the first request.
+- **A Samba AD DC must allow MS-CHAPv2:** Samba's default `ntlm auth = ntlmv2-only` does not accept MS-CHAPv2, and replies `STATUS_WRONG_PASSWORD` even when the password is right. Add `ntlm auth = mschapv2-and-ntlmv2-only` to `[global]` in `smb.conf` on every DC and restart.
+- **Performance:** measured on one Mac against a Samba 4.17 DC in a container, with `connections` at 1, 4 and 16 the rate was about 1600, 3700 and 8300 logons per second. The bottleneck is the DC. If the DC can take it, you can raise `connections`.
 
-指標（2.8 節）：
+Metrics (section 2.8):
 
-| 項目 | 說明 |
+| Item | Description |
 | --- | --- |
-| `rradius_netlogon_logons_total{result="accept\|reject\|no_such_user\|unavailable"}` | 交給 DC 驗證的 MS-CHAPv2 登入 |
-| `rradius_netlogon_channel_setups_total{result="ok\|failed"}` | 建立 secure channel 的次數。`failed` 持續增加通常是電腦帳號密碼錯誤 |
-| `rradius_netlogon_open_connections` | 目前開著的 Netlogon 連線 |
+| `rradius_netlogon_logons_total{result="accept\|reject\|no_such_user\|unavailable"}` | MS-CHAPv2 logons handed to a DC for verification |
+| `rradius_netlogon_channel_setups_total{result="ok\|failed"}` | The number of secure channel setups. A `failed` count that keeps rising is usually a wrong computer account password |
+| `rradius_netlogon_open_connections` | Netlogon connections that are open now |
 
-**限制：**
-- 不會自動加入網域，也不會輪替電腦帳號密碼。電腦帳號要事先建立並設定密碼（手冊第 08 章〈準備電腦帳號〉），之後若在 AD 重設密碼，要同時更新密碼檔並重新載入。
-- 只支援 AES secure channel。停用 AES 的舊 DC（Windows Server 2008 以前）不支援。
-- 在 Samba 4.17 AD DC 上以 `docker/interop-netlogon/run.sh` 實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、各種拒絕、群組、DC 重啟後重建 channel、電腦帳號密碼錯誤），也在 Windows Server 2022 的 DC 上實測過（PEAP-MSCHAPv2 與 MPPE 金鑰、`DOMAIN\` 前綴、群組、錯誤密碼、停用帳號、不在群組、不存在的使用者）。
+**Limits:**
+- There is no automatic domain join, and the computer account password is not rotated. The computer account must be created in advance and given a password (manual chapter 08, "Prepare the computer account"). If the password is later reset in AD, update the password file at the same time and reload.
+- Only the AES secure channel is supported. Old DCs with AES disabled (before Windows Server 2008) are not supported.
+- It has been tested on a Samba 4.17 AD DC with `docker/interop-netlogon/run.sh` (PEAP-MSCHAPv2 and MPPE keys, the `DOMAIN\` prefix, various rejects, groups, rebuilding the channel after a DC restart, a wrong computer account password). It has also been tested on a Windows Server 2022 DC (PEAP-MSCHAPv2 and MPPE keys, the `DOMAIN\` prefix, groups, a wrong password, a disabled account, not in the group, a user that does not exist).
 
-### 3.8 限制登入失敗 `[auth.lockout]`
+### 3.8 Limiting failed logins `[auth.lockout]`
 
-核心本身不限制猜密碼的次數；寫了 `[auth.lockout]` 才啟用，沒寫就完全不變。
+The core does not limit the number of password guesses by itself. Writing `[auth.lockout]` turns it on. Without it, nothing changes.
 
 ```toml
 [auth.lockout]
-max_failures = 10             # 視窗內失敗幾次就鎖定，預設 10
-window_seconds = 300          # 從第一次失敗起算，計數持續多久，預設 300
-lock_seconds = 300            # 鎖定多久，預設 300
-max_entries = 100000          # 每個節點最多記住幾個鍵，預設 100000
-# account_max_failures = 50   # 選用：同一個帳號不分來源的失敗總數（必須大於 max_failures）
-# max_in_flight = 50          # 選用：同一個鍵同時等待判定的登入數，預設是 max_failures 的 5 倍
+max_failures = 10             # failures within the window that cause a lockout, default 10
+window_seconds = 300          # how long counting lasts from the first failure, default 300
+lock_seconds = 300            # how long the lockout lasts, default 300
+max_entries = 100000          # the most keys each node remembers, default 100000
+# account_max_failures = 50   # optional: total failures for one account from all origins (must be greater than max_failures)
+# max_in_flight = 50          # optional: logins waiting for a decision for one key at the same time, default 5 times max_failures
 ```
 
-- **鍵：** 同一個帳號（小寫）加來源裝置：RADIUS 的 `Calling-Station-Id`，TACACS+ 的 `rem_addr`（沒有就是空的）。同一個鍵在視窗內失敗達到 `max_failures` 次，就在 `lock_seconds` 內直接拒絕，連正確的密碼也不驗；換一台裝置不受影響。鎖定期間不延長。
-- **同時進行的登入：** 登入在判定前先佔一個名額，判定後放回。同一個鍵等待判定的登入達到 `max_in_flight`（預設 `max_failures` 的 5 倍，必須大於 0）時，再來的登入直接拒絕並計入 `rradius_auth_lockout_rejected_total`；等待中的登入不占失敗額度，所以多台設備同時重新連線、全部密碼正確時不會被擋，也不會被鎖。設了 `account_max_failures` 時，帳號不分來源的名額是 `max_in_flight × account_max_failures ÷ max_failures`（無條件進位）。取捨：同時開始的一批錯誤登入在任何一個失敗之前就都放行，所以一批最多多猜 `max_in_flight − max_failures` 次（預設是 `max_failures` 的 4 倍）才被鎖；要更嚴就把 `max_in_flight` 設小，但不要低於 `max_failures`：設得比 `max_failures` 小只限制同時進行的數量，不會讓鎖定提早，還會擋掉同時重新連線的正確登入。升級後沒改設定，並行名額就是預設的 5 倍，比舊版寬。
-- **只算真正的拒絕：** 資料庫、LDAP 或網域控制站掛掉，以及密碼驗證逾時（`unavailable`）不算，EAP-TLS 憑證登入與 EAP-AKA'／SIM 不算，成功登入把這個鍵的計數清零。帳號不存在也照算，所以鎖定不會洩漏哪些帳號存在。
-- **範圍：** 驗證鏈涵蓋的登入：RADIUS 的 PAP、CHAP、MS-CHAP，PEAP／TTLS 的內層，和 TACACS+ 的驗證（跨連線，斷線重連不會歸零）。**不涵蓋**沒設驗證鏈、直接由 `[lua].script` 驗證的登入，也不涵蓋 TACACS+ 的第二因素流程。
-- **每個節點各自計數，** 記在記憶體裡：重啟歸零，叢集裡攻擊者可以分散到各節點，實際的上限約為節點數倍。設定重新載入時保留計數；移除 `[auth.lockout]` 並重新載入後，計數清空。
-- **來源欄位由發送端填。** 持有共用密碼的人可以每次換一個假的 `Calling-Station-Id`，繞過「帳號加來源」的鎖。要擋這種人，設 `account_max_failures`：同一個帳號不分來源失敗達到這個數就對所有來源鎖定。代價是猜密碼的人也能用它把受害者的帳號鎖住，所以預設不設定。
-- **計數表有上限。** 滿了先丟過期的，再丟最舊的未鎖定的，鎖定中的不會被擠掉；全是鎖定中時，新的鍵不追蹤，計入 `rradius_auth_lockout_untracked_total`，並每分鐘最多記一行 `the table of N keys is full of locks`。
-- **記錄與統計：** 每次新鎖定記一行 INFO：`auth lockout: client <名稱>: account "<帳號>" from "<來源>" is locked (this origin)`，括號裡也可能是 `all origins`，不含密碼。metrics：`rradius_auth_lockout_rejected_total`（因鎖定被拒絕的登入）、`rradius_auth_lockouts_total`（開始的鎖定）、`rradius_auth_lockout_untracked_total`。沒設定時這三個都不輸出。
+- **Key:** the same account (lower case) plus the origin device: `Calling-Station-Id` for RADIUS, and `rem_addr` for TACACS+ (empty if absent). When the same key reaches `max_failures` failures within the window, logins are rejected at once for `lock_seconds`, even with the right password, and the password is not even checked. Another device is not affected. The lockout is not extended while it lasts.
+- **Logins in progress:** a login takes a slot before the decision and gives it back after. When the logins of one key waiting for a decision reach `max_in_flight` (default 5 times `max_failures`, must be greater than 0), a further login is rejected at once and counted in `rradius_auth_lockout_rejected_total`. Logins that are waiting do not use up the failure allowance, so when many devices reconnect at the same time with correct passwords, none are blocked or locked. When `account_max_failures` is set, the number of slots for an account from all origins is `max_in_flight × account_max_failures ÷ max_failures` (rounded up). The trade-off: a batch of wrong logins that start at the same time are all let through before any of them fails, so a batch can make up to `max_in_flight − max_failures` extra guesses (by default 4 times `max_failures`) before the lock. To be stricter, set `max_in_flight` lower, but not below `max_failures`: a value below `max_failures` only limits the number in progress, does not make the lock start sooner, and blocks correct logins that reconnect at the same time. If you upgrade without changing the configuration, the concurrent allowance is the default 5 times, which is wider than in earlier versions.
+- **Only real rejects are counted:** a database, LDAP or domain controller that is down, and a password check that times out (`unavailable`), are not counted. EAP-TLS certificate logins and EAP-AKA'/SIM are not counted. A successful login resets this key's count to zero. A name that does not exist is counted too, so the lockout does not reveal which accounts exist.
+- **Scope:** logins covered by an auth chain: RADIUS PAP, CHAP and MS-CHAP, the inner method of PEAP/TTLS, and TACACS+ authentication (across connections, so a reconnect does not reset it). **Not covered:** logins with no auth chain that are verified directly by `[lua].script`, and the second-factor flow of TACACS+.
+- **Each node counts on its own,** in memory: a restart resets it to zero, and in a cluster an attacker can spread across nodes, so the real limit is about the number of nodes times the setting. A reload of the configuration keeps the counts. After `[auth.lockout]` is removed and the configuration is reloaded, the counts are cleared.
+- **The origin field is filled in by the sender.** Someone who holds the shared secret can use a different fake `Calling-Station-Id` each time and get around the "account plus origin" lock. To stop that, set `account_max_failures`: when one account reaches this many failures from all origins, it is locked for all origins. The cost is that someone guessing passwords can also use this to lock a victim's account, so it is not set by default.
+- **The count table has a limit.** When it is full, expired entries are dropped first, then the oldest unlocked ones. Locked entries are not pushed out. When all of them are locked, a new key is not tracked and is counted in `rradius_auth_lockout_untracked_total`, and at most one line a minute is logged: `the table of N keys is full of locks`.
+- **Logging and statistics:** each new lockout logs one INFO line: `auth lockout: client <name>: account "<account>" from "<origin>" is locked (this origin)`. The text in brackets can also be `all origins`. It does not contain the password. Metrics: `rradius_auth_lockout_rejected_total` (logins rejected because of a lockout), `rradius_auth_lockouts_total` (lockouts started), `rradius_auth_lockout_untracked_total`. When it is not set, none of these three is output.
 
-## 4. Lua 腳本
+## 4. Lua scripts
 
-### 4.1 執行環境
+### 4.1 Runtime environment
 
-- 腳本以 Luau 執行（以 Lua 5.1 為基礎，支援 `+=` 等語法，不支援 `goto`）。
-- 所有腳本（最上層腳本與 `lua` 處理器）在啟動時編譯一次；語法錯誤會讓啟動失敗並指出檔案。
-- 沙箱：內建函式庫唯讀；沒有 `io`、`os.execute`、`require`、`loadstring`、`getfenv`、`setfenv`，呼叫時會出錯，只在腳本執行到那一行時才會發現。可以使用 `string`、`table`、`math`、`os.time`、`os.clock` 等。
-- 每個請求有自己的全域變數，請求之間不共享；需要跨請求保存的資料請寫入資料庫。
-- **記憶體上限：** 每個 VM 最多用 `[lua].max_memory_mb`。超過時要配置的腳本會得到 `memory error: not enough memory`，處理方式和其他腳本錯誤相同，程序不會結束；當時在同一個 VM 上的其他腳本也可能遇到。腳本結束時 VM 用量超過上限一半，會做一次完整回收，這段時間會卡住一個工作執行緒，也不會有新請求分到這個 VM。之後用量比回收後多出上限的四分之一，或超過上限的八分之七，才會再做。**回收是逐步進行的：** 反覆產生很大的字串時，即使都沒有留下，也可能來不及回收而出錯。實測預設 256 MiB 時，反覆產生 8 MiB 的字串 400 次沒有問題，16 MiB 就會出錯。這個上限不涵蓋 Lua 以外的記憶體，例如等待中的資料庫查詢結果。
-- 腳本在一個請求中的執行時間超過 `[lua].max_execution_ms` 時會被中止並視為拒絕；等待資料庫的時間不計入。時間每 64 次迴圈回跳或函式呼叫才檢查一次，超過後每次都檢查。`pcall` 接得住這個錯誤，但下一次迴圈或呼叫又會出錯，而且就算腳本接住後正常回傳 `accept`，也算失敗。所以超過後最多再跑 64 次才被中止，迴圈內容很慢時會晚一些。執行較久的腳本會定期讓出，不會阻擋其他請求。
-- 腳本出錯（含逾時）時，該請求視為拒絕；但出錯或拒絕是因為叢集資料庫不能用（`sql_query`、`sql_execute` 逾時或找不到 leader，腳本用 `pcall` 接住也一樣）時，認證請求不回應、TACACS+ 回 ERROR（2.2 節〈資料庫不能用時〉）。錯誤會記錄為 `Lua script error (<protocol>/<phase>): <訊息>`，訊息中的位置是腳本路徑與行號，例如 `/etc/rradius/auth.lua:3: attempt to index nil with 'y'`。
+- Scripts run on Luau (based on Lua 5.1; it supports syntax such as `+=` and does not support `goto`).
+- All scripts (the top-level script and the `lua` handlers) are compiled once at startup. A syntax error makes startup fail and names the file.
+- Sandbox: the built-in libraries are read-only. There is no `io`, `os.execute`, `require`, `loadstring`, `getfenv` or `setfenv`; calling them raises an error, and you only find out when the script reaches that line. `string`, `table`, `math`, `os.time`, `os.clock` and similar are available.
+- Each request has its own global variables, which are not shared between requests. Write data that must survive across requests to the database.
+- **Memory limit:** each VM uses at most `[lua].max_memory_mb`. When a script that needs to allocate goes over it, the script gets `memory error: not enough memory`. It is handled like any other script error and the process does not exit; other scripts running on the same VM at that moment may hit it too. When the VM's usage is above half of the limit at the end of a script, a full collection runs. This blocks one worker thread for the duration, and no new request is assigned to that VM. Another one runs only after usage has grown by a quarter of the limit since the last collection, or exceeds seven eighths of the limit. **Collection is incremental:** if a script repeatedly builds very large strings, it can fail even though it keeps none of them, because collection cannot keep up. Measured with the default 256 MiB, building an 8 MiB string 400 times works and 16 MiB fails. The limit does not cover memory outside Lua, such as the results of a pending database query.
+- A script that runs longer than `[lua].max_execution_ms` in one request is aborted and treated as a reject. Time spent waiting for the database does not count. The time is checked only every 64 loop back-edges or function calls, and on every one after the limit is passed. `pcall` can catch this error, but the next loop iteration or call raises it again, and if the script catches it and still returns `accept`, that counts as a failure too. So at most 64 more steps run before the script is aborted, and a loop with a slow body is stopped a little later. A script that runs for a long time yields periodically and does not block other requests.
+- When a script fails (including a timeout), the request is treated as a reject. But when the failure or reject is because the cluster database is unavailable (`sql_query` or `sql_execute` timed out or found no leader, even if the script caught the error with `pcall`), an authentication request gets no response and TACACS+ replies ERROR (section 2.2, "When the database is unavailable"). The error is logged as `Lua script error (<protocol>/<phase>): <message>`, where the location in the message is the script path and line number, for example `/etc/rradius/auth.lua:3: attempt to index nil with 'y'`.
 
-### 4.2 全域變數
+### 4.2 Global variables
 
-| 名稱 | 內容 |
+| Name | Content |
 | --- | --- |
-| `protocol` | `"radius"` 或 `"tacacs"` |
-| `phase` | `"authentication"`、`"authorization"` 或 `"accounting"` |
-| `client` | 比對到的用戶端 `name`，沒有設定時為其 `address` 字串 |
-| `auth_user` | 認證串接的 `lua` 處理器中，是查帳號用的名稱（見 3.6 節），沒有名稱時是 `nil`；其他腳本都是 `nil` |
-| `replayed` | 這個計費請求是否來自暫存的重放（見 2.11 節），其他時候是 `false` |
-| `eap_method` | EAP 授權請求是 `"tls"`、`"peap"` 或 `"ttls"`（見 2.12 節），其他時候是 `nil` |
-| `tls_subject` | `eap_method` 是 `"tls"` 時，憑證的主體，例如 `CN=alice, O=Example`，值依 RFC 4514 跳脫，順序和憑證相同。各種字串類型都會解成文字；不是文字或解不開的值，寫成 `#` 加整個值的 DER 十六進位，例如 `O=#1c0400000061`。名稱表沒有的欄位用 OID，例如 `2.5.4.97=...`。其他時候是 `nil` |
-| `tls_subject_attrs` | 同上時，依欄位分開的表，值不跳脫，例如 `tls_subject_attrs.OU[1]`；不是文字的值同樣是 `#` 開頭，和文字本身以 `#` 開頭的值分不出來，要比對就不要依賴這種值。其他時候是 `nil` |
+| `protocol` | `"radius"` or `"tacacs"` |
+| `phase` | `"authentication"`, `"authorization"` or `"accounting"` |
+| `client` | The `name` of the matched client, or its `address` string when no name is set |
+| `auth_user` | In a `lua` handler in an auth chain, the name used to look up the account (see section 3.6), or `nil` when there is no name; `nil` in every other script |
+| `replayed` | Whether this accounting request comes from a replay of the spool (see section 2.11); `false` otherwise |
+| `eap_method` | `"tls"`, `"peap"` or `"ttls"` for an EAP authorization request (see section 2.12); `nil` otherwise |
+| `tls_subject` | When `eap_method` is `"tls"`, the subject of the certificate, for example `CN=alice, O=Example`, with values escaped as in RFC 4514, in the same order as in the certificate. All string types are decoded to text. A value that is not text or cannot be decoded is written as `#` followed by the whole value in DER hexadecimal, for example `O=#1c0400000061`. A field that is not in the name table uses its OID, for example `2.5.4.97=...`. `nil` otherwise |
+| `tls_subject_attrs` | In the same case, a table split by field, with values not escaped, for example `tls_subject_attrs.OU[1]`. A value that is not text also starts with `#`, and cannot be told apart from a text value that itself starts with `#`, so do not rely on such values when matching. `nil` otherwise |
 
-### 4.3 函式
+### 4.3 Functions
 
-| 函式 | 說明 |
+| Function | Description |
 | --- | --- |
-| `get_attr(name)` | 取得請求屬性；不存在時回傳 `nil`。同名屬性有多個時回傳第一個 |
-| `get_attrs(name)` | 取得所有同名屬性的陣列，順序和封包相同；不存在時回傳空表 |
-| `set_attr(name, value)` | 加入一個回應屬性（字串或數字），依呼叫順序保留。tagged 屬性可以在名稱後加 tag，例如 `Tunnel-Type:1` |
-| `sql_query(sql [, params])` | 讀取本機資料庫副本，回傳列的陣列，每列是「欄名 → 值」的表；只能讀取 |
-| `sql_execute(sql [, params])` | 透過叢集寫入並複寫，回傳受影響的列數 |
-| `db_query(name, sql [, params])` | 在 `[databases.<name>]`（2.17 節）執行查詢，回傳格式和 `sql_query` 相同；也可以寫入，但回傳的是列 |
-| `db_execute(name, sql [, params])` | 在 `[databases.<name>]` 執行寫入，回傳受影響的列數 |
-| `now_unix()` | 目前的 Unix 時間（秒） |
-| `totp_verify(secret, code)` | 以 RFC 6238 驗證 TOTP 驗證碼（HMAC-SHA-1、6 位數、30 秒一步，前後各容許一步）。符合時回傳時間步，否則回傳 `nil`；`secret` 不是 Base32 時腳本出錯 |
-| `password_verify(stored, given)` | 用驗證鏈比對 PAP 密碼的方式，檢查 `given` 是不是儲存值 `stored` 對應的密碼，回傳 `true` 或 `false`。支援所有儲存格式（明文、`{clear}`、`{crypt}`、`{argon2}`、`{SHA}`、`{nthash}` 等，見第 5 節），慢的雜湊在請求執行緒之外計算，並套用 `[auth.password_limits]` 的成本上限、沒有前綴的雜湊不當密碼、沒有前綴的摘要警告，也計入 `rradius_password_checks_total`。`stored` 要是文字；`stored` 或 `given` 是 `nil`、`stored` 去掉前綴後是空的、或被上述規則拒絕時回傳 `false`，不會讓腳本出錯。警告指名請求的 `User-Name`，不含儲存值與密碼。**不計失敗、不鎖定：** 直接由腳本驗證的登入不受 `[auth.lockout]` 保護，要限制猜測就改用 `[auth]` 驗證鏈 |
-| `random_token()` | 回傳 32 個十六進位字元的隨機值，可用來產生 `State` |
-| `wpa_pmk(passphrase, ssid)` | 回傳 WPA2 的 PMK（PBKDF2-HMAC-SHA1、4096 輪、32 octets）的 64 個小寫十六進位字元。`passphrase` 要是 8–63 個可列印 ASCII 字元（或 64 個十六進位字元的 PSK，原樣回傳），`ssid` 要是 1–32 octets，否則腳本出錯，訊息不含密碼。每次呼叫都要跑 4096 輪，約數毫秒，見 2.15 節 |
-| `send_disconnect`、`send_coa` | 要求 NAS 中斷連線或變更權限（RFC 5176），需要 rradius-enterprise；rradiusd 呼叫時腳本出錯 |
-| `log(...)` | 寫一行記錄，見 4.9 節 |
-| `http_request(options)` | 呼叫白名單上的 HTTP API，只有設定 `[lua.http]` 時才有，見 4.11 節 |
-| `url_encode(text)` | 把一個值編碼成 URL 的一段，只有設定 `[lua.http]` 時才有，見 4.11 節 |
+| `get_attr(name)` | Gets a request attribute; returns `nil` if it does not exist. If there are several attributes with that name, returns the first |
+| `get_attrs(name)` | Gets an array of all attributes with that name, in the same order as in the packet; returns an empty table if there are none |
+| `set_attr(name, value)` | Adds a reply attribute (a string or a number), kept in the order of the calls. A tagged attribute can take a tag after the name, for example `Tunnel-Type:1` |
+| `sql_query(sql [, params])` | Reads the local database replica and returns an array of rows, each row a table of "column name → value"; read-only |
+| `sql_execute(sql [, params])` | Writes through the cluster and replicates, and returns the number of affected rows |
+| `db_query(name, sql [, params])` | Runs a query on `[databases.<name>]` (section 2.17) and returns the same format as `sql_query`; it can also write, but then it returns rows |
+| `db_execute(name, sql [, params])` | Runs a write on `[databases.<name>]` and returns the number of affected rows |
+| `now_unix()` | The current Unix time (seconds) |
+| `totp_verify(secret, code)` | Verifies a TOTP code as in RFC 6238 (HMAC-SHA-1, 6 digits, 30-second steps, one step before and after allowed). Returns the time step on a match and `nil` otherwise; the script fails if `secret` is not Base32 |
+| `password_verify(stored, given)` | Checks whether `given` is the password for the stored value `stored`, the same way the auth chain checks a PAP password, and returns `true` or `false`. It supports all stored formats (plain text, `{clear}`, `{crypt}`, `{argon2}`, `{SHA}`, `{nthash}` and so on, see section 5). Slow hashes are computed outside the request thread. The cost limits of `[auth.password_limits]` apply, a hash without a prefix is not treated as a password, the warning for a digest without a prefix applies, and the check counts toward `rradius_password_checks_total`. `stored` must be text. It returns `false`, without making the script fail, when `stored` or `given` is `nil`, when `stored` is empty after the prefix is removed, or when the rules above reject it. The warning names the request's `User-Name` and does not contain the stored value or the password. **No failure counting, no lockout:** a login verified directly by a script is not protected by `[auth.lockout]`; to limit guessing, use an `[auth]` auth chain instead |
+| `random_token()` | Returns a random value of 32 hexadecimal characters, which can be used to build a `State` |
+| `wpa_pmk(passphrase, ssid)` | Returns the WPA2 PMK (PBKDF2-HMAC-SHA1, 4096 rounds, 32 octets) as 64 lowercase hexadecimal characters. `passphrase` must be 8–63 printable ASCII characters (or a PSK of 64 hexadecimal characters, returned as it is) and `ssid` must be 1–32 octets, otherwise the script fails; the message does not contain the passphrase. Each call runs 4096 rounds and takes a few milliseconds, see section 2.15 |
+| `send_disconnect`, `send_coa` | Ask the NAS to disconnect a session or change its authorization (RFC 5176). They need rradius-enterprise; in rradiusd, calling them makes the script fail |
+| `log(...)` | Writes one log line, see section 4.9 |
+| `http_request(options)` | Calls an HTTP API on the allowlist. Only available when `[lua.http]` is set, see section 4.11 |
+| `url_encode(text)` | Encodes a value as one part of a URL. Only available when `[lua.http]` is set, see section 4.11 |
 
-資料庫值轉換：INTEGER、REAL → 數字；TEXT、BLOB → 字串；NULL → `nil`。
+Database value conversion: INTEGER, REAL → number; TEXT, BLOB → string; NULL → `nil`.
 
-`sql_execute` 不要用 `RETURNING`：陳述式會寫入，但呼叫會因為它回傳了資料列而出錯。需要寫入後的值時，寫入後再用 `sql_query` 讀。
+Do not use `RETURNING` with `sql_execute`: the statement writes, but the call fails because it returns rows. When you need the value after the write, read it with `sql_query` after writing.
 
-`sql_execute` 會拒絕在各節點結果可能不同的寫法，例如 `datetime()`、`random()`、`CURRENT_TIMESTAMP`；名稱加了引號、中間夾註解也一樣。這些字當欄位或資料表名稱沒關係，但名稱後面接括號就算呼叫，只有 `INSERT INTO`、`CREATE TABLE`、`REFERENCES`、`WITH` 後面的資料表例外，所以 `CREATE INDEX i ON "date"(a)` 也會被拒絕，這種請放進 migration。需要時間時請用 `now_unix()` 取得後寫入：
+`sql_execute` rejects constructs whose result can differ between nodes, for example `datetime()`, `random()` and `CURRENT_TIMESTAMP`, even when the name is quoted or has a comment in the middle. These words are fine as column or table names, but a name followed by a parenthesis counts as a call. The only exceptions are table names after `INSERT INTO`, `CREATE TABLE`, `REFERENCES` and `WITH`, so `CREATE INDEX i ON "date"(a)` is also rejected; put that in a migration. When you need the time, get it with `now_unix()` and write it:
 
 ```lua
 sql_execute("INSERT INTO sessions VALUES (?, ?)", {id, math.floor(now_unix())})
 ```
 
-**參數：** 來自請求的值一律用 `params` 傳入，不要接進 SQL 字串。這些值由設備或使用者控制，接進字串就是 SQL injection。
+**Parameters:** always pass values that come from the request in `params`; never join them into the SQL string. These values are controlled by the device or the user, and joining them into the string is SQL injection.
 
 ```lua
 local rows = sql_query("SELECT plan FROM users WHERE username = ?", {get_attr('User-Name')})
 ```
 
-- `params` 依序綁定 SQL 中的 `?`。數量不符時腳本會出錯，不會送出 SQL。字串、引號內的名稱和註解裡的 `?` 不算。
-- 只支援 `?`，不支援 `?1`、`:name`、`@name`、`$name`。
-- 字串綁定為 TEXT，不是有效 UTF-8 的字串綁定為 BLOB；有整數值的數字綁定為 INTEGER，其他數字綁定為 REAL；`true`、`false` 綁定為 1、0。
-- 表、函式、NaN 和無限大都會讓腳本出錯。`nil` 在陣列中間會出錯，在結尾會被丟掉，只有 SQL 還需要那個值時才會因數量不符而出錯。**值可能不存在時要先檢查：** `{get_attr('User-Name')}` 在沒有這個屬性時是空陣列，會因數量不符而出錯。要比對或寫入 NULL，請直接寫在 SQL 裡（`IS NULL`、`NULL`）。
-- 不傳 `params` 或傳 `nil` 時視為沒有值，所以 SQL 裡有 `?` 就會出錯。字串、引號內的名稱和註解裡的 `?` 不算。
-- 上面對各節點結果不同的寫法的檢查只看 SQL 文字，不看參數值。
+- `params` are bound in order to the `?` in the SQL. If the counts differ, the script fails and no SQL is sent. A `?` inside a string, a quoted name or a comment does not count.
+- Only `?` is supported, not `?1`, `:name`, `@name` or `$name`.
+- A string is bound as TEXT, and a string that is not valid UTF-8 is bound as BLOB. A number with an integer value is bound as INTEGER and any other number as REAL. `true` and `false` are bound as 1 and 0.
+- Tables, functions, NaN and infinity make the script fail. A `nil` in the middle of the array fails, and a `nil` at the end is dropped, which fails with a count mismatch only if the SQL still needs that value. **Check values that may be missing first:** `{get_attr('User-Name')}` is an empty array when there is no such attribute, and fails with a count mismatch. To compare with or write NULL, write it in the SQL itself (`IS NULL`, `NULL`).
+- Without `params`, or with `nil`, there are no values, so a `?` in the SQL fails. A `?` inside a string, a quoted name or a comment does not count.
+- The check above for constructs whose result differs between nodes looks only at the SQL text, not at the parameter values.
 
-**外部資料庫：** `db_query`、`db_execute` 的參數規則和上面相同，數量不符時一樣不送出。`name` 不在 `[databases]` 時腳本出錯。外部資料庫不經叢集複寫，所以 `db_execute` 不檢查 `now()` 這類寫法。失敗時的處理和佔位符、值型別的限制見 2.17 節。
+**External databases:** the parameter rules of `db_query` and `db_execute` are the same as above, and a count mismatch likewise sends nothing. The script fails if `name` is not in `[databases]`. An external database is not replicated through the cluster, so `db_execute` does not check for constructs such as `now()`. For how failures are handled and the limits on placeholders and value types, see section 2.17.
 
 ```lua
 local rows = db_query('billing', 'SELECT plan FROM users WHERE username = ?', {get_attr('User-Name')})
 db_execute('billing', 'INSERT INTO acct (id, octets) VALUES (?, ?)', {get_attr('Acct-Session-Id'), get_attr('Acct-Output-Octets')})
 ```
 
-### 4.4 回傳值
+### 4.4 Return values
 
-| 回傳 | 結果 |
+| Return | Result |
 | --- | --- |
-| `'accept'` | 接受 |
-| `'ignore'` | 在認證串接的 `lua` 處理器中為略過；作為最上層腳本時視為拒絕 |
-| `'challenge'` | RADIUS 認證時回 Access-Challenge，串接會在此結束；TACACS+ 與其他階段視為拒絕 |
-| 其他值、沒有回傳、或發生錯誤 | 拒絕 |
+| `'accept'` | Accept |
+| `'ignore'` | Skip, in a `lua` handler in an auth chain; treated as a reject when used as the top-level script |
+| `'challenge'` | For RADIUS authentication, replies Access-Challenge and the chain ends there; treated as a reject for TACACS+ and in other phases |
+| Any other value, no return value, or an error | Reject |
 
-**計費階段的回傳值有特別的意思**：`'accept'` 代表已記錄成功，設備收到確認後就不會再送。其他結果都代表沒有記錄，設備會重送，腳本也會再執行一次，每次都會記錄一行。因此：
+**The return value in the accounting phase has a special meaning:** `'accept'` means the packet was recorded, and once the device receives the acknowledgement it does not send it again. Any other result means it was not recorded, so the device resends it, the script runs again, and each run records one line. Therefore:
 
-- 刻意不想記錄某些封包時，請回傳 `'accept'`，不要回傳 `'reject'`，否則設備會一直重送到次數用完。
-- 腳本要能重複執行：寫到一半失敗時，重送會再跑一次。請以 `UNIQUE` 索引加 `INSERT OR IGNORE` 之類的方式防止重複。
-- 叢集失去多數節點時，寫入會逾時，計費請求都不會有回應，直到叢集恢復或設備重送次數用完為止。設定了計費暫存時，這些請求會先寫到本機再回覆（見 2.11 節）。
+- When you deliberately do not want to record some packets, return `'accept'`, not `'reject'`; otherwise the device keeps resending until it runs out of retries.
+- The script must be safe to run more than once: if it fails halfway, the resend runs it again. Prevent duplicates with a `UNIQUE` index and something like `INSERT OR IGNORE`.
+- When the cluster loses its majority, writes time out and no accounting request gets a response until the cluster recovers or the device runs out of retries. When an accounting spool is configured, these requests are written locally first and then answered (see section 2.11).
 
-**Access-Challenge 能帶的屬性：** `Reply-Message`、最多一個 `State`、廠商屬性、`Idle-Timeout`、`Session-Timeout`（RFC 2865 第 4.4 節）。帶了其他屬性時會改回 Access-Reject 並記錄原因。設備會把 `State` 原樣帶回下一個請求，腳本用 `get_attr('State')` 讀取。
+**Attributes an Access-Challenge can carry:** `Reply-Message`, at most one `State`, vendor attributes, `Idle-Timeout` and `Session-Timeout` (RFC 2865 section 4.4). If it carries any other attribute, it is changed to Access-Reject and the reason is logged. The device sends `State` back unchanged in the next request, and the script reads it with `get_attr('State')`.
 
-**兩步驟驗證範例：** 見 [`rradius-server/examples/two-step-totp.lua`](../rradius-server/examples/two-step-totp.lua)，檔案開頭有需要的資料表，測試也直接執行這份腳本；密碼欄存帶前綴的雜湊（例如 `{crypt}$6$...`、`{argon2}...`），用 `password_verify` 驗證。密碼那一步刻意不限制次數（否則知道帳號名稱的人可以把受害者鎖住），要限制就在 `[auth]` 驗證鏈驗密碼、由 `[auth.lockout]` 計數，腳本只處理驗證碼。第一個請求檢查密碼，回傳 `'challenge'`；第二個請求帶回 `State`，`User-Password` 是驗證碼。範例處理了這些事，自己寫腳本時也要處理：
+**Two-step verification example:** see [`rradius-server/examples/two-step-totp.lua`](../rradius-server/examples/two-step-totp.lua). The tables it needs are at the top of the file, and the tests run this script directly. The password column stores a prefixed hash (for example `{crypt}$6$...` or `{argon2}...`), checked with `password_verify`. The password step is deliberately not rate limited (otherwise anyone who knows an account name could lock the victim out). To limit it, check the password in the `[auth]` auth chain, let `[auth.lockout]` do the counting, and have the script handle only the code. The first request checks the password and returns `'challenge'`; the second request brings back `State`, and its `User-Password` is the code. The example handles the following, and a script you write yourself must handle them too:
 
-- **挑戰只能用一次，而且會過期：** `State` 存在資料庫，用 `DELETE` 回傳的列數確認是否由這個請求取得。
-- **驗證碼只能用一次：** 把 `totp_verify` 回傳的時間步存起來，只接受更新的時間步。只回傳對錯的話做不到這點，RFC 6238 也要求防止重複使用。
-- **限制猜測次數：** 6 位數的驗證碼可以被暴力猜中，範例在連續猜錯 5 次後鎖定帳號 5 分鐘。知道密碼的人才能觸發鎖定，密碼本身的猜測次數沒有限制，要另外處理。
-- **沒有密碼的帳號：** 比對前先拒絕 `NULL` 或空字串，否則不帶密碼的請求會比對成功。
-- **一律用參數：** `User-Name` 和 `State` 都由外部控制，要用 `params` 傳入。
-- **多節點：** 第二個請求可能到另一個節點，那裡的資料庫副本可能略為落後，查不到剛寫入的資料，鎖定也可能晚一點生效；範例用的 `DELETE` 和 `UPDATE` 經過叢集，不受影響。
+- **A challenge can be used once and expires:** `State` is stored in the database, and the number of rows `DELETE` returns tells you whether this request got it.
+- **A code can be used once:** store the time step that `totp_verify` returns and accept only a newer time step. This is not possible if you only return right or wrong, and RFC 6238 also requires protection against reuse.
+- **Limit the number of guesses:** a 6-digit code can be guessed by brute force; the example locks the account for 5 minutes after 5 wrong guesses in a row. Only someone who knows the password can trigger the lock, and the number of guesses at the password itself is not limited, so handle that separately.
+- **An account without a password:** reject `NULL` or an empty string before comparing, otherwise a request without a password matches.
+- **Always use parameters:** `User-Name` and `State` are both externally controlled and must be passed in `params`.
+- **Several nodes:** the second request can reach another node, whose database replica may lag slightly and not find the row that was just written, and a lock may take effect a little later. The `DELETE` and `UPDATE` the example uses go through the cluster and are not affected.
 
-**推播核准範例：** 見 [`rradius-server/examples/push-approval.lua`](../rradius-server/examples/push-approval.lua)。密碼通過後，用 `http_request`（4.11 節）請外部的推播服務送通知到使用者手機，再查詢直到核准、拒絕或逾時，核准才接受。它是 `policy = "all_accept"` 串接裡、接在比對密碼的處理器（`sql`、`ldap`）之後的 `lua` 處理器，所以密碼錯的人不會收到推播。檔案開頭寫了它假設的服務介面，實際的網址、欄位要換成你用的服務；測試以假的服務執行這份腳本，涵蓋核准、拒絕、逾時。要注意：
+**Push approval example:** see [`rradius-server/examples/push-approval.lua`](../rradius-server/examples/push-approval.lua). After the password passes, it uses `http_request` (section 4.11) to ask an external push service to send a notification to the user's phone, then polls until the request is approved, denied or times out, and accepts only on approval. It is a `lua` handler in a `policy = "all_accept"` chain, placed after the handler that checks the password (`sql`, `ldap`), so a person with the wrong password never gets a push. The top of the file describes the service interface it assumes; replace the URLs and fields with those of the service you use. The tests run this script against a fake service and cover approval, denial and timeout. Note:
 
-- **NAS 的 RADIUS 逾時要比 `WAIT_SECONDS`（範例是 30 秒）長，** 否則使用者還在看手機時，NAS 已經放棄或重送。pam_radius 是 `/etc/pam_radius.conf` 裡伺服器那一行的逾時。
-- **等待中的登入佔用 `max_auth_inflight` 的名額**（2.3 節），一直到結束。很多人同時在等時會擠掉其他登入，請依同時在等的人數調高。
-- **`[lua.http]` 的 `timeout_ms` 要大於 `POLL_SECONDS`，** 範例每次查詢讓服務最多等這麼久才回答。`max_execution_ms` 不包含等待。
+- **The NAS's RADIUS timeout must be longer than `WAIT_SECONDS`** (30 seconds in the example), otherwise the NAS gives up or resends while the user is still looking at the phone. For pam_radius this is the timeout on the server line in `/etc/pam_radius.conf`.
+- **A login that is waiting holds a slot of `max_auth_inflight`** (section 2.3) until it ends. When many people wait at the same time they push other logins out, so raise the value according to how many wait at once.
+- **`timeout_ms` of `[lua.http]` must be greater than `POLL_SECONDS`,** because on each poll the example lets the service wait up to that long before answering. `max_execution_ms` does not include the wait.
 
-### 4.5 RADIUS 屬性
+### 4.5 RADIUS attributes
 
-**動態 VLAN：** `Tunnel-Type`、`Tunnel-Medium-Type`、`Tunnel-Private-Group-Id` 是 tagged 屬性，`Tunnel-Password` 會自動依 RFC 2868 加密。`sql` 處理器的回覆欄名稱也可以用同樣的寫法。
+**Dynamic VLAN:** `Tunnel-Type`, `Tunnel-Medium-Type` and `Tunnel-Private-Group-Id` are tagged attributes, and `Tunnel-Password` is encrypted automatically as in RFC 2868. The reply column names of the `sql` handler can use the same notation.
 
 ```lua
 set_attr('Tunnel-Type:1', 'VLAN')
@@ -1930,7 +1930,7 @@ set_attr('Tunnel-Medium-Type:1', 'IEEE-802')
 set_attr('Tunnel-Private-Group-Id:1', '100')
 ```
 
-**位址型別：** `set_attr`（以及 `sql` 處理器的 `reply_query`）和 `get_attr` 都用同樣的文字格式：
+**Address types:** `set_attr` (and `reply_query` of the `sql` handler) and `get_attr` all use the same text format:
 
 ```lua
 set_attr('Framed-IPv6-Prefix', '2001:db8::/64')
@@ -1938,23 +1938,23 @@ set_attr('Delegated-IPv6-Prefix', '2001:db8:1::/48')
 set_attr('Framed-Interface-Id', '0011:2233:4455:6677')
 ```
 
-| 型別 | 文字 | 注意 |
+| Type | Text | Note |
 | --- | --- | --- |
 | `ipaddr` | `192.0.2.1` | |
 | `ipv6addr` | `2001:db8::1` | |
-| `ipv6prefix` | `2001:db8::/64` | 前綴之後的位元必須是 0，`2001:db8::1/64` 會讓腳本出錯。一律送完整的 18 octets |
-| `ipv4prefix` | `192.0.2.0/24` | 前綴之後的位元必須是 0 |
-| `ifid` | `0011:2233:4455:6677` | 四組，每組固定 4 個十六進位字元 |
-| `ether` | `00:11:22:aa:bb:cc` | 六組，每組固定 2 個十六進位字元，只接受 `:` 分隔 |
-| `combo-ip` | IPv4 或 IPv6 位址 | |
+| `ipv6prefix` | `2001:db8::/64` | The bits after the prefix must be 0; `2001:db8::1/64` makes the script fail. Always send the full 18 octets |
+| `ipv4prefix` | `192.0.2.0/24` | The bits after the prefix must be 0 |
+| `ifid` | `0011:2233:4455:6677` | Four groups, each exactly 4 hexadecimal characters |
+| `ether` | `00:11:22:aa:bb:cc` | Six groups, each exactly 2 hexadecimal characters; only `:` is accepted as the separator |
+| `combo-ip` | An IPv4 or IPv6 address | |
 
-輸入的十六進位字元不分大小寫，`get_attr` 一律回傳小寫。格式不符或給數字時，`set_attr` 讓腳本出錯，錯誤訊息會指出屬性名稱。
+Hexadecimal characters in the input are case-insensitive, and `get_attr` always returns lowercase. With a wrong format, or a number, `set_attr` makes the script fail and the error message names the attribute.
 
-**`reply_query` 查到格式不符的值時，** 這時沒有腳本可以出錯，所以 Access-Accept 會改成 Access-Reject，就算密碼正確，並記錄 `RADIUS response attribute error`。上線前請確認資料表裡的值。
+**When `reply_query` finds a value in the wrong format,** there is no script that can fail, so the Access-Accept is changed to an Access-Reject even though the password is correct, and `RADIUS response attribute error` is logged. Check the values in the table before you go live.
 
-**升級注意：`get_attr` 讀 `ipv6addr` 屬性（例如 `NAS-IPv6-Address`）以前回傳 16 個原始位元組，現在回傳文字。** 把它當位元組處理的腳本要修改。
+**Upgrade note: `get_attr` on an `ipv6addr` attribute (for example `NAS-IPv6-Address`) used to return 16 raw bytes and now returns text.** A script that treats it as bytes must be changed.
 
-**延伸屬性和 TLV：** RFC 6929 的 `extended`、`long-extended`、`evs` 和 `tlv` 都用裡面屬性自己的名稱讀寫，字典的 `format=` 也會生效，所以 WiMAX 這類廠商屬性可以用。
+**Extended attributes and TLVs:** the `extended`, `long-extended`, `evs` and `tlv` types of RFC 6929 are all read and written by the name of the attribute inside them, and the `format=` of the dictionary takes effect, so vendor attributes such as WiMAX can be used.
 
 ```lua
 local status = get_attr('Frag-Status')
@@ -1964,57 +1964,57 @@ set_attr('IPv6-6rd-BR-IPv4-Address', '192.0.2.1')
 set_attr('WiMAX-Release', '2.0')
 ```
 
-- **相鄰的才合併。** 連續設定同一個 `tlv` 裡的屬性，會放進同一個屬性，例如上面的 6rd 是一個屬性 173。中間夾了別的屬性就會分開。要送兩組獨立的 TLV，目前只能在中間放別的屬性。放不下時會在放不下的那一層開始新的 TLV，一路到新的屬性，不會把一個值切開，所以 `set_attr` 當下沒出錯的值，送出時也放得下。
-- **長度。** `long-extended` 和帶 continuation 的廠商屬性（`format=1,1,c`）會自動分段，收到時也會自動合併。其他型別放不下時腳本出錯。TLV 自己的長度欄位只有一個 octet，所以會分段的格式裡，TLV 的值最多 253 octets；不分段的格式還要放進屬性本身，一般最多 251，預設格式的廠商屬性最多 245。每多一層巢狀少 2 octets。整個回應仍受 4096 octets 限制。
-- **容器本身不能設定。** `set_attr('IPv6-6rd-Configuration', ...)`、`set_attr('Extended-Attribute-1', ...)` 會讓腳本出錯。
-- **無效的屬性會被忽略。** 分段不完整或 TLV 長度不對時，那個屬性裡的內容腳本都看不到，請求的其他部分照常處理（RFC 6929 section 2.8）。字典沒有定義的 TLV 類型會被略過。
-- **Access-Challenge：** `evs` 的屬性和其他延伸屬性一樣不能放，廠商屬性（Vendor-Specific）可以。
-- **TLV 裡的加密屬性：** 字典裡只有 `WiMAX-hDHCP-DHCP-RK`、`WiMAX-vDHCP-DHCP-RK`。不能 `set_attr`，`get_attr` 讀到的是未解密的值。
-- **升級注意：**
-  - `format=` 以前沒有作用，`format=2,1`、`2,2`、`4,0` 的廠商屬性（例如 Lucent、Starent、USR）以前會讀錯，現在才讀得到正確的屬性。
-  - `get_attr('WiMAX-Capability')`、`get_attr('Extended-Attribute-1')` 這類容器名稱以前回傳原始位元組，現在是 `nil`，要用裡面屬性的名稱。
-  - 字典的 `VENDOR` 和 `BEGIN-VENDOR` 上不認得的選項或多餘的欄位以前被忽略，現在載入失敗。
+- **Only adjacent ones are merged.** Attributes of the same `tlv` that are set one after another go into the same attribute; for example the 6rd above is one attribute 173. Another attribute in between splits them. To send two separate TLVs, the only way for now is to put another attribute in between. When something does not fit, a new TLV starts at the level where it no longer fits, all the way up to a new attribute, and a single value is never cut in two, so a value that did not fail in `set_attr` also fits when sent.
+- **Length.** `long-extended` and vendor attributes with a continuation (`format=1,1,c`) are fragmented automatically and reassembled when received. For other types, the script fails if the value does not fit. The length field of a TLV is a single octet, so in a format that fragments, a TLV value is at most 253 octets. A format that does not fragment must also fit in the attribute itself, which is normally at most 251, and at most 245 for a vendor attribute in the default format. Each level of nesting takes 2 octets less. The whole response is still limited to 4096 octets.
+- **The container itself cannot be set.** `set_attr('IPv6-6rd-Configuration', ...)` and `set_attr('Extended-Attribute-1', ...)` make the script fail.
+- **An invalid attribute is ignored.** When the fragments are incomplete or a TLV length is wrong, the script cannot see anything inside that attribute, and the rest of the request is processed as usual (RFC 6929 section 2.8). A TLV type that the dictionary does not define is skipped.
+- **Access-Challenge:** attributes of type `evs` cannot be included, like other extended attributes; a vendor attribute (Vendor-Specific) can.
+- **Encrypted attributes in a TLV:** in the dictionary there are only `WiMAX-hDHCP-DHCP-RK` and `WiMAX-vDHCP-DHCP-RK`. They cannot be set with `set_attr`, and `get_attr` returns the value undecrypted.
+- **Upgrade notes:**
+  - `format=` used to have no effect. Vendor attributes with `format=2,1`, `2,2` or `4,0` (for example Lucent, Starent, USR) used to be read wrongly, and only now are the correct attributes read.
+  - Container names such as `get_attr('WiMAX-Capability')` and `get_attr('Extended-Attribute-1')` used to return raw bytes and now return `nil`; use the names of the attributes inside.
+  - Unrecognized options or extra fields on `VENDOR` and `BEGIN-VENDOR` in the dictionary used to be ignored and now make loading fail.
 
-字典的 `encrypt=` 只能是 1、2、3，其他寫法在載入時就報錯；選項可以用逗號或空白分隔。`set_attr` 支援 `encrypt=1`（RFC 2865 第 5.2 節 User-Password 的方法，值補零到 16 的倍數，1 到 128 個位元組，不能同時有 `has_tag`）和 `encrypt=2`，不支援 `encrypt=3` 的屬性，也不支援 `abinary`；延伸屬性和 TLV 裡有 `has_tag` 或 `encrypt` 的定義也不支援。這些都會讓腳本出錯。
+`encrypt=` in the dictionary can only be 1, 2 or 3, and anything else is reported as an error at load time; the options can be separated by commas or spaces. `set_attr` supports `encrypt=1` (the User-Password method of RFC 2865 section 5.2, with the value zero-padded to a multiple of 16, 1 to 128 bytes, and not combined with `has_tag`) and `encrypt=2`. It does not support attributes with `encrypt=3`, nor `abinary`, nor definitions with `has_tag` or `encrypt` inside extended attributes and TLVs. All of these make the script fail.
 
-- `get_attr` 使用字典中的屬性名稱，例如 `User-Name`、`NAS-IP-Address`；Vendor-Specific 屬性會拆成各廠商屬性。字典中沒有的屬性不會出現。
-- 型別：`integer`、`date`、`byte`、`short`、`signed`、`integer64` → 數字；上表的位址型別 → 文字，值的長度不符時是原始位元組字串；其他 → 原始位元組字串。
-- `User-Password` 會先解密成明文。
-- `set_attr` 的名稱必須在字典中，值可以用字典定義的數值名稱，例如 `set_attr('Service-Type', 'Framed-User')`。名稱不存在時腳本出錯並拒絕。
-- 計費腳本回傳 `'accept'` 才會回覆 Accounting-Response。腳本出錯（含查詢逾時、超過執行時限）或回傳其他值時不回應，由設備重送（RFC 2866 第 2 節：無法記錄時不可回應）。例外是設了計費暫存時，資料庫造成的失敗會先寫到本機再回覆（2.11 節）。
+- `get_attr` uses the attribute names of the dictionary, for example `User-Name` and `NAS-IP-Address`; Vendor-Specific attributes are split into the individual vendor attributes. Attributes that are not in the dictionary do not appear.
+- Types: `integer`, `date`, `byte`, `short`, `signed`, `integer64` → number; the address types in the table above → text, or a raw byte string when the value has the wrong length; everything else → raw byte string.
+- `User-Password` is decrypted to plain text first.
+- The name given to `set_attr` must be in the dictionary, and the value can be a value name defined in the dictionary, for example `set_attr('Service-Type', 'Framed-User')`. If the name does not exist, the script fails and the request is rejected.
+- An accounting script sends an Accounting-Response only when it returns `'accept'`. When the script fails (including a query timeout or exceeding the execution limit) or returns any other value, there is no response and the device resends (RFC 2866 section 2: do not respond when the packet cannot be recorded). The exception is when an accounting spool is set: a failure caused by the database is written locally first and then answered (section 2.11).
 
-### 4.6 TACACS+ 屬性
+### 4.6 TACACS+ attributes
 
-- 共同欄位：`user`、`port`、`rem_addr`。
-- 認證：另有 `data`（PAP 和 ASCII 是密碼；CHAP、MS-CHAPv2 是 PPP id、challenge 和回應，見下方）與 `authen_type`（數字，1 為 ASCII、2 為 PAP、3 為 CHAP、6 為 MS-CHAPv2）。
-- **ASCII 互動式登入**（RFC 8907）：START 沒帶帳號時伺服器回 GETUSER，再回不顯示輸入的 GETPASS，帳號密碼都取得後才執行認證串接或腳本，和 PAP 一樣由 `user` 與 `data` 取得。空帳號最多問三次；每條連線最多 8 個未完成的登入，60 秒內要完成。
-- **長度上限：** TACACS+ 的密碼（PAP 的 `data`、ASCII 登入的密碼，以及第二因素的驗證碼）最多 128 個位元組，ASCII 登入的帳號最多 255 個位元組，與 RADIUS 的 `User-Password` 上限（16 到 128 個位元組，16 的倍數）相同。超過的回 FAIL，不進認證串接或腳本，所以不計入 `[auth.lockout]`，並記一行 INFO（client、帳號、長度，不含內容）；ASCII 登入階段隨之結束。上限固定，沒有設定。超過 128 個位元組的長通關句無法透過 TACACS+ 登入。
-- **升級注意：** 以前 ASCII LOGIN 的 START 會直接交給腳本，現在會先詢問帳號密碼。腳本要改從 `data` 取得密碼。
-- 認證的 START 另有 `priv_lvl`（0–15）與 `authen_service`（數字，1 為一般登入、2 為 enable）。
-- **enable 請求**（設備的 `enable` 指令，`authen_service` 是 2）由 `[tacacs] enable` 決定：
-  - `"deny"`（預設）：直接回 FAIL，不詢問密碼，也不執行串接或腳本，記錄 `TACACS+ enable request refused`。設備收到 FAIL 不會改用下一個方法（例如本機 enable 密碼），所以設備端不要把 rradius 放進 enable 的方法清單，或改用 `"login"`。
-  - `"login"`：和登入一樣，以使用者自己的密碼經串接或腳本驗證。串接裡的 `lua` 處理器或最上層腳本可以用 `authen_service`、`priv_lvl` 限制誰能 enable，例如只讓特定角色通過；沒有這類判斷時，**每個能登入的人都能 enable**。
-- **升級注意（enable）：** 以前 enable 請求被當成一般登入，能登入的人都能用自己的密碼 enable。現在預設拒絕；需要舊行為時設 `enable = "login"`，並建議在腳本裡限制。
-- **只支援 LOGIN 動作。** 改密碼（CHPASS）、SENDPASS、SENDAUTH 一律回 FAIL，不詢問也不執行串接或腳本（RFC 8907：不支援的選項回 FAIL）。以前改密碼會被當成登入而回 PASS，設備會以為密碼已改。
-- 授權與計費：每個 `key=value` 或 `key*value` 參數以 `key` 為名稱，例如 `get_attr('cmd')`。另有封包表頭的 `priv_lvl`（使用者目前的權限等級，0–15）、`authen_method`、`authen_type`、`authen_service`（都是數字）。名稱用底線，和設備送的 `priv-lvl` 這類參數區分；授權群組規則只比對參數，不看這些欄位。
-- **CHAP、MS-CHAP（v1）和 MS-CHAPv2 登入**（RFC 8907 第 5.4.2.3、5.4.2.4、5.4.2.5 節，例如用 PPP 撥接的設備）**要有認證串接**（第 3 節），由串接比對，一個 START 直接回 PASS 或 FAIL，和 RADIUS 的 CHAP、MS-CHAP、MS-CHAPv2 用同樣的處理器：
-  - CHAP 只能比對明文或 `{clear}` 密碼，MS-CHAP 與 MS-CHAPv2 要明文或 `{nthash}`（5.1、5.2 節）；`ldap` 處理器要用 `attribute` 模式。
-  - CHAP 的 challenge 短於 8 個位元組、MS-CHAP 的 `data` 不是剛好 1 + 8 + 49 個位元組（PPP id、8 個位元組的 challenge、LM 回應 24、NT 回應 24、旗標 1）或旗標沒有設 NT 位元（bit 0，只有 LM 回應）、MS-CHAPv2 的 challenge 不是 16 個位元組時直接回 FAIL 並記錄，不執行串接（RFC 8907 的建議與要求）。
-  - MS-CHAP 與 MS-CHAPv2 只回 PASS：MS-CHAPv2 不帶 authenticator response（RFC 8907 沒有定義它放在哪裡），需要雙向驗證的 PPP 用戶端可能因此失敗，這種情況改用 RADIUS；MPPE 金鑰也不經 TACACS+ 給設備。
-  - 沒有串接的 client、串接裡只有沒設 `verifies_password` 的 `lua` 處理器的 client，以及 enable 請求，CHAP、MS-CHAP 和 MS-CHAPv2 照舊回 RESTART，設備可以改用 PAP：腳本沒有可以比對的密碼。
-- **不支援的驗證方式**（ARAP，以及上一項說的情況）的 START 回 RESTART，不執行串接或腳本，設備可以改用 PAP 或 ASCII 重試；不支援 RESTART 的設備會當成 FAIL（RFC 8907）。改密碼這類非 LOGIN 動作與被拒的 enable 仍回 FAIL。
-- **設了 `authorize_group` 的 client，授權不執行腳本，** 由授權群組的規則決定（2.3 節），腳本只處理它的認證和計費。
-- 授權接受時，`set_attr` 加入的屬性以 `name=value` AV pair 回傳（PASS_ADD），每個 AV pair 不可超過 255 個位元組，一個回覆最多 255 個 AV pair，超過時回 ERROR 並記錄。
-- 計費腳本回傳 `'accept'` 時回 SUCCESS，出錯或回傳其他值時回 ERROR，連線維持開啟。
-- **給使用者的訊息 `server_msg`：** 腳本 `set_attr('server_msg', '...')` 時，這段文字放進回覆的 `server_msg` 欄位，設備通常會顯示給使用者（RFC 8907）。認證的 PASS 和 FAIL、授權的 PASS_ADD 和 FAIL、計費的 SUCCESS 和 ERROR 都可以帶；授權時它不會變成 AV pair。
-  - 認證走串接時，處理器（例如 `lua` 處理器）設的 `server_msg` 只有接受時會帶：串接拒絕時不保留任何屬性。
-  - 超過 1024 octets 時不送並記錄錯誤，決定照舊。內容原樣送出，建議只用 ASCII。
-  - 授權群組的規則不帶 `server_msg`。
+- Common fields: `user`, `port`, `rem_addr`.
+- Authentication: there are also `data` (the password for PAP and ASCII; for CHAP and MS-CHAPv2, the PPP id, the challenge and the response, see below) and `authen_type` (a number: 1 for ASCII, 2 for PAP, 3 for CHAP, 6 for MS-CHAPv2).
+- **ASCII interactive login** (RFC 8907): when START carries no account name, the server replies GETUSER and then GETPASS, which does not echo the input. Authentication runs the auth chain or the script only after both the account name and the password are obtained, which are read from `user` and `data` just as with PAP. An empty account name is asked for at most three times; each connection can have at most 8 unfinished logins, and each must finish within 60 seconds.
+- **Length limits:** a TACACS+ password (the `data` of PAP, the password of an ASCII login, and the code of a second factor) is at most 128 bytes, and the account name of an ASCII login is at most 255 bytes. The password limit is the same as for the RADIUS `User-Password` (16 to 128 bytes, a multiple of 16). A longer one gets FAIL and does not reach the auth chain or the script, so it does not count toward `[auth.lockout]`; one INFO line is logged (client, account name and length, not the content), and the ASCII login session ends. The limit is fixed and cannot be configured. A long passphrase over 128 bytes cannot log in through TACACS+.
+- **Upgrade note:** the START of an ASCII LOGIN used to be handed directly to the script; now the server asks for the account name and password first. A script must read the password from `data`.
+- The START of authentication also carries `priv_lvl` (0–15) and `authen_service` (a number: 1 for a normal login, 2 for enable).
+- **An enable request** (the device's `enable` command, with `authen_service` 2) is decided by `[tacacs] enable`:
+  - `"deny"` (the default): replies FAIL at once, does not ask for a password, does not run the chain or the script, and logs `TACACS+ enable request refused`. A device that receives FAIL does not fall back to the next method (for example a local enable password), so do not put rradius in the enable method list on the device, or use `"login"` instead.
+  - `"login"`: like a login, the user's own password is checked through the chain or the script. A `lua` handler in the chain or the top-level script can use `authen_service` and `priv_lvl` to limit who may enable, for example to let only certain roles through; without such a check, **everyone who can log in can enable**.
+- **Upgrade note (enable):** an enable request used to be treated as a normal login, and anyone who could log in could enable with their own password. Now it is denied by default. If you need the old behavior, set `enable = "login"`, and limit it in the script.
+- **Only the LOGIN action is supported.** Changing a password (CHPASS), SENDPASS and SENDAUTH always get FAIL, with no prompt and no chain or script run (RFC 8907: an unsupported option gets FAIL). Changing a password used to be treated as a login and answered with PASS, and the device would think the password had been changed.
+- Authorization and accounting: each `key=value` or `key*value` argument uses `key` as the name, for example `get_attr('cmd')`. There are also the packet header fields `priv_lvl` (the user's current privilege level, 0–15), `authen_method`, `authen_type` and `authen_service` (all numbers). The names use an underscore, to tell them apart from arguments such as `priv-lvl` that the device sends; the rules of an authorize group match only arguments and do not look at these fields.
+- **CHAP, MS-CHAP (v1) and MS-CHAPv2 logins** (RFC 8907 sections 5.4.2.3, 5.4.2.4 and 5.4.2.5, for example a device using PPP dial-up) **need an auth chain** (section 3). The chain does the check, and a single START gets PASS or FAIL directly, using the same handlers as RADIUS CHAP, MS-CHAP and MS-CHAPv2:
+  - CHAP can only check a plain text or `{clear}` password, and MS-CHAP and MS-CHAPv2 need plain text or `{nthash}` (sections 5.1 and 5.2); the `ldap` handler must use `attribute` mode.
+  - When the CHAP challenge is shorter than 8 bytes, the MS-CHAP `data` is not exactly 1 + 8 + 49 bytes (PPP id, 8-byte challenge, LM response 24, NT response 24, flags 1) or the flags do not set the NT bit (bit 0; only the LM response), or the MS-CHAPv2 challenge is not 16 bytes, the reply is FAIL, it is logged, and the chain does not run (the recommendation and requirement of RFC 8907).
+  - MS-CHAP and MS-CHAPv2 only reply PASS: MS-CHAPv2 carries no authenticator response (RFC 8907 does not define where it goes), so a PPP client that needs mutual authentication may fail because of this, and in that case use RADIUS; the MPPE keys are also not given to the device through TACACS+.
+  - For a client with no chain, a client whose chain has only `lua` handlers without `verifies_password`, and for enable requests, CHAP, MS-CHAP and MS-CHAPv2 still get RESTART and the device can fall back to PAP: the script has no password to compare.
+- **An unsupported authentication method** (ARAP, and the cases in the item above) gets RESTART for its START and does not run the chain or the script, and the device can retry with PAP or ASCII; a device that does not support RESTART treats it as FAIL (RFC 8907). Non-LOGIN actions such as changing a password, and a denied enable, still get FAIL.
+- **For a client with `authorize_group` set, authorization does not run the script;** the rules of the authorize group decide (section 2.3), and the script handles only its authentication and accounting.
+- When authorization is accepted, the attributes added with `set_attr` are returned as `name=value` AV pairs (PASS_ADD). Each AV pair can be at most 255 bytes, and one reply can have at most 255 AV pairs; beyond that the reply is ERROR and it is logged.
+- When an accounting script returns `'accept'` the reply is SUCCESS, and on an error or any other return value it is ERROR, and the connection stays open.
+- **The message for the user, `server_msg`:** when the script calls `set_attr('server_msg', '...')`, the text goes into the `server_msg` field of the reply, which the device usually shows to the user (RFC 8907). It can be carried by authentication PASS and FAIL, authorization PASS_ADD and FAIL, and accounting SUCCESS and ERROR; in authorization it does not become an AV pair.
+  - When authentication goes through a chain, a `server_msg` set by a handler (for example a `lua` handler) is carried only on accept: when the chain rejects, no attributes are kept.
+  - Over 1024 octets it is not sent and an error is logged, and the decision stays the same. The content is sent as it is, so ASCII only is recommended.
+  - The rules of an authorize group do not carry `server_msg`.
 
-### 4.7 範例
+### 4.7 Example
 
 ```lua
--- 計費：記錄工作階段，回覆不受影響
+-- Accounting: record the session; the reply is not affected
 if phase == 'accounting' then
   local id = get_attr(protocol == 'radius' and 'Acct-Session-Id' or 'task_id')
   if id then
@@ -2023,12 +2023,12 @@ if phase == 'accounting' then
   return 'accept'
 end
 
--- TACACS+ 授權：只允許 show 指令
+-- TACACS+ authorization: allow only show commands
 if phase == 'authorization' then
   return get_attr('cmd') == 'show' and 'accept' or 'reject'
 end
 
--- 認證（沒有 [auth] 時）：查詢資料表
+-- Authentication (when there is no [auth]): query a table
 local user = protocol == 'radius' and get_attr('User-Name') or get_attr('user')
 local rows = user and sql_query("SELECT 1 AS ok FROM allowed WHERE name = ?", {user}) or {}
 if #rows == 1 then
@@ -2040,62 +2040,62 @@ end
 return 'reject'
 ```
 
-腳本由管理者撰寫並信任其中的 SQL。請求內容請用 `params` 傳入（見 4.3 節），不要組進 SQL 字串。
+A script is written by the administrator, who trusts the SQL in it. Pass request content in `params` (see section 4.3); do not build it into the SQL string.
 
-### 4.8 中斷連線與變更權限（CoA）
+### 4.8 Disconnect and change of authorization (CoA)
 
-中斷連線與變更權限（`send_disconnect`、`send_coa`、`disconnect` 和 `coa` 指令、`[radius.coa]` 的轉送）需要 rradius-enterprise。
+Disconnect and change of authorization (`send_disconnect`, `send_coa`, the `disconnect` and `coa` commands, and the forwarding of `[radius.coa]`) need rradius-enterprise.
 
-### 4.9 記錄 `log`
+### 4.9 Logging with `log`
 
 ```lua
 log('quota left', left, 'for', get_attr('User-Name'))
 ```
 
-以 `info` 等級寫一行記錄：`script /etc/rradius/auth.lua (radius/accounting, client nas1): quota left 42 for bob`。`level` 設成 `warn` 或 `error` 時不會寫出（見 2.10 節）。
+This writes one log line at the `info` level: `script /etc/rradius/auth.lua (radius/accounting, client nas1): quota left 42 for bob`. It is not written when `level` is set to `warn` or `error` (see section 2.10).
 
-- 參數轉成字串，以空白相接；換行改成空白；超過 4096 octets 就截斷。
-- 不會影響腳本的決定，也沒有頻率限制，寫太多會塞滿記錄。
-- **不要記錄密碼。** `get_attr('User-Password')` 和 TACACS+ 的 `data` 都是明文。
+- Arguments are converted to strings and joined with spaces; newlines are replaced with spaces; anything over 4096 octets is truncated.
+- It does not affect the script's decision, and there is no rate limit, so writing too much fills the log.
+- **Do not log passwords.** `get_attr('User-Password')` and the TACACS+ `data` are plain text.
 
-### 4.10 範例腳本：配額、同時上線、IP 配發
+### 4.10 Example scripts: quota, simultaneous use, IP assignment
 
-這些在 `rradius-server/examples/` 下，開頭有需要的資料表，測試也直接執行這幾份腳本。
+These are under `rradius-server/examples/`. The tables they need are at the top of each file, and the tests run these scripts directly.
 
-| 腳本 | 用途 | 要知道的限制 |
+| Script | Purpose | Limits to know |
 | --- | --- | --- |
-| [`quota-and-hours.lua`](../rradius-server/examples/quota-and-hours.lua) | 累計時間配額與可登入時段（UTC），回覆 `Session-Timeout` | 不是硬限制：時間在 Stop 時才計入，`Session-Timeout` 是登入當下剩餘的時間，所以同時登入兩次可以用到兩倍；需要硬限制時，搭配上限設為 1 的 `simultaneous-use.lua`。`quota_sessions` 就是用量，刪除某個使用者的列就重新計算，可以用來每月重置；重置前，NAS 重開機後重複使用的 session ID 會被當成重送而不計入 |
-| [`simultaneous-use.lua`](../rradius-server/examples/simultaneous-use.lua) | 限制同時上線數，整個叢集共用 | 不是精確值：從 Accounting-Start 才算一個連線，同時登入可能都通過。NAS 要定期送 Interim-Update，否則連線逾時後就不算了。舊的列隨時可以刪 |
-| [`mac-auth.lua`](../rradius-server/examples/mac-auth.lua) | MAC 認證：`User-Name` 和 `Calling-Station-Id` 要是同一個位址，再查資料表，回覆 VLAN | MAC 位址不是秘密，任何人讀得到就能冒用，只適合沒有其他方式的設備，VLAN 要限制能連到的地方。只比對名單，不是認證 |
-| [`ip-pool.lua`](../rradius-server/examples/ip-pool.lua) | 配發 `Framed-IP-Address`，不會同時發給兩個人 | NAS 要定期送 Interim-Update 延長租約，並在計費封包中帶回這個位址和 `User-Name`，只有持有者的封包才算數；沒有 `User-Name` 或內容為空的請求會被拒絕；同一個使用者又拿回同一個位址時，NAS 重送舊的 Stop 仍會釋放它；快用完時，副本落後可能讓少數請求被拒 |
+| [`quota-and-hours.lua`](../rradius-server/examples/quota-and-hours.lua) | A cumulative time quota and the hours when login is allowed (UTC); replies `Session-Timeout` | Not a hard limit: time is counted only at Stop, and `Session-Timeout` is the time left at the moment of login, so logging in twice at the same time can use twice the quota. When you need a hard limit, combine it with `simultaneous-use.lua` with the limit set to 1. `quota_sessions` is the usage: deleting a user's rows recalculates it, which can be used for a monthly reset. Before a reset, a session ID reused after a NAS reboot is treated as a resend and not counted |
+| [`simultaneous-use.lua`](../rradius-server/examples/simultaneous-use.lua) | Limits the number of simultaneous sessions, shared across the whole cluster | Not exact: a connection counts only from its Accounting-Start, so simultaneous logins may all pass. The NAS must send Interim-Update periodically, otherwise a connection is no longer counted after it times out. Old rows can be deleted at any time |
+| [`mac-auth.lua`](../rradius-server/examples/mac-auth.lua) | MAC authentication: `User-Name` and `Calling-Station-Id` must be the same address, then it looks up a table and replies a VLAN | A MAC address is not secret, and anyone who can read it can impersonate it, so use this only for devices with no other option, and have the VLAN limit what can be reached. It only matches against a list and is not authentication |
+| [`ip-pool.lua`](../rradius-server/examples/ip-pool.lua) | Assigns a `Framed-IP-Address`, never to two people at the same time | The NAS must send Interim-Update periodically to extend the lease, and bring this address and `User-Name` back in accounting packets, and only packets from the holder count. A request with no `User-Name` or an empty one is rejected. When the same user gets the same address again, an old Stop resent by the NAS still releases it. When the pool is nearly full, a lagging replica can cause a few requests to be rejected |
 
-`quota-and-hours.lua` 和 `simultaneous-use.lua` 的計費封包要帶 `User-Name` 和 `Acct-Session-Id`。缺少或內容為空時不會計入，也就不受限制，腳本會用 `log()` 記一行；請確認 NAS 有送這兩個屬性。兩份腳本的資料表都以 client 加 session ID 為鍵，所以不同 NAS 用同一個 ID 不會互相影響。
+The accounting packets for `quota-and-hours.lua` and `simultaneous-use.lua` must carry `User-Name` and `Acct-Session-Id`. When they are missing or empty, the packet is not counted and so not limited, and the script logs one line with `log()`; make sure the NAS sends both attributes. The tables of both scripts are keyed by client plus session ID, so different NASes using the same ID do not affect each other.
 
-計費腳本都能重複執行，適合搭配計費暫存（見 2.11 節）。`simultaneous-use.lua` 和 `ip-pool.lua` 會扣掉 `Acct-Delay-Time`，舊的回報不會被當成最近的消息。
+The accounting scripts can all run more than once safely, which suits the accounting spool (see section 2.11). `simultaneous-use.lua` and `ip-pool.lua` subtract `Acct-Delay-Time`, so an old report is not taken as recent news.
 
-這些腳本只檢查政策，不驗證密碼。請同時設成 `[lua].script`（計費一定會走這裡），以及 `policy = "all_accept"` 串接中，`sql` 或 `ldap` 之後的 `lua` 處理器。**順序很重要：** 放在它們之前時，腳本在還沒驗證密碼時就會執行，`ip-pool.lua` 這類會寫入的腳本，可能為任意名稱佔走位址，即使請求最後被拒絕。
+These scripts only check policy and do not verify passwords. Set them both as `[lua].script` (accounting always goes through it) and as a `lua` handler after `sql` or `ldap` in a `policy = "all_accept"` chain. **The order matters:** when they come before those handlers, the script runs before the password has been verified, and a script that writes, such as `ip-pool.lua`, can take addresses for arbitrary names even though the request is finally rejected.
 
-**寫入後立刻讀可能讀不到：** `sql_query` 讀本機副本，`sql_execute` 回傳時本機不一定已套用。三節點實測中，有些請求確實讀不到剛寫入的列。要判斷寫入是否成功，請用 `sql_execute` 回傳的受影響列數，不要再查一次。`ip-pool.lua` 就是這樣做的。
+**A read right after a write may not find the data:** `sql_query` reads the local replica, and when `sql_execute` returns, the local replica has not necessarily applied the write yet. In a three-node test, some requests really did not find the row just written. To tell whether a write succeeded, use the number of affected rows that `sql_execute` returns and do not query again. `ip-pool.lua` does exactly this.
 
-### 4.11 呼叫 HTTP API `http_request`
+### 4.11 Calling an HTTP API with `http_request`
 
-腳本可以呼叫外部的 HTTP API，但要先在設定列出允許的主機。沒有 `[lua.http]` 時，`http_request` 和 `url_encode` 都不存在。
+A script can call an external HTTP API, but you must first list the allowed hosts in the configuration. Without `[lua.http]`, neither `http_request` nor `url_encode` exists.
 
 ```toml
 [lua.http]
 allowed_hosts = ["api.example.com", "billing.internal:8443", "http://legacy.internal:8080"]
-timeout_ms = 2000            # 預設，從連線到讀完回應
-max_response_bytes = 1048576 # 預設
-max_concurrent = 64          # 預設，每台主機，計費和其他階段分開算
-ca_file = "internal-ca.pem"  # 選填，系統根憑證之外信任的 CA
+timeout_ms = 2000            # default, from connecting to reading the whole response
+max_response_bytes = 1048576 # default
+max_concurrent = 64          # default, per host; accounting and the other phases are counted separately
+ca_file = "internal-ca.pem"  # optional, a CA to trust in addition to the system roots
 ```
 
 ```lua
 local response, problem = http_request{
   url = 'https://api.example.com/users/' .. url_encode(get_attr('User-Name')),
-  method = 'GET',                             -- 預設；GET、POST、PUT、DELETE、PATCH
-  headers = { Authorization = 'Bearer ...' }, -- 選填
-  body = '...',                               -- 選填
+  method = 'GET',                             -- default; GET, POST, PUT, DELETE, PATCH
+  headers = { Authorization = 'Bearer ...' }, -- optional
+  body = '...',                               -- optional
 }
 if not response then
   log('billing API:', problem)
@@ -2104,76 +2104,76 @@ end
 return response.status == 200 and 'accept' or 'reject'
 ```
 
-- **回傳：** 有收到回應就是 `{status=, body=, headers=}`，4xx、5xx 也算，標頭名稱是小寫。被拒絕、逾時、連線失敗、回應太大、等待的請求太多時回傳 `nil` 和訊息，由腳本決定要拒絕還是放行。參數寫錯才是 Lua 錯誤。
-- **白名單：** 完全比對主機和埠，不支援萬用字元。只寫主機時只允許預設埠。只允許 HTTPS，要用純文字的主機要寫成 `http://host:port`，只對那一項有效。
-- **不跟隨轉址，也不走環境變數的代理。** 腳本會拿到 3xx，要跟隨就再呼叫一次，會再比對一次白名單。
-- **一律用 `url_encode` 把外部的值接進 URL。** 它遇到空字串、`.`、`..` 會讓腳本出錯，帶 `.`、`..` 路徑、頭尾有空白或控制字元的 URL 也會被拒絕，否則登入名稱 `..` 可以走到同一台主機的其他路徑。**只靠 `status == 200` 判斷帳號存在時要特別小心。**
-- **不能設定** `Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`，否則會出錯。
-- **逾時要小於設備的重送逾時，** 也就是腳本等待時，設備不會一直重送。`max_execution_ms` 不包含等待，所以連續呼叫多次時，總時間沒有上限，和多次 `sql_query` 相同。
-- **DNS：** 白名單比對的是名稱，不檢查解析出來的位址，所以 DNS 被竄改時，請求可能送到內網。名稱查詢同時最多 16 個（登入 12 個、計費 4 個，估計值），超過時排隊，等待時間算在 `timeout_ms` 內。
-- **記錄不會寫路徑、查詢字串、標頭或內容，** 只有主機和固定的錯誤種類。腳本自己用 `log()` 寫的內容，要自己注意不要放金鑰。
-- 有 HTTPS 主機但這台機器沒有任何信任的根憑證時，啟動失敗，請設定 `ca_file`。設定改動隨 SIGHUP 生效。
-- 指標：`rradius_script_http_requests_total{result="ok|timeout|error|denied|too_large|busy"}`。
+- **Return value:** when a response is received, it is `{status=, body=, headers=}`, and 4xx and 5xx count too; header names are lowercase. When the call is denied, times out, fails to connect, gets too large a response, or too many requests are waiting, it returns `nil` and a message, and the script decides whether to reject or let the request through. Only wrong parameters are a Lua error.
+- **Allowlist:** the host and port are matched exactly, and wildcards are not supported. When only a host is written, only the default port is allowed. Only HTTPS is allowed; for a plain-text host, write `http://host:port`, which applies to that entry only.
+- **Redirects are not followed, and proxies from environment variables are not used.** The script gets the 3xx, and to follow it you call again, which is matched against the allowlist again.
+- **Always use `url_encode` to join an external value into a URL.** It makes the script fail on an empty string, `.` or `..`, and a URL with a `.` or `..` path, or with whitespace or control characters at either end, is also rejected; otherwise the login name `..` could reach other paths on the same host. **Be especially careful when you decide that an account exists only from `status == 200`.**
+- **These cannot be set:** `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`; otherwise it is an error.
+- **The timeout must be shorter than the device's retransmission timeout,** so that the device does not keep resending while the script waits. `max_execution_ms` does not include the wait, so when you make several calls in a row there is no upper bound on the total time, the same as with several `sql_query` calls.
+- **DNS:** the allowlist matches names and does not check the resolved address, so when DNS is tampered with, a request may go to the internal network. At most 16 name lookups run at the same time (12 for logins and 4 for accounting, an estimate); beyond that they queue, and the wait counts toward `timeout_ms`.
+- **The log does not contain the path, the query string, headers or content,** only the host and a fixed error kind. Take care yourself not to put keys in what the script writes with `log()`.
+- When there is an HTTPS host but this machine has no trusted root certificates at all, startup fails; set `ca_file`. Changes to the settings take effect on SIGHUP.
+- Metrics: `rradius_script_http_requests_total{result="ok|timeout|error|denied|too_large|busy"}`.
 
-## 5. 密碼格式
+## 5. Password formats
 
-`sql` 處理器的密碼欄與 `ldap` 處理器的 `attribute` 模式支援：
+The password column of the `sql` handler and the `attribute` mode of the `ldap` handler support:
 
-| 格式 | 說明 |
+| Format | Description |
 | --- | --- |
-| 明文 | 不以 `{` 開頭的值 |
-| `{clear}` | 明文；明文本身以 `{` 開頭時必須加上這個前綴 |
-| `{crypt}` | crypt(3) 雜湊 |
-| `{SHA}` | Base64 的 SHA-1 |
-| `{SSHA}` | Base64 的加鹽 SHA-1 |
-| `{nthash}` | NT hash（十六進位） |
-| `{argon2}` | PHC 字串 |
-| `{MD5}`、`{SHA224}`、`{SHA256}`、`{SHA384}`、`{SHA512}` | Base64 的雜湊，**只用於遷移** |
-| `{SMD5}`、`{SSHA224}`、`{SSHA256}`、`{SSHA384}`、`{SSHA512}` | Base64 的「雜湊 + 鹽」，**只用於遷移** |
-| `{PBKDF2-SHA1}`、`{PBKDF2}`、`{PBKDF2-SHA256}`、`{PBKDF2-SHA512}` | `<次數>$<鹽>$<雜湊>`，鹽和雜湊是 adapted Base64（`.` 代替 `+`，沒有 padding），和 OpenLDAP 的 pw-pbkdf2 相同（以它實際產生的值測試過）。`{PBKDF2}` 和 `{PBKDF2-SHA1}` 一樣是 SHA-1，雜湊 20 octets。**只用於遷移** |
-| `{X-PBKDF2}` | `<演算法>:<次數>:<鹽>:<雜湊>`，演算法是 `HMACSHA1` 或 `HMACSHA2+224`、`+256`、`+384`、`+512`，次數是 4 octets 大端數的 Base64，鹽和雜湊是 Base64（有沒有 padding 都可以），雜湊長度等於演算法的輸出長度。和 PBKDF2 一樣在處理請求的執行緒之外驗證，**只用於遷移** |
-| `{NS-MTA-MD5}` | 舊郵件伺服器的格式：32 個十六進位字元的 MD5(鹽、0x59、密碼、0xF7、鹽)，後面接 32 個字元的鹽，**只用於遷移** |
+| Plaintext | A value that does not start with `{` |
+| `{clear}` | Plaintext; required as a prefix when the plaintext itself starts with `{` |
+| `{crypt}` | crypt(3) hash |
+| `{SHA}` | Base64 SHA-1 |
+| `{SSHA}` | Base64 salted SHA-1 |
+| `{nthash}` | NT hash (hexadecimal) |
+| `{argon2}` | PHC string |
+| `{MD5}`, `{SHA224}`, `{SHA256}`, `{SHA384}`, `{SHA512}` | Base64 hashes, **for migration only** |
+| `{SMD5}`, `{SSHA224}`, `{SSHA256}`, `{SSHA384}`, `{SSHA512}` | Base64 "hash + salt", **for migration only** |
+| `{PBKDF2-SHA1}`, `{PBKDF2}`, `{PBKDF2-SHA256}`, `{PBKDF2-SHA512}` | `<iterations>$<salt>$<hash>`; the salt and hash are adapted Base64 (`.` instead of `+`, no padding), the same as OpenLDAP pw-pbkdf2 (tested with values it generated). `{PBKDF2}` is SHA-1 like `{PBKDF2-SHA1}`, with a 20-octet hash. **For migration only** |
+| `{X-PBKDF2}` | `<algorithm>:<iterations>:<salt>:<hash>`; the algorithm is `HMACSHA1` or `HMACSHA2+224`, `+256`, `+384`, `+512`; the iteration count is the Base64 of a 4-octet big-endian number; the salt and hash are Base64 (with or without padding); the hash length equals the output length of the algorithm. Like PBKDF2, it is verified outside the threads that handle requests. **For migration only** |
+| `{NS-MTA-MD5}` | Format of an old mail server: a 32-character hexadecimal MD5(salt, 0x59, password, 0xF7, salt), followed by a 32-character salt. **For migration only** |
 
-這些遷移用的格式是為了從舊系統搬帳號時不必重設密碼，`{MD5}`、`{NS-MTA-MD5}`、沒有鹽的 SHA-2 和以 SHA-1 推導的 PBKDF2 特別弱，新帳號請用下面建議的格式。PBKDF2 的次數由雜湊本身決定，會在處理請求的執行緒之外驗證，並受下面〈儲存雜湊的成本上限〉限制。格式錯誤的值一律不符。
+These migration formats exist so that you do not have to reset passwords when moving accounts from an old system. `{MD5}`, `{NS-MTA-MD5}`, SHA-2 without a salt, and PBKDF2 derived from SHA-1 are especially weak. Use the formats recommended below for new accounts. The iteration count of PBKDF2 is set by the hash itself; it is verified outside the threads that handle requests and is capped by "Cost limits on stored hashes" below. A malformed value never matches.
 
-**沒有前綴、卻以 `$2a$`、`$2b$`、`$2y$`、`$1$`、`$5$`、`$6$` 或 `$argon2` 開頭的值，不當明文：** 這幾乎一定是匯入時漏了前綴的雜湊，當明文比對的話，拿到雜湊的人把雜湊字串當密碼送出就能登入。這種值對 PAP、CHAP、MS-CHAP 與 MS-CHAPv2 一律不符，每個使用者每個行程記一次 WARN（指名使用者，不含儲存值），例如 `the stored password looks like a hash with no scheme prefix and is refused; add {crypt} or {argon2} before it, or {clear} if it is the password itself`。補法有三種：bcrypt、SHA-crypt 等 crypt 雜湊補 `{crypt}`，argon2 補 `{argon2}`，真的是以這些字元開頭的明文密碼補 `{clear}`。沒有設定開關；`{clear}` 就是明確的放行。
+**A value with no prefix that starts with `$2a$`, `$2b$`, `$2y$`, `$1$`, `$5$`, `$6$` or `$argon2` is not treated as plaintext:** it is almost certainly a hash whose prefix was lost during import. If it were compared as plaintext, anyone who obtained the hash could log in by sending the hash string as the password. Such a value never matches for PAP, CHAP, MS-CHAP and MS-CHAPv2. The server logs one WARN per user per process (it names the user and does not include the stored value), for example `the stored password looks like a hash with no scheme prefix and is refused; add {crypt} or {argon2} before it, or {clear} if it is the password itself`. There are three fixes: add `{crypt}` to crypt hashes such as bcrypt and SHA-crypt, add `{argon2}` to argon2, and add `{clear}` to a plaintext password that really starts with these characters. There is no switch; `{clear}` is the explicit way to allow it.
 
-**沒有前綴、卻長得像摘要的值，照舊當明文，但會警告：** 全是十六進位字元且長度為 32、40、56、64、96 或 128（NT hash、MD5、SHA-1、SHA-2 的十六進位），或帶填充的標準 Base64 且解碼後是 16、20、28、32、48 或 64 個位元組（例如 `W6ph5Mm5Pz8GgiULbPgzG37mj9g=`）。拿到資料庫的人把這串字當密碼送出就能登入，所以每個使用者每個行程記一次 WARN（指名使用者，不含儲存值）：`the stored password looks like a digest with no scheme prefix and is compared as plaintext; add its prefix ({nthash}, {MD5}, {SHA}, {SHA256}, ...), or {clear} if it is the password itself`。補上該格式的前綴（`{nthash}`、`{MD5}`、`{SHA}`、`{SHA256}` 等）；真的是這樣的明文密碼（例如設備用的 32 個十六進位字元的隨機密碼）補 `{clear}`，就不再警告。只警告、不拒絕，因為這樣的明文密碼確實可能存在。這個規則對 PAP、CHAP、MS-CHAP 與 MS-CHAPv2 都一樣；警告的名單每個行程最多記 1024 個用戶，超過之後不再警告，比對照舊。沒有前綴的加鹽摘要（例如沒有前綴的 SSHA）與其他長度的值認不出來；要找這類值，看 `rradius_password_checks_total{scheme="none"}` 的 `ok` 是否多得不合理。
+**A value with no prefix that looks like a digest is still compared as plaintext, but with a warning:** it is made only of hexadecimal characters and has a length of 32, 40, 56, 64, 96 or 128 (hexadecimal NT hash, MD5, SHA-1, SHA-2), or it is standard Base64 with padding that decodes to 16, 20, 28, 32, 48 or 64 bytes (for example `W6ph5Mm5Pz8GgiULbPgzG37mj9g=`). Anyone who obtains the database can log in by sending this string as the password, so the server logs one WARN per user per process (it names the user and does not include the stored value): `the stored password looks like a digest with no scheme prefix and is compared as plaintext; add its prefix ({nthash}, {MD5}, {SHA}, {SHA256}, ...), or {clear} if it is the password itself`. Add the prefix of the right format (`{nthash}`, `{MD5}`, `{SHA}`, `{SHA256}` and so on). If it really is such a plaintext password (for example a random password of 32 hexadecimal characters for a device), add `{clear}` and the warning stops. The server only warns and does not refuse, because such plaintext passwords can really exist. This rule is the same for PAP, CHAP, MS-CHAP and MS-CHAPv2. The warning list holds at most 1024 users per process; after that no more warnings are logged and the comparison is unchanged. Salted digests with no prefix (for example an SSHA with no prefix) and values of other lengths are not recognized. To find such values, check whether `ok` in `rradius_password_checks_total{scheme="none"}` is unreasonably high.
 
-CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固定時間比較。儲存值是空字串或 `{clear}` 後面沒有內容時，一律視為沒有密碼，任何密碼都不符。
+CHAP works only with plaintext or `{clear}`; PAP supports all formats. The comparison runs in constant time. A stored value that is an empty string, or `{clear}` followed by nothing, always counts as no password, and no password matches.
 
-`{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradiusd user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
+`{crypt}` picks the algorithm from the content of the hash, including DES, `$1$` (MD5), `$5$` (SHA-256), `$6$` (SHA-512) and bcrypt (`$2a$`, `$2b$`, `$2y$`). For new deployments, use `{argon2}` or bcrypt or `$6$` in `{crypt}`. When the accounts are in the cluster's table, `rradiusd user add` and `user passwd` generate bcrypt, `$6$`, `{nthash}` or `{clear}` according to `scheme` in `[accounts]` (section 2.14). In other cases, use an existing tool, such as the `argon2` command or `htpasswd -B`.
 
-`{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時視為拒絕。`{argon2}` 的成本由雜湊本身的參數決定，所以有上限，見下面〈儲存雜湊的成本上限〉。
+Verification of `{crypt}` and `{argon2}` is slow on purpose, so it runs outside the threads that handle requests. No more checks run at the same time than there are CPU cores, and the rest wait in a queue. `timeout_ms` of the `sql` handler covers the queue and the verification, and a timeout counts as a rejection. The cost of `{argon2}` is set by the parameters in the hash itself, so it has an upper limit; see "Cost limits on stored hashes" below.
 
-### 哪些格式偏弱，怎麼逐步淘汰
+### Which formats are weak and how to phase them out
 
-沒有設定開關停用任何格式：其中多數是搬帳號、或 CHAP 與 MS-CHAP 這些協定需要的，一關就會有人登不進來。要淘汰得先知道還在用哪些，所以有統計可以看。
+There is no switch that turns off any format: most of them are needed to move accounts, or by protocols such as CHAP and MS-CHAP, and turning one off would lock some people out. To phase one out you first need to know which ones are still in use, so there are statistics for that.
 
-- **偏弱、只應該用來遷移：** `{MD5}`、`{SMD5}`、`{SHA}`、`{SSHA}`、`{SHA224}`、`{SHA256}`、`{SHA384}`、`{SHA512}` 與它們加鹽的版本、`{NS-MTA-MD5}`：都是只算一次的雜湊，攻擊者拿到資料庫之後可以很快地猜。以 SHA-1 推導的 `{PBKDF2}` 與 `{PBKDF2-SHA1}`有迭代，但演算法老。`{crypt}` 裡的 DES 與 `$1$`（MD5-crypt）也是老格式。
-- **弱，但協定需要，不能淘汰：** `{nthash}`（沒有鹽的 MD4）與明文、`{clear}`。CHAP 需要明文，MS-CHAP、MS-CHAPv2、PEAP 需要明文或 `{nthash}`（5.1 節）。這些帳號要靠資料庫的存取控制保護，也不要讓不需要的帳號用它們。
-- **新帳號用：** `{crypt}` 的 bcrypt、`$5$`、`$6$`，或 `{argon2}`（見上面）。
+- **Weak, for migration only:** `{MD5}`, `{SMD5}`, `{SHA}`, `{SSHA}`, `{SHA224}`, `{SHA256}`, `{SHA384}`, `{SHA512}` and their salted versions, and `{NS-MTA-MD5}`: they are all a single hash round, so an attacker who gets the database can guess very quickly. `{PBKDF2}` and `{PBKDF2-SHA1}`, derived from SHA-1, have iterations but use an old algorithm. DES and `$1$` (MD5-crypt) inside `{crypt}` are also old formats.
+- **Weak, but needed by protocols, so they cannot be phased out:** `{nthash}` (MD4 with no salt), plaintext and `{clear}`. CHAP needs plaintext; MS-CHAP, MS-CHAPv2 and PEAP need plaintext or `{nthash}` (section 5.1). Protect these accounts with access control on the database, and do not let accounts that do not need them use them.
+- **For new accounts:** bcrypt, `$5$` or `$6$` in `{crypt}`, or `{argon2}` (see above).
 
-**儲存雜湊的成本上限（`[auth.password_limits]`）：** 慢雜湊的成本寫在儲存的值裡，能寫入自己密碼值的人（例如目錄允許使用者改 `userPassword`）可以設一個極大的成本，再用與 CPU 數一樣多的登入占住所有慢雜湊的名額，讓別人的登入排隊逾時；`{argon2}` 的記憶體參數還可能讓行程用掉過多記憶體。所以伺服器驗證前先讀成本參數，**超過上限就不計算，直接當密碼錯誤拒絕**。沒寫這一節也有預設上限，所有鍵都是選用的正整數（0 是載入錯誤），SIGHUP 重新載入時生效：
+**Cost limits on stored hashes (`[auth.password_limits]`):** the cost of a slow hash is written in the stored value. Someone who can write their own password value (for example, when the directory lets users change `userPassword`) can set a huge cost and then use as many logins as there are CPUs to occupy all the slow-hash slots, so that other people's logins queue until they time out. The memory parameter of `{argon2}` could also make the process use too much memory. So before verifying, the server reads the cost parameters, and **if one is over the limit, it does not compute and rejects the login as a wrong password**. There are default limits even if you do not write this section. All keys are optional positive integers (0 is a load error) and take effect on a SIGHUP reload:
 
-| 鍵 | 預設 | 限制什麼 |
+| Key | Default | What it limits |
 | --- | --- | --- |
-| `pbkdf2_iterations` | 5000000 | `{PBKDF2}`、`{PBKDF2-SHA1}`、`{PBKDF2-SHA256}`、`{PBKDF2-SHA512}`、`{X-PBKDF2}` 的迭代次數 |
-| `crypt_rounds` | 1000000 | `{crypt}` 的 `$5$`、`$6$`、`$sha1$` 的 `rounds`，以及擴充 DES（`_` 開頭）的 rounds |
-| `bcrypt_cost` | 15 | `{crypt}` 的 bcrypt（`$2a$`、`$2b$`、`$2y$`）的 cost，每加 1 工作量加倍 |
-| `argon2_memory_kib` | 262144 | `{argon2}` 的記憶體（KiB，預設 256 MiB） |
-| `argon2_iterations` | 10 | `{argon2}` 的迭代次數 |
-| `argon2_lanes` | 16 | `{argon2}` 的平行度 |
+| `pbkdf2_iterations` | 5000000 | Iterations of `{PBKDF2}`, `{PBKDF2-SHA1}`, `{PBKDF2-SHA256}`, `{PBKDF2-SHA512}`, `{X-PBKDF2}` |
+| `crypt_rounds` | 1000000 | `rounds` of `$5$`, `$6$` and `$sha1$` in `{crypt}`, and the rounds of extended DES (starting with `_`) |
+| `bcrypt_cost` | 15 | Cost of bcrypt in `{crypt}` (`$2a$`, `$2b$`, `$2y$`); each increase of 1 doubles the work |
+| `argon2_memory_kib` | 262144 | Memory of `{argon2}` (KiB, 256 MiB by default) |
+| `argon2_iterations` | 10 | Iterations of `{argon2}` |
+| `argon2_lanes` | 16 | Parallelism of `{argon2}` |
 
-- **超過上限是一般的密碼錯誤：** 計入 `rradius_password_checks_total` 的 `failed` 與 `[auth.lockout]`，不是「後端不能用」。每個帳號每個行程記一次 WARN，指名帳號、格式與超過的參數（例如 `[auth.password_limits].pbkdf2_iterations`），不含儲存值與密碼。DES、`$1$`、`{SHA}`、`{SSHA}` 等成本固定的格式不受限制。
-- **升級時要注意：** 成本高於預設上限的既有雜湊升級後會被拒絕；看到這個 WARN，確認那個雜湊是正當的，就調高對應的鍵。
-- **實測（Apple M4 Max、release 建置、單次、無競爭）：** 剛好在預設上限的值，PBKDF2-SHA1／256／512 約 0.29／0.37／0.81 秒，`$5$`／`$6$` 約 0.18／0.15 秒，bcrypt cost 15 約 1.3 秒，argon2（256 MiB、t=10、p=16）約 0.94 秒，行程峰值記憶體約 266 MiB。較慢的 CPU 會慢數倍。
-- **argon2 的記憶體上限要乘上 CPU 數：** 同時驗證的數量等於 CPU 數，最壞情況用掉約 `argon2_memory_kib` × CPU 數的記憶體（64 核、預設值約 16 GiB）。記憶體少的機器把 `argon2_memory_kib` 調低，同時確認你的 argon2 雜湊沒有超過它。
-- **預設值取得比常見建議高：** 常見建議是 PBKDF2 約 60 萬到 130 萬次、bcrypt cost 10 到 13，一般部署不受影響。
+- **Going over a limit is an ordinary wrong password:** it counts in `failed` of `rradius_password_checks_total` and in `[auth.lockout]`, and is not "backend unavailable". The server logs one WARN per account per process. It names the account, the format and the parameter that was exceeded (for example `[auth.password_limits].pbkdf2_iterations`), and does not include the stored value or the password. Formats with a fixed cost, such as DES, `$1$`, `{SHA}` and `{SSHA}`, are not limited.
+- **When you upgrade:** existing hashes with a cost above the default limit are rejected after the upgrade. When you see this WARN, check that the hash is legitimate, then raise the matching key.
+- **Measured (Apple M4 Max, release build, one run, no contention):** values exactly at the default limit take about 0.29 / 0.37 / 0.81 s for PBKDF2-SHA1 / 256 / 512, about 0.18 / 0.15 s for `$5$` / `$6$`, about 1.3 s for bcrypt cost 15, and about 0.94 s for argon2 (256 MiB, t=10, p=16), with a peak process memory of about 266 MiB. A slower CPU is several times slower.
+- **Multiply the argon2 memory limit by the number of CPUs:** the number of checks at the same time equals the number of CPUs, so in the worst case the memory used is about `argon2_memory_kib` × the number of CPUs (about 16 GiB with 64 cores and the default). On a machine with little memory, lower `argon2_memory_kib`, and make sure your argon2 hashes do not exceed it.
+- **The defaults are higher than common recommendations:** the common recommendation is about 600,000 to 1,300,000 iterations for PBKDF2 and bcrypt cost 10 to 13, so ordinary deployments are not affected.
 
-**用統計看還在用什麼：** `rradius_password_checks_total{scheme="...",result="ok|failed"}` 記每一次用儲存的密碼比對登入（PAP、CHAP、MS-CHAP、MS-CHAPv2），依儲存值的格式與結果加一。`scheme` 的值是固定的：`clear`、`none`（沒有前綴的明文）、`crypt`、`md5`、`smd5`、`sha`、`ssha`、`sha224`、`ssha224`、`sha256`、`ssha256`、`sha384`、`ssha384`、`sha512`、`ssha512`、`pbkdf2-sha1`（`{PBKDF2}` 也算在這裡）、`pbkdf2-sha256`、`pbkdf2-sha512`、`x-pbkdf2`、`ns-mta-md5`、`nthash`、`argon2`、`unknown`（不認得的前綴），每個格式兩個結果的組合從啟動就有，沒發生過的是 0。資料庫裡寫什麼前綴都不會變成標籤。`failed` 不只是密碼打錯：CHAP 只能比對明文（`{clear}` 或沒有前綴），MS-CHAP 只能比對明文或 `{nthash}`，對 `{crypt}`、`{ssha}` 這類單向雜湊一律失敗；成本參數超過上限（見下）也算。所以一個格式的 `failed` 增加，先分清楚是哪個協定的登入、是不是密碼錯誤，不要直接當成資料有問題。格式是 `unknown`，又一直是 `failed` 的，才多半是匯入的值有問題，見上面沒有前綴的雜湊。LDAP 的 `bind` 模式、`netlogon`、Lua 處理器與憑證登入不比對儲存的密碼，不計。空值、沒有前綴的雜湊與逾時也不計。
+**See what is still in use with the statistics:** `rradius_password_checks_total{scheme="...",result="ok|failed"}` counts every login that is checked against a stored password (PAP, CHAP, MS-CHAP, MS-CHAPv2), by the format of the stored value and the result. The values of `scheme` are fixed: `clear`, `none` (plaintext with no prefix), `crypt`, `md5`, `smd5`, `sha`, `ssha`, `sha224`, `ssha224`, `sha256`, `ssha256`, `sha384`, `ssha384`, `sha512`, `ssha512`, `pbkdf2-sha1` (`{PBKDF2}` counts here too), `pbkdf2-sha256`, `pbkdf2-sha512`, `x-pbkdf2`, `ns-mta-md5`, `nthash`, `argon2` and `unknown` (an unrecognized prefix). The two results of every format exist from startup, and those that have not happened are 0. No prefix written in the database ever becomes a label. `failed` is not only a mistyped password: CHAP can compare only plaintext (`{clear}` or no prefix), MS-CHAP can compare only plaintext or `{nthash}`, and both always fail against one-way hashes such as `{crypt}` and `{ssha}`; a cost parameter over the limit (see below) also counts. So when `failed` grows for a format, first work out which protocol the logins use and whether they are really wrong passwords; do not assume the data is bad. Only when the format is `unknown` and the result is always `failed` is the imported value usually the problem; see the hashes with no prefix above. The `bind` mode of LDAP, `netlogon`, Lua handlers and certificate logins do not compare against a stored password and are not counted. Empty values, hashes with no prefix and timeouts are not counted either.
 
-這個統計只看到有人登入的帳號，從沒登入過的舊帳號不會出現。要盤點資料庫裡全部帳號的格式，用查詢（`users` 與 `password` 換成你的資料表與欄位）：
+These statistics see only accounts that log in; old accounts that never log in do not appear. To take stock of the formats of all the accounts in the database, use a query (replace `users` and `password` with your table and column):
 
 ```sql
 SELECT CASE WHEN password LIKE '{%}%' THEN lower(substr(password, 1, instr(password, '}')))
@@ -2184,35 +2184,35 @@ GROUP BY scheme
 ORDER BY accounts DESC, scheme;
 ```
 
-這個查詢在 SQLite 跑過：沒有前綴的值（包含少了 `}` 的 `{broken`）算 `none`，前綴不分大小寫，`{SSHA}` 與 `{ssha}` 算在一起。其他資料庫的函式名稱可能不同。
+This query has been run on SQLite: a value with no prefix (including `{broken`, which lacks the `}`) counts as `none`, and the prefix is case-insensitive, so `{SSHA}` and `{ssha}` count together. Function names may differ in other databases.
 
-**淘汰的做法：** 先盤點，再看統計：某個偏弱格式盤點是 0 之前還不算淘汰，盤點有帳號、統計卻長期沒有成功登入的，是沒在用的帳號，可以請他們改密碼、或依期限清掉。有人還在用的帳號，用 `user passwd` 換成新格式（見[手冊第 07 章](manual.zh-TW/07-users-and-chains.md#搬入舊系統的密碼雜湊)）；rradius 不會在登入時自動換，也沒有停用格式的設定。
+**How to phase one out:** first take stock, then look at the statistics. A weak format is not phased out until the stock count is 0. If the stock count shows accounts but the statistics show no successful login for a long time, those accounts are unused; you can ask their owners to change the password, or remove them after a deadline. For accounts still in use, change them to a new format with `user passwd` (see the [manual, chapter 07](manual/07-users-and-chains.md#migrate-password-hashes-from-an-old-system)). rradius does not convert on login, and there is no setting to turn a format off.
 
 ### 5.1 MS-CHAPv2
 
-`sql` 處理器、`ldap` 處理器的 `attribute` 模式和 `netlogon` 處理器（3.7 節，AD 帳號）支援 MS-CHAPv2（RFC 2759），成功時回覆 `MS-CHAP2-Success` 和 `MS-MPPE-Send-Key`、`MS-MPPE-Recv-Key`，失敗時回覆帶 `E=691 R=0` 的 `MS-CHAP-Error`。
+The `sql` handler, the `attribute` mode of the `ldap` handler and the `netlogon` handler (section 3.7, AD accounts) support MS-CHAPv2 (RFC 2759). On success they reply with `MS-CHAP2-Success` and `MS-MPPE-Send-Key` and `MS-MPPE-Recv-Key`; on failure they reply with `MS-CHAP-Error` carrying `E=691 R=0`.
 
-- **只能搭配明文、`{clear}` 或 `{nthash}`。** 其他格式都會拒絕，因為這個協定需要 NT hash。AD 帳號用 `netlogon` 處理器，由 DC 驗證。
-- **MS-CHAPv2 本身很弱：** 擷取到的交換可以離線破解，而且 NT hash 外洩就等於密碼外洩。請只用在加密通道內，能用其他方式就不要用它。
-- **使用者名稱：** 驗證時只用最後一個反斜線之後的部分（`BIGCO\alice` 用 `alice`）。查帳號時預設用完整的 `User-Name`，要忽略網域請設定 `strip_realm`（見 3.6 節），或自行寫在查詢裡。正規化只影響查帳號，驗證仍用收到的名稱。
-- **不支援：** `ldap` 處理器的 `bind` 模式、最上層腳本和 `lua` 處理器。EAP-TLS 不用密碼，PEAP、TTLS 內層的 MS-CHAPv2 見 2.12 節。MS-CHAPv1 見 5.2 節。
+- **It works only with plaintext, `{clear}` or `{nthash}`.** All other formats are rejected, because the protocol needs the NT hash. For AD accounts, use the `netlogon` handler, and the DC does the verification.
+- **MS-CHAPv2 itself is weak:** a captured exchange can be cracked offline, and a leaked NT hash is the same as a leaked password. Use it only inside an encrypted tunnel, and do not use it if something else will do.
+- **User name:** verification uses only the part after the last backslash (`alice` for `BIGCO\alice`). The account lookup uses the full `User-Name` by default. To ignore the domain, set `strip_realm` (see section 3.6) or write it in the query yourself. Normalization affects only the account lookup; verification still uses the name as received.
+- **Not supported:** the `bind` mode of the `ldap` handler, the top-level script and the `lua` handler. EAP-TLS uses no password; for MS-CHAPv2 inside PEAP and TTLS, see section 2.12. For MS-CHAPv1, see section 5.2.
 
 ### 5.2 MS-CHAPv1
 
-PPTP VPN 和舊的撥接設備仍會用 MS-CHAPv1（RFC 2433）。RADIUS 的 `MS-CHAP-Challenge`（8 個位元組）加 `MS-CHAP-Response`（50 個位元組：識別碼、旗標、LM 回應、NT 回應），和 TACACS+ 的 MSCHAP 認證（`authen_type` 5，4.6 節）都支援，由 `sql` 處理器和 `ldap` 處理器的 `attribute` 模式驗證，儲存格式與 MS-CHAPv2 相同（明文、`{clear}` 或 `{nthash}`）。**預設不接受**：非用不可的設備才寫 `[auth] allow_mschapv1 = true`（見下面的「關閉 MS-CHAPv1」）。
+PPTP VPNs and old dial-up devices still use MS-CHAPv1 (RFC 2433). Both the RADIUS `MS-CHAP-Challenge` (8 bytes) with `MS-CHAP-Response` (50 bytes: identifier, flags, LM response, NT response) and the TACACS+ MSCHAP authentication (`authen_type` 5, section 4.6) are supported. The `sql` handler and the `attribute` mode of the `ldap` handler verify it, and the storage formats are the same as for MS-CHAPv2 (plaintext, `{clear}` or `{nthash}`). **It is not accepted by default:** write `[auth] allow_mschapv1 = true` only for devices that cannot do without it (see "Turning off MS-CHAPv1" below).
 
-> **風險：MS-CHAPv1 的密碼雜湊只用 DES（56 位元），擷取到的挑戰與回應可以幾乎即時還原 NT hash，和密碼強度無關；NT hash 外洩就等於密碼外洩。Windows 也已預設關閉它。** 只在管理網路或無法升級的舊設備上使用，能用 MS-CHAPv2、PEAP 或 EAP-TLS 就不要用它。
+> **Risk: the password hash of MS-CHAPv1 uses only DES (56 bits), so the NT hash can be recovered almost instantly from a captured challenge and response, whatever the strength of the password; a leaked NT hash is the same as a leaked password. Windows also turns it off by default.** Use it only on a management network or with old devices that cannot be upgraded, and do not use it if MS-CHAPv2, PEAP or EAP-TLS will do.
 
-- **只驗 NT 回應。** 旗標的 bit 0 沒設（要求用 LM 回應）、或只有 LM 回應的請求一律拒絕（RADIUS 當成沒有帳密，TACACS+ 回 FAIL）；LM 回應不看，也沒有 `{lmhash}` 儲存格式。
-- **MPPE 金鑰只有 128 位元。** 成功時回 `MS-CHAP-MPPE-Keys`（8 個位元組的零當 LM-Key，加 16 個位元組的 NT-Key，即 NT hash 的 MD4，RFC 3079 第 2.3 節；依 RFC 2548 第 2.4.1 節用 User-Password 的方法加密，所以在封包裡是 32 個位元組）和 `MS-MPPE-Encryption-Types`（2，只允許 128 位元）。**40/56 位元的 MPPE 不支援**，PPTP 設備只能協商 128 位元時才會成功；LM-Key 是零，沒有用實體設備驗證。
-- **失敗時** Access-Reject 帶 `MS-CHAP-Error`（`E=691 R=0`），不回 `MS-CHAP2-Success`（版本 1 沒有伺服器的證明）。
-- **不能驗證的處理器：** `ldap` 處理器的 `bind` 模式（目錄只看到密碼）拒絕；`netlogon` 處理器只處理 MS-CHAPv2，MS-CHAPv1 略過，所以只有它的串接會拒絕；最上層腳本和 `lua` 處理器看不到回應，不替腳本驗，腳本看得到的是請求的屬性。
-- **不支援：** 換密碼（`MS-CHAP-CPW`）、EAP 內層的 MS-CHAPv1（PEAP、TTLS）、LM 回應。請求同時帶 `User-Password`、`CHAP-Password` 或 `MS-CHAP2-Response` 時，照 PAP、CHAP、MS-CHAPv2 的順序，MS-CHAPv1 排在最後。
-- **RADIUS User-Password 長度：** 依 RFC 2865 第 5.2 節，長度要是 16 到 128 個位元組、16 的倍數；不合的 Access-Request 在解密前就回 Access-Reject，不執行處理器與腳本，不計入 `[auth.lockout]`，驗證記錄的 handler 是 `length`，並記一行限速的 WARN（客戶端與長度，不含密碼）。固定值，沒有設定。**升級注意：** 以前超過 128 個位元組、或沒補齊到 16 倍數的 User-Password 會被接受，現在被拒；先看驗證記錄有沒有 `handler="length"`。
-- **關閉 MS-CHAPv1（`[auth] allow_mschapv1`）：** 選用的布林，預設 `false`：沒寫這個鍵和寫 `false` 一樣。沒寫或 `false` 時，驗證鏈在任何處理器之前就拒絕 MS-CHAPv1 的登入（RADIUS 的 `MS-CHAP-Response`、TACACS+ 的 MSCHAP START）：RADIUS 回 Access-Reject 並帶 `MS-CHAP-Error`（`E=691 R=0`），TACACS+ 回 FAIL，驗證記錄的 handler 是 `mschapv1_refused`。**不查資料庫與目錄，也不計入 `[auth.lockout]` 的失敗次數、不佔它的名額**（它不是密碼猜測），所以舊設備一直重試不會把帳號鎖住。每次拒絕記一行 INFO（客戶端、協定、帳號，不含 challenge 與回應）。PAP、CHAP、MS-CHAPv2、EAP 不受影響；SIGHUP 重新載入時生效。**升級注意：** 這個預設以前是 `true`。仍送 MS-CHAPv1 的舊設備升級後全部登入失敗；`rradius_password_checks_total` 只按儲存格式分，分不出登入用的是哪個協定，要找出它們，看驗證記錄裡 `handler="mschapv1_refused"` 的行或日誌裡的 `MS-CHAPv1 refused`，確認非用不可再寫 `allow_mschapv1 = true`。沒有 `[auth]` 時由 Lua 腳本自己處理的 `MS-CHAP-Response` 不在這個開關範圍。MS-CHAPv1 成功時回的 `MS-CHAP-MPPE-Keys` 由 NT hash 導出，強度不超過 NT hash，這由協定決定，開關是唯一的緩解。
-- **字典：** `MS-CHAP-MPPE-Keys` 是 `encrypt=1` 的屬性，`set_attr` 現在支援 `encrypt=1`（4.5 節）；長度固定的 `octets[N]` 屬性也能用 `set_attr` 設，值要剛好 N 個位元組。
+- **Only the NT response is checked.** A request is always rejected when bit 0 of the flags is not set (it asks for the LM response) or when it has only the LM response (RADIUS treats it as having no credentials, and TACACS+ returns FAIL). The LM response is ignored, and there is no `{lmhash}` storage format.
+- **The MPPE key is only 128 bits.** On success the server returns `MS-CHAP-MPPE-Keys` (8 bytes of zeros as the LM-Key, followed by a 16-byte NT-Key, which is the MD4 of the NT hash, RFC 3079 section 2.3; encrypted the way User-Password is, per RFC 2548 section 2.4.1, so it is 32 bytes in the packet) and `MS-MPPE-Encryption-Types` (2, allowing only 128 bits). **40/56-bit MPPE is not supported**, so it succeeds only when a PPTP device can negotiate 128 bits; the LM-Key is zero and has not been verified with real hardware.
+- **On failure** the Access-Reject carries `MS-CHAP-Error` (`E=691 R=0`) and no `MS-CHAP2-Success` (version 1 has no server proof).
+- **Handlers that cannot verify it:** the `bind` mode of the `ldap` handler (the directory sees only the password) rejects it. The `netlogon` handler handles only MS-CHAPv2 and skips MS-CHAPv1, so only a chain that ends there rejects it. The top-level script and the `lua` handler do not see the response and do not verify for the script; what the script can see are the attributes of the request.
+- **Not supported:** changing the password (`MS-CHAP-CPW`), MS-CHAPv1 inside EAP (PEAP, TTLS) and the LM response. When a request carries `User-Password`, `CHAP-Password` or `MS-CHAP2-Response` as well, the order is PAP, CHAP, MS-CHAPv2, and MS-CHAPv1 comes last.
+- **Length of the RADIUS User-Password:** per RFC 2865 section 5.2, the length must be 16 to 128 bytes and a multiple of 16. An Access-Request that does not fit is answered with Access-Reject before decryption; no handler or script runs, it does not count in `[auth.lockout]`, the handler in the authentication record is `length`, and one rate-limited WARN is logged (the client and the length, not the password). The value is fixed and there is no setting. **Upgrade note:** a User-Password longer than 128 bytes, or not padded to a multiple of 16, used to be accepted and is now rejected; first check the authentication records for `handler="length"`.
+- **Turning off MS-CHAPv1 (`[auth] allow_mschapv1`):** an optional boolean, `false` by default: leaving out the key is the same as writing `false`. When it is not written or is `false`, the auth chain refuses MS-CHAPv1 logins before any handler (RADIUS `MS-CHAP-Response`, TACACS+ MSCHAP START): RADIUS returns Access-Reject with `MS-CHAP-Error` (`E=691 R=0`), TACACS+ returns FAIL, and the handler in the authentication record is `mschapv1_refused`. **It does not query the database or the directory, and it does not count toward the failures of `[auth.lockout]` or take one of its slots** (it is not a password guess), so an old device that keeps retrying does not lock the account. Every refusal logs one INFO line (the client, the protocol and the account, not the challenge or the response). PAP, CHAP, MS-CHAPv2 and EAP are not affected, and the change takes effect on a SIGHUP reload. **Upgrade note:** this default used to be `true`. Old devices that still send MS-CHAPv1 all fail to log in after the upgrade. `rradius_password_checks_total` is split only by storage format and cannot tell which protocol a login used, so to find them, look at the lines with `handler="mschapv1_refused"` in the authentication records or `MS-CHAPv1 refused` in the log, and write `allow_mschapv1 = true` only after you have confirmed that you cannot do without it. When there is no `[auth]`, an `MS-CHAP-Response` handled by the Lua script itself is outside this switch. The `MS-CHAP-MPPE-Keys` returned when MS-CHAPv1 succeeds are derived from the NT hash and are no stronger than it; this is set by the protocol, and the switch is the only mitigation.
+- **Dictionary:** `MS-CHAP-MPPE-Keys` is an attribute with `encrypt=1`, and `set_attr` now supports `encrypt=1` (section 4.5); an `octets[N]` attribute with a fixed length can also be set with `set_attr`, and the value must be exactly N bytes.
 
-## 6. 範例：VPN 閘道走 LDAP、其他設備走 SQL
+## 6. Example: a VPN gateway on LDAP, other devices on SQL
 
 ```toml
 dictionary = "/usr/share/rradius/dictionary"
@@ -2242,7 +2242,7 @@ base_dn = "ou=people,dc=example,dc=com"
 filter = "(uid={user})"
 [[auth.chains.vpn.handlers]]
 type = "lua"
-script = "vpn_hours.lua"     # 例如只在上班時間回傳 'accept'
+script = "vpn_hours.lua"     # for example, return 'accept' only during working hours
 
 [radius]
 [[radius.clients]]
@@ -2257,32 +2257,32 @@ secret_file = "vpn-gw.secret"
 auth = "vpn"
 ```
 
-## 7. 互通性
+## 7. Interoperability
 
-下列組合用互通測試實際測過。這套測試和企業版的功能一起放在 rradius-enterprise 的 repo，核心的 CI 不跑。
+The following combinations have been tested with the interoperability tests. These tests are kept with the enterprise features in the rradius-enterprise repository, and the CI of the core does not run them.
 
-| 項目 | 對端 |
+| Item | Peer |
 | --- | --- |
-| UDP 認證、計費、Status-Server | FreeRADIUS 3.2.10 的 `radclient` |
-| 延伸屬性、`long-extended` 分段、EVS、TLV、WiMAX 廠商格式，收和送 | FreeRADIUS 3.2.10 的 `radclient`。它不會送 `IPv6-6rd-*`，收到時也只顯示編號，所以這組只驗證了回應的內容 |
-| TACACS+ ASCII 與 PAP 登入 | Python `tacacs_plus` 2.6 |
-| EAP-TLS（TLS 1.2、1.3），拒絕其他 CA、撤銷的憑證和不符的名稱 | wpa_supplicant 的 `eapol_test` |
-| PEAP-MSCHAPv2：`sql` 的明文和 `{nthash}`、`ldap` 的 `attribute` 模式、錯誤密碼、不存在的名稱、匿名外層名稱、拒絕 TLS 1.3 | wpa_supplicant 的 `eapol_test` |
-| EAP-TTLS：內層 PAP（`sql` 的明文和 `{argon2}`、`ldap` 的 `bind` 模式）和內層 MS-CHAPv2（明文和 `{nthash}`）、錯誤密碼、不存在的名稱、匿名外層名稱、拒絕 TLS 1.3 | wpa_supplicant 的 `eapol_test` |
-| Linux 主機登入：對和錯的密碼、不存在的名稱、Access-Challenge 答對和答錯、錯的共用密碼 | FreeRADIUS 的 `pam_radius`（4.0.0 的 commit `36cf87d`）加 `pamtester`，開啟它的 `require_message_authenticator` |
+| UDP authentication, accounting, Status-Server | `radclient` from FreeRADIUS 3.2.10 |
+| Extended attributes, `long-extended` fragmentation, EVS, TLV, WiMAX vendor format, receiving and sending | `radclient` from FreeRADIUS 3.2.10. It does not send `IPv6-6rd-*` and shows only the number when it receives it, so for this one only the content of the response was verified |
+| TACACS+ ASCII and PAP login | Python `tacacs_plus` 2.6 |
+| EAP-TLS (TLS 1.2, 1.3), rejecting another CA, a revoked certificate and a mismatched name | `eapol_test` from wpa_supplicant |
+| PEAP-MSCHAPv2: plaintext and `{nthash}` of `sql`, the `attribute` mode of `ldap`, a wrong password, a name that does not exist, an anonymous outer name, rejecting TLS 1.3 | `eapol_test` from wpa_supplicant |
+| EAP-TTLS: inner PAP (plaintext and `{argon2}` of `sql`, the `bind` mode of `ldap`) and inner MS-CHAPv2 (plaintext and `{nthash}`), a wrong password, a name that does not exist, an anonymous outer name, rejecting TLS 1.3 | `eapol_test` from wpa_supplicant |
+| Linux host login: right and wrong passwords, a name that does not exist, an Access-Challenge answered right and wrong, a wrong shared secret | `pam_radius` from FreeRADIUS (commit `36cf87d` of 4.0.0) with `pamtester`, with its `require_message_authenticator` turned on |
 
-**沒有測過：** 任何實體 NAS、路由器或交換器。各廠商的實作可能不同，上線前請實際測一次。`tacacs_plus` 的 ASCII 流程會在 START 帶帳號，所以 GETUSER 只有專案自己的測試涵蓋。
+**Not tested:** any real NAS, router or switch. Implementations may differ between vendors, so test once on real hardware before going live. The ASCII flow of `tacacs_plus` carries the account in the START, so GETUSER is covered only by the project's own tests.
 
-**主機登入：** 要讓 Linux 主機用 rradius 登入，用 FreeRADIUS 的 `pam_radius`，rradius 不提供自己的 PAM 或 NSS 模組。設定時注意：
+**Host login:** to let a Linux host log in through rradius, use `pam_radius` from FreeRADIUS; rradius does not provide its own PAM or NSS module. When you set it up, note:
 
-- **開啟 `require_message_authenticator`，** 這是它的選項，預設關閉，不開就不會要求回應帶這個屬性。
-- **只能走 UDP，** 密碼用共用密碼隱藏。請用夠長的隨機密碼，並只在信任的網路上使用。
-- **它只負責認證，不提供帳號。** `pam_radius` 本身不查本機帳號，測試也沒有建帳號；但 `sshd` 這類程式要先查得到使用者，所以帳號要另外準備。RADIUS 沒有查詢使用者的方法，NSS 模組幫不上這個忙。
-- **`/etc/services` 沒有 `radius` 時要寫明埠，** 例如 `172.30.0.10:1812 secret 3`，否則會回 `Authentication service cannot retrieve authentication info`。最小化的容器映像常常沒有這個檔案。
+- **Turn on `require_message_authenticator`.** It is an option of `pam_radius` and is off by default; if you do not turn it on, it does not require the response to carry this attribute.
+- **It works over UDP only,** and the password is hidden with the shared secret. Use a long random secret, and use it only on a trusted network.
+- **It does authentication only and does not provide accounts.** `pam_radius` does not look up local accounts, and the tests did not create accounts either; but programs such as `sshd` must first be able to find the user, so prepare the accounts separately. RADIUS has no way to look up users, so an NSS module cannot help here.
+- **Write the port explicitly when `/etc/services` has no `radius`,** for example `172.30.0.10:1812 secret 3`, or you get `Authentication service cannot retrieve authentication info`. Minimal container images often lack this file.
 
-互通測試只用 `pamtester` 測到 PAM 這一層，沒有測過 `sshd`、`sudo` 或 `login`。
+The interoperability tests reached only the PAM layer with `pamtester`, and `sshd`, `sudo` or `login` were not tested.
 
-**模糊測試：** `rradius-server/fuzz/` 用 `cargo-fuzz` 測 RADIUS 封包、TACACS+ 封包、EAP 封包、字典和位址屬性文字。`.github/workflows/fuzz.yml` 每週以 `seeds/` 的種子當起點，對每個目標各跑 300 秒。每週才會編譯與執行這些目標，所以改了 fuzz 目標之後，合併前先到分支上手動啟動 Fuzz 工作流程。需要 nightly 工具鏈，要在本機跑時：
+**Fuzz testing:** `rradius-server/fuzz/` uses `cargo-fuzz` to test RADIUS packets, TACACS+ packets, EAP packets, the dictionary and the text of address attributes. `.github/workflows/fuzz.yml` runs every target for 300 seconds each week, starting from the seeds in `seeds/`. The targets are compiled and run only once a week, so after you change a fuzz target, start the Fuzz workflow by hand on the branch before merging. It needs the nightly toolchain. To run it locally:
 
 ```bash
 rustup toolchain install nightly-2026-11-05 --profile minimal
@@ -2296,97 +2296,97 @@ cargo install cargo-fuzz --version 0.13.2 --locked
 cd rradius-server/fuzz && mkdir -p corpus/radius_packet && cargo +nightly-2026-11-05 fuzz run radius_packet corpus/radius_packet seeds/radius_packet -- -max_total_time=120
 ```
 
-找到問題時，導致當機的輸入會存在 `fuzz/artifacts/<目標>/`。修正後把它加進 `fuzz/seeds/<目標>/`，CI 就會一直檢查。
+When it finds a problem, the input that caused the crash is saved in `fuzz/artifacts/<target>/`. After you fix it, add it to `fuzz/seeds/<target>/` and CI checks it from then on.
 
-## 8. 疑難排解
+## 8. Troubleshooting
 
-下表比對的是訊息本身。每行前面還有時間和等級，`json` 格式則在 `message` 欄位裡（見 2.10 節）。
+The table below matches the message itself. Each line also has a time and a level in front of it, and in the `json` format the message is in the `message` field (see section 2.10).
 
-| 現象 | 可能原因 |
+| Symptom | Possible cause |
 | --- | --- |
-| 啟動時狀態碼 2 | 設定錯誤；錯誤訊息會指出檔案與欄位 |
-| ``moved to `[lua].script` `` | 舊設定檔，把最上層 `script` 移到 `[lua]` |
-| `cannot compile script '<檔案>'` | 腳本語法錯誤 |
-| `script exceeded the execution limit of N ms` | 腳本執行太久；檢查迴圈，或調高 `[lua].max_execution_ms` |
-| `memory error: not enough memory` | VM 超過記憶體上限；檢查腳本有沒有留住大量資料，或調高 `[lua].max_memory_mb` |
-| `sql_query timed out` / `sql_execute timed out` | 資料庫太慢或叢集沒有多數節點；調高 `query_timeout_ms` 或檢查叢集 |
-| `sql_execute: non-deterministic ...` | 寫入中使用了時間或亂數函式；改用 `now_unix()` |
-| `Lua script did not accept accounting ...` | 計費腳本沒有回傳 `'accept'`，設備會重送；確認記錄成功時有回傳 `'accept'` |
-| `... failed: the chain did not accept the inner name` | PEAP 或 TTLS 密碼錯誤、查無使用者。PEAP 和 TTLS 的內層 MS-CHAPv2 也可能是 `ldap` 處理器用了 `bind` 模式；TTLS 的內層 PAP 可以用 `bind` |
-| `... failed: the chain accepted the inner name without checking a password` | 串接接受了，但沒有處理器比對過密碼，例如只有 `lua` 處理器。TTLS 的內層 PAP 要有 `sql`、`ldap` 或設了 `verifies_password = true` 的 `lua` 處理器接受 |
-| `... failed: this client has no chain to check a password with` | PEAP、TTLS 需要串接，這個 client 沒有 |
-| `... failed: an MS-CHAP challenge other than the one the tunnel exports` | TTLS 的內層 MS-CHAPv2 用了不是通道匯出的 challenge，可能是用戶端不相容，也可能是轉送攻擊 |
-| `... failed: an unrecognized mandatory inner AVP` | TTLS 用戶端的內層方法不是 PAP 或 MS-CHAPv2，例如內層 EAP 或 CHAP |
-| `EAP conversation with client ... failed` | 看後面的原因：憑證、`State` 找不到（常見於切換節點）、TLS 版本或加密套件不符（2.12 節） |
-| `EAP conversation with client ... refused` | 憑證通過，但名稱不符或串接、腳本沒有接受。使用 LDAP 時，確認設了 `certificate_filter`；使用 SQL 時，確認第一欄有值或設了 `certificate_query` |
-| `accounting spool: request from client ... not written` | 暫存已滿或磁碟寫入失敗，這筆沒有回覆，由設備重送；檢查磁碟與 `max_bytes`（2.11 節） |
-| `accounting spool: request from client ... moved to rejected.log` | 重放時放棄這筆，原因寫在後面；檔案不會自動清理（2.11 節） |
-| `accounting spool: cannot read`、`cannot record progress` | 讀暫存檔或寫進度失敗，檢查磁碟和權限。之後會重試，可能重放同一筆 |
-| `accounting spool: removed ... octets of an unfinished write` | 啟動時截掉寫到一半的內容，有內容時保留在 `truncated.log` |
-| `accounting spool: could not remove an unfinished write` | 啟動時截不掉，那個檔案之後會整個改名為 `.corrupt` |
-| `accounting spool: ... damaged files set aside` | 損壞的檔案改名為 `.corrupt`，裡面的請求不會重放 |
-| `rradius_acct_spool_bytes` 一直不下降 | 資料庫還沒恢復，或腳本仍然失敗；看記錄中的 `Lua script` 開頭訊息 |
-| 設備一直重送計費封包 | 計費腳本出錯或沒有回傳 `'accept'`；看記錄中的 `Lua script` 開頭訊息 |
-| 腳本中 `io`、`os.execute`、`require`、`loadstring`、`getfenv`、`setfenv` 出錯 | 沙箱不提供這些函式 |
-| `lacking a Message-Authenticator` | 設備沒送這個屬性；升級設備，或把該 client 的 `require_message_authenticator` 設成 `no` 或 `auto`（見 2.6 節）|
-| RADIUS 沒有回應 | 來源位址不在 `[[radius.clients]]` 中、共用密碼不符、請求沒帶 Message-Authenticator，或已達同時處理上限 |
-| `RADIUS ... overloaded: discarded N packets` | 已達 `max_auth_inflight` 或 `max_acct_inflight`；通常要先找出處理變慢的原因（LDAP、資料庫），再考慮調高上限 |
-| `TACACS+ overloaded: closed N connections` | 已達 `max_connections` |
-| `TACACS+ connection from <位址> closed: it already holds max_connections_per_source = N connections` | 這個來源位址開著的連線已達 `max_connections_per_source`；每秒最多一行，多條時行尾帶「(N since the last line)」。設備開了連線不關時，調低 `idle_timeout_ms`；位址後面是 NAT 或跳板時，調高這個值 |
-| `cluster was not ready to apply migrations` | 叢集沒有在 `migrations_wait_ms` 內就緒、SQL 檔執行太久，或本機副本沒有追上；啟動其他節點，或調高這個值。節點反覆以狀態碼 1 結束時，通常是這個值比最長的 SQL 檔執行時間小 |
-| `migration file '...' ...` | 見 2.5 節：檔名、編號、修改過已套用的檔案，或 SQL 出錯 |
-| `reload failed, keeping the running configuration: ...` | 重新載入失敗，服務維持原狀；修正訊息指出的問題後再送一次 SIGHUP |
-| `these need a restart to apply: ...` | 列出的設定改了但沒有套用，見 2.9 節；重啟前每次重新載入都會列出 |
-| 結尾是 `(N since the last line)` | 未知來源的 RADIUS 封包和 TACACS+ 連線，這些任何人都能觸發，所以每種每秒最多一行。這行只寫當下那一筆的來源，N 是上一行以來的總數，其他來源要看指標或抓封包 |
-| `accepting a connection failed N times` | 通常是檔案描述元用完；程序會自動重試，不必重啟。`rradiusd tuning` 會依設定算出建議的上限和設定方式（8.1 節），或調低 `max_connections`（預設 1024） |
-| `auth chain: rejecting a request from client ...` | 名稱處理後是空的，或不符合 `allowed`，見 3.6 節 |
-| `script ... : ...` | 腳本用 `log()` 寫的記錄，不是錯誤 |
-| `RADIUS response attribute error: ...` | 回應屬性的值不符合字典型別，例如 `reply_query` 查到 `2001:db8::1/64` 當前綴。該次認證會被拒絕，即使密碼正確；修正資料表的值 |
-| `rradius_auth: authentication ... decision="reject"` | 認證紀錄。`handler` 是做出決定的處理器；`none` 表示全部略過，`no_password_check` 表示 `all_accept` 沒有人比對過密碼，`normalization` 表示名稱被拒絕 |
-| `auth chain: rejecting a request from client ...: all_accept without checking a password` | `all_accept` 裡的 `sql`、`ldap` 都沒有接受，只有腳本說可以，或腳本在它們接受之前就回 `challenge`。通常是名稱不在資料表裡。憑證也一樣，見 3.2 節 |
-| `stopping: after N ms, ... they are cut off` | 停止時等了 `drain_ms` 還有請求沒做完，那些請求沒有回應；通常是腳本、LDAP 或資料庫太慢。要多等就調大 `[shutdown] drain_ms`，寬限時間也一起調（2.16 節） |
-| 停止時 `/readyz` 是 503 `stopping` 但還在回應 | 正常：第 1 段 `ready_delay_ms`，讓負載平衡器先移出這個節點（2.16 節） |
-| `Raft node has not been initialized` | 節點還沒加入叢集，加入後就會停止；一直出現時，檢查其他節點是否啟動 |
-| `rradius_log_dropped_lines_total` 持續增加 | 記錄輸出跟不上或寫入失敗，有記錄遺失；檢查 stderr 接到哪裡，或降低 `level`、關閉 `auth` |
-| TACACS+ 設備登入一直回 ERROR | 同一個會談的封包順序不對、連線上未完成的登入超過 8 個，或登入超過 60 秒 |
-| LDAP 認證全部被拒 | 檢查記錄中 `auth ldap handler:` 開頭的訊息：連線或憑證錯誤、服務帳號登入失敗、搜尋失敗 |
+| Status code 2 at startup | A configuration error; the error message points to the file and the field |
+| ``moved to `[lua].script` `` | An old configuration file; move the top-level `script` into `[lua]` |
+| `cannot compile script '<file>'` | A syntax error in the script |
+| `script exceeded the execution limit of N ms` | The script ran too long; check the loops, or raise `[lua].max_execution_ms` |
+| `memory error: not enough memory` | The VM went over its memory limit; check whether the script keeps a lot of data, or raise `[lua].max_memory_mb` |
+| `sql_query timed out` / `sql_execute timed out` | The database is too slow or the cluster has no majority of nodes; raise `query_timeout_ms` or check the cluster |
+| `sql_execute: non-deterministic ...` | A write uses a time or random function; use `now_unix()` instead |
+| `Lua script did not accept accounting ...` | The accounting script did not return `'accept'`, and the device retransmits; make sure it returns `'accept'` when the record is stored |
+| `... failed: the chain did not accept the inner name` | A wrong PEAP or TTLS password, or the user was not found. For the inner MS-CHAPv2 of PEAP and TTLS, the cause may also be an `ldap` handler in `bind` mode; inner PAP of TTLS can use `bind` |
+| `... failed: the chain accepted the inner name without checking a password` | The chain accepted, but no handler compared a password, for example when there is only a `lua` handler. For inner PAP of TTLS, `sql`, `ldap` or a `lua` handler with `verifies_password = true` must accept |
+| `... failed: this client has no chain to check a password with` | PEAP and TTLS need a chain, and this client has none |
+| `... failed: an MS-CHAP challenge other than the one the tunnel exports` | The inner MS-CHAPv2 of TTLS used a challenge other than the one the tunnel exports; this may be an incompatible client, or a relay attack |
+| `... failed: an unrecognized mandatory inner AVP` | The inner method of the TTLS client is not PAP or MS-CHAPv2, for example inner EAP or CHAP |
+| `EAP conversation with client ... failed` | Look at the reason that follows: the certificate, a `State` that cannot be found (common when switching nodes), a TLS version or cipher suite mismatch (section 2.12) |
+| `EAP conversation with client ... refused` | The certificate passed, but the name does not match, or the chain or the script did not accept. With LDAP, make sure `certificate_filter` is set; with SQL, make sure the first column has a value or `certificate_query` is set |
+| `accounting spool: request from client ... not written` | The spool is full or the disk write failed; this request gets no reply, and the device retransmits it; check the disk and `max_bytes` (section 2.11) |
+| `accounting spool: request from client ... moved to rejected.log` | The request was given up on during replay, and the reason follows; the file is not cleaned up automatically (section 2.11) |
+| `accounting spool: cannot read`, `cannot record progress` | Reading the spool file or writing the progress failed; check the disk and permissions. It retries later and may replay the same request |
+| `accounting spool: removed ... octets of an unfinished write` | An unfinished write was cut off at startup; the content is kept in `truncated.log` if there was any |
+| `accounting spool: could not remove an unfinished write` | It could not be cut off at startup; that whole file is renamed to `.corrupt` later |
+| `accounting spool: ... damaged files set aside` | Damaged files were renamed to `.corrupt`, and the requests inside are not replayed |
+| `rradius_acct_spool_bytes` never goes down | The database has not recovered, or the script still fails; look at the log messages that start with `Lua script` |
+| The device keeps retransmitting accounting packets | The accounting script fails or does not return `'accept'`; look at the log messages that start with `Lua script` |
+| `io`, `os.execute`, `require`, `loadstring`, `getfenv`, `setfenv` fail in a script | The sandbox does not provide these functions |
+| `lacking a Message-Authenticator` | The device did not send this attribute; upgrade the device, or set `require_message_authenticator` of that client to `no` or `auto` (see section 2.6) |
+| RADIUS gives no response | The source address is not in `[[radius.clients]]`, the shared secret does not match, the request has no Message-Authenticator, or the limit on requests in progress has been reached |
+| `RADIUS ... overloaded: discarded N packets` | `max_auth_inflight` or `max_acct_inflight` has been reached; usually first find out why handling slowed down (LDAP, the database), and only then consider raising the limit |
+| `TACACS+ overloaded: closed N connections` | `max_connections` has been reached |
+| `TACACS+ connection from <address> closed: it already holds max_connections_per_source = N connections` | The connections open from this source address have reached `max_connections_per_source`; at most one line per second, and when there are several, the line ends with "(N since the last line)". When a device opens connections and does not close them, lower `idle_timeout_ms`; when the address is behind NAT or a jump host, raise this value |
+| `cluster was not ready to apply migrations` | The cluster was not ready within `migrations_wait_ms`, a SQL file ran too long, or the local replica did not catch up; start the other nodes, or raise this value. When a node keeps exiting with status code 1, this value is usually smaller than the run time of the longest SQL file |
+| `migration file '...' ...` | See section 2.5: the file name, the number, an applied file that was modified, or a SQL error |
+| `reload failed, keeping the running configuration: ...` | The reload failed and the service stays as it was; fix the problem the message points to and send SIGHUP again |
+| `these need a restart to apply: ...` | The listed settings were changed but not applied; see section 2.9; it is listed on every reload until you restart |
+| Ending with `(N since the last line)` | RADIUS packets from unknown sources and TACACS+ connections, which anyone can trigger, so each kind is limited to one line per second. The line names only the source of the current one, and N is the total since the previous line; for other sources, look at the metrics or capture packets |
+| `accepting a connection failed N times` | Usually the file descriptors have run out; the process retries automatically and does not need a restart. `rradiusd tuning` calculates the recommended limit and how to set it from the configuration (section 8.1), or lower `max_connections` (1024 by default) |
+| `auth chain: rejecting a request from client ...` | The name is empty after processing, or does not match `allowed`; see section 3.6 |
+| `script ... : ...` | A log line the script wrote with `log()`, not an error |
+| `RADIUS response attribute error: ...` | The value of a reply attribute does not match the dictionary type, for example when `reply_query` returns `2001:db8::1/64` as a prefix. That authentication is rejected even if the password is correct; fix the value in the table |
+| `rradius_auth: authentication ... decision="reject"` | The authentication record. `handler` is the handler that made the decision; `none` means all were skipped, `no_password_check` means no one compared a password in `all_accept`, and `normalization` means the name was rejected |
+| `auth chain: rejecting a request from client ...: all_accept without checking a password` | None of the `sql` and `ldap` handlers in `all_accept` accepted, and only the script said yes, or the script returned `challenge` before they accepted. Usually the name is not in the table. The same applies to certificates; see section 3.2 |
+| `stopping: after N ms, ... they are cut off` | At stop, requests were still unfinished after waiting `drain_ms`, and those requests get no response; usually the script, LDAP or the database is too slow. To wait longer, raise `[shutdown] drain_ms`, and raise the grace period with it (section 2.16) |
+| At stop, `/readyz` is 503 `stopping` but still responds | Normal: this is phase 1, `ready_delay_ms`, which lets the load balancer remove this node first (section 2.16) |
+| `Raft node has not been initialized` | The node has not joined the cluster yet, and it stops after it joins; when it keeps appearing, check whether the other nodes are started |
+| `rradius_log_dropped_lines_total` keeps increasing | The log output cannot keep up or writing fails, and log lines are lost; check where stderr goes, or lower `level` or turn off `auth` |
+| A TACACS+ device login keeps getting ERROR | The packets of one session are in the wrong order, more than 8 logins are unfinished on the connection, or a login took longer than 60 seconds |
+| All LDAP authentications are rejected | Check the log messages that start with `auth ldap handler:`: a connection or certificate error, a service account login failure, a search failure |
 
-### 8.1 作業系統調校 `tuning`
+### 8.1 Operating system tuning `tuning`
 
-`rradiusd tuning` 依執行的作業系統（Linux、macOS、FreeBSD）和設定檔，列出該調高哪些系統上限、調到多少、怎麼設定。
+`rradiusd tuning` lists which system limits to raise, to what values and how to set them, according to the operating system it runs on (Linux, macOS, FreeBSD) and the configuration file.
 
 ```bash
 rradiusd tuning --config /etc/rradius/rradius.toml
-rradiusd tuning            # 讀預設的設定檔；沒有時用預設設定估算
+rradiusd tuning            # reads the default configuration file; with none, it estimates from the default settings
 ```
 
-- **只讀取，不修改任何東西。** 不需要 root，不啟動叢集節點、不開任何埠。每一項列出目前值、建議值、原因、立即生效的指令（例如 `sysctl -w`）和重開機後仍保留要寫的檔案，由管理者自己執行。目前值已達建議時標 `ok`，不列指令；讀不到的值標 `unknown` 並寫出原因。
-- **先看有沒有真的丟包。** 報告開頭是開機以來 UDP 因接收緩衝滿而丟棄的數量（Linux `/proc/net/snmp` 的 `RcvbufErrors`，macOS、FreeBSD `netstat -s -p udp`）；Linux 另外列出還沒到 socket 就丟掉的數量（`/proc/net/softnet_stat`）。是 0 時接收緩衝目前不必調，下面的建議是給負載更高時用的；不是 0 時調整後觀察它是否還在增加。
-- **檢查的項目：**
+- **It only reads and changes nothing.** It needs no root, starts no cluster node and opens no port. For each item it lists the current value, the recommended value, the reason, a command that takes effect at once (for example `sysctl -w`) and the file to write so that it survives a reboot, and the administrator runs them. An item whose current value already reaches the recommended value is marked `ok` with no command; a value that cannot be read is marked `unknown` with the reason.
+- **First see whether packets are really being dropped.** The report starts with the number of UDP packets dropped since boot because the receive buffer was full (`RcvbufErrors` in Linux `/proc/net/snmp`; `netstat -s -p udp` on macOS and FreeBSD); on Linux it also lists the number dropped before they reached the socket (`/proc/net/softnet_stat`). When it is 0, the receive buffer does not need tuning now, and the recommendations below are for higher load; when it is not 0, adjust and watch whether it keeps increasing.
+- **What it checks:**
 
-  | 項目 | Linux | macOS | FreeBSD |
+  | Item | Linux | macOS | FreeBSD |
   | --- | --- | --- | --- |
-  | UDP 接收緩衝（有 `[radius]` 時） | 沒設 `recv_buffer_bytes`：`net.core.rmem_default`、`net.core.rmem_max`；有設：`net.core.rmem_max` 和 `[radius] recv_buffer_bytes` | 沒設：`kern.ipc.maxsockbuf`（要先調）、`net.inet.udp.recvspace`；有設：`kern.ipc.maxsockbuf` 和 `[radius] recv_buffer_bytes` | 同 macOS |
-  | 檔案描述元 | 程序的 `RLIMIT_NOFILE` | 同左，加上 `kern.maxfilesperproc` | 同 macOS |
-  | TCP 等待連線佇列（有 TACACS+ 或 RadSec 時） | `net.core.somaxconn` | `kern.ipc.somaxconn` | `kern.ipc.soacceptqueue` |
-  | 網卡收包佇列 | `net.core.netdev_max_backlog`，只在 softnet 有丟包時建議；讀不到 softnet 丟包數時不建議 | 無 | 無 |
-  | 設定檔 | `[radius] sockets`、`[runtime] pin_threads` | `sockets` 只能是 1 | 同 macOS |
+  | UDP receive buffer (with `[radius]`) | `recv_buffer_bytes` not set: `net.core.rmem_default`, `net.core.rmem_max`; set: `net.core.rmem_max` and `[radius] recv_buffer_bytes` | Not set: `kern.ipc.maxsockbuf` (raise it first), `net.inet.udp.recvspace`; set: `kern.ipc.maxsockbuf` and `[radius] recv_buffer_bytes` | Same as macOS |
+  | File descriptors | `RLIMIT_NOFILE` of the process | Same as Linux, plus `kern.maxfilesperproc` | Same as macOS |
+  | TCP accept queue (with TACACS+ or RadSec) | `net.core.somaxconn` | `kern.ipc.somaxconn` | `kern.ipc.soacceptqueue` |
+  | NIC receive queue | `net.core.netdev_max_backlog`, recommended only when softnet drops packets; not recommended when the number of softnet drops cannot be read | None | None |
+  | Configuration file | `[radius] sockets`, `[runtime] pin_threads` | `sockets` can only be 1 | Same as macOS |
 
-- **沒設 `recv_buffer_bytes` 時，Linux 要調 `rmem_default`，不是只調 `rmem_max`。** 這時 rradius 不設定 `SO_RCVBUF`，每個 socket 拿到的是 `rmem_default`，但它也會影響機器上所有程式的 UDP socket。**建議改設 `[radius] recv_buffer_bytes`（2.3 節）：** 之後只需上限 `rmem_max` 至少等於設定值（macOS、FreeBSD 的 `kern.ipc.maxsockbuf` 至少兩倍），報告也不再列系統預設值，改列一項比較 `recv_buffer_bytes` 和算出的建議值，比建議小時要改設定檔再重啟。
-- **建議值怎麼算：** 檔案描述元需求是 256（資料庫檔、記錄、叢集與連線池的估計量）加上 TACACS+ 的 `max_connections`、`read_connections`、每個叢集節點 2 條，以及 rradius-enterprise RadSec 的 2 倍 `max_connections`；建議上限是需求的兩倍，至少 65536。每個 UDP socket 的接收緩衝是 `max_auth_inflight` 平分到 `sockets` 個 socket、每個封包以 4096 位元組計，至少 4 MiB，取整到 MiB。TCP 等待佇列至少 1024，和程式要求的長度相同。
-- **這些建議值沒有經過量測，** 是起點：套用後用上面的丟包數確認。
-- **FreeBSD 不是發行的平台，** 那裡的建議依官方文件寫成、沒有在 FreeBSD 上實測過，報告開頭也會寫明。
-- 有 `--config` 但檔案讀不到或有錯時，以狀態 2 結束並印出原因，和 `check` 相同。
+- **When `recv_buffer_bytes` is not set, on Linux raise `rmem_default`, not only `rmem_max`.** In that case rradius does not set `SO_RCVBUF`, and each socket gets `rmem_default`, but that also affects the UDP sockets of every program on the machine. **We recommend setting `[radius] recv_buffer_bytes` instead (section 2.3):** after that, only the upper limit `rmem_max` has to be at least the configured value (at least twice that for `kern.ipc.maxsockbuf` on macOS and FreeBSD), and the report no longer lists the system default but one item that compares `recv_buffer_bytes` with the calculated recommendation; when it is smaller than the recommendation, change the configuration file and restart.
+- **How the recommended values are calculated:** the need for file descriptors is 256 (an estimate for the database files, logs, the cluster and the connection pool) plus `max_connections` of TACACS+, `read_connections`, 2 for each cluster node, and 2 times `max_connections` of RadSec in rradius-enterprise; the recommended limit is twice the need, and at least 65536. The receive buffer of each UDP socket is `max_auth_inflight` divided among the `sockets` sockets, counting 4096 bytes per packet, at least 4 MiB, rounded to a whole MiB. The TCP accept queue is at least 1024, the same as the length the program asks for.
+- **These recommended values have not been measured;** they are a starting point: after you apply them, confirm with the drop count above.
+- **FreeBSD is not a released platform:** the recommendations there are written from the official documentation and have not been tested on FreeBSD, and the start of the report says so.
+- When there is `--config` but the file cannot be read or has an error, it exits with status 2 and prints the reason, the same as `check`.
 
-## 9. 效能量測
+## 9. Performance measurements
 
-`rradius-bench/` 是獨立的 RADIUS 與 TACACS+ 壓力測試工具，用來量伺服器的吞吐和延遲。它不在 Docker 映像裡，要自己建置。
+`rradius-bench/` is a stand-alone load-test tool for RADIUS and TACACS+, used to measure the throughput and latency of the server. It is not in the Docker image, so you build it yourself.
 
-各功能已量過的數字寫在對應的設定說明裡：三節點叢集、讀取連線和快照在 2.2 節，多個接收 socket、綁核和計費寫入在 2.4 節，認證紀錄在 2.10 節，計費暫存在 2.11 節，TACACS+ 授權群組和腳本的比較在 2.3 節。
+The numbers already measured for each feature are written in the matching configuration sections: the three-node cluster, read connections and snapshots in section 2.2; multiple receive sockets, core pinning and accounting writes in section 2.4; the authentication record in section 2.10; the accounting spool in section 2.11; and the comparison of TACACS+ authorize groups with scripts in section 2.3.
 
-**只用測試密語。** `--secret` 會出現在程序列表，範例設定的密語和帳號也都寫在檔案裡，而且一律接受登入，不要拿去對正式環境或放上正式伺服器。
+**Use test secrets only.** `--secret` appears in the process list, and the secrets and accounts of the example configurations are written in the files, and they accept every login, so do not use them against a production environment or put them on a production server.
 
-### 建置
+### Build
 
 ```bash
 cargo build --release --locked --manifest-path rradius-bench/Cargo.toml
@@ -2396,39 +2396,39 @@ cargo build --release --locked --manifest-path rradius-bench/Cargo.toml
 cargo build --release --locked --manifest-path rradius-server/Cargo.toml
 ```
 
-### 範例設定
+### Example configurations
 
-`rradius-server/benchmarks/` 是量測用的伺服器設定，都只綁 `127.0.0.1`，密語是 `bench-secret`，指標埠是 9812。工具只負責送請求，伺服器要另外啟動。EAP-AKA' 和 RadSec 的設定（`aka.toml`、`radsec.toml`）在 rradius-enterprise 的 `benchmarks/`。
+`rradius-server/benchmarks/` holds the server configurations for measuring. They all bind only `127.0.0.1`, the secret is `bench-secret`, and the metrics port is 9812. The tool only sends requests, and you start the server separately. The EAP-AKA' and RadSec configurations (`aka.toml`, `radsec.toml`) are in `benchmarks/` of rradius-enterprise.
 
-| 設定 | 計費腳本做的事 |
+| Configuration | What the accounting script does |
 | --- | --- |
-| `accept.toml` | 不寫任何東西，一律接受 |
-| `acct-sql.toml` | 每次寫一筆資料庫 |
-| `acct-cpu.toml` | 每次純運算；單獨跑時約 30 ms，換機器要調整 `acct-cpu.lua` 的迴圈次數 |
-| `eap.toml` | 一律接受計費；EAP-TLS、PEAP 和 TTLS 給帳號 `bench`（密碼 `bench`），見下方〈EAP 登入〉 |
-| `tacacs.toml` | 只開 TACACS+，埠 4949，認證、授權、計費一律接受，見下方〈TACACS+〉 |
+| `accept.toml` | Writes nothing and always accepts |
+| `acct-sql.toml` | Writes one database row each time |
+| `acct-cpu.toml` | Pure computation each time; about 30 ms when run alone, and on another machine adjust the loop count in `acct-cpu.lua` |
+| `eap.toml` | Always accepts accounting; EAP-TLS, PEAP and TTLS use the account `bench` (password `bench`), see "EAP logins" below |
+| `tacacs.toml` | Opens only TACACS+, port 4949, and always accepts authentication, authorization and accounting, see "TACACS+" below |
 
-在 `rradius-server/benchmarks/` 目錄啟動伺服器，資料會放在該目錄的 `data/`（已被 gitignore）：
+Start the server in the `rradius-server/benchmarks/` directory. Its data goes in `data/` of that directory (which is gitignored):
 
 ```bash
 cd rradius-server/benchmarks && ../../target/release/rradiusd serve --config accept.toml
 ```
 
-換一組設定前請先停掉伺服器。下面的命令在專案根目錄的另一個終端機執行。
+Stop the server before you switch to another configuration. The commands below run in another terminal in the project root.
 
-量最大吞吐，搭配 `accept.toml`。這個量測的延遲大多是排隊，不要拿來看延遲：
+To measure the maximum throughput, use `accept.toml`. The latency of this measurement is mostly queueing, so do not use it to look at latency:
 
 ```bash
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load pap,concurrency=64,window=1
 ```
 
-[計費負載表](#24-過載與重送)的五列依序如下。無計費負載，搭配 `accept.toml`：
+The five rows of the [accounting load table](#24-overload-and-retransmission) follow in order. No accounting load, with `accept.toml`:
 
 ```bash
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load pap,rate=100
 ```
 
-每次寫一筆資料庫，併發 256 和 4096，搭配 `acct-sql.toml`：
+One database row each time, concurrency 256 and 4096, with `acct-sql.toml`:
 
 ```bash
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=256 --load pap,rate=100
@@ -2438,7 +2438,7 @@ target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metr
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=4096 --load pap,rate=100
 ```
 
-每次約 30 ms 的純運算，併發 256 和 4096，搭配 `acct-cpu.toml`。這個負載排隊久，所以預熱和逾時都要拉長：
+About 30 ms of pure computation each time, concurrency 256 and 4096, with `acct-cpu.toml`. This load queues for a long time, so lengthen both the warm-up and the timeout:
 
 ```bash
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=256 --load pap,rate=100 --warmup 15 --duration 20 --timeout 60
@@ -2448,16 +2448,16 @@ target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metr
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load acct-start,concurrency=4096 --load pap,rate=100 --warmup 15 --duration 20 --timeout 60
 ```
 
-### EAP 登入
+### EAP logins
 
-`eap-tls`、`peap`（內層 EAP-MSCHAPv2）、`ttls`（內層 PAP）和 `ttls-mschapv2`（內層 MS-CHAPv2）負載跑完整的 EAP 登入：一次登入算一個請求，從第一個 Access-Request 算到 Access-Accept 或 Access-Reject，報告的 `rounds` 是每次登入平均幾個 Access-Request。Access-Accept 帶的 MS-MPPE 金鑰要和 TLS 匯出的金鑰相同才算 `accept`，不同就算 `invalid`，所以算到的都是真的完成的登入。
+The `eap-tls`, `peap` (inner EAP-MSCHAPv2), `ttls` (inner PAP) and `ttls-mschapv2` (inner MS-CHAPv2) loads run complete EAP logins: one login counts as one request, counted from the first Access-Request to the Access-Accept or Access-Reject, and `rounds` in the report is the average number of Access-Requests per login. The MS-MPPE keys carried by the Access-Accept must equal the keys exported from TLS to count as `accept`; if they differ it counts as `invalid`, so everything counted is a login that really completed.
 
-- **選項。** `--cert-file`、`--key-file` 是 `eap-tls` 登入用的憑證；`--tls-version` 是 `1.2`（預設）或 `1.3`，`1.3` 只能用在 `eap-tls`；`--eap-fragment` 是工具每段送出的 TLS 資料上限（預設 1000 octets）。EAP 一律帶 Message-Authenticator，不能配 `--no-message-authenticator`。
-- **伺服器憑證預設不檢查。** 壓測對象多半用自己做的憑證，所以預設接受任何伺服器憑證（仍檢查握手的簽章）；給 `--ca-file` 才檢查，名稱用 `--tls-name`（預設是 `--server`）。不要拿這個預設去連正式環境。
-- **伺服器提供別的方法時，** 工具回一次 Nak 要自己的方法，這多一個來回。`eap.toml` 先提供 EAP-TLS，所以 PEAP 和 TTLS 的 `rounds` 各多 1。
-- **工具也要做 TLS 握手，** 尤其 `eap-tls` 每次都要用私鑰簽一次。`tool_saturated` 警告出現時，把伺服器限定在較少的 CPU，或給工具更多執行緒；`concurrency` 小時記得同時調小 `window`，否則 socket 只有一個，工具也只用一個執行緒（例如 `concurrency=64,window=8,threads=7`）。
+- **Options.** `--cert-file` and `--key-file` are the certificate used for `eap-tls` logins; `--tls-version` is `1.2` (default) or `1.3`, and `1.3` works only with `eap-tls`; `--eap-fragment` is the upper limit of the TLS data the tool sends in each fragment (1000 octets by default). EAP always carries Message-Authenticator and cannot be combined with `--no-message-authenticator`.
+- **The server certificate is not checked by default.** The targets of load tests mostly use certificates they made themselves, so by default any server certificate is accepted (the signature of the handshake is still checked); the certificate is checked only when you give `--ca-file`, and the name is `--tls-name` (default `--server`). Do not use this default against a production environment.
+- **When the server offers another method,** the tool replies once with a Nak asking for its own method, which adds a round trip. `eap.toml` offers EAP-TLS first, so `rounds` of PEAP and TTLS are each one more.
+- **The tool also does the TLS handshake,** and `eap-tls` in particular signs with the private key every time. When a `tool_saturated` warning appears, limit the server to fewer CPUs or give the tool more threads; when `concurrency` is small, lower `window` as well, or there is only one socket and the tool uses only one thread (for example `concurrency=64,window=8,threads=7`).
 
-先在專案根目錄做 `eap.toml` 要的憑證（`eap-certs/` 已被 gitignore）：
+First, in the project root, make the certificates that `eap.toml` needs (`eap-certs/` is gitignored):
 
 ```bash
 mkdir -p rradius-server/benchmarks/eap-certs && cd rradius-server/benchmarks/eap-certs
@@ -2471,7 +2471,7 @@ openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 
 cd ../../..
 ```
 
-用戶端憑證的名稱 `bench` 要和登入的名稱相同（`match_identity`）。然後在 `rradius-server/benchmarks/` 以 `eap.toml` 啟動伺服器，再從專案根目錄分別跑三種負載：
+The name `bench` of the client certificate must equal the name used to log in (`match_identity`). Then start the server with `eap.toml` in `rradius-server/benchmarks/`, and run the three loads one by one from the project root:
 
 ```bash
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load eap-tls,concurrency=64,window=8 --cert-file rradius-server/benchmarks/eap-certs/client.pem --key-file rradius-server/benchmarks/eap-certs/client.key
@@ -2485,68 +2485,68 @@ target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metr
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --metrics-url http://127.0.0.1:9812/metrics --load ttls,concurrency=64,window=8
 ```
 
-2026-11-08 在同一台 Apple M4 Max 上 Docker 的 Linux（arm64）量測，伺服器限定 CPU 0–6、工具限定 7–13（`threads=7`），`eap.toml`，TLS 1.2，各兩次。先是 RSA 2048 的憑證（上面的指令）：
+Measured on 2026-11-08 on Linux (arm64) in Docker on the same Apple M4 Max, with the server limited to CPUs 0–6 and the tool to 7–13 (`threads=7`), `eap.toml`, TLS 1.2, two runs each. First with RSA 2048 certificates (the commands above):
 
-| 方法 | 每次登入的來回 | 併發 64，`window=8`（次/秒） | 併發 512（次/秒） | 每次登入的伺服器 CPU |
+| Method | Round trips per login | Concurrency 64, `window=8` (logins/s) | Concurrency 512 (logins/s) | Server CPU per login |
 | --- | --- | --- | --- | --- |
-| EAP-TLS | 6 | 8,410–8,660，p99 13 ms | 9,100–9,380，p99 90–92 ms，每輪 21–41 個逾時 | 約 690–740 µs |
-| PEAP | 10（含一次 Nak） | 8,770–8,900，p99 12.6–12.9 ms | 8,890–9,090，p99 81–84 ms，一輪 17 個逾時 | 約 730–780 µs |
-| TTLS | 6（含一次 Nak） | 10,630–10,710，p99 12 ms | 10,880–10,930，p99 74–75 ms | 約 630–660 µs |
+| EAP-TLS | 6 | 8,410–8,660, p99 13 ms | 9,100–9,380, p99 90–92 ms, 21–41 timeouts per run | about 690–740 µs |
+| PEAP | 10 (including one Nak) | 8,770–8,900, p99 12.6–12.9 ms | 8,890–9,090, p99 81–84 ms, 17 timeouts in one run | about 730–780 µs |
+| TTLS | 6 (including one Nak) | 10,630–10,710, p99 12 ms | 10,880–10,930, p99 74–75 ms | about 630–660 µs |
 
-同樣的條件換成 ECDSA P-256 的憑證（伺服器和用戶端都換），併發 64、`window=8`，和 RSA 在同一個容器裡接連跑：
+With the same conditions but ECDSA P-256 certificates (both server and client changed), concurrency 64, `window=8`, run one after the other with RSA in the same container:
 
-| 方法 | RSA 2048（次/秒） | ECDSA P-256（次/秒） | 每次登入的伺服器 CPU，RSA → ECDSA | 每次登入的來回，RSA → ECDSA |
+| Method | RSA 2048 (logins/s) | ECDSA P-256 (logins/s) | Server CPU per login, RSA → ECDSA | Round trips per login, RSA → ECDSA |
 | --- | --- | --- | --- | --- |
-| EAP-TLS | 7,230–8,590，p99 13–22 ms | 24,080–24,730，p99 5.3–5.5 ms | 約 700–790 → 265–267 µs | 6 → 4 |
-| PEAP | 7,850–8,620，p99 13–16 ms | 18,320–18,500，p99 6.0–6.1 ms | 約 776–777 → 350–352 µs | 10 → 9 |
-| TTLS | 9,780–10,140，p99 13–14 ms | 28,940–29,340，p99 4.2–4.3 ms | 約 644–656 → 219–220 µs | 6 → 5 |
+| EAP-TLS | 7,230–8,590, p99 13–22 ms | 24,080–24,730, p99 5.3–5.5 ms | about 700–790 → 265–267 µs | 6 → 4 |
+| PEAP | 7,850–8,620, p99 13–16 ms | 18,320–18,500, p99 6.0–6.1 ms | about 776–777 → 350–352 µs | 10 → 9 |
+| TTLS | 9,780–10,140, p99 13–14 ms | 28,940–29,340, p99 4.2–4.3 ms | about 644–656 → 219–220 µs | 6 → 5 |
 
-- **伺服器的 CPU 用滿了：** 併發 64 起，7 顆 CPU 幾乎全滿（每 10 秒用掉 56–69 CPU 秒），所以 RSA 2048 時每秒約 9 千到 1 萬 1 千次就是上限，提高併發只會增加延遲和逾時。
-- **一次 EAP 登入的 CPU 遠多於 PAP：** RSA 2048 時一次登入約 0.6–0.8 ms，同樣環境下一律接受的 PAP 約 18 µs（rradius-enterprise 使用文件 2.13 節的量測），差在每次都是完整的 TLS 握手。
-- **大部分是 RSA 簽章：** 換成 ECDSA P-256，每次登入的 CPU 降到約三分之一，吞吐約 2 到 3 倍；憑證變小，伺服器那一輪的分段也少，所以少一個來回。PEAP 仍比 TTLS 多約 130 µs，可能是內層 MS-CHAPv2 的雜湊和多出的來回，沒有確認。
-- **ECDSA 憑證的指令：** 把上面每個 `-newkey rsa:2048` 換成 `-newkey ec -pkeyopt ec_paramgen_curve:prime256v1`。要用 OpenSSL 3：macOS 內建的 LibreSSL 產生的 EC 私鑰 rradius 讀不了（`failed to parse private key`）。
-- **工具的記憶體：** 併發 512 時約 15 MB。
-- 數字只適合比較，實際設備還有無線、重送和使用者數量的差別。
+- **The server CPU is used up:** from concurrency 64 the 7 CPUs are almost full (56–69 CPU seconds used every 10 seconds), so about 9,000 to 11,000 logins per second is the limit with RSA 2048, and more concurrency only adds latency and timeouts.
+- **One EAP login uses far more CPU than PAP:** with RSA 2048 one login takes about 0.6–0.8 ms, while a PAP that always accepts takes about 18 µs in the same environment (measured in section 2.13 of the rradius-enterprise usage reference). The difference is that every login is a full TLS handshake.
+- **Most of it is the RSA signature:** with ECDSA P-256 the CPU per login falls to about a third and the throughput is about 2 to 3 times higher; the certificates are smaller, so the server's turn has fewer fragments, which saves one round trip. PEAP is still about 130 µs more than TTLS, possibly because of the hashing of the inner MS-CHAPv2 and the extra round trips, which has not been confirmed.
+- **Commands for ECDSA certificates:** replace every `-newkey rsa:2048` above with `-newkey ec -pkeyopt ec_paramgen_curve:prime256v1`. Use OpenSSL 3: rradius cannot read the EC private keys generated by the LibreSSL built into macOS (`failed to parse private key`).
+- **Memory of the tool:** about 15 MB at concurrency 512.
+- The numbers are good only for comparison; real devices also differ in wireless, retransmission and the number of users.
 
 ### UDP
 
-UDP 的接收迴圈也用和 RadSec 相同的方式：收到一個封包後，先不等待地試收下一個；下一個已經在了，就把這個交給新 task，讓同一個 socket 的請求分到多個執行緒；沒有的話，先在接收迴圈處理一次，不必等待就直接送出回應，要等資料庫、LDAP、HTTP 或上游的才交給新 task。名額持有到回應送出為止，接收迴圈不等待送出（送不出去時交給新 task），過載丟棄和重送偵測不變。
+The UDP receive loop also works the way RadSec does: after it receives a packet, it first tries to receive the next one without waiting. If the next one is already there, it hands this packet to a new task, so the requests of one socket are spread across several threads. If not, it handles this one in the receive loop first and sends the response directly without waiting, and hands it to a new task only when it has to wait for the database, LDAP, HTTP or an upstream. The slot is held until the response is sent, the receive loop does not wait for the send (when it cannot send, it hands it to a new task), and overload discarding and retransmission detection are unchanged.
 
-2026-11-09 同樣環境（伺服器 CPU 0–6、工具 7–13，`radsec.toml`，計費用經資料庫寫入一列的腳本，PEAP 用 `eap.toml`），和改動前（`main` `5dc1c95`）在同一次量測裡對照，各兩輪，都沒有逾時：
+Measured on 2026-11-09 in the same environment (server CPUs 0–6, tool 7–13, `radsec.toml`, accounting through a script that writes one database row, PEAP with `eap.toml`), compared with the version before the change (`main` `5dc1c95`) in the same measurement, two runs each, with no timeouts:
 
-| 負載 | 改動前 次/秒 | 改動後 次/秒 | 每個請求的伺服器 CPU |
+| Load | Before (logins or requests/s) | After (logins or requests/s) | Server CPU per request |
 | --- | --- | --- | --- |
-| `pap,concurrency=64,window=64`（1 個來源 socket） | 188,200–196,500 | 230,900–238,700 | 約 21.5 → 18–18.5 µs |
-| `pap,concurrency=64,window=8`（8 個） | 237,500–257,700 | 265,300–281,000 | 約 24 → 20–21 µs |
-| `pap,concurrency=256,window=4`（64 個） | 245,600–271,100 | 281,000–282,200 | 約 23–24 → 20.3–20.4 µs |
-| `acct-start,concurrency=64,window=8`，經資料庫 | 68,100–69,500 | 76,300–77,100 | — |
-| `peap,concurrency=64,window=8` | 8,990–9,000 | 9,270–9,370 | 約 772 → 738–740 µs |
+| `pap,concurrency=64,window=64` (1 source socket) | 188,200–196,500 | 230,900–238,700 | about 21.5 → 18–18.5 µs |
+| `pap,concurrency=64,window=8` (8 sockets) | 237,500–257,700 | 265,300–281,000 | about 24 → 20–21 µs |
+| `pap,concurrency=256,window=4` (64 sockets) | 245,600–271,100 | 281,000–282,200 | about 23–24 → 20.3–20.4 µs |
+| `acct-start,concurrency=64,window=8`, through the database | 68,100–69,500 | 76,300–77,100 | — |
+| `peap,concurrency=64,window=8` | 8,990–9,000 | 9,270–9,370 | about 772 → 738–740 µs |
 
-一律在接收迴圈處理不採用：同一個 NAS 的封包都落在同一個 socket（Linux 依來源位址和埠分配），會擠在一顆核心上。
+Always handling in the receive loop was not adopted: the packets of one NAS all land on the same socket (Linux assigns by source address and port) and would crowd onto one core.
 
-- **很吃 CPU 又不必等待的腳本會佔住接收迴圈：** 這時同一個 socket 的新封包留在系統的接收緩衝區，等它做完才讀；緩衝區滿時系統直接丟掉，不會計入 `rradius_radius_discarded_total{reason="overload"}`。只在當時沒有其他封包在等時發生，RadSec 也一樣（見上方）。
-- 接收迴圈裡的處理如果 panic，只會讓那個請求沒有回應（記一行錯誤），接收迴圈照常繼續。
+- **A script that uses a lot of CPU and never has to wait holds the receive loop:** new packets of the same socket stay in the system receive buffer until it finishes; when the buffer is full the system drops them, and they are not counted in `rradius_radius_discarded_total{reason="overload"}`. This happens only when no other packet is waiting at that moment, and the same is true of RadSec (see above).
+- If the handling inside the receive loop panics, only that request gets no response (one error line is logged), and the receive loop continues as usual.
 
 ### TACACS+
 
-`tacacs-pap`、`tacacs-ascii`、`tacacs-author` 和 `tacacs-acct` 負載對 `--tacacs-port`（預設 49）送 TACACS+（RFC 8907），封包用 `--secret` 加密。
+The `tacacs-pap`, `tacacs-ascii`, `tacacs-author` and `tacacs-acct` loads send TACACS+ (RFC 8907) to `--tacacs-port` (49 by default), and the packets are encrypted with `--secret`.
 
-| 負載 | 送什麼 | 結果 |
+| Load | What it sends | Result |
 | --- | --- | --- |
-| `tacacs-pap` | 認證 START，PAP，帶 `--user`（或 `--users`）和 `--password` | PASS 算 `accept`，FAIL 算 `reject` |
-| `tacacs-ascii` | 認證 START，ASCII，不帶帳號；GETUSER 後回帳號，GETPASS 後回密碼 | 同上，三個來回算一次登入，`rounds` 為 3 |
-| `tacacs-author` | 授權 REQUEST：`service=shell`、`cmd=show`、`cmd-arg=version` | PASS_ADD 或 PASS_REPL 算 `accept`，FAIL 算 `reject` |
-| `tacacs-acct` | 計費 START 紀錄 | SUCCESS 算 `accounting`，ERROR（腳本沒有接受）算 `reject` |
+| `tacacs-pap` | Authentication START, PAP, with `--user` (or `--users`) and `--password` | PASS counts as `accept`, FAIL as `reject` |
+| `tacacs-ascii` | Authentication START, ASCII, with no account; replies with the account after GETUSER and the password after GETPASS | The same; three round trips count as one login, and `rounds` is 3 |
+| `tacacs-author` | Authorization REQUEST: `service=shell`, `cmd=show`, `cmd-arg=version` | PASS_ADD or PASS_REPL counts as `accept`, FAIL as `reject` |
+| `tacacs-acct` | Accounting START record | SUCCESS counts as `accounting`, ERROR (the script did not accept) as `reject` |
 
-- **一條連線一次一個請求。** rradius 一條連線依序處理，在同一條連線多送只會排隊，所以 TACACS+ 負載的 `window` 固定是 1，給其他值是錯誤的參數；連線數等於 `concurrency`，例如 `concurrency=64` 像 64 台各開一條連線的設備。
-- **`--tacacs-connect keep`（預設）：** 所有連線在送負載前就連好，之後一直用；量測前連不上時什麼都不送，exit 3。伺服器關閉連線時，在等回應的請求算 `socket_errors`，工具重新連線，次數記在 `reconnects`。
-- **`--tacacs-connect per-request`：** 每個請求開一條新連線，收到最後的回覆後由工具關閉，延遲包含建立連線。連不上算 `socket_errors`。
-- **不重送。** 超過 `--timeout` 沒有完成算 `timeouts`（`tacacs-ascii` 是整個登入的三個來回加起來），並關閉那條連線（`keep` 會重新連線），因為晚到的回覆會被當成下一個請求的。`--retries` 不套用到 TACACS+ 負載。
-- **回覆要對得上才算。** 序號和 session id 要對上，解密後各欄位的長度要和封包長度相符，不然算 `invalid`。共用密碼設錯時解出來是亂碼，就是這樣被擋下，標準錯誤會印一次 `lengths: ...`。
-- **`concurrency` 不能超過伺服器的 `max_connections`**（預設 1024）**和 `max_connections_per_source`**（預設 64，工具的連線都來自同一個位址）。伺服器先完成 TCP 連線再立刻關閉多的連線，所以工具在量測前看不出來，兩種模式都表現為 `socket_errors`；`keep` 還會一直重連（`reconnects` 增加，還沒收到任何回覆就被關閉的連線每 100 ms 才重試一次）。`tacacs.toml` 把兩個都調到 8192。
-- **`per-request` 會在工具這端留下 TIME_WAIT。** 由工具關閉的連線，在工具端停留一段時間（Linux 約 60 秒）才放掉連接埠。Linux 預設可用的連接埠約 28,000 個（`net.ipv4.ip_local_port_range` 是 32768–60999），所以持續每秒新開超過約 470 條連線，連接埠就會用完，出現連不上的 `socket_errors`。Linux 的 `net.ipv4.tcp_tw_reuse` 預設是 2，只在 loopback 重用 TIME_WAIT 的連接埠，所以工具和伺服器在同一台時不受這個限制，連到別台才會碰到。量更高的速率要放寬範圍（例如 `sysctl -w net.ipv4.ip_local_port_range="1024 65535"`）並把 `net.ipv4.tcp_tw_reuse` 設成 1，或用 `--bind` 分到多個來源位址；`ss -s` 的 `timewait` 可以看目前有多少。macOS 的範圍是 49152–65535（約 16,000 個），TIME_WAIT 約 30 秒，上限約每秒 540 條，超過時錯誤是 `Can't assign requested address`。
+- **One request at a time per connection.** rradius handles one connection in order, and sending more on the same connection only queues them, so `window` of a TACACS+ load is fixed at 1, and any other value is an invalid parameter; the number of connections equals `concurrency`, so for example `concurrency=64` is like 64 devices that each open one connection.
+- **`--tacacs-connect keep` (default):** all connections are made before the load is sent and are then reused; if they cannot connect before the measurement, nothing is sent and the exit code is 3. When the server closes a connection, the request waiting for a response counts as `socket_errors`, the tool reconnects, and the number is recorded in `reconnects`.
+- **`--tacacs-connect per-request`:** every request opens a new connection, which the tool closes after the last reply, and the latency includes setting up the connection. A failure to connect counts as `socket_errors`.
+- **No retransmission.** A request that does not complete within `--timeout` counts as `timeouts` (for `tacacs-ascii` it is the three round trips of the whole login added together), and that connection is closed (`keep` reconnects), because a late reply would be taken for the reply of the next request. `--retries` does not apply to TACACS+ loads.
+- **The reply must match to count.** The sequence number and the session id must match, and the lengths of the decrypted fields must match the packet length, or it counts as `invalid`. When the shared secret is wrong the decrypted result is garbage, and this is how it is caught; standard error prints `lengths: ...` once.
+- **`concurrency` must not exceed `max_connections` of the server** (1024 by default) **or `max_connections_per_source`** (64 by default; all the tool's connections come from the same address). The server completes the TCP connection first and then closes the extra ones at once, so the tool cannot see it before the measurement, and both modes show it as `socket_errors`; `keep` also keeps reconnecting (`reconnects` increases, and a connection closed before it has received any reply is retried only every 100 ms). `tacacs.toml` raises both to 8192.
+- **`per-request` leaves TIME_WAIT on the tool's side.** A connection closed by the tool stays on the tool's side for a while (about 60 seconds on Linux) before the port is released. On Linux the default usable ports are about 28,000 (`net.ipv4.ip_local_port_range` is 32768–60999), so if you keep opening more than about 470 new connections per second, the ports run out and you get `socket_errors` for failing to connect. `net.ipv4.tcp_tw_reuse` on Linux is 2 by default, which reuses TIME_WAIT ports only on loopback, so the limit does not apply when the tool and the server are on the same machine, and you meet it only when connecting to another machine. To measure at a higher rate, widen the range (for example `sysctl -w net.ipv4.ip_local_port_range="1024 65535"`) and set `net.ipv4.tcp_tw_reuse` to 1, or spread over several source addresses with `--bind`; `timewait` in `ss -s` shows how many there are now. On macOS the range is 49152–65535 (about 16,000 ports), TIME_WAIT is about 30 seconds, the limit is about 540 connections per second, and past that the error is `Can't assign requested address`.
 
-在 `rradius-server/benchmarks/` 以 `tacacs.toml` 啟動伺服器，再從專案根目錄分別跑四種負載：
+Start the server with `tacacs.toml` in `rradius-server/benchmarks/`, and run the four loads one by one from the project root:
 
 ```bash
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-pap,concurrency=64
@@ -2564,69 +2564,69 @@ target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --taca
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --load tacacs-acct,concurrency=64
 ```
 
-每個請求開新連線。連到別台或在 macOS 上，用固定速率並低於上面 TIME_WAIT 的限制；固定併發會盡快開連線，幾秒內就把連接埠用完：
+A new connection for each request. When you connect to another machine or are on macOS, use a fixed rate below the TIME_WAIT limit above; a fixed concurrency opens connections as fast as it can and uses up the ports within seconds:
 
 ```bash
 target/release/rradius-bench run --server 127.0.0.1 --secret bench-secret --tacacs-port 4949 --tacacs-connect per-request --load tacacs-pap,rate=300
 ```
 
-2026-11-08 在同一台 Apple M4 Max 上 OrbStack 的 Linux（arm64）量測，伺服器限定 CPU 0–6、工具限定 7–13（`threads=7`），`tacacs.toml`，每列三次，都沒有逾時、`invalid`、socket 錯誤和重連：
+Measured on 2026-11-08 on Linux (arm64) in OrbStack on the same Apple M4 Max, with the server limited to CPUs 0–6 and the tool to 7–13 (`threads=7`), `tacacs.toml`, three runs per row, all with no timeouts, `invalid`, socket errors or reconnects:
 
-| 負載 | 連線 | 次/秒 | p50 / p99 | 每個請求的伺服器 CPU |
+| Load | Connections | Requests/s | p50 / p99 | Server CPU per request |
 | --- | --- | --- | --- | --- |
-| `tacacs-pap,concurrency=64` | 64，`keep` | 313,500–323,700 | 0.18–0.19 / 0.54–0.56 ms | 約 16 µs |
-| `tacacs-ascii,concurrency=64` | 64，`keep` | 140,800–142,400 次登入 | 0.42 / 1.07–1.10 ms | 約 31 µs（一次登入） |
-| `tacacs-author,concurrency=64` | 64，`keep` | 336,200–371,500 | 0.16–0.17 / 0.46–0.58 ms | 約 13–14 µs |
-| `tacacs-acct,concurrency=64` | 64，`keep` | 372,500–385,600 | 0.15–0.16 / 0.46–0.48 ms | 約 14 µs |
-| `tacacs-pap,concurrency=512` | 512，`keep` | 413,200–430,500 | 1.06–1.10 / 3.4–3.5 ms | 約 16 µs |
-| `tacacs-pap,concurrency=64` | 每個請求一條，`per-request` | 16,600–21,300 | 0.97–1.09 / 13–36 ms | 約 38–42 µs |
+| `tacacs-pap,concurrency=64` | 64, `keep` | 313,500–323,700 | 0.18–0.19 / 0.54–0.56 ms | about 16 µs |
+| `tacacs-ascii,concurrency=64` | 64, `keep` | 140,800–142,400 logins | 0.42 / 1.07–1.10 ms | about 31 µs (one login) |
+| `tacacs-author,concurrency=64` | 64, `keep` | 336,200–371,500 | 0.16–0.17 / 0.46–0.58 ms | about 13–14 µs |
+| `tacacs-acct,concurrency=64` | 64, `keep` | 372,500–385,600 | 0.15–0.16 / 0.46–0.48 ms | about 14 µs |
+| `tacacs-pap,concurrency=512` | 512, `keep` | 413,200–430,500 | 1.06–1.10 / 3.4–3.5 ms | about 16 µs |
+| `tacacs-pap,concurrency=64` | one per request, `per-request` | 16,600–21,300 | 0.97–1.09 / 13–36 ms | about 38–42 µs |
 
-固定每秒 400 次時，`keep` 的延遲是 p50 0.89–0.99 ms、p99 2.8–4.0 ms，`per-request` 是 p50 1.24–1.27 ms、p99 2.7–2.9 ms。
+At a fixed 400 per second, the latency of `keep` is p50 0.89–0.99 ms and p99 2.8–4.0 ms, and for `per-request` it is p50 1.24–1.27 ms and p99 2.7–2.9 ms.
 
-- **保持連線時比 RADIUS 還快：** 同樣環境下 UDP 的 PAP 是每秒 246,800–265,600 次、每個請求約 22–23 µs（和 RadSec 同一次量測，見 rradius-enterprise 使用文件第 9 章〈RadSec〉），TACACS+ 的 PAP 每個請求約 16 µs。授權和計費比 PAP 再少一點。這兩點的原因都沒有確認。
-- **ASCII 登入是三個來回，** 一次登入的 CPU 約是 PAP 的兩倍，吞吐不到一半。
-- **每個請求開新連線貴很多：** 吞吐約是 `keep` 的 6%，伺服器每個請求多約 22–26 µs，花在接受和關閉連線。這時工具的執行緒也忙到 81–93%（兩輪有 `tool_saturated` 警告），所以這個數字有一部分是工具的上限。量測中 TIME_WAIT 累積到整個連接埠範圍（28,232 個），因為是 loopback，靠 `tcp_tw_reuse` 預設的 2 重用，沒有出現錯誤。
-- **在低速率下，`per-request` 的 p50 多約 0.3 ms，** 是建立連線的來回。實際設備多半是保持連線或一段時間開一條，要看設備的設定。
+- **With persistent connections it is faster than RADIUS:** in the same environment, PAP over UDP is 246,800–265,600 per second at about 22–23 µs per request (the same measurement as RadSec; see the usage reference of rradius-enterprise, section 9, "RadSec"), and PAP over TACACS+ is about 16 µs per request. Authorization and accounting are a little less than PAP. The reason for either of these has not been confirmed.
+- **An ASCII login is three round trips,** so one login uses about twice the CPU of PAP and has less than half the throughput.
+- **A new connection per request is much more expensive:** the throughput is about 6% of `keep`, and the server spends about 22–26 µs more per request, on accepting and closing connections. The tool's threads were also busy 81–93% (two runs had the `tool_saturated` warning), so part of this number is the limit of the tool. During the measurement TIME_WAIT built up to the whole port range (28,232 ports); because it is loopback, they were reused through the default 2 of `tcp_tw_reuse`, and no errors appeared.
+- **At low rates, p50 of `per-request` is about 0.3 ms more,** which is the round trip of setting up the connection. Real devices mostly keep a connection or open one every so often, depending on the device's configuration.
 
-### 固定併發與固定速率
+### Fixed concurrency and fixed rate
 
-`--load` 的格式是 `KIND[,concurrency=N][,rate=N][,window=N][,threads=N][,alive=N]`，可以重複，每個負載各用自己的執行緒，所以背景壓力不會讓量測登入的執行緒排隊。`KIND` 可以是 `pap`、`chap`、`chap-authenticator`、`mschapv2`、`acct-start`、`acct-alive`、`acct-stop`、`acct-on`、`acct-off`、`status-auth`、`status-acct`、`session`，EAP 的 `eap-tls`、`peap`、`ttls`、`ttls-mschapv2`、`aka-prime`（見上方〈EAP 登入〉，以及 rradius-enterprise 使用文件第 9 章〈EAP-AKA'〉），以及 TACACS+ 的 `tacacs-pap`、`tacacs-ascii`、`tacacs-author`、`tacacs-acct`（見上方〈TACACS+〉）。
+The format of `--load` is `KIND[,concurrency=N][,rate=N][,window=N][,threads=N][,alive=N]`. It can be repeated, and each load uses its own threads, so background pressure does not make the threads that measure logins queue. `KIND` can be `pap`, `chap`, `chap-authenticator`, `mschapv2`, `acct-start`, `acct-alive`, `acct-stop`, `acct-on`, `acct-off`, `status-auth`, `status-acct`, `session`, the EAP kinds `eap-tls`, `peap`, `ttls`, `ttls-mschapv2` and `aka-prime` (see "EAP logins" above, and the usage reference of rradius-enterprise, section 9, "EAP-AKA'"), and the TACACS+ kinds `tacacs-pap`, `tacacs-ascii`, `tacacs-author` and `tacacs-acct` (see "TACACS+" above).
 
-- **固定併發（`concurrency=N`）用來量吞吐。** 收到回應才送下一個，所以延遲大多是排隊，不適合拿來說明延遲。
-- **固定速率（`rate=N`）用來量延遲。** 依排程送出，不等回應，延遲從預定時間起算，伺服器卡住時後面的請求也會算進去。
+- **Fixed concurrency (`concurrency=N`) measures throughput.** The next request is sent only after a response arrives, so the latency is mostly queueing and is not suitable for describing latency.
+- **Fixed rate (`rate=N`) measures latency.** Requests are sent on a schedule without waiting for responses, and the latency is counted from the scheduled time, so when the server stalls, the later requests are counted too.
 
-### 看報告
+### Reading the report
 
-- 回應一律驗證 Authenticator，沒通過的算 `invalid`，不會算成成功。
-- 預設不重送，遺失就算 `timeouts`。`--retries` 可以開啟重送。
-- 結束碼：0 全部成功、1 有被拒絕或收到 Access-Challenge、2 有逾時、驗證失敗或 socket 錯誤、3 引數或設定有誤。
-- 下面這些警告會讓 `trustworthy` 變成 false，這次的數字不能當成伺服器的能力：
+- The Authenticator of every response is verified, and one that fails counts as `invalid` and never as a success.
+- There is no retransmission by default, and a lost packet counts as `timeouts`. `--retries` turns retransmission on.
+- Exit codes: 0 all succeeded, 1 some were rejected or got an Access-Challenge, 2 some timed out, failed verification or had a socket error, 3 a wrong argument or configuration.
+- The warnings below make `trustworthy` false, and the numbers of this run cannot be taken as the capability of the server:
 
-| 警告 | 意思 |
+| Warning | Meaning |
 | --- | --- |
-| `tool_saturated` | 工具的 worker 忙碌超過 90%，量到的是工具的上限 |
-| `rate_not_met` | 固定速率沒有照排程送出，通常是 CPU 被搶走，或要求的速率超過工具或伺服器能處理的量。送出的請求不到排程的 1% 時（量測窗口內的請求要等落後的排程清完才送，所以報告的 `sent` 是 0），訊息會加註「跟不上這個速率」：降低 `rate`，或加大 `concurrency` 與 `threads`。退出碼不受影響 |
-| `duplicate_path` | 伺服器走了重送快取，腳本沒有執行 |
+| `tool_saturated` | The workers of the tool were busy more than 90%, so what was measured is the limit of the tool |
+| `rate_not_met` | The fixed rate was not sent on schedule, usually because the CPU was taken away or the requested rate is more than the tool or the server can handle. When fewer than 1% of the scheduled requests were sent (the requests in the measuring window are sent only after the late schedule has been cleared, so `sent` in the report is 0), the message adds "cannot keep up with this rate": lower `rate`, or raise `concurrency` and `threads`. The exit code is not affected |
+| `duplicate_path` | The server took the retransmission cache, and the script did not run |
 
-- 下面這些警告不影響 `trustworthy`，要自己判斷。`trustworthy` 為 true 也不代表伺服器沒有丟封包：
+- The warnings below do not affect `trustworthy`, and you must judge them yourself. A `trustworthy` of true also does not mean the server dropped no packets:
 
-| 警告 | 意思 |
+| Warning | Meaning |
 | --- | --- |
-| `server_discarded_<原因>` | 伺服器丟掉了封包，例如超過額度 |
-| `metrics_unavailable` | 讀不到 `--metrics-url`，所以也不知道有沒有走重送快取或丟封包 |
+| `server_discarded_<reason>` | The server dropped packets, for example when over a quota |
+| `metrics_unavailable` | `--metrics-url` cannot be read, so it is also not known whether the retransmission cache was used or packets were dropped |
 
-`--metrics-url` 會比對伺服器在量測前後的計數。伺服器要在設定中開啟 `[metrics]`。
+`--metrics-url` compares the counters of the server before and after the measurement. The server must have `[metrics]` turned on in its configuration.
 
-### 工具自身的上限
+### Limits of the tool itself
 
 ```bash
 target/release/rradius-bench calibrate
 ```
 
-`calibrate` 對程序內建的回應器跑四種組合，量出工具本身的上限和這台機器的延遲底線。伺服器的吞吐接近這個上限，或延遲接近這個底線時，要改到另一台機器量。
+`calibrate` runs four combinations against the responder built into the program, and measures the limit of the tool itself and the latency floor of this machine. When the throughput of the server is close to this limit, or the latency is close to this floor, measure on another machine.
 
-### 同機量測的限制
+### Limits of measuring on one machine
 
-工具和伺服器在同一台機器時會搶 CPU，數字只能用來比較同一台機器上的前後差異，不能當成真實網路的能力。尤其是計費腳本把 CPU 用滿的情境，登入延遲會把工具和伺服器的排程都算進去。要知道真實網路的數字，請把工具放在另一台機器，並用 `--bind` 指定來源位址。
+When the tool and the server are on the same machine they compete for CPU, so the numbers are good only for comparing before and after on the same machine and cannot be taken as the capability of a real network. In particular, in a scenario where the accounting script uses the whole CPU, the login latency includes the scheduling of both the tool and the server. To get numbers for a real network, put the tool on another machine and set the source address with `--bind`.
 
-**不同時間量的數字會差 5–8%。** 2026-11-09 用 `main` `dd48f9c` 重量主要負載（EAP、TACACS+、EAP-AKA' 都和上面各節一致），UDP 和 RadSec 的 PAP 比之前各節的數字低 5–8%。同一個容器裡交錯跑 PR #86 合併時的版本和 `dd48f9c` 各三輪，兩者沒有差別（UDP 26.7–28.0 萬 對 27.4–27.9 萬、RadSec 7 條連線 27.9–28.2 萬 對 28.4–28.9 萬、64 條連線 27.4–27.5 萬 對 27.0–27.4 萬次/秒），所以是那次容器的狀況，不是程式變慢。要比較兩個版本，請在同一次執行裡交錯跑，不要拿不同時間的數字比。
+**Numbers measured at different times differ by 5–8%.** On 2026-11-09 the main loads were measured again with `main` `dd48f9c` (EAP, TACACS+ and EAP-AKA' all agree with the sections above), and the PAP of UDP and RadSec was 5–8% lower than the numbers in the earlier sections. The version at the merge of PR #86 and `dd48f9c` were run interleaved, three rounds each, in the same container, and the two showed no difference (UDP 267,000–280,000 against 274,000–279,000; RadSec with 7 connections 279,000–282,000 against 284,000–289,000; with 64 connections 274,000–275,000 against 270,000–274,000 per second), so it was the condition of that container, not a slower program. To compare two versions, run them interleaved in the same execution, and do not compare numbers from different times.

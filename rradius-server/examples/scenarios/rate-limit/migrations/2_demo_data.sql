@@ -1,5 +1,5 @@
--- 示範資料，正式環境請刪掉這個檔案，改用自己的資料。
---   dave 的方案不存在（資料有錯的例子），erin 停用中
+-- Demo data; delete this file in production and use your own data.
+-- dave's plan does not exist (an example of bad data), and erin is disabled
 INSERT INTO plans (plan, down_kbps, up_kbps, profile) VALUES
   ('fiber-100', 100000, 50000, 'fiber-100'),
   ('fiber-500', 500000, 250000, 'fiber-500'),

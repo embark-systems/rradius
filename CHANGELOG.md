@@ -21,7 +21,7 @@ The first release.
 - **Clustering:** a built-in hiqlite cluster (SQLite replicated with Raft) of three or more nodes that keeps serving when one node is down; nodes can be added and removed while running; the configuration is reloaded with SIGHUP.
 - **Operations:** Prometheus metrics, structured logs, `check` to validate a configuration, `status` (one node or the whole cluster; `--watch`, `--json`), and commands for users, sessions, queries and the cluster.
 - **`status --tui`:** a full-screen view of `status`, one panel at a time, with a table of the items and a line chart of the last 60 seconds of the selected rate; in a cluster, `[` and `]` choose all the members added up or one member, and `p` pauses. It is part of every build.
-- **Documentation:** the user manual in `docs/manual.zh-TW/` (a guide by topic with deployment scenarios, and reference appendices for the configuration, commands, metrics and Lua API) and the usage guide in `docs/usage.md`. The scenario examples in `rradius-server/examples/scenarios/` are started by automated tests.
+- **Documentation:** the user manual in `docs/manual/` in English and `docs/manual.zh-TW/` in Traditional Chinese (a guide by topic with deployment scenarios, and reference appendices for the configuration, commands, metrics and Lua API) and the usage guide in `docs/usage.md`. The scenario examples in `rradius-server/examples/scenarios/` are started by automated tests.
 - **Packaging and deployment:** a Docker image and Compose files, Kubernetes and Synology examples, Prometheus alert rules, and packaging for deb, rpm, FreeBSD and tarball releases.
 
 ### Known limits

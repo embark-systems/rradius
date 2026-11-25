@@ -1,14 +1,14 @@
-# 用戶資源控制：每個用戶有方案，限制同時連線數和一段時間的流量。單機。
-# 說明：docs/manual.zh-TW/14-isp-recipes.md〈方案與用量控制：usage-control〉
+# Per-user resource control: each user has a plan that limits concurrent sessions and traffic over a period. Single node.
+# See: `docs/manual/14-isp-recipes.md` "Plans and usage control: usage-control"
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/usage-control/rradius.toml
 #
-# 相對路徑都以這個檔案所在的目錄為準。
+# Relative paths are resolved against the directory that holds this file.
 
 dictionary = "../../../../share/dictionary"
 
-# 有 [auth] 時認證交給下面的串接；這個腳本只處理計費（記錄流量、確認和釋放連線位）。
+# With [auth], authentication goes to the chain below; this script handles only accounting (recording traffic, confirming and releasing session slots).
 [lua]
 script = "accounting.lua"
 
@@ -18,8 +18,8 @@ secret_raft_file = "raft.secret"
 secret_api_file = "api.secret"
 migrations_dir = "migrations"
 
-# all_accept：依序執行，任一個拒絕就停。先由 sql 處理器驗密碼（密碼錯就不會往下，所以不會替
-# 沒通過的人佔連線位），再由 lua 處理器檢查方案的流量和同時連線數。
+# all_accept: run in order and stop at the first reject. The sql handler checks the password first (a wrong password goes no further, so it never
+# takes a slot for someone who failed), then the lua handler checks the plan's traffic and concurrent sessions.
 [auth]
 policy = "all_accept"
 
@@ -42,15 +42,15 @@ secret_file = "localhost.secret"
 
 [metrics]
 
-# 現在在線的 session：rradiusd session list。連線位本身就記著誰在線，直接查它：
-# 狀態是 active 而且還沒到期的列。
+# Users online now: rradiusd session list. A slot itself records who is online, so query it directly:
+# rows whose state is active and that have not expired.
 [sessions]
 list = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE state = 'active' AND expires > strftime('%s', 'now') ORDER BY username, slot"
 show = "SELECT username, nas, session_id, slot, updated FROM session_slots WHERE username = ?1 AND state = 'active' AND expires > strftime('%s', 'now') ORDER BY slot"
 
-# 監控：每個狀態的連線位數，成為指標 rradius_query_slot_usage{state}（free 是空的、reserved 是預留、
-# active 是在線）。每個節點每 30 秒對自己的副本查一次；說明見手冊第 14 章〈方案與用量控制〉的「監控」。
-# 這個查詢走 session_slots_expiry 索引，不掃整個表。
+# Monitoring: the number of slots in each state becomes the metric rradius_query_slot_usage{state} (free is empty, reserved is held,
+# active is online). Each node queries its own replica every 30 seconds; see chapter 14 of the manual, "Plans and usage control: usage-control", section "Monitoring".
+# This query uses the session_slots_expiry index and does not scan the whole table.
 [queries.slot_usage]
 sql = "SELECT state, count(*) AS slots FROM session_slots GROUP BY state"
 help = "Session slots by state: free, reserved or active."

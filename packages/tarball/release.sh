@@ -216,7 +216,7 @@ package() {
     local stage="$work/stage-$program-$target/$name"
     mkdir -p "$stage/bin"
     cp "$(binary_of "$program" "$target")" "$stage/bin/$binary"
-    local docs='rradius-server/examples docs/usage.md docs/manual.zh-TW share/dictionary* share/LICENSE share/NOTICE'
+    local docs='rradius-server/examples docs/usage.md docs/usage.zh-TW.md docs/manual docs/manual.zh-TW share/dictionary* share/LICENSE share/NOTICE'
     # $docs holds a glob, expanded inside $work/src.
     # shellcheck disable=SC2086
     (cd "$work/src" && tar -cf - $docs) | tar -xf - -C "$stage"
@@ -230,7 +230,7 @@ package() {
         glibc=$(strings "$stage/bin/$binary" | grep -o '^GLIBC_[0-9][0-9.]*$' | sed 's/^GLIBC_//' | sort -t . -k 1,1n -k 2,2n -k 3,3n | tail -n 1)
         [ -n "$glibc" ] || fail "cannot find which glibc the $target binary needs"
         printf 'glibc %s\n' "$glibc" >>"$stage/VERSION"
-        printf '\n## 系統需求\n\n這個 Linux 版需要 glibc %s 以上。\n' "$glibc" >>"$stage/README.md"
+        printf '\n## System requirements\n\nThis Linux build needs glibc %s or newer.\n' "$glibc" >>"$stage/README.md"
     fi
 
     # SQLite keeps its compile options as strings in the binary; without this one some queries

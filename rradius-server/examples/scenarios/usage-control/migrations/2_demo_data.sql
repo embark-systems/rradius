@@ -1,7 +1,7 @@
--- 示範資料，正式環境請刪掉這個檔案，改用自己的資料。
---   basic   同時 1 個連線，不限流量
---   family  同時 2 個連線，100 GiB／30 天，超過降速
---   strict  同時 1 個連線，5 GiB／30 天，超過拒絕
+-- Demo data; delete this file in production and use your own data.
+--   basic   1 concurrent session, unlimited traffic
+--   family  2 concurrent sessions, 100 GiB per 30 days, throttled when exceeded
+--   strict  1 concurrent session, 5 GiB per 30 days, rejected when exceeded
 INSERT INTO plans (plan, max_sessions, quota_octets, period_days, over_quota, normal_filter, throttle_filter) VALUES
   ('basic', 1, 0, 30, 'throttle', 'basic', NULL),
   ('family', 2, 107374182400, 30, 'throttle', 'family', 'family-slow'),

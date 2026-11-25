@@ -1,6 +1,6 @@
--- 示範資料，正式環境請刪掉這個檔案。
--- NT hash：printf '%s' 'staff1-password' | iconv -t UTF-16LE | openssl dgst -md4
--- （OpenSSL 3 要加 -provider legacy -provider default）
+-- Demo data; delete this file in production.
+-- NT hash: printf '%s' 'staff1-password' | iconv -t UTF-16LE | openssl dgst -md4
+-- (OpenSSL 3 needs -provider legacy -provider default added)
 INSERT INTO accounts (name, kind, password, grp, enabled) VALUES
   ('staff1', 'user', '{nthash}eb046393145d207c556e275a62e46dfc', 'staff', 1),
   ('staff2', 'user', '{nthash}c3a36ac0282a6c9b466d1d12f4efea9b', 'staff', 0),

@@ -1,6 +1,6 @@
--- 帳號在會員系統，這裡只有計費。
--- 每個 session 一列。Session ID 只在同一台 NAS 內唯一，所以主鍵包含 client 和 NAS：
--- 一個 client 可以是整個網段，nas 是 NAS 回報的位址或名稱（見 accounting.lua）。
+-- Accounts live in the member system; only accounting is here.
+-- One row per session. The Session ID is unique only within one NAS, so the primary key includes the client and the NAS:
+-- one client can be a whole subnet, and nas is the address or name the NAS reports (see accounting.lua).
 CREATE TABLE accounting (
   client TEXT NOT NULL,
   nas TEXT NOT NULL,

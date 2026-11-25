@@ -1,7 +1,7 @@
--- 示範資料，正式環境請刪掉這個檔案，改用自己的資料。
---   olt-a 的 3、4 號埠：alice（100M）、bob（1G，綁定第一次看到的 MAC）
---   olt-b 的 7 號埠：carol（商業）；8 號埠：dave，停用中
---   沒有 remote-id、circuit-id 是二進位的線路：erin
+-- Demo data; delete this file in production and use your own data.
+--   olt-a ports 3 and 4: alice (100M), bob (1G, bound to the first MAC seen)
+--   olt-b port 7: carol (business); port 8: dave, disabled
+--   a line with no remote-id and a binary circuit-id: erin
 INSERT INTO plans (plan, pool, profile, interim) VALUES
   ('fiber-100', 'residential', 'fiber-100m', 300),
   ('fiber-1g', 'residential', 'fiber-1g', 300),

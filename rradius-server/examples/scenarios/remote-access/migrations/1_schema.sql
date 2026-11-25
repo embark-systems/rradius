@@ -1,8 +1,8 @@
--- 跳板機的兩步驟驗證（two-step-totp.lua 用的表）和計費。
+-- Two-step verification for the jump host (the table two-step-totp.lua uses) and accounting.
 CREATE TABLE mfa_users (
   username TEXT PRIMARY KEY,
-  password TEXT,                          -- 帶前綴的儲存密碼，例如 {crypt}$6$... 或 {argon2}$...；two-step-totp.lua 用 password_verify 驗證
-  totp_secret TEXT,                       -- Base32，和使用者手機上的驗證器 App 相同
+  password TEXT,                          -- prefixed stored password, for example {crypt}$6$... or {argon2}$...; two-step-totp.lua verifies it with password_verify
+  totp_secret TEXT,                       -- Base32, the same as the authenticator app on the user's phone
   last_step INTEGER NOT NULL DEFAULT 0,
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until INTEGER NOT NULL DEFAULT 0

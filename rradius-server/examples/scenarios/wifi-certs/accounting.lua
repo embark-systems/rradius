@@ -1,46 +1,46 @@
--- 計費：每個 session 一列，Start 建立，Interim-Update 和 Stop 更新。
+-- Accounting: one row per session; Start creates it, Interim-Update and Stop update it.
 --
--- 計費腳本回傳 'accept' 才會回覆 NAS；其他結果 NAS 會重送，腳本會再跑一次，所以每個寫入都
--- 要能重複執行。同一個封包寫兩次，結果和寫一次相同。
+-- The accounting script must return 'accept' for the NAS to get a reply; for any other result the NAS retransmits and the script runs again, so every write
+-- has to be repeatable. Writing the same packet twice gives the same result as writing it once.
 
--- 有 [auth] 時認證不會來到這裡。萬一設定改了，也不要讓這個腳本放行任何人。
+-- With [auth] set, authentication never reaches this script. Even if the configuration changes, do not let this script admit anyone.
 if phase ~= 'accounting' then
   return 'reject'
 end
 
--- 哪一台 NAS：一個 client 可以是整個網段，所以再用 NAS 回報的位址或名稱分開。
--- 這些值是 NAS 自己說的，但只在同一個 client 裡比較：同一個 client 的 NAS 共用密碼，本來就同樣可信。
+-- Which NAS: one client can be a whole network range, so tell them apart by the address or name the NAS reports.
+-- These values come from the NAS itself, but they are only compared within one client: NASes of the same client share a secret, so they are equally trusted.
 local nas = get_attr('NAS-IP-Address') or get_attr('NAS-IPv6-Address') or get_attr('NAS-Identifier')
 if not nas or nas == '' then
   nas = client
 end
 
 local status = get_attr('Acct-Status-Type')
--- NAS 重開機（Accounting-On／Off）：這台 NAS 之前的 session 都結束了。
+-- NAS reboot (Accounting-On/Off): all earlier sessions of this NAS have ended.
 if status == 7 or status == 8 then
   sql_execute("UPDATE accounting SET stopped = updated, terminate_cause = 11 WHERE client = ? AND nas = ? AND stopped IS NULL",
     {client, nas})
   return 'accept'
 end
-if status ~= 1 and status ~= 2 and status ~= 3 then -- Start、Stop、Interim-Update
+if status ~= 1 and status ~= 2 and status ~= 3 then -- Start, Stop, Interim-Update
   return 'accept'
 end
 
 local session = get_attr('Acct-Session-Id')
 if not session or session == '' then
   log('accounting without Acct-Session-Id from', client)
-  return 'accept' -- 無法記錄，但重送也不會比較好
+  return 'accept' -- cannot record it, but a retransmit would not help
 end
 
--- 從計費暫存重放、或 NAS 晚送的封包，以 Acct-Delay-Time 還原發生的時間。
+-- For packets replayed from the accounting spool (disk storage for accounting requests while the database cannot be written) or sent late by the NAS, Acct-Delay-Time recovers the time the event happened.
 local seen = math.floor(now_unix()) - math.floor(get_attr('Acct-Delay-Time') or 0)
 local seconds = math.floor(get_attr('Acct-Session-Time') or 0)
--- 超過 4 GiB 的流量，NAS 會把進位放在 Gigawords。
+-- For traffic over 4 GiB, the NAS puts the carry in Gigawords.
 local function octets(name)
   return math.floor(get_attr(name .. '-Octets') or 0) + math.floor(get_attr(name .. '-Gigawords') or 0) * 4294967296
 end
 
--- 結束後才到的封包（晚送的 Interim-Update、重送的 Stop）不再改 updated，所以 updated 不會晚於 stopped。
+-- Packets that arrive after the end (a late Interim-Update, a retransmitted Stop) no longer change updated, so updated is never later than stopped.
 sql_execute([[
   INSERT INTO accounting (client, nas, session_id, username, started, updated, session_time, input_octets, output_octets)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

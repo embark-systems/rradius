@@ -1,6 +1,6 @@
--- 方案和線路。套用過的檔案不能再改，要改結構就新增下一個編號的檔案。
+-- Plans and lines. An applied file must not be changed; to change the structure, add a file with the next number.
 
--- 每個方案：回給 BNG 的位址池名稱、設定檔名稱（速率等由 BNG 上同名的設定檔決定）、Interim 間隔。
+-- Each plan: the pool name returned to the BNG, the profile name (rates etc. are set by the profile of the same name on the BNG), and the Interim interval.
 CREATE TABLE plans (
   plan TEXT PRIMARY KEY,
   pool TEXT NOT NULL,
@@ -8,11 +8,11 @@ CREATE TABLE plans (
   interim INTEGER NOT NULL DEFAULT 300
 );
 
--- 每條線一列。主鍵是 (remote_id, circuit_id)：circuit-id 通常只在同一個接入設備內唯一，
--- remote-id 常是那個設備的名稱；BNG 沒送 remote-id 時用空字串。
--- 兩個 id 都存正規化後的值（見 auth.lua）：小寫、去頭尾空白，含不可印字元的寫成 0x 加十六進位。
---   lock_mac   0：只記錄最後看到的 MAC 和時間；1：第一次登入把 MAC 綁起來，之後不同的 MAC 拒絕。
---              換設備時把 bound_mac 清成 NULL。bound_mac 是 12 個小寫十六進位字元，沒有冒號或橫線。
+-- One row per line. The primary key is (remote_id, circuit_id): a circuit-id is usually unique only within one access device,
+-- and the remote-id is often that device's name; use an empty string when the BNG sends no remote-id.
+-- Both ids are stored normalized (see auth.lua): lowercase, whitespace trimmed, and a value with non-printable characters written as 0x plus hex.
+--   lock_mac   0: only record the last MAC and time seen; 1: the first login binds the MAC, and a different MAC afterwards is rejected.
+--              When the device is replaced, clear bound_mac to NULL. bound_mac is 12 lowercase hex characters, with no colons or hyphens.
 CREATE TABLE lines (
   remote_id TEXT NOT NULL DEFAULT '',
   circuit_id TEXT NOT NULL,

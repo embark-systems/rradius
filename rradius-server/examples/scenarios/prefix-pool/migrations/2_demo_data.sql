@@ -1,9 +1,9 @@
--- 示範資料，正式環境請刪掉這個檔案，改用自己的池和用戶。
---   residential：2001:db8:100::/48，每人一個 /56，共 256 個前綴
---   business：2001:db8:200::/52，每人一個 /60，共 256 個前綴
---   ula：fd12:3456:789a::/48，每人一個 /56（高位元是 1，base 是負數）
---   erin：停用中
--- base 是前綴的高 64 位元：2001:0db8:0100:0000 寫成 0x20010db801000000。
+-- Demo data. Delete this file in production and use your own pools and users.
+--   residential: 2001:db8:100::/48, one /56 per user, 256 prefixes in all
+--   business: 2001:db8:200::/52, one /60 per user, 256 prefixes in all
+--   ula: fd12:3456:789a::/48, one /56 per user (the top bit is 1, so base is negative)
+--   erin: disabled
+-- base is the high 64 bits of the prefix: 2001:0db8:0100:0000 is written as 0x20010db801000000.
 INSERT INTO prefix_pools (pool, base, plen, dlen) VALUES
   ('residential', 0x20010db801000000, 48, 56),
   ('business', 0x20010db802000000, 52, 60),

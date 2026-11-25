@@ -6,7 +6,7 @@
 > - Add your own vendor-specific attributes (VSAs) and read and write them from a script
 > - Set reply attributes from the database or from a script, and stay within the value and packet size limits
 
-Prerequisites: build a configuration that starts, as in [chapter 04](04-configuration.md). This chapter uses `[log.trace]` to see the attributes that are actually sent. It is described in full in [chapter 17](../manual.zh-TW/17-monitoring.md).
+Prerequisites: build a configuration that starts, as in [chapter 04](04-configuration.md). This chapter uses `[log.trace]` to see the attributes that are actually sent. It is described in full in [chapter 17](17-monitoring.md).
 
 In this chapter:
 
@@ -44,7 +44,7 @@ The server only knows the attributes that are in the dictionary. An attribute in
 dictionary = "/usr/share/rradius/dictionary"
 ```
 
-This is a top-level key. It can only be written in the main configuration file, and it must come before the first `[table]`. See [Appendix A](../manual.zh-TW/90-config-reference.md).
+This is a top-level key. It can only be written in the main configuration file, and it must come before the first `[table]`. See [Appendix A](90-config-reference.md).
 
 ## Bundled dictionaries
 
@@ -288,8 +288,8 @@ The script writes `set_attr('Example-Key', 'session-key-0123')`, the login is ac
 
 Reply attributes (the attributes sent to the NAS in an Accept) have two sources, and you can use both together:
 
-1. **Scripts**: `set_attr(name, value)`, as in the previous section. For how to write scripts, see [chapter 10](../manual.zh-TW/10-lua-policies.md).
-2. **The database query of the auth chain**: the `reply_query` of the `sql` handler returns rows with two columns, "attribute name, value", and each row becomes one reply attribute ([chapter 07](../manual.zh-TW/07-users-and-chains.md)).
+1. **Scripts**: `set_attr(name, value)`, as in the previous section. For how to write scripts, see [chapter 10](10-lua-policies.md).
+2. **The database query of the auth chain**: the `reply_query` of the `sql` handler returns rows with two columns, "attribute name, value", and each row becomes one reply attribute ([chapter 07](07-users-and-chains.md)).
 
 The values that `reply_query` returns are always text, converted according to the dictionary type: an integer attribute can be written as a number or as a `VALUE` name, and an attribute with a tag is written `name:tag`. For example, with this data:
 
@@ -401,10 +401,10 @@ The dictionary is read only once, when the server starts.
 
 - [04 Configuration file basics](04-configuration.md)
 - [05 RADIUS service and NAS clients](05-radius-clients.md)
-- [07 User accounts and auth chains](../manual.zh-TW/07-users-and-chains.md)
-- [10 Writing policies in Lua](../manual.zh-TW/10-lua-policies.md)
-- [14 Scenarios: broadband and ISP](../manual.zh-TW/14-isp-recipes.md)
-- [15 Scenarios: network access for organizations](../manual.zh-TW/15-access-recipes.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix D: Lua API reference](../manual.zh-TW/93-lua-reference.md)
+- [07 User accounts and auth chains](07-users-and-chains.md)
+- [10 Writing policies in Lua](10-lua-policies.md)
+- [14 Scenarios: broadband and ISP](14-isp-recipes.md)
+- [15 Scenarios: network access for organizations](15-access-recipes.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix D: Lua API reference](93-lua-reference.md)

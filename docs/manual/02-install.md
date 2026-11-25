@@ -41,7 +41,7 @@ The repository provides build scripts and definition files for each installation
 | Docker Compose | Single-host container deployment | `compose.yaml`, `docker/` | Verified |
 | Synology | Container Manager on a Synology NAS | `deploy/synology/compose.yaml` | Not verified on real hardware |
 
-The cluster Compose file (`compose.cluster.yaml`) and the Kubernetes manifests (`deploy/kubernetes/`) are described in [chapter 16](../manual.zh-TW/16-cluster.md).
+The cluster Compose file (`compose.cluster.yaml`) and the Kubernetes manifests (`deploy/kubernetes/`) are described in [chapter 16](16-cluster.md).
 
 All paths in this chapter are relative to the root of the rradius source repository.
 
@@ -361,7 +361,7 @@ Settings in `compose.yaml`:
 
 ### Adding accounts
 
-This configuration has no `[accounts]`, so `user add` cannot be used. The approach suggested in the comments of `1_schema.sql` is to add a migration file with a higher number, for example `docker/config/migrations/2_users.sql`, containing `INSERT INTO users …`. For the format of the password column, see [chapter 07](../manual.zh-TW/07-users-and-chains.md).
+This configuration has no `[accounts]`, so `user add` cannot be used. The approach suggested in the comments of `1_schema.sql` is to add a migration file with a higher number, for example `docker/config/migrations/2_users.sql`, containing `INSERT INTO users …`. For the format of the password column, see [chapter 07](07-users-and-chains.md).
 
 You can also add `[accounts]` to `rradius.toml` as described in chapter 07, then manage accounts with `docker compose exec rradius rradiusd user add …`.
 
@@ -396,7 +396,7 @@ Data uses the named volume `data`, which Docker makes writable for the container
 | CPU architecture | Build a `linux/amd64` image for x86_64 models and `linux/arm64` for ARM models; the image must have the same architecture as the NAS |
 | Memory | Memory use of a single node was not measured on DSM. If the same NAS runs many other services, check the available memory first |
 | Network | The NAS needs a fixed address (a DHCP reservation or a manual setting), and your devices' RADIUS server address must point to it |
-| Single point of failure | RADIUS is the entry to the network: when the NAS reboots or DSM updates, nobody can connect. If you can, use the three nodes on different machines from [chapter 16](../manual.zh-TW/16-cluster.md) instead of relying on one machine. Three containers on the same NAS are no more reliable than one |
+| Single point of failure | RADIUS is the entry to the network: when the NAS reboots or DSM updates, nobody can connect. If you can, use the three nodes on different machines from [chapter 16](16-cluster.md) instead of relying on one machine. Three containers on the same NAS are no more reliable than one |
 
 ### Building the image on another computer
 
@@ -442,7 +442,7 @@ For an ARM NAS, replace `linux/amd64` with `linux/arm64`. When the `Dockerfile` 
 | The log says `Read-only file system` | The example `compose.yaml` makes the root file system read-only (`read_only: true`), and only the data volume and `/tmp` are writable. If the configuration has paths that point elsewhere (for example the accounting spool or the accounting log file), mount a volume for them, or point them under `/var/lib/rradius` |
 | The project did not come up after the NAS rebooted | `restart: unless-stopped` brings the container up after Docker starts. If the package has not finished starting after the NAS reboot, wait a while and look again; if it still has not come up, start the project by hand |
 
-When there is a configuration error (for example `migration file … changed after it was applied`), the container exits immediately, and the reason is in the project's log; see [chapter 18](../manual.zh-TW/18-operations.md).
+When there is a configuration error (for example `migration file … changed after it was applied`), the container exits immediately, and the reason is in the project's log; see [chapter 18](18-operations.md).
 
 ### Why there is no Synology package
 
@@ -595,7 +595,7 @@ default dictionary: /usr/share/rradius/dictionary
 - [03 First start and first login](03-quick-start.md)
 - [04 Configuration file basics](04-configuration.md)
 - [05 RADIUS service and NAS clients](05-radius-clients.md)
-- [10 Writing policies in Lua](../manual.zh-TW/10-lua-policies.md)
-- [16 Clusters and high availability](../manual.zh-TW/16-cluster.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [20 Security hardening](../manual.zh-TW/20-security.md)
+- [10 Writing policies in Lua](10-lua-policies.md)
+- [16 Clusters and high availability](16-cluster.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [20 Security hardening](20-security.md)

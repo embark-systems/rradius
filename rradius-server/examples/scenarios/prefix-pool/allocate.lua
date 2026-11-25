@@ -1,27 +1,27 @@
--- 認證串接的 lua 處理器：替通過密碼驗證的用戶分配一個委派前綴（DHCPv6-PD），放進 Access-Accept 的
--- Delegated-IPv6-Prefix。前面的 sql 處理器已經驗過密碼；all_accept 遇到拒絕就停，所以密碼錯的人不會來到這裡。
+-- Lua handler in the auth chain: allocate a delegated prefix (DHCPv6-PD) to a user who passed password verification and put it in the Access-Accept as
+-- Delegated-IPv6-Prefix. The sql handler before it has already checked the password; all_accept stops at a reject, so users with a wrong password never get here.
 --
--- 表放在線的、剛離線的前綴（prefix_leases）：沒有那一列就是空閒。順序：
---   1. 已經有前綴就沿用：reserved、active 照舊；released（他離線了，前綴暫時留給他）改回 reserved。
---   2. 沒有就從用戶名稱的雜湊決定一個起點 n，在往後 WINDOW 個 n 裡找空的 n（沒有那一列的），用 INSERT OR IGNORE
---      去佔：受影響列數是 1 就搶到，0 就是剛被別人拿走（主鍵擋住）。
---      同一個用戶每次從同一個起點開始，那個位置空著就拿到同一個前綴；被別人佔走時拿到後面的，不是保證。
---   3. 窗口裡沒有空的，就搶最舊的 released 列（那個用戶離線最久）：從最舊的幾列隨機挑一個，用一條有條件的 UPDATE
---      搶，受影響列數是 1 才算贏。
---   4. 都沒有（沒有 released 列）才在整個池裡找空的 n；整個池都滿了才拒絕，並在記錄寫一行
---      （NAS 只看到 Access-Reject）。
---   搶輸了再找時，在往後的候選裡隨機挑，免得同時進來的人每一輪都搶同一個 n。
+-- The table holds the prefixes that are online or just went offline (prefix_leases): a prefix with no row is free. Order:
+--   1. If the user already has a prefix, reuse it: reserved and active stay as they are; released (the user went offline and the prefix was kept for them for now) goes back to reserved.
+--   2. Otherwise derive a start n from a hash of the user name, look among the next WINDOW values of n for a free n (one with no row), and claim it with INSERT OR IGNORE:
+--      1 affected row means it was won, 0 means someone else just took it (the primary key blocked the insert).
+--      The same user always starts from the same point, so if that position is free they get the same prefix; if someone else holds it they get a later one, which is not guaranteed.
+--   3. If the window has no free n, take the oldest released row (the user who has been offline longest): pick one at random from the oldest few rows and
+--      take it with a conditional UPDATE; it is won only if 1 row is affected.
+--   4. Only if there is none (no released row) look for a free n in the whole pool; reject only when the whole pool is full, and write one line to the log
+--      (the NAS only sees an Access-Reject).
+--   When a claim is lost and the search repeats, pick at random among the later candidates so users arriving at the same time do not all go for the same n every round.
 --
--- 找空的 n 是一次讀（走主鍵），不是一個一個去寫；寫入只有搶的那一次。池越滿，要走過的連續已佔用的 n 越長，
--- 所以只看一個窗口，窗口裡沒有就搶 released（見手冊第 14 章〈IPv6 前綴池〉的量測）。
--- INTERIM_SECONDS、HOLD_SECONDS 要和 accounting.lua 一致；回收的間隔（60 秒）也要和它的 REAP_SECONDS 一致。
+-- Finding a free n is one read (it walks the primary key), not a write one by one; the only write is the claim itself. The fuller the pool, the longer the run of consecutive occupied n values to walk,
+-- so only a window is examined, and if it has no free n a released row is taken (see the measurements in manual chapter 14, "IPv6 prefix pool: prefix-pool").
+-- INTERIM_SECONDS and HOLD_SECONDS must match accounting.lua; the reclaim interval (60 seconds) must also match its REAP_SECONDS.
 
-local RESERVE_SECONDS = 120    -- 預留多久：Accounting-Start 沒來就刪掉
-local INTERIM_SECONDS = 300    -- 要求 NAS 每幾秒送一次 Interim-Update
-local HOLD_SECONDS = 86400      -- 釋放後留給原來的用戶多久
-local ATTEMPTS = 16            -- 搶輸了（同時有人也搶這個 n）最多再試幾次
-local WINDOW = 1024            -- 從起點往後最多看幾個 n 找空的
-local STEAL_CHOICES = 8        -- 搶 released 時，第一次從最舊的幾列裡隨機挑；搶輸一次，候選數乘 2（見下面的 width）
+local RESERVE_SECONDS = 120    --    how long to reserve: delete it if no Accounting-Start comes
+local INTERIM_SECONDS = 300    --    ask the NAS to send an Interim-Update every this many seconds
+local HOLD_SECONDS = 86400      --      how long a released prefix is kept for its previous user
+local ATTEMPTS = 16            --            how many more times to retry after losing a claim (someone else claimed the same n at the same time)
+local WINDOW = 1024            --            how many values of n to look at from the start point when searching for a free one
+local STEAL_CHOICES = 8        --        when taking a released row, pick at random from the oldest few rows the first time; each lost claim doubles the number of candidates (see width below)
 
 if phase ~= 'authentication' then
   return 'reject'
@@ -32,7 +32,7 @@ if not user or user == '' then
   return 'reject'
 end
 
--- 用戶屬於哪個池。停用或不存在的帳號沒有列，不替它們分配。
+-- Which pool the user belongs to. Disabled or nonexistent accounts have no row, and nothing is allocated to them.
 local subscriber = sql_query("SELECT pool FROM subscribers WHERE username = ? AND enabled = 1", {user})
 if #subscriber == 0 then
   return 'reject'
@@ -40,12 +40,12 @@ end
 local pool = subscriber[1].pool
 local now = math.floor(now_unix())
 
--- 請求觸發的回收：到期還沒確認的預留、沒收到 Interim-Update 的前綴，刪掉就是空閒。
--- 先讀本機副本判斷該不該跑，再用 UPDATE 搶一次，只有搶到的那一個去做，所以多個節點每個週期只做一次。
+-- Request-triggered reclaim: reservations that expired without confirmation and prefixes with no Interim-Update; deleting them makes them free.
+-- Read the local replica first to decide whether to run, then claim it with one UPDATE and only the winner does the work, so with several nodes it runs once per period.
 local due = sql_query("SELECT 1 FROM housekeeping WHERE name = 'reap-prefix-pool' AND last_run < ?", {now - 60})
 if #due > 0 and sql_execute("UPDATE housekeeping SET last_run = ? WHERE name = 'reap-prefix-pool' AND last_run < ?", {now, now - 60}) == 1 then
-  -- 沒收到 Interim 而過期的 active：改成 released，留給用戶 HOLD_SECONDS 秒；session_id 留著，NAS 其實還在線、
-  -- 只是 Interim 沒到的話，之後到的 Interim 可以讓它回到 active（Stop 與 On／Off 會清掉 session_id，不行）。過期的 reserved、released：刪掉就是空閒。
+  --   An active row that expired without an Interim: becomes released and is kept for the user for HOLD_SECONDS; session_id is kept, because the NAS may still be online
+  --   and only the Interim was missed, so a later Interim can bring it back to active (Stop and On/Off clear session_id, so they cannot). An expired reserved or released row: deleting it makes it free.
   sql_execute([[UPDATE prefix_leases SET state = 'released', expires = ?, updated = ?
                 WHERE rowid IN (SELECT rowid FROM prefix_leases WHERE state = 'active' AND expires < ? LIMIT 1000)]],
     {now + HOLD_SECONDS, now, now})
@@ -56,20 +56,20 @@ end
 
 local function give(prefix)
   set_attr('Delegated-IPv6-Prefix', prefix)
-  -- WAN 的 /64 不在這裡分配：回池的名稱，由 BNG 自己的池決定。
+  --   The WAN /64 is not allocated here: it is returned as a pool name, and the BNG's own pool decides it.
   set_attr('Framed-IPv6-Pool', pool)
   set_attr('Acct-Interim-Interval', INTERIM_SECONDS)
   return 'accept'
 end
 
--- 1. 已經有前綴：沿用。預留的延長到從現在起 RESERVE_SECONDS；active 的由計費延長。
+-- 1. The user already has a prefix: reuse it. A reservation is extended to RESERVE_SECONDS from now; an active one is extended by accounting.
 local function mine()
   return sql_query("SELECT prefix, state FROM prefix_leases WHERE username = ? AND pool = ?", {user, pool})
 end
 local have = mine()
 if #have > 0 then
-  -- released：他回來了，前綴還在，改回 reserved（等 Accounting-Start）。條件 state = 'released'：這一列剛被別人搶走時
-  -- 它的 username 已經不是他，UPDATE 不會動到。
+  --   released: the user came back and the prefix is still there, so it goes back to reserved (waiting for Accounting-Start). The condition state = 'released': if the row was just taken by someone else,
+  --   its username is no longer this user and the UPDATE does not touch it.
   sql_execute("UPDATE prefix_leases SET state = 'reserved', expires = ?, updated = ? WHERE username = ? AND pool = ? AND state = 'released'",
     {now + RESERVE_SECONDS, now, user, pool})
   sql_execute("UPDATE prefix_leases SET expires = max(expires, ?), updated = ? WHERE username = ? AND pool = ? AND state = 'reserved'",
@@ -78,7 +78,7 @@ if #have > 0 then
   if #current > 0 then
     return give(current[1].prefix)
   end
-  -- 剛好被搶走了：當作沒有，往下重新找一個。
+  --   It was just taken by someone else: treat it as not found and go on to find a new one below.
 end
 
 local capacity_row = sql_query("SELECT (1 << (dlen - plen)) AS capacity FROM prefix_pools WHERE pool = ?", {pool})
@@ -88,8 +88,8 @@ if #capacity_row == 0 then
 end
 local capacity = capacity_row[1].capacity
 
--- FNV-1a，32 位元。Luau 的數字是雙精度，32 位元乘 16777619 會超過 2^53，所以把乘法拆開：
--- 16777619 = 2^24 + 403，乘 2^24 再取 32 位元就是低 8 位元左移 24 位。
+-- FNV-1a, 32 bit. Luau numbers are doubles, and multiplying a 32-bit value by 16777619 exceeds 2^53, so the multiplication is split:
+-- 16777619 = 2^24 + 403, and multiplying by 2^24 and keeping 32 bits is the low 8 bits shifted left by 24.
 local function hash(text)
   local h = 2166136261
   for i = 1, #text do
@@ -103,13 +103,13 @@ local function taken(n)
   return #sql_query("SELECT 1 FROM prefix_leases WHERE pool = ? AND n = ?", {pool, n}) > 0
 end
 
--- [from, upper) 裡的空段（連續的空 n）的第一個 n，最多 count 個，由小到大：已佔用的 n 的下一個 n 沒有被佔用的那些。
+-- The first n of each free run (consecutive free n) in [from, upper), at most count of them, in ascending order: those n whose next n is not occupied.
 local GAP = [[SELECT a.n + 1 AS n FROM prefix_leases a
               WHERE a.pool = ? AND a.n >= ? AND a.n < ?
                 AND NOT EXISTS (SELECT 1 FROM prefix_leases b WHERE b.pool = a.pool AND b.n = a.n + 1)
               ORDER BY a.n LIMIT ?]]
 
--- [from, upper) 裡最多 count 個空段的第一個 n：from 自己空著的話就是第一個。
+-- The first n of at most count free runs in [from, upper): if from itself is free, it is the first.
 local function free_in(from, upper, count)
   local found = {}
   if from >= upper or count < 1 then
@@ -118,16 +118,16 @@ local function free_in(from, upper, count)
   if not taken(from) then
     found[1] = from
   end
-  -- a.n < upper - 1：上界能走索引，找不到時不會一路掃到範圍外。
+  --   a.n < upper - 1: the upper bound can use the index, so when nothing is found it does not scan all the way past the range.
   for _, row in ipairs(sql_query(GAP, {pool, from, upper - 1, count - #found})) do
     found[#found + 1] = row.n
   end
   return found
 end
 
--- 前綴的高 64 位元是 base | (n << (64 - dlen))，在 SQL 裡算：Luau 沒有 64 位元整數。
--- 文字是伺服器解碼 Delegated-IPv6-Prefix 的形式（壓縮、小寫）：前綴最長 /64，低 64 位元一定是 0，
--- 所以尾端至少四個零群，一定是被壓縮的那一段：不含尾端零群的各群（去前導零）加 ::/長度。
+-- The high 64 bits of the prefix are base | (n << (64 - dlen)), computed in SQL: Luau has no 64-bit integers.
+-- The text is the form the server decodes Delegated-IPv6-Prefix to (compressed, lower case): a prefix is at most /64, so the low 64 bits are always 0,
+-- so the end has at least four zero groups, and they are always the compressed part: the groups without the trailing zero groups (leading zeros removed) plus ::/length.
 local CLAIM = [[WITH h AS (SELECT p.pool AS pool, p.dlen AS dlen, p.base | (? << (64 - p.dlen)) AS v
                            FROM prefix_pools p WHERE p.pool = ?)
                 INSERT OR IGNORE INTO prefix_leases (pool, n, prefix, state, username, expires, updated)
@@ -146,7 +146,7 @@ local CLAIM = [[WITH h AS (SELECT p.pool AS pool, p.dlen AS dlen, p.base | (? <<
 
 local start = hash(user) % capacity
 
--- 起點往後 WINDOW 個 n（到池尾繞回 0）裡最多 count 個空段的第一個 n。
+-- The first n of at most count free runs within WINDOW values of n from the start point (wrapping to 0 at the end of the pool).
 local function free_near(count)
   local upper = math.min(start + WINDOW, capacity)
   local found = free_in(start, upper, count)
@@ -158,8 +158,8 @@ local function free_near(count)
   return found
 end
 
--- 整個池裡從起點往後最多 count 個空段的第一個 n；到池尾都不夠就從 0 找到起點。窗口裡沒有空的、也沒有 released 可搶時
--- 用：搶輸再來時候選數加倍，同時進來的人才不會每一輪都搶同一個 n。
+-- The first n of at most count free runs in the whole pool from the start point; if that is not enough by the end of the pool, search from 0 up to the start point. Used when the window has no free n and there is no released row to take:
+-- on a retry after losing a claim the number of candidates doubles, so users arriving at the same time do not all go for the same n every round.
 local function free_anywhere(count)
   local found = free_in(start, capacity, count)
   if #found < count then
@@ -174,15 +174,15 @@ local function claim(n)
   return sql_execute(CLAIM, {n, pool, n, user, now + RESERVE_SECONDS, now}) == 1
 end
 
--- 最舊的 released 列（離線最久的用戶的前綴），走部分索引 (pool, updated)。
+-- The oldest released row (the prefix of the user offline longest), using the partial index (pool, updated).
 local OLDEST = "SELECT n, username, updated FROM prefix_leases WHERE pool = ? AND state = 'released' ORDER BY updated LIMIT ?"
--- 搶它：條件是它還是那個用戶的、還是 released、還是那一次釋放（updated 沒變）。UPDATE OR IGNORE：這個用戶同時的另一個
--- 請求已經拿到一列時，(username, pool) 唯一索引會擋下，當作搶輸，不丟錯誤。
+-- Take it: the condition is that it still belongs to that user, is still released, and is still that same release (updated unchanged). UPDATE OR IGNORE: when another concurrent
+-- request of this user already got a row, the unique index (username, pool) blocks it, which counts as a lost claim and raises no error.
 local STEAL = [[UPDATE OR IGNORE prefix_leases
                 SET username = ?, state = 'reserved', session_id = NULL, nas = NULL, expires = ?, updated = ?
                 WHERE pool = ? AND n = ? AND state = 'released' AND username = ? AND updated = ?]]
 
--- 搶一列最舊的 released。回傳 (搶到了, 有 released 列可搶)。
+-- Take the oldest released row. Returns (won, whether a released row was available to take).
 local function steal(width)
   local oldest = sql_query(OLDEST, {pool, STEAL_CHOICES * width})
   if #oldest == 0 then
@@ -217,13 +217,13 @@ for attempt = 1, ATTEMPTS do
       return give(got[1].prefix)
     end
   end
-  -- 搶輸了：這個 n 剛被別人拿走，或這個用戶同時的另一個請求已經拿到前綴。
+  --   Lost: this n was just taken by someone else, or another concurrent request of this user already got a prefix.
   local again = mine()
   if #again > 0 then
     return give(again[1].prefix)
   end
-  -- 輸的不只一個：同時進來、起點落在同一段的人，都會找到同一個空的 n，每一輪只有一個贏；池越滿，空段越短，
-  -- 一輪輸的人下一輪又都搶同一個空段。所以再找時從往後的空段裡隨機挑一個，候選的個數每輸一次加倍（最多 64）。
+  --   More than one loser: users who arrive at the same time and start in the same segment all find the same free n, and only one wins each round; the fuller the pool, the shorter the free runs,
+  --   and the losers of one round all go for the same free run in the next. So the retry picks at random from the later free runs, and the number of candidates doubles with each loss (up to 64).
   width = math.min(2 ^ attempt, 64)
 end
 

@@ -1,15 +1,15 @@
-# 速率（固網寬頻）：同一個方案，依 BNG 的廠商送不同的速率屬性。
-# 密碼由 sql 處理器驗，速率屬性由 lua 處理器依方案與 client 的風格回。
-# 說明：docs/manual.zh-TW/14-isp-recipes.md〈依 BNG 回速率：rate-limit〉
+# Rates (fixed broadband): one plan, with different rate attributes depending on the BNG's vendor.
+# The sql handler checks the password; the lua handler returns the rate attributes by plan and client style.
+# See: `docs/manual/14-isp-recipes.md` "Return rates by BNG: rate-limit"
 #
 #   cd rradius-server
 #   cargo run --release -- serve --config examples/scenarios/rate-limit/rradius.toml
 #
-# 相對路徑都以這個檔案所在的目錄為準。
+# Relative paths are resolved against the directory that holds this file.
 
 dictionary = "../../../../share/dictionary"
 
-# 有 [auth] 時認證交給下面的串接；這個腳本只處理計費（一律回覆）。
+# With [auth], authentication goes to the chain below; this script handles only accounting (always replies).
 [lua]
 script = "accounting.lua"
 
@@ -19,7 +19,7 @@ secret_raft_file = "raft.secret"
 secret_api_file = "api.secret"
 migrations_dir = "migrations"
 
-# all_accept：依序執行，任一個拒絕就停。先驗密碼，再回速率屬性。
+# all_accept: run in order and stop at the first reject. Check the password first, then return the rate attributes.
 [auth]
 policy = "all_accept"
 
@@ -35,8 +35,8 @@ script = "rate.lua"
 bind = "127.0.0.1"
 status_server = true
 
-# 每個 BNG 一個 client。回哪一種屬性看 nas_styles 表裡這個 client 的風格；
-# 名稱要和那張表的 client 欄位一樣。沒有列在表裡的 client 回 Filter-Id。
+# One client per BNG. Which kind of attribute to return depends on this client's style in the nas_styles table;
+# the name must match the client column of that table. A client not listed in the table gets Filter-Id.
 [[radius.clients]]
 name = "bng-default"
 address = "127.0.0.1"
