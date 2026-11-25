@@ -315,6 +315,18 @@ fn read_lines(name: &str, reader: impl std::io::BufRead, events: &mut Events) ->
     Ok(())
 }
 
+/// Reads the file `path` into `events`. A name that ends in `.gz` (in any letter case) is
+/// decompressed, a file of several gzip members one after the other included; any other file is
+/// read as it is.
+fn read_file(path: &str, events: &mut Events) -> Result<(), String> {
+    let opened = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    if path.to_ascii_lowercase().ends_with(".gz") {
+        read_lines(path, std::io::BufReader::new(flate2::read::MultiGzDecoder::new(opened)), events)
+    } else {
+        read_lines(path, std::io::BufReader::new(opened), events)
+    }
+}
+
 /// A time as RFC 3339 in UTC, with the milliseconds only when there are some.
 fn rfc3339(time: SystemTime) -> String {
     let full = crate::accounting_log::timestamp(time);
@@ -372,14 +384,7 @@ pub fn run(args: &[String]) -> i32 {
     let mut events = Events::default();
     let files: Vec<&str> = if command.files.is_empty() { vec!["-"] } else { command.files.iter().map(String::as_str).collect() };
     for file in files {
-        let read = if file == "-" {
-            read_lines("standard input", std::io::stdin().lock(), &mut events)
-        } else {
-            match std::fs::File::open(file) {
-                Ok(opened) => read_lines(file, std::io::BufReader::new(opened), &mut events),
-                Err(e) => Err(format!("{file}: {e}")),
-            }
-        };
+        let read = if file == "-" { read_lines("standard input", std::io::stdin().lock(), &mut events) } else { read_file(file, &mut events) };
         if let Err(e) = read {
             eprintln!("{e}");
             return 2;
@@ -622,5 +627,75 @@ mod tests {
         assert!(events.add_line("[1,2]").is_err());
         assert!(events.add_line("").is_err());
         Ok(())
+    }
+
+    fn gzip(text: &str) -> Result<Vec<u8>, String> {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        encoder.finish().map_err(|e| e.to_string())
+    }
+
+    /// Reads `bytes` as the file `name` and asks who held 1500 at 10:30 (Log File Opening).
+    fn read_named(name: &str, bytes: &[u8]) -> Result<Result<usize, String>, String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        let mut events = Events::default();
+        let read = read_file(&path.to_string_lossy(), &mut events);
+        Ok(read.map(|()| events.holds_at(Ipv4Addr::new(198, 51, 100, 7), 1500, at("2026-11-25T10:30:00Z").unwrap_or(UNIX_EPOCH)).holds.len()))
+    }
+
+    fn session_text() -> String {
+        session().join("\n") + "\n"
+    }
+
+    /// A file is read by its name: `.gz` in any letter case is decompressed, the rest is not
+    /// (Log File Opening, reading by name).
+    #[test]
+    fn test_files_are_read_by_name() -> Result<(), String> {
+        let text = session_text();
+        let packed = gzip(&text)?;
+        assert_eq!(read_named("a.jsonl.gz", &packed)?, Ok(1));
+        assert_eq!(read_named("a.JSONL.GZ", &packed)?, Ok(1));
+        assert_eq!(read_named("a.jsonl", text.as_bytes())?, Ok(1));
+        // A compressed file without the extension is plain text, and not JSON.
+        assert!(read_named("a.gz.jsonl", &packed)?.is_err());
+        Ok(())
+    }
+
+    /// Several gzip members one after the other are one file; the block is in the second.
+    #[test]
+    fn test_gzip_members_one_after_the_other() -> Result<(), String> {
+        let lines = session();
+        let mut both = gzip(&(lines[..1].join("\n") + "\n"))?;
+        both.extend(gzip(&(lines[1..].join("\n") + "\n"))?);
+        assert_eq!(read_named("a.jsonl.gz", &both)?, Ok(1));
+        Ok(())
+    }
+
+    /// Data that is not gzip, or that ends early, is an error that names the file.
+    #[test]
+    fn test_damaged_gzip_is_an_error() -> Result<(), String> {
+        let text = session_text();
+        let Err(message) = read_named("a.jsonl.gz", text.as_bytes())? else {
+            return Err("plain text in a .gz file was accepted".to_string());
+        };
+        assert!(message.contains("a.jsonl.gz"), "{message}");
+        let packed = gzip(&text)?;
+        let Err(message) = read_named("b.jsonl.gz", &packed[..packed.len() / 2])? else {
+            return Err("a truncated gzip file was accepted".to_string());
+        };
+        assert!(message.contains("b.jsonl.gz"), "{message}");
+        Ok(())
+    }
+
+    /// A missing file is an error that names it, with or without the extension.
+    #[test]
+    fn test_missing_files_are_named() {
+        let mut events = Events::default();
+        for name in ["/nonexistent/log.jsonl", "/nonexistent/log.jsonl.gz"] {
+            assert!(read_file(name, &mut events).is_err_and(|e| e.contains(name)));
+        }
     }
 }

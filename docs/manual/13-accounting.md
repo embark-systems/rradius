@@ -444,7 +444,7 @@ $ echo $?
 1
 ```
 
-- **時間要有時區**，例如 `2026-11-25T10:00:00Z` 或 `2026-11-25T18:00:00+08:00`。`--file` 可以給多次，沒給或給 `-` 就讀標準輸入。命令不讀 `.gz`，壓縮檔用 `zcat accounting.jsonl.2.gz | rradiusd accounting find --ip … --at …`。
+- **時間要有時區**，例如 `2026-11-25T10:00:00Z` 或 `2026-11-25T18:00:00+08:00`。`--file` 可以給多次，沒給或給 `-` 就讀標準輸入。檔名以 `.gz` 結尾的 `--file` 會自動解壓（logrotate 輪替出來的 `accounting.jsonl.2.gz` 直接給 `--file` 就行，幾個 gzip 檔串在一起也可以）；標準輸入不解壓，要用 `zcat accounting.jsonl.2.gz | rradiusd accounting find --ip … --at …`。壓縮檔損毀或被截斷時，命令以結束碼 2 結束並指出檔名。
 - **誰持有：** `IP-Port-Range-Alloc` 為 `Allocation` 的區段開始持有，`Deallocation` 結束持有；釋放沒帶起訖埠時，結束同一對象先前分配的全部。同一個 client 與 `Acct-Session-Id` 的 `Stop` 也結束它的持有——RFC 沒有規定這一點，這是命令的決定，輸出的 `ended_by` 會標成 `stop`，你可以據此判斷。沒有釋放也沒有 Stop 的，輸出 `ended ... still held`（JSON 的 `released` 是 `null`）。
 - **時間依據：** 事件時間優先取 `Event-Timestamp`，沒有的話取收到時間減 `Acct-Delay-Time`，再沒有就是收到時間；輸出的 `time_source` 標明是哪一種。NAS 重送或排隊會讓收到的時間比事件晚，邊界附近的結果要以 `time_source` 為準判斷。
 - **不假設有用戶名：** 輸出只列那一行有的識別屬性（`User-Name`、`Acct-Session-Id`、`Framed-IP-Address`、`NAS-Identifier`、`NAS-IP-Address`、`client`）。

@@ -1418,7 +1418,7 @@ rradiusd accounting find --ip <公網 IPv4> --port <埠> --at <時間> [--file <
 ```
 
 - `--at` 是 RFC 3339，要有時區，例如 `2026-11-25T10:00:00Z` 或 `2026-11-25T18:00:00+08:00`，可以帶小數秒。
-- `--file` 可以給多次；`-`，或完全不給 `--file`，讀標準輸入。壓縮檔用 `zcat accounting.jsonl.2.gz | rradiusd accounting find …`（命令本身不讀 `.gz`）。檔案不必先依時間排好：命令依事件時間自己排序，但含 `IP-Port-Range` 與 `Stop` 的行會整批載入記憶體，所以先依日期選好檔案。
+- `--file` 可以給多次；`-`，或完全不給 `--file`，讀標準輸入。檔名以 `.gz` 結尾的 `--file` 會自動解壓（可由幾個 gzip 串成；損毀或被截斷時結束碼 2 並指出檔名）；標準輸入不解壓，要用 `zcat accounting.jsonl.2.gz | rradiusd accounting find …`。檔案不必先依時間排好：命令依事件時間自己排序，但含 `IP-Port-Range` 與 `Stop` 的行會整批載入記憶體，所以先依日期選好檔案。
 - **持有規則（RFC 8045）：** `IP-Port-Range-Alloc` 是 `Allocation` 時開始持有該公網位址與 `Range-Start` 到 `Range-End` 的埠；`Deallocation` 時結束同一對象（同一個 `IP-Port-Range-Local-Id`，沒有的話同一個 client 與 `Acct-Session-Id`，再沒有的話同一個 client 與 `User-Name`、`Framed-IP-Address`）、同一位址且埠有重疊的持有，整筆結束（不拆分）；釋放沒有起訖埠時，結束該對象的全部持有。**同一個 client 與 `Acct-Session-Id` 的 `Stop` 也會結束它的全部持有**——RFC 沒有規定這一點，這是本命令的決定，結果的 `ended_by` 會標成 `stop`。沒有釋放也沒有 Stop 的，視為仍持有。
 - **時間：** 每一行的事件時間依序取 `Event-Timestamp`，否則取 `time` 減 `Acct-Delay-Time`，否則取 `time`；結果的 `time_source` 標明用的是 `Event-Timestamp`、`received-minus-delay` 或 `received`。
 - **輸出：** 每個持有一行；`--json` 輸出一個陣列（鍵 `ext_ip`、`port_start`、`port_end`、`allocated`、`released`、`ended_by`、`time_source`、`identity`、`attributes`）。`attributes` 只放那一行有的 `User-Name`、`Acct-Session-Id`、`Framed-IP-Address`、`NAS-Identifier`、`NAS-IP-Address` 與 `client`，**不假設一定有用戶名**。

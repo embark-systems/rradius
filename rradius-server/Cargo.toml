@@ -19,6 +19,8 @@ rradius-core = { path = "../rradius-core", features = ["test-support"] }
 hiqlite = { version = "0.16.0", default-features = false, features = ["sqlite", "auto-heal", "webpki-roots"] }
 hmac = "0.13"
 libc = "0.2"
+# Compresses the log that `accounting find` reads in a test.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 md-5 = "0.11.0"
 rcgen = "0.14"
 ring = "0.17"
