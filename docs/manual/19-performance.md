@@ -47,7 +47,7 @@
 $ rradiusd tuning --config rradius.toml
 ```
 
-用法是 `rradiusd tuning [--config <path>]`。沒有 `--config` 時讀 `/etc/rradius/rradius.toml`；讀不到就印一行說明，改用全部預設值來算。參數或指定的設定檔有錯時結束碼 2，其他情況是 0。它有 Linux、macOS、FreeBSD 三種平台的建議；其他平台只印一行「no advice for this platform」。
+用法是 `rradiusd tuning [--config <path>]`，`--config` 可以不給。設定檔只用來把建議算得貼近你的設定（例如 `recv_buffer_bytes`、`sockets`、連線上限）；不給時讀預設路徑（`rradiusd --version` 第二行，建置時依前綴決定，一般是 `/etc/rradius/rradius.toml`，FreeBSD port 是 `/usr/local/etc/rradius/rradius.toml`），讀不到就印一行說明，改用全部預設值來算，系統層面的建議照樣給。指定了 `--config` 就一定要讀得進來。參數或指定的設定檔有錯時結束碼 2，其他情況是 0。它有 Linux、macOS、FreeBSD 三種平台的建議；其他平台只印一行「no advice for this platform」。
 
 下面是第 17 章那份實驗設定在 macOS 上的實際輸出：
 
