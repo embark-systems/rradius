@@ -1,4 +1,4 @@
-# 13 計費與 session
+# 計費與 session
 
 > 本章讓你做到：
 > - 收下 NAS 的計費請求，寫進資料表之後才回覆
@@ -7,7 +7,7 @@
 > - 把每一筆計費寫成本機的 JSON 記錄檔
 > - 用 `session` 指令查詢上線中的 session
 
-前置條件：做過[第 03 章](03-quick-start.md)，手上有 `~/rradius-lab/quick-start`；會寫簡單的 Lua 腳本（[第 10 章](10-lua-policies.md)）。本章的指令都在 `~/rradius-lab/quick-start` 執行，伺服器要在跑。
+前置條件：做過[第 3 章](03-quick-start.md)，手上有 `~/rradius-lab/quick-start`；會寫簡單的 Lua 腳本（[第 10 章](10-lua-policies.md)）。本章的指令都在 `~/rradius-lab/quick-start` 執行，伺服器要在跑。
 
 本章小節：
 
@@ -29,14 +29,14 @@
 
 NAS 在 session 開始、進行中、結束時各送一個 Accounting-Request（RFC 2866），說明誰在線、用了多久、傳了多少資料。rradius 收到之後：
 
-1. 用來源 IP 比對 `[[radius.clients]]`，再用那個用戶端的共用密碼檢查請求的 Authenticator。比對不到或檢查不過，直接丟掉，不回覆（第 05 章）。
-2. 重送偵測：同一個請求在處理中又到，丟掉；已經回覆過的，10 秒內再到就重送原來的回覆，不再跑腳本（第 05 章）。
+1. 用來源 IP 比對 `[[radius.clients]]`，再用那個用戶端的共用密碼檢查請求的 Authenticator。比對不到或檢查不過，直接丟掉，不回覆（第 5 章）。
+2. 重送偵測：同一個請求在處理中又到，丟掉；已經回覆過的，10 秒內再到就重送原來的回覆，不再跑腳本（第 5 章）。
 3. 交給最上層腳本（`[lua] script`），`phase` 是 `accounting`。驗證鏈（`[auth]`）不處理計費。
 4. 腳本回傳 `accept`，才回 Accounting-Response。
 
 最後一點是整個計費設計的核心：**回覆就等於「我記下來了」**。NAS 沒收到回覆會重送（retransmit），重送幾次、隔多久由 NAS 決定。所以 rradius 只在確定寫好之後才回覆，寫不進去就不回，讓 NAS 再送一次。
 
-計費腳本看得到請求裡的每一個屬性，名稱照字典（第 06 章）。列舉型的屬性用數字比較，例如 `Acct-Status-Type`：
+計費腳本看得到請求裡的每一個屬性，名稱照字典（第 6 章）。列舉型的屬性用數字比較，例如 `Acct-Status-Type`：
 
 | 值 | 意思 |
 | --- | --- |
@@ -189,7 +189,7 @@ migration 套用過就不能再改，要改表結構時新增下一個編號的�
 | `acct-on`、`acct-off` | Accounting-On、Accounting-Off |
 | `session` | PAP 登入、Start、Stop，三個用同一個 session ID |
 
-每次執行 `rradius-bench run` 都產生新的 session ID，所以分開送的 `acct-start` 與 `acct-stop` 是兩個不同的 session。要測一個完整的 session，用 `session`（第 03 章）。
+每次執行 `rradius-bench run` 都產生新的 session ID，所以分開送的 `acct-start` 與 `acct-stop` 是兩個不同的 session。要測一個完整的 session，用 `session`（第 3 章）。
 
 送兩個 Start，再送 Accounting-On：
 
@@ -309,7 +309,7 @@ $ rradiusd session show --config rradius.toml --json nobody
 
 - 沒有 `--json` 時，每一列是一段 `欄位=值`，照 SELECT 的欄位順序，NULL 是空值，列與列之間空一行。
 - `--json` 印出一個 JSON 陣列：NULL 是 `null`，整數與實數是數字，文字是字串，BLOB 是小寫的十六進位字串。
-- `show` 的名稱照預設鏈的 `[auth.username]` 正規化，跟 `user` 指令一樣（第 07 章）。
+- `show` 的名稱照預設鏈的 `[auth.username]` 正規化，跟 `user` 指令一樣（第 7 章）。
 - 指令透過叢集的 API 埠讀取，不啟動節點，也不建立資料目錄，但伺服器一定要在跑。讀取是一致讀：讀到的是叢集已經確認的資料。
 
 結束碼：
@@ -330,7 +330,7 @@ $ rradiusd session show --config rradius.toml --json nobody
 | `show = "… WHERE username = ?2"` | `rradius.toml: sessions.show: only ?1 (the user name) can be used` |
 | 沒有 `[sessions]` 或沒有那個鍵 | `sessions.show is not set in rradius.toml` |
 
-`session` 指令只是查詢。要把在線的人數變成 Prometheus 指標，用具名查詢（[第 09 章](09-external-databases.md)）。
+`session` 指令只是查詢。要把在線的人數變成 Prometheus 指標，用具名查詢（[第 9 章](09-external-databases.md)）。
 
 ## 計費記錄檔
 
@@ -402,7 +402,7 @@ $ ls -l log
 
 `SIGHUP` 之後的紀錄寫進新建的 `accounting.log`；改名之後、`SIGHUP` 之前的紀錄仍然寫進舊檔案（已改名的那個），不會遺失。reload 時重新開檔失敗的話，記一次 `stage="open"` 的失敗並警告，繼續寫原來的檔案；新的 `file` 所在的目錄不存在時，reload 失敗，設定不變。
 
-用 logrotate 時，在 `postrotate` 送 `SIGHUP`，不要用 `copytruncate`（會漏行）。deb、rpm 套件附的 `/etc/logrotate.d/rradius` 就是這樣寫的，它輪替的是 `/var/log/rradius/*.jsonl`，所以套件安裝時把 `file` 設在那個目錄、副檔名用 `.jsonl`，就會一起被輪替（第 02 章）。
+用 logrotate 時，在 `postrotate` 送 `SIGHUP`，不要用 `copytruncate`（會漏行）。deb、rpm 套件附的 `/etc/logrotate.d/rradius` 就是這樣寫的，它輪替的是 `/var/log/rradius/*.jsonl`，所以套件安裝時把 `file` 設在那個目錄、副檔名用 `.jsonl`，就會一起被輪替（第 2 章）。
 
 **停止時。** 收到 SIGTERM 或 SIGINT 時，伺服器先停止收請求、等處理中的請求做完，再把佇列裡剩下的寫完，最多等 5 秒。
 
@@ -432,7 +432,7 @@ Accounting log
 
 ### 公網位址與埠的反查
 
-營運商用 CGNAT（許多用戶共用一個公網位址）時，被問到「某個時刻，這個公網位址與埠是誰」，答案要從記錄檔找。`rradiusd accounting find` 只讀記錄檔，不連叢集、不需要設定檔，所以可以對備份出來的檔案執行：
+營運商用 CGNAT（許多用戶共用一個公網位址）時，被問到「某個時刻，這個公網位址與埠是誰」，答案要從記錄檔找。`rradiusd accounting find` 只讀取記錄檔，不連叢集、不需要設定檔，所以可以對備份出來的檔案執行：
 
 ```console
 $ rradiusd accounting find --ip 198.51.100.7 --port 1500 --at 2026-11-25T10:30:00Z --file accounting.jsonl
@@ -444,20 +444,20 @@ $ echo $?
 1
 ```
 
-- **時間要有時區**，例如 `2026-11-25T10:00:00Z` 或 `2026-11-25T18:00:00+08:00`。`--file` 可以給多次，沒給或給 `-` 就讀標準輸入。檔名以 `.gz` 結尾的 `--file` 會自動解壓（logrotate 輪替出來的 `accounting.jsonl.2.gz` 直接給 `--file` 就行，幾個 gzip 檔串在一起也可以）；標準輸入不解壓，要用 `zcat accounting.jsonl.2.gz | rradiusd accounting find --ip … --at …`。壓縮檔損毀或被截斷時，命令以結束碼 2 結束並指出檔名。
-- **誰持有：** `IP-Port-Range-Alloc` 為 `Allocation` 的區段開始持有，`Deallocation` 結束持有；釋放沒帶起訖埠時，結束同一對象先前分配的全部。同一個 client 與 `Acct-Session-Id` 的 `Stop` 也結束它的持有——RFC 沒有規定這一點，這是命令的決定，輸出的 `ended_by` 會標成 `stop`，你可以據此判斷。沒有釋放也沒有 Stop 的，輸出 `ended ... still held`（JSON 的 `released` 是 `null`）。
+- **時間要有時區**，例如 `2026-11-25T10:00:00Z` 或 `2026-11-25T18:00:00+08:00`。`--file` 可以給多次，沒給或給 `-` 就讀標準輸入。檔名以 `.gz` 結尾的 `--file` 會自動解壓（logrotate 輪替出來的 `accounting.jsonl.2.gz` 直接給 `--file` 就行，幾個 gzip 檔串在一起也可以）；標準輸入不解壓，要用 `zcat accounting.jsonl.2.gz | rradiusd accounting find --ip … --at …`。壓縮檔損毀或被截斷時，指令以結束碼 2 結束並指出檔名。
+- **誰持有：** `IP-Port-Range-Alloc` 為 `Allocation` 的區段開始持有，`Deallocation` 結束持有；釋放沒帶起訖埠時，結束同一對象先前分配的全部。同一個 client 與 `Acct-Session-Id` 的 `Stop` 也結束它的持有——RFC 沒有規定這一點，這是指令的決定，輸出的 `ended_by` 會標成 `stop`，你可以據此判斷。沒有釋放也沒有 Stop 的，輸出 `ended ... still held`（JSON 的 `released` 是 `null`）。
 - **時間依據：** 事件時間優先取 `Event-Timestamp`，沒有的話取收到時間減 `Acct-Delay-Time`，再沒有就是收到時間；輸出的 `time_source` 標明是哪一種。NAS 重送或排隊會讓收到的時間比事件晚，邊界附近的結果要以 `time_source` 為準判斷。
 - **不假設有用戶名：** 輸出只列那一行有的識別屬性（`User-Name`、`Acct-Session-Id`、`Framed-IP-Address`、`NAS-Identifier`、`NAS-IP-Address`、`client`）。
 - **結束碼：** 0 有找到、1 沒有、2 是參數或檔案有誤（訊息指出檔名與行號）。
 
-**保存期限。** 命令不保存任何資料。記錄檔留多久，由輪替的工具（logrotate、newsyslog）與企業版匯出的 `keep_days` 決定；各地對營運商日誌的法定保存期限不同，由你自己決定，rradius 不設預設值也不替你刪檔。
+**保存期限。** 指令不保存任何資料。記錄檔留多久，由輪替的工具（logrotate、newsyslog）與企業版匯出的 `keep_days` 決定；各地對營運商日誌的法定保存期限不同，由你自己決定，rradius 不設預設值也不替你刪檔。
 
 > **未實機驗證：** 這個功能沒有對真實的 CGN 或 BNG 試過。測試用的封包是照 RFC 8045 的屬性定義手工組出來的，所以各家設備實際送什麼（例如是否有 `Ext-IPv4-Addr`、釋放是否只送一部分埠、`Stop` 時是否另外送釋放）要在你的設備上確認。
 
 **已知限制：**
 
 - 釋放只要與持有的埠有重疊就整筆結束，不拆分；設備若只釋放一部分埠，剩下的埠在查詢時會被當成已釋放，也就是會漏報。
-- 沒有 `Ext-IPv4-Addr`、起訖埠或任何識別的區段無法比對，命令在標準錯誤印出這類區段的個數。
+- 沒有 `Ext-IPv4-Addr`、起訖埠或任何識別的區段無法比對，指令在標準錯誤印出這類區段的個數。
 - 只帶內網位址、要再跟 BNG 的 session 對起來的獨立 CGN，這一版不支援；IPv6 公網位址不支援。
 - 事件依時間排序，整批載入記憶體：記憶體隨相關行（含 `IP-Port-Range` 與 `Stop`）的數量增加，先依日期選好檔案再查。
 
@@ -604,7 +604,7 @@ TACACS+ 的計費請求也交給最上層腳本，`phase` 是 `accounting`，`pr
 
 **症狀：** `rradius-bench` 是 `timeouts 1`，伺服器日誌什麼都沒有。
 **原因：** 請求在腳本之前就被丟掉了，最常見的是共用密碼不一致（`status` 的 `Discarded: invalid` 增加），或來源不是設定裡的用戶端（`Discarded: unknown client`）。
-**解法：** 見[第 05 章](05-radius-clients.md)。
+**解法：** 見[第 5 章](05-radius-clients.md)。
 
 **症狀：** 同一個 session 在計費表裡有兩列，或流量被算了兩次。
 **原因：** 腳本不能重複執行：用了單純的 `INSERT`，或把流量用加的。

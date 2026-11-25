@@ -256,7 +256,7 @@ SQL 字串常值裡的 `?` 不算參數。實測 `sql_query("SELECT '?' AS q")` 
 
 ## 外部資料庫
 
-`db_query` 與 `db_execute` 用 `[databases.<name>]` 設定的 PostgreSQL 或 MySQL，設定見[第 09 章](09-external-databases.md)。
+`db_query` 與 `db_execute` 用 `[databases.<name>]` 設定的 PostgreSQL 或 MySQL，設定見[第 9 章](09-external-databases.md)。
 
 ### db_query
 
@@ -440,7 +440,7 @@ wpa_pmk(passphrase, ssid) -> 字串
 password_verify(stored, given) -> 布林
 ```
 
-- **參數：** `stored`，存放的密碼，格式與 sql 處理器的密碼欄位相同（`{crypt}`、`{clear}` 等前綴與不帶前綴的雜湊，見第 07 章）；`given`，使用者輸入的密碼。
+- **參數：** `stored`，存放的密碼，格式與 sql 處理器的密碼欄位相同（`{crypt}`、`{clear}` 等前綴與不帶前綴的雜湊，見第 7 章）；`given`，使用者輸入的密碼。
 - **回傳：** 相符是 `true`。任何一個是 `nil` 時是 `false`；格式不認得也是 `false`，不會出錯。
 - **注意：** 不會累計失敗次數，`[auth.lockout]` 管不到。腳本自己比對密碼時，要自己限制猜測次數。
 

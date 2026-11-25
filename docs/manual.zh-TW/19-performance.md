@@ -1,4 +1,4 @@
-# 19 效能調校與壓測
+# 效能調校與壓測
 
 > 本章讓你做到：
 > - 用 `tuning` 找出作業系統該調高的限制，知道建議值是怎麼算出來的
@@ -6,7 +6,7 @@
 > - 用 `rradius-bench` 量出自己機器的容量，並判斷量到的數字可不可信
 > - 用 repo 附的 `benchmarks/` 設定重現一次量測
 
-前置條件：做完[第 03 章](03-quick-start.md)，會用 `rradius-bench` 送一筆登入；讀過[第 17 章](17-monitoring.md)的指標與 `status`。
+前置條件：做完[第 3 章](03-quick-start.md)，會用 `rradius-bench` 送一筆登入；讀過[第 17 章](17-monitoring.md)的指標與 `status`。
 
 本章小節：
 
@@ -41,7 +41,7 @@
 
 ## 用 tuning 檢查作業系統
 
-`tuning` 讀這台機器的系統值與你的設定檔，告訴你哪些限制該調高、調到多少、怎麼調。它只讀不改：不改系統設定、不啟動節點、不開任何埠。
+`tuning` 讀這台機器的系統值與你的設定檔，告訴你哪些限制該調高、調到多少、怎麼調。它只讀取不改：不改系統設定、不啟動節點、不開任何埠。
 
 ```console
 $ rradiusd tuning --config rradius.toml
@@ -144,7 +144,7 @@ These suggestions are unmeasured starting points: apply them, then confirm with 
 | `radius.sockets` | Linux：工作執行緒數；其他平台：`1` | 要重啟 | 每個位址與埠開幾個接收 socket |
 | `radius.recv_buffer_bytes` | 不設（用系統預設） | 要重啟 | 每個 RADIUS socket 的 `SO_RCVBUF`，4096 到 1073741824 位元組 |
 
-完整的鍵表在[附錄 A](90-config-reference.md)。這兩個鍵屬於 `[radius]`，`[radius]` 的其他設定在[第 05 章](05-radius-clients.md)。
+完整的鍵表在[附錄 A](90-config-reference.md)。這兩個鍵屬於 `[radius]`，`[radius]` 的其他設定在[第 5 章](05-radius-clients.md)。
 
 **`sockets`：** 在 Linux 上，同一個埠可以開好幾個 socket，由核心把封包分給它們，讓每個工作執行緒都能收。核心是依封包的來源分配的，**同一個來源的封包總是進同一個 socket**，所以只有一台 NAS 時，多開 socket 幫不上忙。（這是 Linux 核心的行為，本章沒有在 Linux 上實測。）其他平台不會這樣分配封包，所以只能是 1：
 
@@ -256,9 +256,9 @@ warnings:
 
 ## rradius-bench 的用法
 
-`rradius-bench` 是 repo 裡附的 RADIUS 與 TACACS+ 壓測工具。它有兩個子命令：`run` 對伺服器送負載，`calibrate` 量工具自己。完整的旗標見[附錄 B](91-command-reference.md)，或執行 `rradius-bench run --help`。
+`rradius-bench` 是 repo 裡附的 RADIUS 與 TACACS+ 壓測工具。它有兩個子指令：`run` 對伺服器送負載，`calibrate` 量工具自己。完整的旗標見[附錄 B](91-command-reference.md)，或執行 `rradius-bench run --help`。
 
-> **注意：** deb、rpm、FreeBSD 套件與 Docker 映像只裝 `rradiusd`，不含 `rradius-bench`，要從原始碼建置（第 02 章）。
+> **注意：** deb、rpm、FreeBSD 套件與 Docker 映像只裝 `rradiusd`，不含 `rradius-bench`，要從原始碼建置（第 2 章）。
 
 ### 負載的寫法
 
@@ -429,7 +429,7 @@ $ rradius-bench run --server 127.0.0.1 --auth-port 1812 --secret bench-secret \
 - **固定速率才看得出某個負載下的延遲。** 每秒 20000 筆時 p99 只有 0.07 ms，比固定並行量到的低很多，因為沒有人為的排隊。
 - **計費和登入同時跑時，看登入的延遲有沒有被拖累。** 這裡 1000/s 的登入 p99 是 0.88 ms，比單獨跑時高。
 - **EAP 一個對話有好幾個來回**，`rounds per finished conversation` 就是來回數；速率數的是對話，不是封包。
-- **TACACS+ 那一行的 `server counters: auth 0` 不是錯誤。** `--metrics-url` 只讀 RADIUS 的計數，TACACS+ 的請求要看伺服器的 `rradius_tacacs_requests_total`。
+- **TACACS+ 那一行的 `server counters: auth 0` 不是錯誤。** `--metrics-url` 只讀取 RADIUS 的計數，TACACS+ 的請求要看伺服器的 `rradius_tacacs_requests_total`。
 
 **為什麼這些數字不能直接比較：**
 

@@ -1,4 +1,4 @@
-# 90 附錄 A：設定參考
+# 附錄 A：設定參考
 
 > 本章讓你做到：
 > - 查到 `rradiusd` 每一個設定鍵的型別、預設值、是否必填與意思
@@ -73,7 +73,7 @@ $ rradiusd config show --config rradius.toml
 | 區段 | 必要 | 省略時 | reload | 主章 |
 | --- | --- | --- | --- | --- |
 | `dictionary` | 是 | 不能省略 | 重啟 | [06](06-dictionary.md) |
-| `include` | | 只讀這一個檔案 | 可 | [04](04-configuration.md) |
+| `include` | | 只讀取這一個檔案 | 可 | [04](04-configuration.md) |
 | `[lua]` | 是 | `check` 失敗：`the [lua] section is required` | 可（`max_memory_mb` 要重啟） | [10](10-lua-policies.md) |
 | `[cluster]` | 是 | `check` 失敗：`the [cluster] section is required` | 重啟 | [16](16-cluster.md) |
 | `[metrics]` | | 不開 HTTP 埠：沒有 `/metrics`、`/livez`、`/readyz`，`status` 指令也讀不到資料 | 重啟 | [17](17-monitoring.md) |
@@ -131,7 +131,7 @@ secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 `include` 的規則（`config.rs`）：
 
 - 萬用字元 `*`、`?` 只能出現在最後一段檔名，例如 `conf.d/*.toml`；目錄名稱不能有萬用字元。
-- 一個名稱展開後依路徑排序；萬用字元不配對以 `.` 開頭的檔名；同一個檔案只讀一次；主檔自己會被略過。
+- 一個名稱展開後依路徑排序；萬用字元不配對以 `.` 開頭的檔名；同一個檔案只讀取一次；主檔自己會被略過。
 - 被引入的檔案最多 1000 個，每個最多 1048576 位元組（1 MiB）。
 - 被引入的檔案要以表（`[section]`）開頭，不能再寫 `include`。
 - 主檔已經宣告的表，被引入的檔案不能再宣告一次，否則得到 `duplicate key`。

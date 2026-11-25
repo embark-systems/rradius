@@ -1,4 +1,4 @@
-# 10 用 Lua 寫政策
+# 用 Lua 寫政策
 
 > 本章讓你做到：
 > - 知道腳本什麼時候執行、回傳值代表什麼
@@ -7,7 +7,7 @@
 > - 寫出可以重送的計費腳本
 > - 從腳本呼叫白名單上的 HTTP API，並守住執行時間、記憶體與資料庫等待的限制
 
-前置條件：照[第 03 章](03-quick-start.md)跑過 quick-start；讀過[第 07 章](07-users-and-chains.md)，知道驗證鏈與處理器。本章只寫用法，每個函式完整的參數、回傳值與錯誤訊息在[附錄 D](93-lua-reference.md)。
+前置條件：照[第 3 章](03-quick-start.md)跑過 quick-start；讀過[第 7 章](07-users-and-chains.md)，知道驗證鏈與處理器。本章只寫用法，每個函式完整的參數、回傳值與錯誤訊息在[附錄 D](93-lua-reference.md)。
 
 本章小節：
 
@@ -114,7 +114,7 @@ set_attr('Session-Timeout', 3600)
 return 'accept'
 ```
 
-存成 `policy.lua`，檢查設定，再啟動伺服器（同第 03 章）：
+存成 `policy.lua`，檢查設定，再啟動伺服器（同第 3 章）：
 
 ```console
 $ rradiusd check --config rradius.toml
@@ -181,7 +181,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 
 ## 讀取請求的屬性
 
-`get_attr(name)` 回傳請求裡第一個叫這個名字的屬性；沒有就是 `nil`。名稱就是字典裡的名稱（第 06 章），大小寫要一致。
+`get_attr(name)` 回傳請求裡第一個叫這個名字的屬性；沒有就是 `nil`。名稱就是字典裡的名稱（第 6 章），大小寫要一致。
 
 值的型別依字典裡的型別而定：
 
@@ -297,7 +297,7 @@ sql_execute('INSERT INTO last_login (username, at, client) VALUES (?, ?, ?) ' ..
 
 實測：`query_timeout_ms = 200` 時，一段要跑很久的查詢讓 `rradius-bench` 得到 `timeouts 1`，`Discarded: database` 從 0 變 1。
 
-一個請求裡的所有資料庫呼叫（包括第 09 章的 `db_query`、`db_execute`）共用同一個 `query_timeout_ms`：第二個呼叫只能用第一個剩下的時間。外部資料庫的用法在第 09 章，每個函式的參數與錯誤在附錄 D。
+一個請求裡的所有資料庫呼叫（包括第 9 章的 `db_query`、`db_execute`）共用同一個 `query_timeout_ms`：第二個呼叫只能用第一個剩下的時間。外部資料庫的用法在第 9 章，每個函式的參數與錯誤在附錄 D。
 
 ## 用 migration 建立資料表
 
@@ -368,13 +368,13 @@ return 'ignore'        -- 不表示意見：交給下一個處理器（sql）比
 - `auth_user` 只有在驗證鏈裡才有值。它是 `[auth.username]` 整理過的名稱，查資料表時用它。
 - `lua` 處理器只在登入時執行。計費一律交給最上層腳本。
 
-> **警告：** `first_match` 的鏈裡，`lua` 處理器回傳 `'accept'` 就直接接受，後面的處理器不再比對密碼。實測：腳本對 `guest` 回傳 `'accept'`，任何密碼都能登入。只做規則的腳本，該放行時回傳 `'ignore'`；要兩關都過，改用 `policy = "all_accept"`（第 07 章）。
+> **警告：** `first_match` 的鏈裡，`lua` 處理器回傳 `'accept'` 就直接接受，後面的處理器不再比對密碼。實測：腳本對 `guest` 回傳 `'accept'`，任何密碼都能登入。只做規則的腳本，該放行時回傳 `'ignore'`；要兩關都過，改用 `policy = "all_accept"`（第 7 章）。
 
-腳本真的自己比對了密碼（例如用 `password_verify` 或呼叫 API）時，在處理器加上 `verifies_password = true`，驗證鏈才把它的接受當成「密碼已比對」。PEAP、TTLS 的內層登入需要這一點，細節在第 07 章與[第 11 章](11-eap.md)。
+腳本真的自己比對了密碼（例如用 `password_verify` 或呼叫 API）時，在處理器加上 `verifies_password = true`，驗證鏈才把它的接受當成「密碼已比對」。PEAP、TTLS 的內層登入需要這一點，細節在第 7 章與[第 11 章](11-eap.md)。
 
 ## 兩步登入：回 Access-Challenge
 
-腳本回傳 `'challenge'` 時，伺服器送 Access-Challenge，NAS 會再問使用者一次（例如一次性密碼），第二個 Access-Request 帶回同一個 `State`。
+腳本回傳 `'challenge'` 時，伺服器送 Access-Challenge，NAS 會再問使用者一次（例如驗證碼），第二個 Access-Request 帶回同一個 `State`。
 
 ```lua
 -- policy.lua（片段）

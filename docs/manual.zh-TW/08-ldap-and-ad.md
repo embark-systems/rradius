@@ -1,4 +1,4 @@
-# 08 接上 LDAP 與 Active Directory
+# 接上 LDAP 與 Active Directory
 
 > 本章讓你做到：
 > - 讓使用者用公司目錄（LDAP 或 Active Directory）的帳號密碼登入
@@ -6,7 +6,7 @@
 > - 用 TLS 安全地連到目錄，目錄故障時知道伺服器會怎麼做
 > - 在 Active Directory 環境用 Netlogon 驗證 MS-CHAPv2 與 PEAP
 
-前置條件：讀過[第 07 章](07-users-and-chains.md)，知道驗證鏈、處理器與 `first_match`／`all_accept`。需要一台 LDAP 伺服器或 Active Directory 網域控制站，以及一個能搜尋使用者的服務帳號。
+前置條件：讀過[第 7 章](07-users-and-chains.md)，知道驗證鏈、處理器與 `first_match`／`all_accept`。需要一台 LDAP 伺服器或 Active Directory 網域控制站，以及一個能搜尋使用者的服務帳號。
 
 本章小節：
 
@@ -54,7 +54,7 @@
 
 群組是 `ou=groups,dc=example,dc=com` 底下的 `groupOfNames`。
 
-伺服器的其他設定照[第 03 章](03-quick-start.md)的 quick-start（單機叢集、一個 `127.0.0.1` 的用戶端）。登入測試用 `rradius-bench`，共同的參數省略成 `…`。
+伺服器的其他設定照[第 3 章](03-quick-start.md)的 quick-start（單機叢集、一個 `127.0.0.1` 的用戶端）。登入測試用 `rradius-bench`，共同的參數省略成 `…`。
 
 > **未實機驗證：** 沒有在真正的 Windows Server Active Directory 上測過。LDAP 的部分在 OpenLDAP 測過；netlogon 的部分在 Samba AD 網域控制站測過。
 
@@ -111,7 +111,7 @@ $ chmod 600 ldap.secret
 ```
 
 - `{user}` 代入之前會依 RFC 4515 跳脫（`*`、`(`、`)`、`\` 與 NUL 換成 `\2a` 這類寫法），使用者名稱改變不了搜尋條件的結構。（依程式碼，本章沒有另外測。）
-- 代入的是驗證鏈整理後的帳號名稱。上面的 `[auth.username]` 讓 `CORP\Alice`、`alice@example.com` 都用 `alice` 搜尋（[第 07 章](07-users-and-chains.md)）。
+- 代入的是驗證鏈整理後的帳號名稱。上面的 `[auth.username]` 讓 `CORP\Alice`、`alice@example.com` 都用 `alice` 搜尋（[第 7 章](07-users-and-chains.md)）。
 - `reply_attributes` 的值有好幾個時，每個值各加一個屬性，順序照目錄傳回的順序。
 - 服務帳號的密碼不能是空的：空密碼的 bind 是匿名 bind，`check` 直接拒絕。
 - **用 `filter` 排除停用的帳號。** 搜尋不到的使用者視同不存在，所以停用的帳號可以直接在條件裡排除。AD 的寫法是 `(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))`（`userAccountControl` 的第 2 位元是停用）；OpenLDAP 若啟用了密碼政策（ppolicy），可以用 `(&(uid={user})(!(pwdAccountLockedTime=*)))` 排除被鎖定的帳號。`check` 只檢查 `{user}` 的個數，條件本身有沒有用要先在你的目錄上試過。
@@ -271,7 +271,7 @@ password_check = "attribute"
 password_attribute = "userPassword"
 ```
 
-比對的規則和 sql 處理器一樣（[第 07 章](07-users-and-chains.md)的格式表）：`{SSHA}`、`{crypt}` 這些只能驗證 PAP；明文或 `{nthash}` 還能驗證 MS-CHAPv2，明文另外能驗證 CHAP。MS-CHAPv1 也照同樣的規則比對（`[auth]` 的 `allow_mschapv1 = false` 會在處理器之前就拒絕它，見[第 07 章](07-users-and-chains.md)），這一點**未實機驗證**。
+比對的規則和 sql 處理器一樣（[第 7 章](07-users-and-chains.md)的格式表）：`{SSHA}`、`{crypt}` 這些只能驗證 PAP；明文或 `{nthash}` 還能驗證 MS-CHAPv2，明文另外能驗證 CHAP。MS-CHAPv1 也照同樣的規則比對（`[auth]` 的 `allow_mschapv1 = false` 會在處理器之前就拒絕它，見[第 7 章](07-users-and-chains.md)），這一點**未實機驗證**。
 
 用途：
 
@@ -388,7 +388,7 @@ auth = "vpn"
 - 這是具名的鏈，只有 `auth = "vpn"` 的 VPN 閘道走這裡。同一個情境的跳板機走另一條 `mfa` 鏈（[第 15 章](15-access-recipes.md)）。
 - 目錄伺服器的憑證不是系統信任的 CA 簽的時候，加 `ca_file`。
 
-這份設定過得了 `check`（`check` 不會連到目錄）。**已驗證**：照第 03 章的方式複製 `rradius-server/examples/scenarios/remote-access/`，把 `dictionary` 改成字典的實際路徑、密碼檔改成 0600 之後，`check` 印 `configuration ok`（另外警告兩個用戶端還在用範例附的公開 secret）。
+這份設定過得了 `check`（`check` 不會連到目錄）。**已驗證**：照第 3 章的方式複製 `rradius-server/examples/scenarios/remote-access/`，把 `dictionary` 改成字典的實際路徑、密碼檔改成 0600 之後，`check` 印 `configuration ok`（另外警告兩個用戶端還在用範例附的公開 secret）。
 
 > **未實機驗證：** 這個情境沒有接上真正的 AD 跑過。過濾停用帳號的寫法是 AD 的語法，在本章的 OpenLDAP 測試目錄裡不適用。
 
@@ -582,7 +582,7 @@ Netlogon
 
 這筆登入沒有回應（`rradius-bench` 是 `timeouts 1`），`rradius_netlogon_channel_setups_total{result="failed"}` 與 `rradius_netlogon_logons_total{result="unavailable"}` 各加一。**已驗證**。
 
-> **注意：** AD 會定期要求電腦帳號換密碼。這個處理器只讀 `machine_password_file`，不會自己去換。電腦帳號的密碼在網域那邊被改了，要同時更新這個檔案再 reload。
+> **注意：** AD 會定期要求電腦帳號換密碼。這個處理器只讀取 `machine_password_file`，不會自己去換。電腦帳號的密碼在網域那邊被改了，要同時更新這個檔案再 reload。
 
 ## 把 LDAP 與 netlogon 放在同一條鏈
 
@@ -615,7 +615,7 @@ filter = "(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:
 - MS-CHAPv2 的登入：netlogon 處理器決定。反過來把 ldap 放前面的話，bind 模式的 ldap 處理器會**拒絕** MS-CHAPv2（它沒辦法驗證，但不是 ignore），netlogon 永遠輪不到。
 - 網域控制站說查無此人（`STATUS_NO_SUCH_USER`）時 netlogon ignore，接著 ldap 處理器在目錄找不到這個人，也拒絕 MS-CHAPv2，結果是拒絕。
 
-也可以分成兩條具名的鏈，VPN 閘道用一條、Wi-Fi 控制器用另一條（[第 07 章](07-users-and-chains.md)），各自只放一種處理器，比較好懂。
+也可以分成兩條具名的鏈，VPN 閘道用一條、Wi-Fi 控制器用另一條（[第 7 章](07-users-and-chains.md)），各自只放一種處理器，比較好懂。
 
 > **未實機驗證：** 這個組合只過了 `check`，沒有同時接上 LDAP 與網域控制站跑過；處理器的順序規則依程式碼。
 
@@ -655,7 +655,7 @@ filter = "(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:
 
 **症狀：** `check` 印出 `auth.handlers: group_reply: unknown attribute 'No-Such-Attr'`。
 **原因：** `group_reply` 的屬性名稱不在字典裡。
-**解法：** 改正名稱（[第 06 章](06-dictionary.md)）。
+**解法：** 改正名稱（[第 6 章](06-dictionary.md)）。
 
 **症狀：** `check` 印出 `auth.handlers[0].password_attribute is required when password_check = "attribute"`。
 **原因：** 用了 attribute 模式，沒說是哪個屬性。

@@ -1,4 +1,4 @@
-# 09 外部資料庫與具名查詢
+# 外部資料庫與具名查詢
 
 > 本章讓你做到：
 > - 連上既有的 PostgreSQL 或 MySQL，讓驗證鏈直接用裡面的帳號表
@@ -6,7 +6,7 @@
 > - 用 `/readyz`、指標與 `status` 監看外部資料庫的健康
 > - 把一段 SQL 變成 Prometheus 指標，也能用 `query` 指令直接查
 
-前置條件：照[第 03 章](03-quick-start.md)跑過 quick-start；讀過[第 07 章](07-users-and-chains.md)的 sql 處理器。要從腳本使用外部資料庫，先讀[第 10 章](10-lua-policies.md)。
+前置條件：照[第 3 章](03-quick-start.md)跑過 quick-start；讀過[第 7 章](07-users-and-chains.md)的 sql 處理器。要從腳本使用外部資料庫，先讀[第 10 章](10-lua-policies.md)。
 
 本章小節：
 
@@ -42,7 +42,7 @@ rradius 本身就有一個資料庫：叢集資料庫（內建的 hiqlite，每�
 - 帳號已經在別的系統裡（例如會員系統、舊的 RADIUS 伺服器的帳號表），你不想搬，也不想同步。
 - 要把計費資料寫到報表或計費系統直接讀的地方。
 
-帳號完全由 rradius 管理時，用叢集資料庫就好：登入時讀本機，不受網路與另一台伺服器的影響。把舊系統的帳號與密碼雜湊搬進叢集資料庫的做法在第 07 章。
+帳號完全由 rradius 管理時，用叢集資料庫就好：登入時讀本機，不受網路與另一台伺服器的影響。把舊系統的帳號與密碼雜湊搬進叢集資料庫的做法在第 7 章。
 
 ## 設定一個外部資料庫
 
@@ -101,7 +101,7 @@ pool_size × 節點數，再加上每個節點 1 條健康檢查的連線（只�
 
 ### 給 rradius 的資料庫帳號
 
-只給它需要的權限。只讀帳號表時，PostgreSQL 可以這樣建：
+只給它需要的權限。只讀取帳號表時，PostgreSQL 可以這樣建：
 
 ```sql
 -- 在 radius 資料庫上，以管理者執行
@@ -181,11 +181,11 @@ reply_query = "SELECT attribute, value FROM radreply WHERE username = ?"
 ```
 
 - SQL 裡的值一律寫 `?`。送到 PostgreSQL 時，rradius 依序改寫成 `$1`、`$2`……；送到 MySQL 時原樣送出。`?1`、`:name` 這類寫法不接受。
-- 密碼欄的格式和叢集資料庫的帳號表相同（`{crypt}`、`{clear}` 等前綴，見第 07 章）。
+- 密碼欄的格式和叢集資料庫的帳號表相同（`{crypt}`、`{clear}` 等前綴，見第 7 章）。
 - 只要讀，所以給 rradius 一個唯讀帳號，能讀這兩個表就好。
-- 舊系統的明文密碼若需要補 `{clear}` 前綴，在 SQL 裡串接：PostgreSQL 用 `SELECT '{clear}' || value FROM radcheck WHERE username = ?`，MySQL 用 `SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?`（MySQL 的 `||` 預設是邏輯 OR）。什麼情況需要它，見[第 07 章](07-users-and-chains.md#沒有前綴的明文mysql-與-concat)。這兩句未在真實資料庫上重新執行。
+- 舊系統的明文密碼若需要補 `{clear}` 前綴，在 SQL 裡串接：PostgreSQL 用 `SELECT '{clear}' || value FROM radcheck WHERE username = ?`，MySQL 用 `SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?`（MySQL 的 `||` 預設是邏輯 OR）。什麼情況需要它，見[第 7 章](07-users-and-chains.md#沒有前綴的明文mysql-與-concat)。這兩句未在真實資料庫上重新執行。
 - 佔位符的限制：sql 處理器的 SQL 由 rradius 掃描 `?`，所以 PostgreSQL 的 `$$ … $$` 字串與 `$1` 寫法會被拒絕（`only plain ? placeholders are supported, found $$…`，`rradius-core/src/lua_engine.rs` 的 `sql_placeholders`），而 jsonb 的 `?` 運算子會被當成佔位符。要用它們，改寫 SQL（例如用 `jsonb_exists(…)` 函式）。
-- 舊系統的帳號表如果還要由舊系統維護，這裡只讀；計費寫回舊系統用腳本的 `db_execute`（見下一節）。
+- 舊系統的帳號表如果還要由舊系統維護，這裡唯讀；計費寫回舊系統用腳本的 `db_execute`（見下一節）。
 - `database` 寫了 `[databases]` 裡沒有的名稱，`check` 就會出錯：`auth.handlers[0].database: there is no [databases.nosuch]`。
 
 實測（PostgreSQL 17 與 MySQL 8.4，表與 quick-start 的帳號相同）：`bob`（bcrypt）與 `alice`（明文）用正確密碼都是 `accept 1`，錯的密碼是 `reject 1`。

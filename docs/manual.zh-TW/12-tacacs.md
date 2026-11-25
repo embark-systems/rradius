@@ -1,4 +1,4 @@
-# 12 TACACS+ 設備管理
+# TACACS+ 設備管理
 
 > 本章讓你做到：
 > - 讓路由器、交換器的管理員用 TACACS+ 登入
@@ -7,7 +7,7 @@
 > - 把每一次登入、登出與指令都記進資料表
 > - 看懂 TACACS+ 的回覆狀態與日誌，排除常見的問題
 
-前置條件：讀過[第 03 章](03-quick-start.md)，會啟動伺服器、用 `rradius-bench` 測試；知道驗證鏈是什麼（[第 07 章](07-users-and-chains.md)）。授權與計費要寫 Lua 腳本，語法見[第 10 章](10-lua-policies.md)。本章全部在一台機器上做，用 `rradius-bench` 當設備，不需要真的路由器。
+前置條件：讀過[第 3 章](03-quick-start.md)，會啟動伺服器、用 `rradius-bench` 測試；知道驗證鏈是什麼（[第 7 章](07-users-and-chains.md)）。授權與計費要寫 Lua 腳本，語法見[第 10 章](10-lua-policies.md)。本章全部在一台機器上做，用 `rradius-bench` 當設備，不需要真的路由器。
 
 本章小節：
 
@@ -44,7 +44,7 @@ RADIUS 多半用在「讓使用者上網」：Wi-Fi、VPN、寬頻。TACACS+（R
 | 加密 | 只有密碼欄位 | 整個封包內容用共用密碼加密（RFC 8907 的 MD5 pad） |
 | AAA | 認證與授權在同一個回覆 | 認證、授權、計費是三種分開的請求 |
 | 授權的單位 | 登入時一次給完回覆屬性 | 設備可以每下一個指令就問一次 |
-| 本章的設定 | `[radius]`（第 05 章） | `[tacacs]` |
+| 本章的設定 | `[radius]`（第 5 章） | `[tacacs]` |
 
 設備送出的授權與計費請求帶著一串 AV pair，例如 `service=shell`、`cmd=show`、`cmd-arg=version`。授權的回覆也是 AV pair，例如 `priv-lvl=15`。哪些 AV pair 有意義由設備決定；rradius 只負責收下、交給腳本或規則，再把結果送回去。
 
@@ -93,7 +93,7 @@ TACACS+ 的回覆帶一個狀態。你在日誌、測試工具與設備上看到
 
 本章用 device-admin 情境。它只開 TACACS+：管理員帳號放在叢集資料庫的 `admins` 表，認證交給 sql 處理器，授權與計費交給 `tacacs.lua`。它在原始碼的 `rradius-server/examples/scenarios/device-admin/`。
 
-跟第 03 章一樣，先複製到工作目錄。以下的指令在原始碼 repo 的根目錄執行：
+跟第 3 章一樣，先複製到工作目錄。以下的指令在原始碼 repo 的根目錄執行：
 
 ```console
 $ export PATH="$PWD/target/release:$PATH"
@@ -106,7 +106,7 @@ $ chmod 600 *.secret
 ```
 
 - 第三個 `.secret` 是 TACACS+ 用戶端的共用密碼。情境附的值是公開的示範值，`check` 會警告 `TACACS+ client 'core-routers' has the public shared secret shipped with the examples`，所以一開始就換掉。
-- 如果第 03 章的 quick-start 還在跑，先停掉它：兩個情境用的是同樣的叢集埠與指標埠。
+- 如果第 3 章的 quick-start 還在跑，先停掉它：兩個情境用的是同樣的叢集埠與指標埠。
 
 接著改 `rradius.toml` 的三個地方，讓它在本機就能測：
 
@@ -123,7 +123,7 @@ address = "127.0.0.1"     # 原本 "10.50.0.0/24"
 secret_file = "tacacs.secret"
 ```
 
-- 49 是 TACACS+ 的標準埠，小於 1024，一般帳號不能監聽，所以實驗時改成 4949。正式環境要用 49 時，給程式需要的權限，做法見[第 02 章](02-install.md)。
+- 49 是 TACACS+ 的標準埠，小於 1024，一般帳號不能監聽，所以實驗時改成 4949。正式環境要用 49 時，給程式需要的權限，做法見[第 2 章](02-install.md)。
 - `rradius-bench` 從 `127.0.0.1` 連過來，所以用戶端的位址改成它。
 
 ```console
@@ -209,7 +209,7 @@ port = 9812
 | `auth` | | 這台設備的認證改用哪一條 `[auth.chains.<name>]`，預設是預設鏈 |
 | `authorize_group` | | 用哪一個授權群組的規則授權（見[用授權群組授權](#用授權群組授權)） |
 
-其他欄位寫在 TACACS+ 用戶端上，`check` 會失敗，例如 `tacacs client 'lab': eap_methods applies only to RADIUS clients`。位址與網段怎麼比對、共用密碼太短時的警告，跟 RADIUS 用戶端相同，見[第 05 章](05-radius-clients.md)。
+其他欄位寫在 TACACS+ 用戶端上，`check` 會失敗，例如 `tacacs client 'lab': eap_methods applies only to RADIUS clients`。位址與網段怎麼比對、共用密碼太短時的警告，跟 RADIUS 用戶端相同，見[第 5 章](05-radius-clients.md)。
 
 一個網段裡的所有設備共用一個用戶端項目，也共用同一把共用密碼。不同用途的設備（例如核心路由器與機房的接取交換器）想要不同的密碼、不同的驗證鏈或不同的授權規則，就分成不同的項目：
 
@@ -241,7 +241,7 @@ $ rradiusd serve --config rradius.toml
 … INFO rradius_core::metrics: Metrics listening on 127.0.0.1:9812
 ```
 
-第一次啟動時還有兩行 hiqlite 的 `No metadata exists inside the DB yet`，是正常的（第 03 章）。
+第一次啟動時還有兩行 hiqlite 的 `No metadata exists inside the DB yet`，是正常的（第 3 章）。
 
 另開一個終端機，用 `rradius-bench` 當設備，送一筆 PAP 登入：
 
@@ -256,7 +256,7 @@ tacacs-pap (fixed-concurrency): concurrency 1, 1 threads, 1 sockets over tcp, bu
 ```
 
 - `--tacacs-port` 是 TACACS+ 的埠，預設 49。
-- `accept 1` 就是收到 `PASS`；`reject 1` 是 `FAIL`。結束碼跟第 03 章一樣：0 全部接受，1 有拒絕，2 有逾時或無效的回應，3 參數錯誤、什麼都沒送。
+- `accept 1` 就是收到 `PASS`；`reject 1` 是 `FAIL`。結束碼跟第 3 章一樣：0 全部接受，1 有拒絕，2 有逾時或無效的回應，3 參數錯誤、什麼都沒送。
 - 密碼存成 bcrypt，比對要花時間，所以速率只有每秒二十幾次，這是正常的。
 
 `rradius-bench` 的 TACACS+ 負載有五種：
@@ -345,7 +345,7 @@ PASS
 … INFO rradius_auth: authentication protocol="tacacs" client="core-routers" source=127.0.0.1 user="netadmin1" account="netadmin1" chain="default" handler="no_password_check" decision="reject"
 ```
 
-哪些密碼格式能做 CHAP、MS-CHAP，`auth.allow_mschapv1` 怎麼打開 MS-CHAPv1（預設是關的），都在[第 07 章](07-users-and-chains.md)。PAP 與 ASCII 能用任何格式。
+哪些密碼格式能做 CHAP、MS-CHAP，`auth.allow_mschapv1` 怎麼打開 MS-CHAPv1（預設是關的），都在[第 7 章](07-users-and-chains.md)。PAP 與 ASCII 能用任何格式。
 
 **什麼時候回 `RESTART`：** 下面幾種情況，rradius 回 `RESTART`，不跑驗證鏈，也不跑腳本，讓設備改用別的方式（通常是 PAP 或 ASCII）再試：
 
@@ -438,9 +438,9 @@ end
 … INFO rradius_auth: authentication protocol="tacacs" client="core-routers" source=127.0.0.1 user="noc1" account="noc1" chain="script" handler="script" decision="accept"
 ```
 
-> **注意：** 在腳本裡認證時，`[auth.lockout]` 的登入失敗鎖定不會作用：`password_verify` 不計算失敗次數。需要鎖定時，用驗證鏈（第 07 章）。
+> **注意：** 在腳本裡認證時，`[auth.lockout]` 的登入失敗鎖定不會作用：`password_verify` 不計算失敗次數。需要鎖定時，用驗證鏈（第 7 章）。
 
-只有部分設備需要特別的認證規則時，不必整個拿掉 `[auth]`：在 `[auth.chains.<name>]` 定義一條含 lua 處理器的鏈，讓那些設備的用戶端用 `auth` 選它（第 07 章）。
+只有部分設備需要特別的認證規則時，不必整個拿掉 `[auth]`：在 `[auth.chains.<name>]` 定義一條含 lua 處理器的鏈，讓那些設備的用戶端用 `auth` 選它（第 7 章）。
 
 ## 用腳本授權
 
@@ -575,7 +575,7 @@ permit|deny  樣式 樣式 …  {回覆的 AV pair …}
 
 **寫規則要小心的地方：**
 
-- **用白名單，不要用黑名單。** 規則只比對設備送來的 AV pair。沒有列出的子命令（例如 `show tech-support`）與設備上的縮寫（例如打 `show run` 而不是 `show running-config`），都不會被 `deny cmd=show cmd-arg=running-config` 擋到，卻符合 `permit cmd=show`。上面的 `noc` 群組只放行列出的指令，其餘落到「沒有任何一條成立」而被拒絕，比較安全。縮寫在設備上實際送出什麼，依設備而定（未實機驗證）。
+- **用白名單，不要用黑名單。** 規則只比對設備送來的 AV pair。沒有列出的子指令（例如 `show tech-support`）與設備上的縮寫（例如打 `show run` 而不是 `show running-config`），都不會被 `deny cmd=show cmd-arg=running-config` 擋到，卻符合 `permit cmd=show`。上面的 `noc` 群組只放行列出的指令，其餘落到「沒有任何一條成立」而被拒絕，比較安全。縮寫在設備上實際送出什麼，依設備而定（未實機驗證）。
 - **參數不是逐一比對。** 一條規則的每個樣式，只要符合請求裡**任何一個** AV pair 就成立，所以 `cmd-arg=interfaces` 會放行 `show interfaces` 之後再加別的參數。要設備真的唯讀，靠設備上那個權限等級本身能做什麼，授權規則只是第二道防線。
 - **設備開 shell 時可能送 `cmd*`。** AV pair 的分隔符號是 `=`（必要）或 `*`（可有可無），照設備送來的樣子比對。設備送 `cmd*`（值是空的）時，樣式要寫成 `cmd\*`，寫 `cmd=` 不會成立：
 
@@ -681,7 +681,7 @@ $ rradius-bench run --server 127.0.0.1 --tacacs-port 4949 --secret "$(cat tacacs
 
 `accounting 1` 表示收到 `SUCCESS`。
 
-要把這些紀錄變成「每人每天下了幾個指令」這類指標，用具名查詢（[第 09 章](09-external-databases.md)）。
+要把這些紀錄變成「每人每天下了幾個指令」這類指標，用具名查詢（[第 9 章](09-external-databases.md)）。
 
 > **注意：** TACACS+ 的計費沒有計費 spool，也不會寫進 `[radius.accounting_log]`：那兩個功能只處理 RADIUS 的計費。資料庫寫不進去時，腳本出錯，設備收到 `ERROR`，要靠設備自己重送或改送下一台伺服器。
 
@@ -822,7 +822,7 @@ TACACS+
 
 **症狀：** CHAP 登入失敗，日誌是 `handler="no_password_check" decision="reject"`，同一個帳號用 PAP 卻能登入。
 **原因：** 帳號的密碼存成雜湊（例如 bcrypt），CHAP 無法檢查。
-**解法：** 設備改用 PAP 或 ASCII；或者那些帳號改存能比對的格式（第 07 章，要考慮資料庫外流的風險）。
+**解法：** 設備改用 PAP 或 ASCII；或者那些帳號改存能比對的格式（第 7 章，要考慮資料庫外流的風險）。
 
 **症狀：** 設備用 CHAP 登入時，日誌：`TACACS+ authentication type not supported here: asking the client to restart with another`。
 **原因：** 這個用戶端的驗證鏈沒有會比對密碼的處理器（例如沒有 `[auth]`，全部交給腳本），或這是 enable 請求。
@@ -842,7 +842,7 @@ TACACS+
 
 **症狀：** `check` 印出 `tacacs client 'lab': unknown auth chain 'nosuch' (no [auth.chains.nosuch])`。
 **原因：** 用戶端的 `auth` 指到不存在的驗證鏈。
-**解法：** 先在 `[auth.chains.nosuch]` 定義那條鏈（第 07 章），或改成已有的名稱。
+**解法：** 先在 `[auth.chains.nosuch]` 定義那條鏈（第 7 章），或改成已有的名稱。
 
 **症狀：** `check` 印出 `tacacs.idle_timeout_ms must be greater than 0` 或 `tacacs.max_connections must be greater than 0`。
 **原因：** 這兩個值不能是 0。

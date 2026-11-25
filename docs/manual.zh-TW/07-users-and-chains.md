@@ -1,4 +1,4 @@
-# 07 使用者帳號與驗證鏈
+# 使用者帳號與驗證鏈
 
 > 本章讓你做到：
 > - 用 `user` 指令新增、改密碼、停用、刪除本機帳號
@@ -7,7 +7,7 @@
 > - 統一使用者名稱的大小寫與 realm
 > - 限制猜密碼：登入失敗鎖定與雜湊成本上限
 
-前置條件：做完[第 03 章](03-quick-start.md)，手上有一份能啟動的 quick-start 複本（`~/rradius-lab/quick-start`），而且照第 03 章加上了 `[accounts]`。LDAP 與 Active Directory 的處理器在[第 08 章](08-ldap-and-ad.md)。
+前置條件：做完[第 3 章](03-quick-start.md)，手上有一份能啟動的 quick-start 複本（`~/rradius-lab/quick-start`），而且照第 3 章加上了 `[accounts]`。LDAP 與 Active Directory 的處理器在[第 8 章](08-ldap-and-ad.md)。
 
 本章小節：
 
@@ -26,7 +26,7 @@
 - [常見錯誤](#常見錯誤)
 - [相關章節](#相關章節)
 
-本章的指令都在 quick-start 複本的目錄裡執行，伺服器在另一個終端機跑著。登入測試照第 03 章用 `rradius-bench`，下文把共同的參數省略成 `…`：
+本章的指令都在 quick-start 複本的目錄裡執行，伺服器在另一個終端機跑著。登入測試照第 3 章用 `rradius-bench`，下文把共同的參數省略成 `…`：
 
 ```console
 $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
@@ -43,10 +43,10 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 
 | `type` | 做什麼 | 本書 |
 | --- | --- | --- |
-| `sql` | 在叢集資料庫或外部資料庫查帳號，比對密碼 | 本章、[第 09 章](09-external-databases.md) |
+| `sql` | 在叢集資料庫或外部資料庫查帳號，比對密碼 | 本章、[第 9 章](09-external-databases.md) |
 | `lua` | 跑一個 Lua 腳本，由腳本決定 | 本章、[第 10 章](10-lua-policies.md) |
-| `ldap` | 在 LDAP 目錄找使用者，驗證密碼 | [第 08 章](08-ldap-and-ad.md) |
-| `netlogon` | 把 MS-CHAPv2 交給 Active Directory 網域控制站驗證 | [第 08 章](08-ldap-and-ad.md) |
+| `ldap` | 在 LDAP 目錄找使用者，驗證密碼 | [第 8 章](08-ldap-and-ad.md) |
+| `netlogon` | 把 MS-CHAPv2 交給 Active Directory 網域控制站驗證 | [第 8 章](08-ldap-and-ad.md) |
 
 每個處理器對一筆請求給出四種答案之一：
 
@@ -111,7 +111,7 @@ rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>
 它們不直接碰資料表的結構，只執行你在 `[accounts]` 寫好的 SQL。所以帳號表長什麼樣子由你決定，`user` 指令照你的表去寫。
 
 ```toml
-# rradius.toml（第 03 章加上的那一節）
+# rradius.toml（第 3 章加上的那一節）
 [accounts]
 scheme = "bcrypt"
 add = "INSERT INTO users (username, password) VALUES (?1, ?2)"
@@ -156,7 +156,7 @@ $ rradiusd user show --config rradius.toml erin
 no account erin
 ```
 
-密碼一律從標準輸入讀，不從命令列參數讀（參數會出現在行程清單裡）。在終端機上直接執行 `add` 或 `passwd` 時，指令關掉回顯，問兩次；兩次不同就什麼都不寫，結束碼 2。用管線餵進去時只讀第一行，去掉行尾的換行。空密碼一律拒絕。
+密碼一律從標準輸入讀，不從命令列參數讀（參數會出現在行程清單裡）。在終端機上直接執行 `add` 或 `passwd` 時，指令關掉回顯，問兩次；兩次不同就什麼都不寫，結束碼 2。用管線餵進去時只讀取第一行，去掉行尾的換行。空密碼一律拒絕。
 
 結束碼：
 
@@ -263,7 +263,7 @@ rradius_password_checks_total{scheme="crypt",result="ok"} 4
 
 目標：把舊目錄、舊 RADIUS 伺服器或 `/etc/shadow` 裡的密碼雜湊原樣放進資料表，使用者不必重設密碼；之後使用者改密碼時，換成新的格式。
 
-範例情境 `migrate-users` 就是這樣做的。照第 03 章的方式複製一份到工作目錄（改 `dictionary` 的路徑、換掉 `.secret` 檔），它的重點在設定與 migration：
+範例情境 `migrate-users` 就是這樣做的。照第 3 章的方式複製一份到工作目錄（改 `dictionary` 的路徑、換掉 `.secret` 檔），它的重點在設定與 migration：
 
 ```toml
 # rradius.toml（migrate-users，節錄）
@@ -409,13 +409,13 @@ SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?
 ### 上線前
 
 - **先平行跑一陣子。** 挑幾台 NAS 指到 rradius，其他的留在舊系統，確認登入結果一致再全部切換。
-- **舊系統給的回覆屬性**（VLAN、速率、權限）也要搬，放進 `user_reply`（範例的資料表，`reply_query` 讀它）。屬性名稱要是 rradius 字典裡的名稱（[第 06 章](06-dictionary.md)）；搬完用真的登入試幾個帳號，不要只靠 `check`。
+- **舊系統給的回覆屬性**（VLAN、速率、權限）也要搬，放進 `user_reply`（範例的資料表，`reply_query` 讀它）。屬性名稱要是 rradius 字典裡的名稱（[第 6 章](06-dictionary.md)）；搬完用真的登入試幾個帳號，不要只靠 `check`。
 - **舊系統的共用密碼** 可以沿用，NAS 那邊只要改伺服器位址；趁這次換成每台不同、夠長的更好。
 - **慢雜湊會排隊。** `{crypt}`、`{argon2}` 與 PBKDF2 故意算得慢，同時登入很多時會排隊，尖峰時變慢。成本過高的值會被 `[auth.password_limits]` 擋下（見[限制雜湊的計算成本](#限制雜湊的計算成本)）；遷移來的雜湊成本本來就高時，先調高上限。
 - **訂一個期限。** 期限到了還沒改密碼的帳號，用新的 migration 檔把密碼設成 `NULL`（例如 `UPDATE users SET password = NULL WHERE origin <> 'rradius'`）。密碼欄是 `NULL` 的帳號一律登不進來（日誌 `no stored password; rejecting`），請他們找管理者重設。這句 `UPDATE` 是依範例資料表寫的，未實際執行。
 - **沒有測過的：** 從任何一套特定的舊系統實際匯出再匯入的流程。範例的雜湊是依各格式的定義算出來的，再由情境測試確認 rradius 驗證得過。
 
-帳號想留在原本的 PostgreSQL 或 MySQL、由舊系統繼續維護時，sql 處理器可以用 `database` 直接查外部資料庫，情境裡的 `external-db.toml` 是這種寫法，見[第 09 章](09-external-databases.md)。
+帳號想留在原本的 PostgreSQL 或 MySQL、由舊系統繼續維護時，sql 處理器可以用 `database` 直接查外部資料庫，情境裡的 `external-db.toml` 是這種寫法，見[第 9 章](09-external-databases.md)。
 
 > **警告：** `2_imported_users.sql` 的帳號與密碼是公開的示範值。拿這個情境改成正式環境時，刪掉這個檔案，換成你自己匯出的資料。
 
@@ -505,7 +505,7 @@ reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 | `reply_query` | — | 剛好一個 `?`。每一列是 `(屬性名稱, 值)`，依序加進 Access-Accept |
 | `certificate_query` | — | EAP-TLS 憑證通過之後改用的查詢，查到就接受（[第 11 章](11-eap.md)） |
 | `default_user` | — | 查不到帳號時，改用這個帳號的密碼驗證 |
-| `database` | —（叢集資料庫） | 改查某個 `[databases.<name>]`（[第 09 章](09-external-databases.md)） |
+| `database` | —（叢集資料庫） | 改查某個 `[databases.<name>]`（[第 9 章](09-external-databases.md)） |
 | `timeout_ms` | `5000` | 一次查詢的時限，毫秒；也涵蓋慢雜湊排隊與比對的時間 |
 
 整個 `[auth]` 都可以 reload（`database` 指向的連線本身例外：`[databases]` 改了要重啟）。
@@ -523,7 +523,7 @@ reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 
 帳號名稱一律以參數綁定，不會拼進 SQL 字串。
 
-`reply_query` 的屬性名稱要在字典裡（[第 06 章](06-dictionary.md)）。quick-start 的 `alice` 有兩列：`Session-Timeout = 3600`、`Filter-Id = staff`，登入成功的 Access-Accept 就帶這兩個屬性，依查詢傳回的順序。
+`reply_query` 的屬性名稱要在字典裡（[第 6 章](06-dictionary.md)）。quick-start 的 `alice` 有兩列：`Session-Timeout = 3600`、`Filter-Id = staff`，登入成功的 Access-Accept 就帶這兩個屬性，依查詢傳回的順序。
 
 ### default_user：查不到時的共用帳號
 
@@ -666,7 +666,7 @@ auth = "lab"
 - 每條鏈在啟動與 reload 時建好一次。
 - 具名的鏈要寫自己的 `policy` 與 `username`，不會沿用 `[auth]` 的。在 `[auth]` 寫了 `policy` 或 `[auth.username]`、卻沒有 `[[auth.handlers]]`，`check` 會失敗。
 
-範例情境 `remote-access` 就是這樣：VPN 閘道用 `vpn` 鏈（LDAP），跳板機用 `mfa` 鏈（Lua 兩步驟驗證）。LDAP 的部分見[第 08 章](08-ldap-and-ad.md)，兩步驟驗證見[第 15 章](15-access-recipes.md)。
+範例情境 `remote-access` 就是這樣：VPN 閘道用 `vpn` 鏈（LDAP），跳板機用 `mfa` 鏈（Lua 第二因素驗證）。LDAP 的部分見[第 8 章](08-ldap-and-ad.md)，兩步驟驗證見[第 15 章](15-access-recipes.md)。
 
 改鏈只要 reload。在跑伺服器的終端機之外執行：
 
@@ -674,7 +674,7 @@ auth = "lab"
 $ kill -HUP <伺服器的 PID>
 ```
 
-伺服器日誌會寫 `configuration reloaded from rradius.toml`，之後的請求就走新的鏈。reload 的細節見[第 04 章](04-configuration.md)。
+伺服器日誌會寫 `configuration reloaded from rradius.toml`，之後的請求就走新的鏈。reload 的細節見[第 4 章](04-configuration.md)。
 
 ## 統一使用者名稱與 realm
 

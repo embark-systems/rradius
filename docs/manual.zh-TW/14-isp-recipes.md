@@ -1,4 +1,4 @@
-# 14 情境實作：寬頻與 ISP
+# 情境實作：寬頻與 ISP
 
 > 本章讓你做到：
 > - 從資料表的位址池分配 IPv4 位址與 IPv6 委派前綴，用計費確認與釋放
@@ -7,7 +7,7 @@
 > - 依方案限制同時連線數與一段期間的流量
 > - 同一個方案依 BNG 的廠商回不同的速率屬性
 
-前置條件：讀過[第 03 章](03-quick-start.md)，會複製情境、啟動伺服器、用 `rradius-bench` 登入；知道[第 07 章](07-users-and-chains.md)的驗證鏈與[第 10 章](10-lua-policies.md)的 Lua 腳本在做什麼。本章全部在一台機器上做，不需要真的 BNG。
+前置條件：讀過[第 3 章](03-quick-start.md)，會複製情境、啟動伺服器、用 `rradius-bench` 登入；知道[第 7 章](07-users-and-chains.md)的驗證鏈與[第 10 章](10-lua-policies.md)的 Lua 腳本在做什麼。本章全部在一台機器上做，不需要真的 BNG。
 
 本章小節：
 
@@ -52,7 +52,7 @@
 … INFO rradius_core::lua_engine: script allocate.lua (radius/authentication, client localhost): ip pool business is exhausted: no address for hank
 ```
 
-**監控用具名查詢。** 有池的情境都有 `[queries.<name>]`：每個節點每 30 秒（`interval_ms` 預設 `30000`）查一次自己的副本，結果變成指標 `rradius_query_<name>`；`rradiusd query <name>` 則是馬上查一次，印成表格。具名查詢改了要重啟才生效，細節見[第 09 章](09-external-databases.md)。
+**監控用具名查詢。** 有池的情境都有 `[queries.<name>]`：每個節點每 30 秒（`interval_ms` 預設 `30000`）查一次自己的副本，結果變成指標 `rradius_query_<name>`；`rradiusd query <name>` 則是馬上查一次，印成表格。具名查詢改了要重啟才生效，細節見[第 9 章](09-external-databases.md)。
 
 本章情境用到的設定鍵（完整說明見[附錄 A](90-config-reference.md)）：
 
@@ -68,11 +68,11 @@
 
 > **注意：** 示範資料都在 `migrations/2_demo_*.sql`，帳號、密碼、池都是公開的示範值。拿情境改成正式環境時，刪掉這個檔案，改用你自己的資料。套用過的 migration 檔不能再改，要改結構就新增下一個編號的檔案。
 
-**用發行檔跑範例，與一次只跑一個。** 發行壓縮檔 `rradius-<版本>-<平台>.tar.gz` 解開後，目錄結構和原始碼 repo 相同（執行檔在 `bin/`，範例在 `rradius-server/examples/`），第 03 章的 `export PATH="$PWD/target/release:$PATH"` 在解開後的根目錄改成 `export PATH="$PWD/bin:$PATH"`，其他指令和路徑照寫。情境都用標準埠（1812、1813、TACACS+ 的 49），同一台機器上同時啟動兩個會互相衝突：一次只跑一個，或改埠。範例都有自動測試（`rradius-server/tests/scenarios_test.rs` 照這幾章的方式啟動每個情境，送出請求並比對結果），所以照著複製的設定檔能啟動；`.secret` 檔都是 `change-me` 一類的示範值，正式環境要換掉（見第 03 章〈換掉範例密碼〉與第 18 章〈更換密碼〉）。
+**用發行檔跑範例，與一次只跑一個。** 發行壓縮檔 `rradius-<版本>-<平台>.tar.gz` 解開後，目錄結構和原始碼 repo 相同（執行檔在 `bin/`，範例在 `rradius-server/examples/`），第 3 章的 `export PATH="$PWD/target/release:$PATH"` 在解開後的根目錄改成 `export PATH="$PWD/bin:$PATH"`，其他指令和路徑照寫。情境都用標準埠（1812、1813、TACACS+ 的 49），同一台機器上同時啟動兩個會互相衝突：一次只跑一個，或改埠。範例都有自動測試（`rradius-server/tests/scenarios_test.rs` 照這幾章的方式啟動每個情境，送出請求並比對結果），所以照著複製的設定檔能啟動；`.secret` 檔都是 `change-me` 一類的示範值，正式環境要換掉（見第 3 章〈換掉範例密碼〉與第 18 章〈更換密碼〉）。
 
 ## 準備實驗目錄
 
-每個情境都照第 03 章的方式複製出來再跑，不要在原始碼目錄裡直接啟動。以 ip-pool 為例，在原始碼 repo 的根目錄執行：
+每個情境都照第 3 章的方式複製出來再跑，不要在原始碼目錄裡直接啟動。以 ip-pool 為例，在原始碼 repo 的根目錄執行：
 
 ```console
 $ export PATH="$PWD/target/release:$PATH"
@@ -120,7 +120,7 @@ minutes = 60
 
 ### 要不要由認證伺服器分配位址
 
-很多 BNG 與 NAS 自己有位址池。認證伺服器只要回 `Framed-Pool` 的池名稱，NAS 就從自己的池發位址；這時不需要這個情境，在 sql 處理器的 `reply_query` 回 `Framed-Pool` 即可（見[第 03 章](03-quick-start.md)與[第 07 章](07-users-and-chains.md)）。下面幾種情況才要由認證伺服器分配：
+很多 BNG 與 NAS 自己有位址池。認證伺服器只要回 `Framed-Pool` 的池名稱，NAS 就從自己的池發位址；這時不需要這個情境，在 sql 處理器的 `reply_query` 回 `Framed-Pool` 即可（見[第 3 章](03-quick-start.md)與[第 7 章](07-users-and-chains.md)）。下面幾種情況才要由認證伺服器分配：
 
 | 情況 | 為什麼 |
 | --- | --- |
@@ -303,7 +303,7 @@ max by (pool) (rradius_query_pool_usage{state="free"}) < 100
 
 - `reserved` 一直很多而 `active` 很少，代表 NAS 沒有送 Accounting-Start；預留要 120 秒才回收。
 - 查詢沒有符合的列就沒有樣本。池整個用盡（沒有任何 `free` 的列）時，`state="free"` 的樣本消失，上面第一條告警式不會觸發。要抓這種情況，用 `max by (pool) (rradius_query_pool_usage{state="active"}) unless on (pool) max by (pool) (rradius_query_pool_usage{state="free"})`，或在已知池名稱時用 `absent(rradius_query_pool_usage{pool="business",state="free"})`。
-- 查詢失敗時指標保留上一次的值；看 `rradius_query_last_success_timestamp_seconds{query="pool_usage"}` 有沒有在前進（見[第 09 章](09-external-databases.md)）。
+- 查詢失敗時指標保留上一次的值；看 `rradius_query_last_success_timestamp_seconds{query="pool_usage"}` 有沒有在前進（見[第 9 章](09-external-databases.md)）。
 - 成本：這個查詢走 `ip_pool_state` 的覆蓋索引（`SCAN ip_pool USING COVERING INDEX ip_pool_state`）。2026-11-16 在 SQLite 3.54.1 的記憶體資料庫、11 萬位址上量到中位數約 3.7 毫秒；改寫成 `WHERE state = 'free' GROUP BY pool` 走 `ip_pool_expiry`，每列要回表，約 9.5 毫秒。所以一次取出每個池的每個狀態比較好。未重新量測。
 
 ### 規模
@@ -663,7 +663,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat bng.secret)" \
 `lines` 與 `plans` 是一般的資料表，沒有專用的管理指令。改資料有兩條路：
 
 - **migration 檔。** 下面的 SQL 寫成新編號的 migration 檔，放到每個節點、逐台重啟（見[第 18 章](18-operations.md#新增-migration)）。適合線路不常變、想留下變更紀錄的情況；每換一次用戶設備就多一個檔案，換設備頻繁時不實際。
-- **把線路資料放在別的地方。** 線路多、常變動（開通、停用、換設備）時，讓腳本用 `db_query` 查外部的 MySQL 或 PostgreSQL（[第 09 章](09-external-databases.md)），或用 `http_request` 問帳務系統（[第 10 章](10-lua-policies.md)），`lines` 只留 `bound_mac`、`last_mac` 這類 rradius 自己寫的欄位。這個情境沒有示範，要自己改 `auth.lua`。
+- **把線路資料放在別的地方。** 線路多、常變動（開通、停用、換設備）時，讓腳本用 `db_query` 查外部的 MySQL 或 PostgreSQL（[第 9 章](09-external-databases.md)），或用 `http_request` 問帳務系統（[第 10 章](10-lua-policies.md)），`lines` 只留 `bound_mac`、`last_mac` 這類 rradius 自己寫的欄位。這個情境沒有示範，要自己改 `auth.lua`。
 
 不論用哪一條路，資料表的內容是這樣改的：
 
@@ -921,7 +921,7 @@ UPDATE static_assignments SET pd_v6 = '2001:db8:200::/200' WHERE username = 'dav
 
 ### 維護固定資料
 
-`static_assignments` 沒有專用的管理指令。改資料要寫成新編號的 migration 檔，放到每個節點、逐台重啟（見[第 18 章](18-operations.md#新增-migration)）；用戶很多、常變動時，把這些資料放在外部資料庫或帳務系統，讓腳本用 `db_query` 或 `http_request` 查（[第 09 章](09-external-databases.md)、[第 10 章](10-lua-policies.md)）。SQL 是這樣：
+`static_assignments` 沒有專用的管理指令。改資料要寫成新編號的 migration 檔，放到每個節點、逐台重啟（見[第 18 章](18-operations.md#新增-migration)）；用戶很多、常變動時，把這些資料放在外部資料庫或帳務系統，讓腳本用 `db_query` 或 `http_request` 查（[第 9 章](09-external-databases.md)、[第 10 章](10-lua-policies.md)）。SQL 是這樣：
 
 ```sql
 -- 新增用戶和固定位址
@@ -1094,7 +1094,7 @@ $ rradiusd query slot_usage --config rradius.toml
 - **用盡時 NAS 只看到 Reject。** 原因在日誌，監控日誌裡的 `session limit` 與 `quota`。
 - **沒有預付餘額與線上計費，** 也沒有內建函式；連線位的使用率靠上面的 `slot_usage`。
 - **NAS 當機沒送 Stop 時，** 連線位佔到期限（3 個 Interim 間隔，900 秒）才回收；NAS 回來送 Accounting-On 會立刻釋放。
-- **帳號名稱的大小寫。** 連線位與流量都以登入名稱為準；要不分大小寫，在驗證鏈設定 `[auth.username]`（見[第 07 章](07-users-and-chains.md)）。
+- **帳號名稱的大小寫。** 連線位與流量都以登入名稱為準；要不分大小寫，在驗證鏈設定 `[auth.username]`（見[第 7 章](07-users-and-chains.md)）。
 
 ### 常見問題
 
@@ -1207,7 +1207,7 @@ bng-erx       ERX-Ingress-Policy-Name = fiber-100-up, ERX-Egress-Policy-Name = f
   end,
 ```
 
-函式回 `false` 表示這個方案送不出去（`wispr` 就是這樣拒絕過快的方案），沒有回值就是送了。`set_attr` 會依字典檢查屬性名稱與值的型別：名稱不在字典裡、或值不是那個型別，登入因腳本錯誤被拒絕，日誌寫 `Lua script error`。沒有收錄的廠商，要先把它的屬性加進字典（見[第 06 章](06-dictionary.md)）。
+函式回 `false` 表示這個方案送不出去（`wispr` 就是這樣拒絕過快的方案），沒有回值就是送了。`set_attr` 會依字典檢查屬性名稱與值的型別：名稱不在字典裡、或值不是那個型別，登入因腳本錯誤被拒絕，日誌寫 `Lua script error`。沒有收錄的廠商，要先把它的屬性加進字典（見[第 6 章](06-dictionary.md)）。
 
 ### 新增一個 BNG
 
@@ -1222,7 +1222,7 @@ INSERT INTO nas_styles (client, style) VALUES ('bng-new', 'wispr');
 
 ### 資料怎麼維護
 
-`plans`、`subscribers`、`nas_styles` 是一般的資料表，沒有專用的管理指令；改資料要寫成新編號的 migration 檔。用戶很多、常變動時，把資料放在外部資料庫或帳務系統，讓腳本用 `db_query` 或 `http_request` 查（[第 09 章](09-external-databases.md)、[第 10 章](10-lua-policies.md)）。SQL 是這樣：
+`plans`、`subscribers`、`nas_styles` 是一般的資料表，沒有專用的管理指令；改資料要寫成新編號的 migration 檔。用戶很多、常變動時，把資料放在外部資料庫或帳務系統，讓腳本用 `db_query` 或 `http_request` 查（[第 9 章](09-external-databases.md)、[第 10 章](10-lua-policies.md)）。SQL 是這樣：
 
 ```sql
 INSERT INTO plans (plan, down_kbps, up_kbps, profile) VALUES ('fiber-2g', 2000000, 2000000, 'fiber-2g');

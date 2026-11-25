@@ -1,4 +1,4 @@
-# 01 認識 rradius
+# 認識 rradius
 
 > 本章讓你做到：
 > - 說出 rradius 能做什麼、不做什麼
@@ -47,7 +47,7 @@ rradius **不做**的事：
 | --- | --- | --- | --- |
 | RADIUS 認證（RFC 2865） | 使用者登入：PAP、CHAP、MS-CHAP、MS-CHAPv2 | UDP 1812 | 第 05、07 章 |
 | RADIUS 計費（RFC 2866） | Start、Interim-Update、Stop 等計費紀錄 | UDP 1813 | 第 13 章 |
-| Status-Server（RFC 5997） | 監控系統確認伺服器還活著，不用測試帳號 | 同上兩個埠 | 第 05 章 |
+| Status-Server（RFC 5997） | 監控系統確認伺服器還活著，不用測試帳號 | 同上兩個埠 | 第 5 章 |
 | EAP over RADIUS | 802.1X：EAP-TLS、PEAP、EAP-TTLS | 走 RADIUS 認證埠 | 第 11 章 |
 | TACACS+（RFC 8907） | 網路設備的管理員登入、指令授權、計費 | TCP 49 | 第 12 章 |
 
@@ -67,7 +67,7 @@ rradius 的資料庫是 hiqlite：每個節點各有一份 SQLite 資料庫，�
 - **資料表由 migration 建立。** `[cluster]` 的 `migrations_dir` 指向一個放 SQL 檔的目錄，伺服器啟動時依檔名編號依序套用，已經套用過的不會再跑。要改結構，就新增下一個編號的檔案，不要改舊檔。單一檔案不能超過 2,000,000 位元組（一次寫入叢集的上限）：migration 放結構與少量初始資料，大量資料不要寫成 migration。超過時伺服器啟動失敗，訊息是 `migration file '3_big.sql' is 3000001 bytes, more than the 2000000 the cluster takes in one write: …`。`check` 不會發現這件事，要到啟動才知道。幾個檔案加起來超過 2,000,000 位元組沒有關係，伺服器會自己分批寫入。
 - **管理指令透過 API 埠寫入。** `user add` 這類指令不直接開資料庫檔，而是連到叢集的 API 埠，所以伺服器要先啟動，指令才有對象。
 
-除了內建的資料庫，你也可以讓 sql 處理器去查外部的 PostgreSQL 或 MySQL（第 09 章），或用 LDAP、Active Directory 驗證（第 08 章）。
+除了內建的資料庫，你也可以讓 sql 處理器去查外部的 PostgreSQL 或 MySQL（第 9 章），或用 LDAP、Active Directory 驗證（第 8 章）。
 
 ## 請求怎麼走
 
@@ -76,20 +76,20 @@ rradius 的資料庫是 hiqlite：每個節點各有一份 SQLite 資料庫，�
 ### 認證請求（Access-Request）
 
 1. **Status-Server 先處理。** 如果封包是 Status-Server，直接回應，不跑任何腳本，也不經過重送偵測。
-2. **比對用戶端（client）。** 用封包的來源 IP 位址，在 `[[radius.clients]]` 裡找對應的用戶端。一個用戶端可以是一個位址，也可以是整個網段（第 05 章）。找不到就丟棄，不回應，日誌最多每秒記一行 `RADIUS packet from unknown client … discarded`。
-3. **檢查封包。** 用這個用戶端的共用密碼檢查 Message-Authenticator。算出來不對（通常是共用密碼設錯）就丟棄。用戶端要求一定要有 Message-Authenticator、封包卻沒帶時，也丟棄（`require_message_authenticator`，第 05 章）。
+2. **比對用戶端（client）。** 用封包的來源 IP 位址，在 `[[radius.clients]]` 裡找對應的用戶端。一個用戶端可以是一個位址，也可以是整個網段（第 5 章）。找不到就丟棄，不回應，日誌最多每秒記一行 `RADIUS packet from unknown client … discarded`。
+3. **檢查封包。** 用這個用戶端的共用密碼檢查 Message-Authenticator。算出來不對（通常是共用密碼設錯）就丟棄。用戶端要求一定要有 Message-Authenticator、封包卻沒帶時，也丟棄（`require_message_authenticator`，第 5 章）。
 4. **重送偵測。** NAS 沒收到回應時會重送（retransmit）同一個封包。伺服器記得最近處理過的請求：處理中的重送直接丟掉，已經回過的就把同一個回應再送一次。
 5. **沒有 leader 時不回應。** 如果設了 `cluster.stop_without_leader_ms`，叢集失去 leader 超過這段時間，認證請求就不回應，讓 NAS 改問別台（第 16 章）。
 6. **EAP。** 封包帶 EAP-Message、而且設了 `[radius.eap]` 時，交給 EAP 處理：先跟用戶端完成 TLS 交握，過程中會來回好幾次 Access-Challenge（第 11 章）。EAP 裡面的身分最後還是交給下一步判斷：
    - EAP-TLS：憑證驗證通過後，用憑證證明的名稱去問驗證鏈；沒有驗證鏈時，問最上層的 Lua 腳本。
    - PEAP、EAP-TTLS：通道裡的密碼一定要由驗證鏈檢查。用戶端沒有驗證鏈時，這種登入一律拒絕。
 7. **驗證鏈或 Lua 腳本，二選一。** 這一步只走其中一條：
-   - 設了 `[auth]` 時，用驗證鏈。用戶端有 `auth = "<名稱>"` 時用 `[auth.chains.<名稱>]`，否則用 `[auth]` 本身那條（名稱叫 `default`）。驗證鏈由一個或多個處理器組成（sql、lua、ldap、netlogon），依 `policy` 決定結果（第 07 章）。
+   - 設了 `[auth]` 時，用驗證鏈。用戶端有 `auth = "<名稱>"` 時用 `[auth.chains.<名稱>]`，否則用 `[auth]` 本身那條（名稱叫 `default`）。驗證鏈由一個或多個處理器組成（sql、lua、ldap、netlogon），依 `policy` 決定結果（第 7 章）。
    - 沒有 `[auth]` 時，執行 `[lua]` 的 `script`，`phase` 是 `authentication`，由腳本回傳 `accept`、`reject` 或 `challenge`（第 10 章）。
 8. **資料庫無法使用時不回應。** 驗證時資料庫或外部後端無法使用，伺服器不回 Access-Reject，而是不回應，日誌寫 `not answered: the authentication backend could not be used`。這樣 NAS 會重送或改問別台，使用者不會因為後端暫時故障被當成密碼錯誤。
 9. **回覆。** 結果是接受時，把回覆屬性（例如 `Session-Timeout`、`Filter-Id`）依字典編碼，送回 Access-Accept；拒絕時送 Access-Reject。每次認證都在日誌寫一筆認證紀錄（`[log]` 的 `auth`，預設開啟），裡面有用戶端、使用者、驗證鏈、處理器和結果。
 
-> **注意：** 設了 `[auth]` 之後，最上層的 Lua 腳本就不再參與 RADIUS 的密碼認證（EAP-TLS 沒有驗證鏈的情況除外）。很多人以為腳本會在驗證鏈之後再跑一次，其實不會。要在驗證鏈裡加規則，用 lua 處理器（第 07 章）。
+> **注意：** 設了 `[auth]` 之後，最上層的 Lua 腳本就不再參與 RADIUS 的密碼認證（EAP-TLS 沒有驗證鏈的情況除外）。很多人以為腳本會在驗證鏈之後再跑一次，其實不會。要在驗證鏈裡加規則，用 lua 處理器（第 7 章）。
 
 ### 計費請求（Accounting-Request）
 
@@ -118,13 +118,13 @@ rradius 跑起來需要三樣東西，各自的角色不同：
 
 - **設定檔裡的相對路徑以設定檔所在目錄為基準。** 不是以你執行指令時所在的目錄為基準。所以 `data_dir = "data"` 指的是設定檔旁邊的 `data`。
 - **資料目錄只能給一個節點用。** 它是伺服器自己的狀態，不要手動改裡面的檔案，也不要讓兩個程式同時用同一個目錄。
-- **字典決定腳本與設定裡能用哪些屬性名稱。** 伺服器啟動時讀字典，`Filter-Id`、`Session-Timeout` 這些名稱都是從字典來的。rradius 附的字典是 FreeRADIUS 專案 v3.2.x 字典檔的原樣複本（授權是 CC-BY 4.0，見字典目錄裡的 `NOTICE`）。要加自訂屬性的做法見第 06 章。
+- **字典決定腳本與設定裡能用哪些屬性名稱。** 伺服器啟動時讀字典，`Filter-Id`、`Session-Timeout` 這些名稱都是從字典來的。rradius 附的字典是 FreeRADIUS 專案 v3.2.x 字典檔的原樣複本（授權是 CC-BY 4.0，見字典目錄裡的 `NOTICE`）。要加自訂屬性的做法見第 6 章。
 
 除了這三樣，通常還有：
 
 - Lua 腳本（`[lua]` 的 `script`）：設定裡一定要有 `[lua]` 這一節，腳本檔也要存在。
 - migration 目錄（`cluster.migrations_dir`）：建立資料表的 SQL 檔。
-- 祕密檔：共用密碼、叢集密碼放在獨立的檔案裡，用 `secret_file`、`secret_raft_file`、`secret_api_file` 指過去，權限設成 0600 或 0640（第 04 章）。
+- 祕密檔：共用密碼、叢集密碼放在獨立的檔案裡，用 `secret_file`、`secret_raft_file`、`secret_api_file` 指過去，權限設成 0600 或 0640（第 4 章）。
 
 ## 指令一覽
 
@@ -154,28 +154,28 @@ without --config, the configuration is /etc/rradius/rradius.toml
 
 | 指令 | 做什麼 | 說明在 |
 | --- | --- | --- |
-| `serve` | 啟動伺服器 | 第 03 章 |
-| `check` | 檢查設定檔，不啟動任何服務 | 第 04 章 |
-| `config show`／`diff`／`init` | 印出帶預設值的完整設定、比較兩份設定、產生底稿 | 第 04 章 |
-| `schema` | 印出設定檔的 JSON Schema，含每個鍵的說明與預設值 | 第 04 章 |
+| `serve` | 啟動伺服器 | 第 3 章 |
+| `check` | 檢查設定檔，不啟動任何服務 | 第 4 章 |
+| `config show`／`diff`／`init` | 印出帶預設值的完整設定、比較兩份設定、產生底稿 | 第 4 章 |
+| `schema` | 印出設定檔的 JSON Schema，含每個鍵的說明與預設值 | 第 4 章 |
 | `status` | 讀指標埠，整理成一頁狀態 | 第 17 章 |
 | `tuning` | 依這台機器的狀況給效能調校建議 | 第 19 章 |
-| `user` | 新增、改密碼、停用、啟用、刪除、查看帳號 | 第 07 章 |
+| `user` | 新增、改密碼、停用、啟用、刪除、查看帳號 | 第 7 章 |
 | `session` | 列出在線的 session | 第 13 章 |
-| `query` | 執行設定裡的具名查詢 | 第 09 章 |
+| `query` | 執行設定裡的具名查詢 | 第 9 章 |
 | `cluster` | 查看與移除叢集成員 | 第 16 章 |
 
-另外有一個獨立的壓測程式 `rradius-bench`，可以送 RADIUS 和 TACACS+ 請求。本書第 03 章拿它當登入測試工具，第 19 章用它做壓測。
+另外有一個獨立的壓測程式 `rradius-bench`，可以送 RADIUS 和 TACACS+ 請求。本書第 3 章拿它當登入測試工具，第 19 章用它做壓測。
 
 ## 用外部工具測試
 
-本書的登入測試都用 `rradius-bench`（第 03 章）。要用別的用戶端工具時：
+本書的登入測試都用 `rradius-bench`（第 3 章）。要用別的用戶端工具時：
 
 - **RADIUS：** FreeRADIUS 附的 `radtest`、`radclient`（Debian、Ubuntu 在 `freeradius-utils` 套件，macOS 可用 Homebrew 的 `freeradius-server`）。
 - **802.1X：** wpa_supplicant 附的 `eapol_test`（第 11 章）。
 - **TACACS+：** Python 套件 `tacacs_plus` 附的 `tacacs_client`（第 12 章）。
 
-rradius 預設丟棄沒有 Message-Authenticator 的 Access-Request（`require_message_authenticator`，第 05 章），不送的用戶端工具會得到逾時，伺服器日誌是 `discarded … Access-Requests lacking a Message-Authenticator`。遇到這種情況改用 `radclient`，在輸入加上 `Message-Authenticator=0x00`，它會算出正確的值：
+rradius 預設丟棄沒有 Message-Authenticator 的 Access-Request（`require_message_authenticator`，第 5 章），不送的用戶端工具會得到逾時，伺服器日誌是 `discarded … Access-Requests lacking a Message-Authenticator`。遇到這種情況改用 `radclient`，在輸入加上 `Message-Authenticator=0x00`，它會算出正確的值：
 
 ```console
 $ echo 'User-Name=alice,User-Password=alice-password,Message-Authenticator=0x00' \
@@ -190,7 +190,7 @@ $ echo 'User-Name=alice,Acct-Session-Id=s1,Acct-Status-Type=Start' \
 $ echo 'Message-Authenticator=0x00' | radclient 127.0.0.1:1812 status "$(cat localhost.secret)"
 ```
 
-最後一行是 Status-Server，`radius.status_server` 預設開啟（第 05 章）。
+最後一行是 Status-Server，`radius.status_server` 預設開啟（第 5 章）。
 
 > **未實機驗證：** 這一節的外部工具指令沒有在本版重跑；舊版手冊用 FreeRADIUS 3.2.10 的 `radclient` 測過（較舊的版本可能不會自動加 Message-Authenticator）。`Message-Authenticator` 被預設要求這一點，則對照了程式碼與第 05、21 章的實測。
 
@@ -235,7 +235,7 @@ dpsk: not supported by this program (DPSK needs rradius-enterprise)
 依你要做的事挑著讀：
 
 - **第一次接觸：** 照順序讀第 01 到 03 章，讓伺服器回出第一個 Access-Accept。接著讀第 04、05 章，學會寫設定檔和加入 NAS。
-- **要接上帳號來源：** 第 07 章（內建資料表與驗證鏈），第 08 章（LDAP、AD），第 09 章（外部資料庫），第 10 章（Lua 腳本）。
+- **要接上帳號來源：** 第 7 章（內建資料表與驗證鏈），第 8 章（LDAP、AD），第 9 章（外部資料庫），第 10 章（Lua 腳本）。
 - **要做 802.1X：** 第 11 章。
 - **要管網路設備的登入：** 第 12 章。
 - **要記計費、看誰在線：** 第 13 章。
@@ -259,11 +259,11 @@ dpsk: not supported by this program (DPSK needs rradius-enterprise)
 
 **症狀：** 設了 `[auth]` 之後，Lua 腳本裡寫的認證規則沒有作用。
 **原因：** 有 `[auth]` 時，RADIUS 的密碼認證只走驗證鏈，最上層腳本只處理計費（以及 TACACS+ 的授權與計費）。
-**解法：** 把規則改寫成驗證鏈裡的 lua 處理器（第 07 章），或拿掉 `[auth]`，全部交給腳本（第 10 章）。
+**解法：** 把規則改寫成驗證鏈裡的 lua 處理器（第 7 章），或拿掉 `[auth]`，全部交給腳本（第 10 章）。
 
 **症狀：** PEAP 或 EAP-TTLS 登入一律被拒絕，日誌說 `this client has no chain to check a password with`。
 **原因：** 通道裡的密碼只能由驗證鏈檢查，這個用戶端沒有驗證鏈。
-**解法：** 設定 `[auth]`（第 07 章、第 11 章）。
+**解法：** 設定 `[auth]`（第 7 章、第 11 章）。
 
 **症狀：** NAS 說 RADIUS 伺服器沒回應，伺服器日誌卻沒有認證紀錄。
 **原因：** 請求在比對用戶端或檢查封包的階段就被丟掉了，例如來源位址不在 `[[radius.clients]]` 裡，或共用密碼不一致。

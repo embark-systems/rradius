@@ -1,6 +1,6 @@
 # rradius 使用手冊
 
-這份手冊依主題寫：先認識程式、安裝、第一次登入，再依功能一章一章往下，最後是設定、命令與指標的參考附錄。常見的部署情境（企業 Wi-Fi、有線 MAC 認證、遠端存取、寬頻與 ISP）寫成「情境實作」章，每個情境都有可以直接啟動的設定檔，放在 [`rradius-server/examples/scenarios/`](../../rradius-server/examples/scenarios/)，並有自動測試（`rradius-server/tests/scenarios_test.rs`）照手冊的方式啟動它們。
+這份手冊依主題寫：先認識程式、安裝、第一次登入，再依功能一章一章往下，最後是設定、指令與指標的參考附錄。常見的部署情境（企業 Wi-Fi、有線 MAC 認證、遠端存取、寬頻與 ISP）寫成「情境實作」章，每個情境都有可以直接啟動的設定檔，放在 [`rradius-server/examples/scenarios/`](../../rradius-server/examples/scenarios/)，並有自動測試（`rradius-server/tests/scenarios_test.rs`）照手冊的方式啟動它們。
 
 指令的用法也可以直接問程式：`rradiusd help`、`rradiusd schema` 與 `rradiusd config show`。
 
@@ -41,13 +41,13 @@
 | 附錄 | 內容 |
 | --- | --- |
 | [A 設定參考](90-config-reference.md) | 每個設定鍵的預設值、能不能 reload |
-| [B 命令參考](91-command-reference.md) | 每個命令與旗標、結束碼 |
+| [B 命令參考](91-command-reference.md) | 每個指令與旗標、結束碼 |
 | [C 指標參考](92-metrics-reference.md) | 每個 Prometheus 指標與標籤 |
 | [D Lua API 參考](93-lua-reference.md) | 腳本裡能呼叫的函式 |
 | [E 術語與 RFC 對照](94-glossary.md) | 名詞與對應的 RFC |
 
 ## 範例的共同約定
 
-範例的做法（相對路徑、一次只跑一個情境、用發行檔時的執行檔路徑、示範密碼）寫在[第 14 章的開頭](14-isp-recipes.md#這些情境共同的做法)和[第 03 章](03-quick-start.md#準備工作目錄)。
+範例的做法（相對路徑、一次只跑一個情境、用發行檔時的執行檔路徑、示範密碼）寫在[第 14 章的開頭](14-isp-recipes.md#這些情境共同的做法)和[第 3 章](03-quick-start.md#準備工作目錄)。
 
 企業版的功能（RadSec、代理轉送、CoA 轉送、DPSK、動態用戶端等）不在這本手冊裡，見企業版手冊。

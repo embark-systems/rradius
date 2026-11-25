@@ -1,4 +1,4 @@
-# 92 附錄 C：指標參考
+# 附錄 C：指標參考
 
 > 本章讓你做到：
 > - 查到 `rradiusd` 在 `/metrics` 輸出的每一個指標：型別、標籤、意思
@@ -393,7 +393,7 @@ spool 裡等著重送的位元組數。
 
 ## 登入失敗鎖定與密碼比對
 
-主章：[第 07 章](07-users-and-chains.md)。
+主章：[第 7 章](07-users-and-chains.md)。
 
 #### `rradius_auth_lockout_rejected_total`
 
@@ -423,7 +423,7 @@ spool 裡等著重送的位元組數。
 
 ## Netlogon
 
-主章：[第 08 章](08-ldap-and-ad.md)。
+主章：[第 8 章](08-ldap-and-ad.md)。
 
 #### `rradius_netlogon_logons_total`
 
@@ -447,7 +447,7 @@ netlogon 處理器向網域控制站詢問的 MS-CHAPv2 登入，依結果分。
 
 ## 外部資料庫
 
-主章：[第 09 章](09-external-databases.md)。`database` 標籤是 `[databases.<名稱>]` 的名稱。
+主章：[第 9 章](09-external-databases.md)。`database` 標籤是 `[databases.<名稱>]` 的名稱。
 
 #### `rradius_external_db_failures_total`
 
@@ -481,7 +481,7 @@ rradius_external_db_reachable{database="billing"} 0
 
 ## 具名查詢
 
-主章：[第 09 章](09-external-databases.md)。`query` 標籤是 `[queries.<名稱>]` 的名稱。
+主章：[第 9 章](09-external-databases.md)。`query` 標籤是 `[queries.<名稱>]` 的名稱。
 
 #### `rradius_query_{name}`
 

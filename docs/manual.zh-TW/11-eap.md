@@ -1,4 +1,4 @@
-# 11 802.1X 與 EAP
+# 802.1X 與 EAP
 
 > 本章讓你做到：
 > - 準備 EAP 用的伺服器憑證與 CA，設定 `[radius.eap]`
@@ -9,8 +9,8 @@
 
 前置條件：
 
-- 讀過[第 03 章](03-quick-start.md)，會啟動伺服器、用 `rradius-bench` 測試登入。
-- 知道驗證鏈與 sql 處理器是什麼（[第 07 章](07-users-and-chains.md)）。
+- 讀過[第 3 章](03-quick-start.md)，會啟動伺服器、用 `rradius-bench` 測試登入。
+- 知道驗證鏈與 sql 處理器是什麼（[第 7 章](07-users-and-chains.md)）。
 - 機器上有 `openssl`，用來產生示範憑證。
 
 本章小節：
@@ -79,7 +79,7 @@ TLS session 恢復也不提供：每一次登入都是完整的握手。
 
 - **公司配發、能裝憑證的設備**（筆電、受管理的手機）用 EAP-TLS。沒有密碼可以猜，遺失時用 CRL 撤銷。
 - **員工自己的設備**用 PEAP。幾乎所有作業系統都內建 PEAP-MSCHAPv2。
-- **TTLS 內層 PAP** 適合密碼只能用明文比對的帳號來源，例如用 LDAP bind 檢查密碼的目錄（[第 08 章](08-ldap-and-ad.md)）。內層密碼在 TLS 通道裡，不會以明文經過空中。
+- **TTLS 內層 PAP** 適合密碼只能用明文比對的帳號來源，例如用 LDAP bind 檢查密碼的目錄（[第 8 章](08-ldap-and-ad.md)）。內層密碼在 TLS 通道裡，不會以明文經過空中。
 
 ## 一次 EAP 登入怎麼走
 
@@ -233,7 +233,7 @@ show = "SELECT name, vlan, enabled FROM devices WHERE name = ?1"
 - `reply_query` 回三個 VLAN 屬性，`:1` 是 tag。
 - `[accounts]` 只寫了 `enable`、`disable`、`show`，讓你用 `user` 指令停用或啟用設備。
 
-**設定：** 照[第 03 章](03-quick-start.md)的方式準備工作目錄，然後產生憑證、換掉範例密碼。情境的用戶端位址是 `10.30.0.10`，在本機測試時改成 `127.0.0.1`：
+**設定：** 照[第 3 章](03-quick-start.md)的方式準備工作目錄，然後產生憑證、換掉範例密碼。情境的用戶端位址是 `10.30.0.10`，在本機測試時改成 `127.0.0.1`：
 
 ```console
 $ cp -R rradius-server/examples/scenarios/wifi-certs ~/rradius-lab/
@@ -370,7 +370,7 @@ reply_query = "SELECT r.attribute, r.value FROM accounts a JOIN group_reply r ON
 
 ### 用 ldap 處理器決定
 
-ldap 處理器要寫 `certificate_filter` 才會處理憑證登入，例如 `certificate_filter = "(uid={user})"`。找到項目、且符合 `required_groups` 時接受，不必 bind。沒有 `certificate_filter` 的 ldap 處理器遇到憑證登入會略過，並記一行 `ignoring a certificate login: this handler has no certificate_filter`。ldap 處理器的其他設定在[第 08 章](08-ldap-and-ad.md)。
+ldap 處理器要寫 `certificate_filter` 才會處理憑證登入，例如 `certificate_filter = "(uid={user})"`。找到項目、且符合 `required_groups` 時接受，不必 bind。沒有 `certificate_filter` 的 ldap 處理器遇到憑證登入會略過，並記一行 `ignoring a certificate login: this handler has no certificate_filter`。ldap 處理器的其他設定在[第 8 章](08-ldap-and-ad.md)。
 
 ### 沒有驗證鏈時用 Lua 腳本決定
 
@@ -597,7 +597,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat wlc.secret)" \
 - `default_user` 不適用於通道裡的密碼。
 - 驗證鏈回的 MPPE 金鑰不會送出，送出的是從 TLS 通道推導的金鑰；其他回覆屬性照放進 Access-Accept。驗證鏈沒有回 `User-Name` 時，rradius 放進正規化之後的帳號名稱。
 - 密碼錯誤在驗證鏈拒絕的當下就寫日誌與認證紀錄，不必等用戶端把對話走完；同一段對話不會記兩次。
-- 通道裡的密碼登入照常計入 `auth.lockout`（[第 07 章](07-users-and-chains.md)）。
+- 通道裡的密碼登入照常計入 `auth.lockout`（[第 7 章](07-users-and-chains.md)）。
 - 通道裡最多 8 輪。
 
 > **未實機驗證：** TTLS 內層 MS-CHAPv2 只對照了程式碼與測試。`rradius-bench` 的 `ttls` 負載只送內層 PAP，所以本章沒有實際跑過內層 MS-CHAPv2。
@@ -630,7 +630,7 @@ show = "SELECT name, kind, grp, enabled FROM accounts WHERE name = ?1"
 - 只用 TTLS 內層 PAP 時，可以存 bcrypt 這類較安全的雜湊。
 - 帳號在 LDAP 而且只能用 bind 檢查密碼時，bind 只認得明文密碼，所以只適用 TTLS 內層 PAP，不適用 PEAP。
 
-`rradius_password_checks_total` 會依存放格式計數，例如上面的測試讓 `scheme="nthash"` 的 `ok` 增加。各種格式的說明在[第 07 章](07-users-and-chains.md)。
+`rradius_password_checks_total` 會依存放格式計數，例如上面的測試讓 `scheme="nthash"` 的 `ok` 增加。各種格式的說明在[第 7 章](07-users-and-chains.md)。
 
 ## 在 Lua 腳本裡看 EAP
 
@@ -707,7 +707,7 @@ return 'reject'
 
 ## 資料庫無法使用時
 
-EAP 對話本身在記憶體裡，但最後那一步（驗證鏈查資料表）需要叢集資料庫。資料庫暫時不能用時（例如呼叫逾時；只讀的查詢在沒有 leader 時仍用本機副本回答，見第 16 章）：
+EAP 對話本身在記憶體裡，但最後那一步（驗證鏈查資料表）需要叢集資料庫。資料庫暫時不能用時（例如呼叫逾時；唯讀的查詢在沒有 leader 時仍用本機副本回答，見第 16 章）：
 
 - 這個請求不回應，`rradius_radius_discarded_total{reason="database"}` 加 1，日誌寫 `EAP request from client <名稱> not answered: …`。
 - 對話留著。NAS 重送同一個 EAP-Response 時，rradius 重做那一步，不會把 TLS 資料再讀一次。
@@ -800,7 +800,7 @@ EAP
 
 **症狀：** `check` 印出 `radius.eap.methods has a method whose password only a chain can check, and there is no [auth] section`。
 **原因：** 用了 `peap` 或 `ttls`，卻沒有驗證鏈。
-**解法：** 加上 `[auth]` 與會比對密碼的處理器（[第 07 章](07-users-and-chains.md)）。
+**解法：** 加上 `[auth]` 與會比對密碼的處理器（[第 7 章](07-users-and-chains.md)）。
 
 **症狀：** `check` 印出 `radius client 'example': eap_methods is required when radius.eap.methods has more than one method; [] for a client without EAP`。
 **原因：** 提供兩種以上的方法時，每個用戶端都要寫 `eap_methods`。
