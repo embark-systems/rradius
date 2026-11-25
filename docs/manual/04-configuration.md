@@ -36,16 +36,16 @@ TOML opens a table with `[table-name]`, adds one entry to an array of tables wit
 | --- | --- | --- | --- |
 | `dictionary` | No | Path of the main dictionary file; when absent, the default dictionary path is used (`/usr/share/rradius/dictionary` for the package) | [06](06-dictionary.md) |
 | `include` | | Other configuration files to read along with this one | This chapter |
-| `[lua]` | Yes | The top-level Lua script and its resource limits | [10](../manual.zh-TW/10-lua-policies.md) |
-| `[cluster]` | Yes | The built-in cluster database; a single server needs it too | [16](../manual.zh-TW/16-cluster.md) |
+| `[lua]` | Yes | The top-level Lua script and its resource limits | [10](10-lua-policies.md) |
+| `[cluster]` | Yes | The built-in cluster database; a single server needs it too | [16](16-cluster.md) |
 | `[radius]` | At least one of this and `[tacacs]` | RADIUS listeners and clients | [05](05-radius-clients.md) |
-| `[tacacs]` | At least one of this and `[radius]` | TACACS+ listeners and clients | [12](../manual.zh-TW/12-tacacs.md) |
-| `[auth]` | | The auth chain | [07](../manual.zh-TW/07-users-and-chains.md) |
-| `[accounts]` | | SQL run by the `user` command | [07](../manual.zh-TW/07-users-and-chains.md) |
-| `[sessions]` | | SQL run by the `session` command | [13](../manual.zh-TW/13-accounting.md) |
-| `[databases.<name>]`, `[queries.<name>]` | | External databases and named queries | [09](../manual.zh-TW/09-external-databases.md) |
-| `[metrics]`, `[log]` | | HTTP port for metrics and health checks, and logging | [17](../manual.zh-TW/17-monitoring.md) |
-| `[runtime]` | | Worker thread settings | [19](../manual.zh-TW/19-performance.md) |
+| `[tacacs]` | At least one of this and `[radius]` | TACACS+ listeners and clients | [12](12-tacacs.md) |
+| `[auth]` | | The auth chain | [07](07-users-and-chains.md) |
+| `[accounts]` | | SQL run by the `user` command | [07](07-users-and-chains.md) |
+| `[sessions]` | | SQL run by the `session` command | [13](13-accounting.md) |
+| `[databases.<name>]`, `[queries.<name>]` | | External databases and named queries | [09](09-external-databases.md) |
+| `[metrics]`, `[log]` | | HTTP port for metrics and health checks, and logging | [17](17-monitoring.md) |
+| `[runtime]` | | Worker thread settings | [19](19-performance.md) |
 | `[shutdown]` | | Wait times when stopping | This chapter |
 
 A few rules you must know:
@@ -55,7 +55,7 @@ A few rules you must know:
 - **A service exists only if its section exists.** Without `[tacacs]` the TACACS+ port is not opened. Without `[metrics]` there is no `/metrics` or `/readyz`, and the `status` command has nothing to read.
 - **Error messages never print values.** A value of the wrong type may be a password that lacks its quotes, so the message gives only the line number and the key name.
 
-The type, default and reload behavior of every key are listed in full in [Appendix A](../manual.zh-TW/90-config-reference.md). Each table in this chapter also states its defaults and its reload behavior.
+The type, default and reload behavior of every key are listed in full in [Appendix A](90-config-reference.md). Each table in this chapter also states its defaults and its reload behavior.
 
 ## A configuration from scratch
 
@@ -96,7 +96,7 @@ address = "127.0.0.1"
 secret_file = "localhost.secret"   # openssl rand -hex 32 > localhost.secret
 ```
 
-`auth.lua` is the top-level script. This configuration has no `[auth]`, so the script alone decides every login. Start with a script that recognizes one demo account. How to write scripts is covered in [chapter 10](../manual.zh-TW/10-lua-policies.md):
+`auth.lua` is the top-level script. This configuration has no `[auth]`, so the script alone decides every login. Start with a script that recognizes one demo account. How to write scripts is covered in [chapter 10](10-lua-policies.md):
 
 ```lua
 -- auth.lua
@@ -121,7 +121,7 @@ $ rradiusd check --config rradius.toml
 configuration ok
 ```
 
-This configuration has no `[[cluster.nodes]]`, so it is a cluster of one node. The two cluster ports, Raft and API, use the defaults `127.0.0.1:8100` and `127.0.0.1:8200` and listen on the local machine only. Cluster settings are covered in [chapter 16](../manual.zh-TW/16-cluster.md).
+This configuration has no `[[cluster.nodes]]`, so it is a cluster of one node. The two cluster ports, Raft and API, use the defaults `127.0.0.1:8100` and `127.0.0.1:8200` and listen on the local machine only. Cluster settings are covered in [chapter 16](16-cluster.md).
 
 ## Relative paths
 
@@ -208,12 +208,12 @@ The secret files that the core edition reads:
 
 | Setting | Content | Main chapter |
 | --- | --- | --- |
-| `radius.clients[].secret_file`, `tacacs.clients[].secret_file` | The shared secret of a client | [05](05-radius-clients.md), [12](../manual.zh-TW/12-tacacs.md) |
-| `cluster.secret_raft_file`, `cluster.secret_api_file` | The passwords of the two cluster ports | [16](../manual.zh-TW/16-cluster.md) |
-| `databases.<name>.password_file` | The password of an external database | [09](../manual.zh-TW/09-external-databases.md) |
-| `auth.handlers[ldap].bind_password_file` | The password of the LDAP service account | [08](../manual.zh-TW/08-ldap-and-ad.md) |
-| `auth.handlers[netlogon].machine_password_file` | The password of the domain computer account | [08](../manual.zh-TW/08-ldap-and-ad.md) |
-| `radius.eap.key_file` | The private key of the EAP server certificate | [11](../manual.zh-TW/11-eap.md) |
+| `radius.clients[].secret_file`, `tacacs.clients[].secret_file` | The shared secret of a client | [05](05-radius-clients.md), [12](12-tacacs.md) |
+| `cluster.secret_raft_file`, `cluster.secret_api_file` | The passwords of the two cluster ports | [16](16-cluster.md) |
+| `databases.<name>.password_file` | The password of an external database | [09](09-external-databases.md) |
+| `auth.handlers[ldap].bind_password_file` | The password of the LDAP service account | [08](08-ldap-and-ad.md) |
+| `auth.handlers[netlogon].machine_password_file` | The password of the domain computer account | [08](08-ldap-and-ad.md) |
+| `radius.eap.key_file` | The private key of the EAP server certificate | [11](11-eap.md) |
 
 Generate a random shared secret and tighten its permissions:
 
@@ -259,7 +259,7 @@ The recommended flow for changing the configuration: edit the file, run `check`,
 
 ## Viewing the effective configuration: config show
 
-`config show` reads the configuration the way the server does, fills in the defaults for the keys you did not write, and prints the whole thing. Below is the result for [A configuration from scratch](#a-configuration-from-scratch) plus `conf.d/20-lab.toml` (`…` stands for two omitted lines of settings that have no effect in the core edition, see [Appendix A](../manual.zh-TW/90-config-reference.md)):
+`config show` reads the configuration the way the server does, fills in the defaults for the keys you did not write, and prints the whole thing. Below is the result for [A configuration from scratch](#a-configuration-from-scratch) plus `conf.d/20-lab.toml` (`…` stands for two omitted lines of settings that have no effect in the core edition, see [Appendix A](90-config-reference.md)):
 
 ```console
 $ rradiusd config show --config rradius.toml
@@ -483,7 +483,7 @@ If another SIGTERM or SIGINT arrives during this time, the remaining waits are s
 | `shutdown.ready_delay_ms` | `0` for a single node; `5000` when `cluster.nodes` has more than one | Yes | Duration of step 1, in milliseconds, 0 to 60000 |
 | `shutdown.drain_ms` | `5000` | Yes | The longest wait in step 3, in milliseconds, 0 to 60000 |
 
-0 means no wait. A value above 60000 makes `check` fail: `shutdown.drain_ms must be at most 60000`. The value in effect at the moment stopping begins is the one used, so a reload applies it. See [Appendix A](../manual.zh-TW/90-config-reference.md).
+0 means no wait. A value above 60000 makes `check` fail: `shutdown.drain_ms must be at most 60000`. The value in effect at the moment stopping begins is the one used, so a reload applies it. See [Appendix A](90-config-reference.md).
 
 **Configure:**
 
@@ -528,8 +528,8 @@ When you send another signal during stopping, the log shows `stopping: asked aga
 
 ## runtime and log
 
-- `[runtime]` has only `pin_threads` (default `false`, needs a restart). It pins each worker thread to one CPU and works only on Linux; set to `true` on another platform, `check` fails: `runtime.pin_threads is only supported on Linux`. For when to use it, see [chapter 19](../manual.zh-TW/19-performance.md).
-- `[log]` sets the log level (default `info`), the format (default `text`) and whether authentication records are written (default `true`). The whole table needs a restart to take effect. `[log.trace]` can be reloaded and is used to record the full requests of a given user or client for a while. See [chapter 17](../manual.zh-TW/17-monitoring.md) for details.
+- `[runtime]` has only `pin_threads` (default `false`, needs a restart). It pins each worker thread to one CPU and works only on Linux; set to `true` on another platform, `check` fails: `runtime.pin_threads is only supported on Linux`. For when to use it, see [chapter 19](19-performance.md).
+- `[log]` sets the log level (default `info`), the format (default `text`) and whether authentication records are written (default `true`). The whole table needs a restart to take effect. `[log.trace]` can be reloaded and is used to record the full requests of a given user or client for a while. See [chapter 17](17-monitoring.md) for details.
 
 ## Common mistakes
 
@@ -586,10 +586,10 @@ When you send another signal during stopping, the log shows `stopping: asked aga
 - [03 First start and first login](03-quick-start.md)
 - [05 RADIUS service and NAS clients](05-radius-clients.md)
 - [06 Dictionary and attributes](06-dictionary.md)
-- [10 Writing policies in Lua](../manual.zh-TW/10-lua-policies.md)
-- [16 Clusters and high availability](../manual.zh-TW/16-cluster.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [18 Day-to-day operations](../manual.zh-TW/18-operations.md)
-- [20 Security hardening](../manual.zh-TW/20-security.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix B: Command reference](../manual.zh-TW/91-command-reference.md)
+- [10 Writing policies in Lua](10-lua-policies.md)
+- [16 Clusters and high availability](16-cluster.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [18 Day-to-day operations](18-operations.md)
+- [20 Security hardening](20-security.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix B: Command reference](91-command-reference.md)

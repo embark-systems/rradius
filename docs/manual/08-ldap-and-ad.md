@@ -101,7 +101,7 @@ lowercase = true
 | `pool_size` | `4` | Connections kept open per URL |
 | `timeout_ms` | `5000` | Time limit for connecting to one URL plus the whole query, in milliseconds |
 
-Every key can be reloaded. The group keys are in the next two sections. For the full list of fields see [Appendix A](../manual.zh-TW/90-config-reference.md).
+Every key can be reloaded. The group keys are in the next two sections. For the full list of fields see [Appendix A](90-config-reference.md).
 
 Create the password file:
 
@@ -144,7 +144,7 @@ Authentication log:
 - For a name the directory cannot find, the ldap handler ignores it and passes it to the next handler. There is none here, so it shows `handler="none"`.
 - If the search finds two or more entries, the handler rejects and the log says `filter matched 2 entries; rejecting` (according to the code and its tests; the test directory in this chapter has no duplicate accounts).
 
-Use `[log.trace]` to see the Access-Accept for `alice` ([chapter 17](../manual.zh-TW/17-monitoring.md)). The value of `description` became `Filter-Id`:
+Use `[log.trace]` to see the Access-Accept for `alice` ([chapter 17](17-monitoring.md)). The value of `description` became `Filter-Id`:
 
 ```text
 … INFO rradius_trace: response client="localhost" source=127.0.0.1 user="alice" code=2 attributes="Message-Authenticator = <hidden>, Filter-Id = std.ppp, Class = it-staff, Session-Timeout = 28800"
@@ -385,7 +385,7 @@ Key points:
 - The AD account name is in `sAMAccountName`. The second part of `filter` excludes disabled accounts (bit 2 of `userAccountControl`). A disabled account cannot be found by the search and is the same as not existing.
 - Groups use the default `memberOf`, which AD writes on the user.
 - Users may type `CORP\alice` or `alice@corp.example.com`; `strip_realm = "both"` normalizes both to `alice`.
-- This is a named chain, and only the VPN gateway with `auth = "vpn"` goes through it. The jump host in the same scenario goes through a different `mfa` chain ([chapter 15](../manual.zh-TW/15-access-recipes.md)).
+- This is a named chain, and only the VPN gateway with `auth = "vpn"` goes through it. The jump host in the same scenario goes through a different `mfa` chain ([chapter 15](15-access-recipes.md)).
 - If the directory server certificate is not signed by a CA the system trusts, add `ca_file`.
 
 This configuration passes `check` (`check` does not connect to the directory). **Verified**: copy `rradius-server/examples/scenarios/remote-access/` as described in chapter 03, change `dictionary` to the real path of the dictionary and the password files to 0600, and `check` prints `configuration ok` (plus a warning that two clients still use the public secret that comes with the example).
@@ -703,8 +703,8 @@ You can also split this into two named chains, one for the VPN gateway and one f
 - [06 Dictionary and attributes](06-dictionary.md)
 - [11 802.1X and EAP](11-eap.md)
 - [12 TACACS+ device administration](12-tacacs.md)
-- [15 Scenarios: network access for organizations](../manual.zh-TW/15-access-recipes.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [20 Security hardening](../manual.zh-TW/20-security.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
+- [15 Scenarios: network access for organizations](15-access-recipes.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [20 Security hardening](20-security.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)

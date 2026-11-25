@@ -145,7 +145,7 @@ crl_file = "certs/ca.crl"
 
 This fragment goes in the `conf.d/` of the `config init` starter and has been verified with `check` (`configuration ok`). Paths are relative to the directory of the main configuration file `rradius.toml`.
 
-All keys (defaults are taken from `config show`; the full description is in [Appendix A](../manual.zh-TW/90-config-reference.md)):
+All keys (defaults are taken from `config show`; the full description is in [Appendix A](90-config-reference.md)):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -464,7 +464,7 @@ This schedule itself (the download source, the CA's CRL distribution point) has 
 
 ### ECDSA or RSA for the server certificate
 
-When login volume is high, switch the server certificate to **ECDSA P-256**: the CPU cost of each full handshake is about one third of RSA 2048 (source: a measurement in the old `docs/usage.md`, not measured again in this chapter; for the baseline rows see [Chapter 19](../manual.zh-TW/19-performance.md)).
+When login volume is high, switch the server certificate to **ECDSA P-256**: the CPU cost of each full handshake is about one third of RSA 2048 (source: a measurement in the old `docs/usage.md`, not measured again in this chapter; for the baseline rows see [Chapter 19](19-performance.md)).
 
 - **Use the P-256 curve, not P-384.** Community reports say old Android (7.0) supports only P-256, and a P-384 certificate chain fails there (not official documentation, not verified on a real device). The same goes for the CA and intermediate certificates.
 - **The server uses only one certificate at a time.** Before you switch to ECDSA, connect once with each kind of device.
@@ -676,7 +676,7 @@ A few limits:
 
 - This script is no use for PEAP and TTLS: their passwords must be checked by the auth chain, so the configuration must have `[auth]`.
 - When a lua handler in the auth chain is to compare the password for TTLS inner PAP, set `verifies_password = true` and compare `User-Password` yourself.
-- Other ways of writing scripts are in [Chapter 10](10-lua-policies.md), and the full API is in [Appendix D](../manual.zh-TW/93-lua-reference.md).
+- Other ways of writing scripts are in [Chapter 10](10-lua-policies.md), and the full API is in [Appendix D](93-lua-reference.md).
 
 ## Conversation limits and timeouts
 
@@ -703,7 +703,7 @@ You normally do not need to tune these values. For when you do:
 
 `rradius_eap_sessions_open` is the number of unfinished conversations right now.
 
-`rradius-bench` can also measure throughput with an EAP load (for example `--load eap-tls,concurrency=16`); that is covered in [Chapter 19](../manual.zh-TW/19-performance.md). When measuring, remember to set `max_sessions` and `max_sessions_per_client` higher than the number of simultaneous conversations; `rradius-server/benchmarks/eap.toml` in the source does exactly that.
+`rradius-bench` can also measure throughput with an EAP load (for example `--load eap-tls,concurrency=16`); that is covered in [Chapter 19](19-performance.md). When measuring, remember to set `max_sessions` and `max_sessions_per_client` higher than the number of simultaneous conversations; `rradius-server/benchmarks/eap.toml` in the source does exactly that.
 
 ## When the database is unavailable
 
@@ -715,7 +715,7 @@ The EAP conversation itself is in memory, but the last step (the auth chain quer
 
 So when the database is down briefly, supplicants only log in more slowly and are not rejected; when the outage is too long, the conversation times out and the supplicant must start over.
 
-> **Not verified on real hardware:** This part was only checked against the code and the spec, and was never run under a real database failure. For the overall behavior when the cluster has no leader, see [Chapter 16](../manual.zh-TW/16-cluster.md).
+> **Not verified on real hardware:** This part was only checked against the code and the spec, and was never run under a real database failure. For the overall behavior when the cluster has no leader, see [Chapter 16](16-cluster.md).
 
 ## EAP metrics and logs
 
@@ -760,13 +760,13 @@ The log lines related to EAP are all WARN:
 | `EAP conversation with client <name> failed: <reason>` | The conversation failed midway, for example wrong password, method not allowed, TLS handshake failure |
 | `EAP request from client <name> not answered: <reason>` | The database is unavailable and the request got no answer; the conversation waits for the NAS to retransmit |
 
-Each conversation that ends also has an `rradius_auth` authentication record. The log never prints the MSK or TLS content, and never prints the password inside the tunnel. The full description of metrics and logs is in [Chapter 17](../manual.zh-TW/17-monitoring.md) and [Appendix C](../manual.zh-TW/92-metrics-reference.md).
+Each conversation that ends also has an `rradius_auth` authentication record. The log never prints the MSK or TLS content, and never prints the password inside the tunnel. The full description of metrics and logs is in [Chapter 17](17-monitoring.md) and [Appendix C](92-metrics-reference.md).
 
 ## Connect real NASes and clients
 
 The tests in this chapter use `rradius-bench` to play both the NAS and the supplicant. When you connect real equipment:
 
-1. **NAS:** On the AP controller or switch, point the RADIUS server at the rradius authentication port (default 1812), with the shared secret equal to `secret_file`; change the client's `address` back to the NAS's real address. Configure accounting as in [Chapter 13](../manual.zh-TW/13-accounting.md).
+1. **NAS:** On the AP controller or switch, point the RADIUS server at the rradius authentication port (default 1812), with the shared secret equal to `secret_file`; change the client's `address` back to the NAS's real address. Configure accounting as in [Chapter 13](13-accounting.md).
 2. **Supplicant:** Set it to trust the CA that issued the server certificate and give the server name (the example is `radius.corp.example.com`). For EAP-TLS, also install the device certificate and private key. When there are many devices, use MDM or group policy (GPO) to push the CA certificate, the server name and the Wi-Fi settings to the devices together, instead of relying on users to tap "trust" by hand; without preconfiguration, users are asked again and again whether to trust the certificate, or they simply choose not to verify. This step is an operation of each operating system and management system, and this manual has not tested it.
 3. **VLAN:** The NAS must support assigning a VLAN by `Tunnel-Private-Group-Id`, so that the reply attributes in the examples have an effect.
 
@@ -815,7 +815,7 @@ The `eapol/` directory of the `enterprise-wifi` scenario has two `eapol_test` co
 **Fix:** Change it as the message says.
 
 **Symptom:** `check` prints `radius.eap.<key>: not supported by this program (… needs rradius-enterprise)`, or `radius.eap.methods: <method> is not supported by this program (… needs rradius-enterprise)`.
-**Cause:** The configuration has a key or method that exists only in the enterprise edition. The keys that are rejected this way are listed under "Settings the core does not support or that have no effect" in [Appendix A](../manual.zh-TW/90-config-reference.md).
+**Cause:** The configuration has a key or method that exists only in the enterprise edition. The keys that are rejected this way are listed under "Settings the core does not support or that have no effect" in [Appendix A](90-config-reference.md).
 **Fix:** Delete them from the `rradiusd` configuration; use only `tls`, `peap` and `ttls` as methods.
 
 **Symptom:** `check` prints `radius.eap.methods: 'md5' is not a method this server offers; it has tls, peap and ttls`.
@@ -877,11 +877,11 @@ The `eapol/` directory of the `enterprise-wifi` scenario has two `eapol_test` co
 - [07 User accounts and auth chains](07-users-and-chains.md)
 - [08 LDAP and Active Directory](08-ldap-and-ad.md)
 - [10 Writing policies in Lua](10-lua-policies.md)
-- [13 Accounting and sessions](../manual.zh-TW/13-accounting.md)
-- [15 Scenarios: network access for organizations](../manual.zh-TW/15-access-recipes.md)
-- [16 Clusters and high availability](../manual.zh-TW/16-cluster.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [19 Performance tuning and load testing](../manual.zh-TW/19-performance.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
-- [Appendix D: Lua API reference](../manual.zh-TW/93-lua-reference.md)
+- [13 Accounting and sessions](13-accounting.md)
+- [15 Scenarios: network access for organizations](15-access-recipes.md)
+- [16 Clusters and high availability](16-cluster.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [19 Performance tuning and load testing](19-performance.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)
+- [Appendix D: Lua API reference](93-lua-reference.md)

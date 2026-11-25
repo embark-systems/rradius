@@ -170,7 +170,7 @@ bind = "127.0.0.1"
 port = 9812
 ```
 
-Every key of `[tacacs]` (see [Appendix A](../manual.zh-TW/90-config-reference.md) for the full types and descriptions):
+Every key of `[tacacs]` (see [Appendix A](90-config-reference.md) for the full types and descriptions):
 
 | Setting | Default | Reload | Meaning |
 | --- | --- | --- | --- |
@@ -654,8 +654,8 @@ CREATE INDEX tacacs_log_user ON tacacs_log (username, logged);
 ```
 
 - The command and its arguments are sent separately; the script puts them back into one line and drops the `<cr>` the device adds.
-- The primary key is `(device, task_id, event)`, together with `INSERT OR IGNORE`: when a device resends the same record, only one row stays in the table. An accounting script must be safe to run more than once; the reason is in [chapter 13](../manual.zh-TW/13-accounting.md).
-- **`tacacs_log` grows without limit, and rradius never cleans it up.** Every command is one row. Delete old rows regularly, the same way as for accounting tables; see [chapter 18](../manual.zh-TW/18-operations.md). How long to keep them depends on your company's audit requirements; check before you delete.
+- The primary key is `(device, task_id, event)`, together with `INSERT OR IGNORE`: when a device resends the same record, only one row stays in the table. An accounting script must be safe to run more than once; the reason is in [chapter 13](13-accounting.md).
+- **`tacacs_log` grows without limit, and rradius never cleans it up.** Every command is one row. Delete old rows regularly, the same way as for accounting tables; see [chapter 18](18-operations.md). How long to keep them depends on your company's audit requirements; check before you delete.
 
 A measured accounting request for `show version` (AV pairs: `task_id=42 start_time=1795000000 service=shell cmd=show cmd-arg=version cmd-arg=<cr>`) got the reply `SUCCESS`, and this row appeared in the table:
 
@@ -746,11 +746,11 @@ TACACS+ authentication for client <name> answered ERROR: the authentication back
 TACACS+ authorization for client <name> answered ERROR: the cluster database could not be used
 ```
 
-When the cluster has `[cluster] stop_without_leader_ms` set and this node has had no leader for longer than that, authentication and authorization always answer `ERROR`, and the script does not even run. Accounting is still handed to the script; when the script cannot write to the database it answers `ERROR`. For this setting and the behavior of the cluster, see [chapter 16](../manual.zh-TW/16-cluster.md).
+When the cluster has `[cluster] stop_without_leader_ms` set and this node has had no leader for longer than that, authentication and authorization always answer `ERROR`, and the script does not even run. Accounting is still handed to the script; when the script cannot write to the database it answers `ERROR`. For this setting and the behavior of the cluster, see [chapter 16](16-cluster.md).
 
 So set at least two TACACS+ servers on the device, ideally pointing to different nodes of the cluster.
 
-> **Not verified on real hardware:** Authentication answering `ERROR` with `stop_without_leader_ms` set was measured in [chapter 16](../manual.zh-TW/16-cluster.md), which simulates three nodes on one machine. Authorization, accounting, and the replies when a database call times out were checked only against the code and the specification, not on a real multi-machine cluster.
+> **Not verified on real hardware:** Authentication answering `ERROR` with `stop_without_leader_ms` set was measured in [chapter 16](16-cluster.md), which simulates three nodes on one machine. Authorization, accounting, and the replies when a database call times out were checked only against the code and the specification, not on a real multi-machine cluster.
 
 ## The device side
 
@@ -802,7 +802,7 @@ TACACS+
 …
 ```
 
-The matching metrics are `rradius_tacacs_connections_open`, `rradius_tacacs_connections_total{result}`, `rradius_tacacs_requests_total{type}`, `rradius_tacacs_malformed_total` and `rradius_tacacs_response_seconds`. An ASCII login counts only once in `requests_total{type="authen"}`, however many packets go back and forth. For the meaning of each metric, see [chapter 17](../manual.zh-TW/17-monitoring.md) and [Appendix C](../manual.zh-TW/92-metrics-reference.md).
+The matching metrics are `rradius_tacacs_connections_open`, `rradius_tacacs_connections_total{result}`, `rradius_tacacs_requests_total{type}`, `rradius_tacacs_malformed_total` and `rradius_tacacs_response_seconds`. An ASCII login counts only once in `requests_total{type="authen"}`, however many packets go back and forth. For the meaning of each metric, see [chapter 17](17-monitoring.md) and [Appendix C](92-metrics-reference.md).
 
 When `Malformed` goes up, the most common cause is a wrong shared secret on one device.
 
@@ -868,8 +868,8 @@ When `Malformed` goes up, the most common cause is a wrong shared secret on one 
 - [08 LDAP and Active Directory](08-ldap-and-ad.md): log in to devices with directory accounts
 - [09 External databases and named queries](09-external-databases.md): turn accounting records into metrics
 - [10 Writing policies in Lua](10-lua-policies.md): `get_attr`, `get_attrs`, `set_attr`, `sql_execute`
-- [13 Accounting and sessions](../manual.zh-TW/13-accounting.md): why an accounting script must be safe to run more than once
-- [16 Clusters and high availability](../manual.zh-TW/16-cluster.md): `stop_without_leader_ms`
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
+- [13 Accounting and sessions](13-accounting.md): why an accounting script must be safe to run more than once
+- [16 Clusters and high availability](16-cluster.md): `stop_without_leader_ms`
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)

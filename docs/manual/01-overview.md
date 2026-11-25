@@ -226,7 +226,7 @@ The table below lists the items that the core edition refuses and that exist onl
 | CoA and Disconnect | `[radius.coa]` | `coa`, `disconnect` |
 | Cluster backup | `[cluster.backup]` | — |
 
-Besides the table, `[radius.eap]` and `[[radius.clients]]` also have a few keys that only the enterprise edition can use, for example OCSP revocation checking and session resumption in EAP. The core edition refuses most of these too, with a message that also ends in `needs rradius-enterprise`. A few are accepted but have no effect in the core edition. These keys are listed in [Appendix A](../manual.zh-TW/90-config-reference.md) and marked "not supported in core". The main text of this manual does not describe them.
+Besides the table, `[radius.eap]` and `[[radius.clients]]` also have a few keys that only the enterprise edition can use, for example OCSP revocation checking and session resumption in EAP. The core edition refuses most of these too, with a message that also ends in `needs rradius-enterprise`. A few are accepted but have no effect in the core edition. These keys are listed in [Appendix A](90-config-reference.md) and marked "not supported in core". The main text of this manual does not describe them.
 
 The rule of thumb is simple: check your configuration with `rradiusd check`. If it passes, the core edition can run it. If you see `needs rradius-enterprise`, that item needs the enterprise edition.
 
@@ -275,7 +275,7 @@ The formats used in the book:
 - [03 First start and first login](03-quick-start.md)
 - [04 Configuration file basics](04-configuration.md)
 - [05 RADIUS service and NAS clients](05-radius-clients.md)
-- [07 User accounts and auth chains](../manual.zh-TW/07-users-and-chains.md)
-- [10 Writing policies in Lua](../manual.zh-TW/10-lua-policies.md)
-- [16 Clusters and high availability](../manual.zh-TW/16-cluster.md)
-- [Appendix E: Glossary and RFC cross-reference](../manual.zh-TW/94-glossary.md)
+- [07 User accounts and auth chains](07-users-and-chains.md)
+- [10 Writing policies in Lua](10-lua-policies.md)
+- [16 Clusters and high availability](16-cluster.md)
+- [Appendix E: Glossary and RFC cross-reference](94-glossary.md)

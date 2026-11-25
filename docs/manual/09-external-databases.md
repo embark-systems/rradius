@@ -69,7 +69,7 @@ $ chmod 600 billing.secret
 
 The newline at the end of the file is removed. If the file is empty, `check` fails: `databases.billing.password_file: 'billing.secret' is empty`.
 
-The keys (see [Appendix A](../manual.zh-TW/90-config-reference.md) for the full description; any change to `[databases]` needs a restart):
+The keys (see [Appendix A](90-config-reference.md) for the full description; any change to `[databases]` needs a restart):
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -199,7 +199,7 @@ A script uses an external database through two functions. The first argument is 
 | `db_query(name, sql, params)` | Read | An array with one table per row, with the column names as keys |
 | `db_execute(name, sql, params)` | Write | The number of rows affected |
 
-The parameter rules are the same as for `sql_query`: always pass values with `?` and a parameter array, and never build them into the SQL string. The error messages of each function are in [Appendix D](../manual.zh-TW/93-lua-reference.md).
+The parameter rules are the same as for `sql_query`: always pass values with `?` and a parameter array, and never build them into the SQL string. The error messages of each function are in [Appendix D](93-lua-reference.md).
 
 Example: write a copy of the accounting data to the PostgreSQL of a billing system. In the quick-start `accounting.lua`, add this before the final `return 'accept'`:
 
@@ -404,7 +404,7 @@ External databases
   billing reachable               no
 ```
 
-You can set alerts like this: `rradius_external_db_reachable == 0` for one minute, or `rate(rradius_external_db_failures_total{reason="unavailable"}[5m]) > 0`. The full list of metrics is in [Appendix C](../manual.zh-TW/92-metrics-reference.md).
+You can set alerts like this: `rradius_external_db_reachable == 0` for one minute, or `rate(rradius_external_db_failures_total{reason="unavailable"}[5m]) > 0`. The full list of metrics is in [Appendix C](92-metrics-reference.md).
 
 ## Named queries: turn SQL into metrics
 
@@ -661,7 +661,7 @@ A change to `[queries]` gives `these need a restart to apply: [queries]`. Check 
 
 ## Accounts in another system: HTTP API
 
-When the accounts are in a membership system (the booking or billing system of a hotel or a coworking space) that you can only ask through an HTTP API, use `http_request` in a `lua` handler. For the full configuration and script, see [the external-api section of Chapter 15](../manual.zh-TW/15-access-recipes.md#帳號在外部系統external-api) and [Chapter 10](10-lua-policies.md). This section adds the points those two chapters do not cover.
+When the accounts are in a membership system (the booking or billing system of a hotel or a coworking space) that you can only ask through an HTTP API, use `http_request` in a `lua` handler. For the full configuration and script, see [the external-api section of Chapter 15](15-access-recipes.md#accounts-in-an-external-system-external-api) and [Chapter 10](10-lua-policies.md). This section adds the points those two chapters do not cover.
 
 **When the API only speaks JSON.** Scripts have no function to encode or decode JSON (`rradius-core/src/lua_engine.rs` does not provide one), so the example lets the API answer with a status code and response headers, and the request is form-encoded. If your API only speaks JSON:
 
@@ -702,7 +702,7 @@ When the accounts are in a membership system (the booking or billing system of a
 - [03 First start and first login](03-quick-start.md)
 - [07 User accounts and auth chains](07-users-and-chains.md)
 - [10 Writing policies in Lua](10-lua-policies.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
-- [Appendix D: Lua API reference](../manual.zh-TW/93-lua-reference.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)
+- [Appendix D: Lua API reference](93-lua-reference.md)

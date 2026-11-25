@@ -289,7 +289,7 @@ show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE
 | `sessions.list` | none | read by the command only | The SQL that `session list` runs, with no parameters |
 | `sessions.show` | none | read by the command only | The SQL that `session show <name>` runs; `?1` is the user name |
 
-(See [Appendix A](../manual.zh-TW/90-config-reference.md) for the full description.)
+(See [Appendix A](90-config-reference.md) for the full description.)
 
 - Both statements may only read: after any whitespace they must start with `SELECT` or `WITH`, in any letter case.
 - `show` must use `?1`, and only `?1`.
@@ -347,7 +347,7 @@ file = "log/accounting.log"
 | `radius.accounting_log.file` | none, required | yes | The file to append to, relative to the configuration file's directory |
 | `radius.accounting_log.queue` | `65536` | needs restart | The most records that can wait to be written, 1 to 16777216 |
 
-Adding or removing the whole `[radius.accounting_log]` table needs a restart. (See [Appendix A](../manual.zh-TW/90-config-reference.md) for the full description.)
+Adding or removing the whole `[radius.accounting_log]` table needs a restart. (See [Appendix A](90-config-reference.md) for the full description.)
 
 The directory of the file must exist first, or `check` fails:
 
@@ -482,7 +482,7 @@ dir = "spool"
 | `radius.accounting_spool.replay_interval_ms` | `5000` | needs restart | How long to wait before trying again after a replay fails, in milliseconds, must be greater than 0 |
 | `radius.accounting_spool.replay_window` | `1` | needs restart | How many requests to replay at the same time, 1 to 1024 |
 
-A change anywhere in the table needs a restart; on reload, the log says `these need a restart to apply: [radius.accounting_spool]`. (See [Appendix A](../manual.zh-TW/90-config-reference.md) for the full description.)
+A change anywhere in the table needs a restart; on reload, the log says `these need a restart to apply: [radius.accounting_spool]`. (See [Appendix A](90-config-reference.md) for the full description.)
 
 **What goes into the spool and what does not:**
 
@@ -661,5 +661,5 @@ For attributes, table design and examples, see [chapter 12](12-tacacs.md).
 - [14 Scenarios: broadband and ISP](14-isp-recipes.md): accounting for address pools and traffic control
 - [16 Clusters and high availability](16-cluster.md): why a write waits for the leader to confirm
 - [17 Monitoring, status and logs](17-monitoring.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)

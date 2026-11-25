@@ -45,7 +45,7 @@ RADIUS runs over UDP. When a NAS gets no answer it retransmits, and after waitin
 | `radius.sockets` | On Linux, the number of worker threads; `1` on other platforms | restart | How many receive sockets to open per address and port |
 | `radius.recv_buffer_bytes` | System default | restart | Receive buffer of each socket, 4096 to 1073741824 bytes |
 
-For the full types and limits, see [Appendix A](../manual.zh-TW/90-config-reference.md). `sockets` and `recv_buffer_bytes` affect performance under heavy traffic; how to tune them is in [chapter 19](../manual.zh-TW/19-performance.md).
+For the full types and limits, see [Appendix A](90-config-reference.md). `sockets` and `recv_buffer_bytes` affect performance under heavy traffic; how to tune them is in [chapter 19](19-performance.md).
 
 Listen on the local IPv4 and IPv6 addresses at the same time:
 
@@ -85,12 +85,12 @@ For the error messages, see [Common mistakes](#common-mistakes).
 | `address` | required | An IP address or a CIDR network, for example `192.0.2.10`, `198.51.100.0/24`, `2001:db8::/32` |
 | `name` | the value of `address` | The name used in logs, metrics and `[log.trace]`; it cannot repeat within one list (RADIUS or TACACS+), and when `name` is not set the `address` counts as the name, so a duplicate fails at load time (see "Common mistakes") |
 | `secret`, `secret_file` | set exactly one | The shared secret, or the file that holds it ([chapter 04](04-configuration.md)) |
-| `auth` | the default auth chain | Which `[auth.chains.<name>]` this client's logins use instead ([chapter 07](../manual.zh-TW/07-users-and-chains.md)) |
-| `eap_methods` | `radius.eap.methods` | The EAP methods this client may use; needs `[radius.eap]` ([chapter 11](../manual.zh-TW/11-eap.md)) |
+| `auth` | the default auth chain | Which `[auth.chains.<name>]` this client's logins use instead ([chapter 07](07-users-and-chains.md)) |
+| `eap_methods` | `radius.eap.methods` | The EAP methods this client may use; needs `[radius.eap]` ([chapter 11](11-eap.md)) |
 | `require_message_authenticator` | the value in `[radius]` | Overrides the `[radius]` setting, see the next section |
 | `limit_proxy_state` | the value in `[radius]` | Overrides the `[radius]` setting, see the next section |
 
-For the details of each key, see [Appendix A](../manual.zh-TW/90-config-reference.md).
+For the details of each key, see [Appendix A](90-config-reference.md).
 
 ```toml
 # conf.d/20-nas.toml
@@ -130,7 +130,7 @@ When you give the same shared secret to the NAS, set rradius's address, the auth
 
 > **Note:** `authorize_group` is only for TACACS+ clients. Writing it on a RADIUS client makes `check` fail.
 
-> **Enterprise:** The other client keys (RadSec, CoA, second factor) are enterprise features. In the core edition, writing them is either ignored or makes `check` fail; see [Appendix A](../manual.zh-TW/90-config-reference.md).
+> **Enterprise edition:** The other client keys (RadSec, CoA, second factor) are enterprise features. In the core edition, writing them is either ignored or makes `check` fail; see [Appendix A](90-config-reference.md).
 
 ## How clients are matched
 
@@ -241,7 +241,7 @@ Message-Authenticator is a signature attribute in an Access-Request. Without it,
 | `radius.require_message_authenticator` | `yes` | yes | `yes`, `no`, `auto` |
 | `radius.limit_proxy_state` | `yes` | yes | `yes`, `no`, `auto` |
 
-Both keys can be overridden on each client, with the same key names. See [Appendix A](../manual.zh-TW/90-config-reference.md).
+Both keys can be overridden on each client, with the same key names. See [Appendix A](90-config-reference.md).
 
 - `require_message_authenticator = "yes"`: every Access-Request without a Message-Authenticator is dropped.
 - `require_message_authenticator = "no"`: not required. Only then is `limit_proxy_state` consulted.
@@ -306,7 +306,7 @@ Status-Server (RFC 5997) is the packet a NAS or a monitoring system uses to ask 
 - The source must be a known client, with the right shared secret.
 - It does not go into the duplicate-request cache. Every one is answered again.
 - The number of answers is counted in `rradius_radius_status_server_total`.
-- With `radius.status_server = false` (default `true`, needs a restart), every Status-Server is dropped. See [Appendix A](../manual.zh-TW/90-config-reference.md).
+- With `radius.status_server = false` (default `true`, needs a restart), every Status-Server is dropped. See [Appendix A](90-config-reference.md).
 
 ```console
 $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
@@ -321,7 +321,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 …
 ```
 
-A cluster node that has lost the majority and stopped serving does not answer Status-Server on the authentication port, so the NAS asks another node instead ([chapter 16](../manual.zh-TW/16-cluster.md)).
+A cluster node that has lost the majority and stopped serving does not answer Status-Server on the authentication port, so the NAS asks another node instead ([chapter 16](16-cluster.md)).
 
 > **Not verified on real hardware:** The sentence above and "a Status-Server without Message-Authenticator is always dropped" come from the code and the specification. Only Status-Server with a Message-Authenticator was tested for this chapter.
 
@@ -359,13 +359,13 @@ rradius_radius_duplicates_total 1
 | `radius.max_auth_inflight` | `4096` | restart |
 | `radius.max_acct_inflight` | `4096` | restart |
 
-When the number of authentication (or accounting) requests being handled reaches the limit, new requests are dropped before any work is created, and not answered. This way the server does not spend memory and CPU on requests that are bound to time out when traffic surges, and the NAS retransmits or asks another server. See [Appendix A](../manual.zh-TW/90-config-reference.md).
+When the number of authentication (or accounting) requests being handled reaches the limit, new requests are dropped before any work is created, and not answered. This way the server does not spend memory and CPU on requests that are bound to time out when traffic surges, and the NAS retransmits or asks another server. See [Appendix A](90-config-reference.md).
 
 - Dropped requests are counted in `rradius_radius_discarded_total{reason="overload"}`.
 - The log has at most one line per port per second, saying how many were dropped: `RADIUS authentication overloaded: discarded 1 packets` (`accounting` for accounting). For the exact count, use the metric.
 - `rradius_radius_requests_limit{kind="auth"}` is the configured limit, and `rradius_radius_requests_in_progress{kind="auth"}` is the number being handled now.
 
-When you set the limit to 1 and send 8 requests at the same time with a slow script, 1 is answered, 7 time out, and `reason="overload"` is 7. For what value to set and how to measure it, see [chapter 19](../manual.zh-TW/19-performance.md).
+When you set the limit to 1 and send 8 requests at the same time with a slow script, 1 is answered, 7 time out, and `reason="overload"` is 7. For what value to set and how to measure it, see [chapter 19](19-performance.md).
 
 ## When the server does not answer
 
@@ -379,9 +379,9 @@ Besides the drops described above, the server also deliberately does not answer 
 | The database is temporarily unusable when deciding an Access-Request (timeout, no leader found, write queue full) | `reason="database"` |
 | The cluster node has lost the majority and stopped serving | `reason="no_leader"` |
 
-The counters in the table are all labels of `rradius_radius_discarded_total`. When the database cannot be used, the log line is `RADIUS Access-Request from client <name> not answered: the authentication backend could not be used`. When the data says "no" (no such account, wrong password, the database was queried fine but a script rejects), an Access-Reject is still returned; only "cannot decide" gets no answer. For how accounting requests are handled when the database cannot be used, see [chapter 13](../manual.zh-TW/13-accounting.md).
+The counters in the table are all labels of `rradius_radius_discarded_total`. When the database cannot be used, the log line is `RADIUS Access-Request from client <name> not answered: the authentication backend could not be used`. When the data says "no" (no such account, wrong password, the database was queried fine but a script rejects), an Access-Reject is still returned; only "cannot decide" gets no answer. For how accounting requests are handled when the database cannot be used, see [chapter 13](13-accounting.md).
 
-> **Not verified on real hardware:** The database-unusable and `no_leader` rows come from the code and the specification. This chapter did not create a real database failure to verify them. For clusters, see [chapter 16](../manual.zh-TW/16-cluster.md).
+> **Not verified on real hardware:** The database-unusable and `no_leader` rows come from the code and the specification. This chapter did not create a real database failure to verify them. For clusters, see [chapter 16](16-cluster.md).
 
 Also, when a response packet exceeds the RADIUS limit of 4096 bytes, the server sends an Access-Reject with no attributes instead and logs an error line; see [chapter 06](06-dictionary.md).
 
@@ -392,8 +392,8 @@ When a new NAS is connected for the first time, check in this order. Most proble
 1. **Did the server receive it?** Look at `rradius_radius_discarded_total`. If `unknown_client` goes up, the source address is not on the list. If nothing changes at all, the packet did not reach the server (the firewall, the address or port set on the NAS is wrong, or `radius.bind` does not listen on that interface).
 2. **Are the shared secret and Message-Authenticator right?** When `invalid` goes up, first check whether the log has `lacking a Message-Authenticator`: if it does, the NAS did not send it; if it does not, the shared secret most likely differs.
 3. **Did the server answer?** Look at `rradius_radius_client_responses_total{client="<name>"}`. If `access_accept` or `access_reject` goes up, the server answered, and the problem is in the authentication itself or on the NAS side that receives the response.
-4. **Why was it rejected?** Every decision has one authentication record line (`decision=` of `rradius_auth`), which says which auth chain and which handler were used. When that is not enough, use `[log.trace]` to temporarily record the full requests and responses of this NAS ([chapter 17](../manual.zh-TW/17-monitoring.md)).
-5. **Is accounting arriving?** Requests on the accounting port are counted per client too, and `code="accounting_response"` goes up. For how accounting data is handled, see [chapter 13](../manual.zh-TW/13-accounting.md).
+4. **Why was it rejected?** Every decision has one authentication record line (`decision=` of `rradius_auth`), which says which auth chain and which handler were used. When that is not enough, use `[log.trace]` to temporarily record the full requests and responses of this NAS ([chapter 17](17-monitoring.md)).
+5. **Is accounting arriving?** Requests on the accounting port are counted per client too, and `code="accounting_response"` goes up. For how accounting data is handled, see [chapter 13](13-accounting.md).
 
 The settings you usually find on a NAS are named differently by each vendor, but mean roughly this:
 
@@ -430,7 +430,7 @@ The settings you usually find on a NAS are named differently by each vendor, but
 
 **Symptom:** `rradius.toml: radius client '127.0.0.1': eap_methods needs [radius.eap]`.
 **Cause:** `eap_methods` was written without configuring EAP.
-**Fix:** Configure `[radius.eap]` first ([chapter 11](../manual.zh-TW/11-eap.md)), or remove `eap_methods`.
+**Fix:** Configure `[radius.eap]` first ([chapter 11](11-eap.md)), or remove `eap_methods`.
 
 **Symptom:** `radius clients: duplicate client name 'core'` (the TACACS+ list says `tacacs clients: …`).
 **Cause:** Two clients in the same list have the same name. A client without `name` is named by its `address`, so one unnamed `10.0.0.5` and another with `name = "10.0.0.5"` also count as the same name. The name is used to separate metrics and logs, and to find the client when the accounting spool is replayed, so it cannot repeat. Names that differ in case are different names, and the RADIUS and TACACS+ lists may use the same name.
@@ -466,12 +466,12 @@ The settings you usually find on a NAS are named differently by each vendor, but
 
 - [04 Configuration file basics](04-configuration.md)
 - [06 Dictionary and attributes](06-dictionary.md)
-- [07 User accounts and auth chains](../manual.zh-TW/07-users-and-chains.md)
-- [11 802.1X and EAP](../manual.zh-TW/11-eap.md)
-- [13 Accounting and sessions](../manual.zh-TW/13-accounting.md)
-- [16 Clusters and high availability](../manual.zh-TW/16-cluster.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [19 Performance tuning and load testing](../manual.zh-TW/19-performance.md)
-- [20 Security hardening](../manual.zh-TW/20-security.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
+- [07 User accounts and auth chains](07-users-and-chains.md)
+- [11 802.1X and EAP](11-eap.md)
+- [13 Accounting and sessions](13-accounting.md)
+- [16 Clusters and high availability](16-cluster.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [19 Performance tuning and load testing](19-performance.md)
+- [20 Security hardening](20-security.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)

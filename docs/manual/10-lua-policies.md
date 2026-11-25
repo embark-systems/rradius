@@ -7,7 +7,7 @@
 > - Write an accounting script that is safe to run again on a retransmission
 > - Call an allow-listed HTTP API from a script, and stay within the limits on execution time, memory and database wait
 
-Prerequisites: you have run the quick-start in [chapter 03](03-quick-start.md), and you have read [chapter 07](07-users-and-chains.md) so you know auth chains and handlers. This chapter covers usage only. The full parameters, return values and error messages of every function are in [Appendix D](../manual.zh-TW/93-lua-reference.md).
+Prerequisites: you have run the quick-start in [chapter 03](03-quick-start.md), and you have read [chapter 07](07-users-and-chains.md) so you know auth chains and handlers. This chapter covers usage only. The full parameters, return values and error messages of every function are in [Appendix D](93-lua-reference.md).
 
 In this chapter:
 
@@ -74,7 +74,7 @@ script = "policy.lua"
 # ... (other settings omitted)
 ```
 
-The default value of each `[lua]` key and whether it can be reloaded are in [Appendix A](../manual.zh-TW/90-config-reference.md):
+The default value of each `[lua]` key and whether it can be reloaded are in [Appendix A](90-config-reference.md):
 
 | Key | Default | Reload | Meaning |
 | --- | --- | --- | --- |
@@ -288,7 +288,7 @@ When written as `strftime('%s', 'now')`, a test gave `` sql_execute: non-determi
 
 ### When the database is unreachable
 
-A write waits for the leader to confirm. When the cluster has had no leader for more than 5 seconds, a new write fails at once. The first write after the majority is lost has already been handed to the cluster, and waits 30 seconds before it fails (see [chapter 16](../manual.zh-TW/16-cluster.md)). When the total time one request spends waiting for the database goes past `lua.query_timeout_ms`, the call fails too, for example `sql_query timed out: the database calls of one request have 5000 ms together`.
+A write waits for the leader to confirm. When the cluster has had no leader for more than 5 seconds, a new write fails at once. The first write after the majority is lost has already been handed to the cluster, and waits 30 seconds before it fails (see [chapter 16](16-cluster.md)). When the total time one request spends waiting for the database goes past `lua.query_timeout_ms`, the call fails too, for example `sql_query timed out: the database calls of one request have 5000 ms together`.
 
 This kind of failure means "cannot be asked right now". It does not mean this person may not log in, so the server handles it differently from an ordinary error:
 
@@ -321,7 +321,7 @@ CREATE TABLE last_login (
 );
 ```
 
-Migrations are applied only at startup, so restart the server after you add a new file. How this behaves with several nodes in the cluster (waiting for the leader, catching up) is in [chapter 16](../manual.zh-TW/16-cluster.md).
+Migrations are applied only at startup, so restart the server after you add a new file. How this behaves with several nodes in the cluster (waiting for the leader, catching up) is in [chapter 16](16-cluster.md).
 
 ## Use a script as a lua handler in the auth chain
 
@@ -387,7 +387,7 @@ return 'challenge'
 - An Access-Challenge can carry only `Reply-Message`, `State`, `Idle-Timeout`, `Session-Timeout` and vendor attributes, and at most one `State`. If it carries any other attribute, the server sends a reject instead, and the log says `RADIUS Access-Challenge for client localhost not sent: 'Filter-Id' is not allowed in an Access-Challenge`.
 - The script must remember whom it gave a challenge to: write the `State` to a table, and look it up in the second request.
 
-The full approach (password, TOTP, a limit on the number of failures, a code usable only once) is in the example `rradius-server/examples/two-step-totp.lua`, explained step by step in [chapter 15](../manual.zh-TW/15-access-recipes.md).
+The full approach (password, TOTP, a limit on the number of failures, a code usable only once) is in the example `rradius-server/examples/two-step-totp.lua`, explained step by step in [chapter 15](15-access-recipes.md).
 
 ## Write an accounting script
 
@@ -411,7 +411,7 @@ end
 
 The number of accounting scripts that run at the same time is limited: the number of Lua VMs minus 2, at least 1 (the number of VMs equals the number of CPUs the program can use). Requests over the limit wait in a queue and are not rejected. A script gives up its place while it waits for the database or an HTTP reply. This keeps CPU available for logins when a lot of accounting arrives. Login and authorization scripts have no such limit.
 
-How to design accounting tables, the spool, and the `session` command are all in [chapter 13](../manual.zh-TW/13-accounting.md).
+How to design accounting tables, the spool, and the `session` command are all in [chapter 13](13-accounting.md).
 
 ## Call an HTTP API
 
@@ -425,7 +425,7 @@ timeout_ms = 1500
 max_concurrent = 64
 ```
 
-Without `[lua.http]`, `http_request` and `url_encode` do not exist in the script: they are `nil`. The default of each key is in [Appendix A](../manual.zh-TW/90-config-reference.md):
+Without `[lua.http]`, `http_request` and `url_encode` do not exist in the script: they are `nil`. The default of each key is in [Appendix A](90-config-reference.md):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -611,8 +611,8 @@ $ kill -HUP <server PID>
 - [09 External databases and named queries](09-external-databases.md)
 - [11 802.1X and EAP](11-eap.md)
 - [12 TACACS+ device administration](12-tacacs.md)
-- [13 Accounting and sessions](../manual.zh-TW/13-accounting.md)
-- [15 Scenarios: network access for organizations](../manual.zh-TW/15-access-recipes.md)
-- [16 Clusters and high availability](../manual.zh-TW/16-cluster.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix D: Lua API reference](../manual.zh-TW/93-lua-reference.md)
+- [13 Accounting and sessions](13-accounting.md)
+- [15 Scenarios: network access for organizations](15-access-recipes.md)
+- [16 Clusters and high availability](16-cluster.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix D: Lua API reference](93-lua-reference.md)

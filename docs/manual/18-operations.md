@@ -137,7 +137,7 @@ Settings that are applied and not applied on reload:
 | `file` of `[radius.accounting_log]` (the file is reopened on reload) | `tacacs.bind`, `port`, `max_connections`, `max_connections_per_source`, `max_body_len`, `idle_timeout_ms` |
 | | Adding or removing a whole `[radius]` or `[tacacs]` |
 
-Whether each key can be reloaded is also written in the reload column of [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md).
+Whether each key can be reloaded is also written in the reload column of [Appendix A: Configuration reference](90-config-reference.md).
 
 ## Shutdown and restart
 
@@ -313,7 +313,7 @@ To generate a new secret:
 $ (umask 077; openssl rand -hex 32 > nas.secret)
 ```
 
-- Give only the account that runs rradius read permission on secret files (0600 or 0640). When the permissions are too wide, `check`, start and reload warn; see [Chapter 20](../manual.zh-TW/20-security.md) for details.
+- Give only the account that runs rradius read permission on secret files (0600 or 0640). When the permissions are too wide, `check`, start and reload warn; see [Chapter 20](20-security.md) for details.
 - A shared secret shorter than 16 bytes, or one that contains `change-me` (the public value in the examples), also gives a warning and does not block the start. Some old devices limit the length or the characters of the secret, so make sure the device accepts it before you change it.
 
 ## Purging old data
@@ -535,7 +535,7 @@ The full metrics list and the alert rules are in [Chapter 17](17-monitoring.md).
 | Rate of increase of `rradius_radius_responses_total{code="access_reject"}` | Logins are rejected | A sudden increase: someone is trying passwords, the directory is down, or the configuration is wrong. Look at `handler` in the authentication record |
 | `rradius_radius_discarded_total{reason="unknown_client"}` | The source is not in the client list | A new device has not been added yet, or someone is scanning |
 | `rradius_radius_discarded_total{reason="invalid"}` | Wrong signature or format | Usually the shared secret of one device is wrong |
-| `rradius_radius_discarded_total{reason="overload"}` | The number of requests handled at once reached the limit | Investigate if above 0: the database, directory or script has become slow, see [Chapter 21](../manual.zh-TW/21-troubleshooting.md) |
+| `rradius_radius_discarded_total{reason="overload"}` | The number of requests handled at once reached the limit | Investigate if above 0: the database, directory or script has become slow, see [Chapter 21](21-troubleshooting.md) |
 | Rate of increase of `rradius_radius_duplicates_total` | The NAS is retransmitting | Handling is slower than the NAS's retransmit interval |
 | `rradius_cluster_leader` | Whether this node has a leader to write to | 0 for more than a few seconds: the node is isolated, or the cluster has no majority ([Chapter 16](16-cluster.md)) |
 | `rradius_acct_spool_bytes` | Accounting in the spool not yet written to the database | Stays above 0: the database or the cluster has a problem |
@@ -554,7 +554,7 @@ The full metrics list and the alert rules are in [Chapter 17](17-monitoring.md).
 
 ## Pre-launch checklist
 
-This is the integrated operations checklist. The security items are written one by one in [Chapter 20, "Checklist"](../manual.zh-TW/20-security.md#檢查清單); this list only points there and does not repeat them.
+This is the integrated operations checklist. The security items are written one by one in [Chapter 20, "Checklist"](20-security.md#checklist); this list only points there and does not repeat them.
 
 - [ ] `rradiusd check --config …` passes, and gives no warnings (secret file permissions, shared secrets that are too short or contain `change-me`, `unencrypted`, and so on; see Chapter 20).
 - [ ] All `*.secret` files are newly generated random values, not the ones that come with the examples (see "Changing secrets" above).
@@ -563,7 +563,7 @@ This is the integrated operations checklist. The security items are written one 
 - [ ] `[[radius.clients]]` and `[[tacacs.clients]]` list only devices that really will send requests, and do not use `0.0.0.0/0`.
 - [ ] `[metrics]` is bound only to an internal address; with several nodes, `[cluster] listen` is bound to an internal network or a WireGuard address.
 - [ ] The firewall opens only the ports in use and limits their sources: 1812 and 1813 (UDP), 49 (TACACS+), and the cluster ports only between nodes.
-- [ ] You have run `rradiusd tuning --config …` and set the receive buffer and the file descriptor limit as it recommends ([Chapter 19](../manual.zh-TW/19-performance.md)).
+- [ ] You have run `rradiusd tuning --config …` and set the receive buffer and the file descriptor limit as it recommends ([Chapter 19](19-performance.md)).
 - [ ] The server is managed by systemd, Compose or Kubernetes, which send SIGTERM on stop (not SIGKILL) and wait long enough; `data_dir` and the accounting spool are on persistent local disk (see "How long shutdown takes" and "Managing with systemd" above).
 - [ ] Automatic restart is set (systemd `Restart=on-failure`, Compose `restart: unless-stopped`): when a node's database breaks, the server exits with exit code 1 and relies on the restart to recover.
 - [ ] After start, look at the log: every port that should be open has a `listening` line: `RADIUS Server listening on …`, `TACACS+ Server listening on …`, `Metrics listening on …`. If a RADIUS or TACACS+ port cannot be bound, the server exits with exit code 1; if only the metrics port cannot be bound, it logs one error line and the process keeps running, so you must see `Metrics listening on …`.
@@ -631,7 +631,7 @@ This is the integrated operations checklist. The security items are written one 
 - [13 Accounting and sessions](13-accounting.md)
 - [16 Clusters and high availability](16-cluster.md)
 - [17 Monitoring, status and logs](17-monitoring.md)
-- [19 Performance tuning and load testing](../manual.zh-TW/19-performance.md)
-- [21 Troubleshooting](../manual.zh-TW/21-troubleshooting.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix B: Command reference](../manual.zh-TW/91-command-reference.md)
+- [19 Performance tuning and load testing](19-performance.md)
+- [21 Troubleshooting](21-troubleshooting.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix B: Command reference](91-command-reference.md)

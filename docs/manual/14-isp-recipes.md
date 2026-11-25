@@ -54,7 +54,7 @@ The script returns `Acct-Interim-Interval = 300` in the Access-Accept, which ask
 
 **Monitor with named queries.** Each scenario with a pool has `[queries.<name>]`. Every node queries its own copy every 30 seconds (`interval_ms` defaults to `30000`), and the result becomes the metric `rradius_query_<name>`. `rradiusd query <name>` runs the query once, right now, and prints a table. A named query takes effect only after a restart. See [chapter 09](09-external-databases.md) for details.
 
-The configuration keys used by the scenarios in this chapter (see [Appendix A](../manual.zh-TW/90-config-reference.md) for the full description):
+The configuration keys used by the scenarios in this chapter (see [Appendix A](90-config-reference.md) for the full description):
 
 | Setting | Default | reload | Use in this chapter |
 | --- | --- | --- | --- |
@@ -318,7 +318,7 @@ Login storm measurement of 2026-11-16 (change ip-pool-scale; one 14-CPU Docker m
 
 This speed depends on two things: choosing candidates uses the `(pool, state, n)` index, and every query at login has a condition covered by the first columns of some index. The `WHERE nas = ? AND state = 'active'` of the accounting script has no index, but it runs only when a NAS reboots and sends Accounting-On or Accounting-Off, not at every login. When SQLite has no statistics, an index covers only part of a condition, and the query may scan the whole pool by primary key. The "reuse the binding" query of an earlier version did exactly that (it had `ORDER BY ip`, which the primary key already satisfies), and with 110,000 addresses it managed only 64 logins per second. When you change a query, use `EXPLAIN QUERY PLAN` to see which index it uses.
 
-The measurement covers authentication only. The accounting writes (Start, Interim, Stop) are counted separately, and the limits are in [chapter 19](../manual.zh-TW/19-performance.md). If the reconnect takes longer than 120 seconds, reservations that received no Start are released first, and the "reserved" count is lower than the number of logins.
+The measurement covers authentication only. The accounting writes (Start, Interim, Stop) are counted separately, and the limits are in [chapter 19](19-performance.md). If the reconnect takes longer than 120 seconds, reservations that received no Start are released first, and the "reserved" count is lower than the number of logins.
 
 ### Known limitations
 
@@ -1362,5 +1362,5 @@ Time is counted only at the Stop, so two simultaneous sessions each get the rema
 - [15 Scenarios: network access for organizations](15-access-recipes.md)
 - [16 Clusters and high availability](16-cluster.md)
 - [17 Monitoring, status and logs](17-monitoring.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix D: Lua API reference](../manual.zh-TW/93-lua-reference.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix D: Lua API reference](93-lua-reference.md)

@@ -135,7 +135,7 @@ These two ports are protected only by shared secrets (`secret_raft`, `secret_api
 
 ## cluster settings
 
-Every key of `[cluster]` needs a restart to take effect; on reload the log lists `[cluster]` after `these need a restart to apply:`. For the full types and defaults, see [Appendix A](../manual.zh-TW/90-config-reference.md).
+Every key of `[cluster]` needs a restart to take effect; on reload the log lists `[cluster]` after `these need a restart to apply:`. For the full types and defaults, see [Appendix A](90-config-reference.md).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -148,7 +148,7 @@ Every key of `[cluster]` needs a restart to take effect; on reload the log lists
 | `migrations_dir` | none | Directory of SQL files applied at startup ([chapter 18](18-operations.md)) |
 | `migrations_wait_ms` | `60000` | Time limit for each of the three startup steps (wait for a leader, apply migrations, catch up), in milliseconds |
 | `snapshot_every` | `100000` | Number of Raft log entries between two snapshots |
-| `read_connections` | twice the number of worker threads, at most 32 | Number of connections that read the local database, 1 to 128 ([chapter 19](../manual.zh-TW/19-performance.md)) |
+| `read_connections` | twice the number of worker threads, at most 32 | Number of connections that read the local database, 1 to 128 ([chapter 19](19-performance.md)) |
 | `stop_without_leader_ms` | none (always answer) | After there has been no leader for longer than this time, do not answer logins and Status-Server, in milliseconds |
 
 Rules for `nodes` (`check` fails when they are broken):
@@ -182,7 +182,7 @@ The tables are replicated automatically, but the things below are not. Check the
 - **`snapshot_every`:** when you lower it, a restart after an abnormal exit (power loss, SIGKILL) is faster, but with many writes, snapshots that are too frequent slow the service down.
 - **More nodes do not raise the write limit.** Every write goes through the same leader and waits for the confirmation of a majority, and between separate hosts it also waits for the round trips between the nodes (see [Across data centers](#across-data-centers)). Logins (reads) are handled by each node on its own, so the more nodes, the higher the total.
 
-The defaults and ranges of the three are in the table above. All need a restart, and for how to measure see [chapter 19](../manual.zh-TW/19-performance.md).
+The defaults and ranges of the three are in the table above. All need a restart, and for how to measure see [chapter 19](19-performance.md).
 
 ## Three nodes on one machine
 
@@ -1124,7 +1124,7 @@ Suggested directions for alerts:
 - `rradius_cluster_caught_up` is 0 for too long.
 - The bytes of the accounting spool (`rradius_acct_spool_bytes`) keep growing, which means writes to the database are failing.
 
-The `deploy/monitoring/` directory of the source has ready-made rules; see [chapter 17](17-monitoring.md). The full description of every metric is in [Appendix C](../manual.zh-TW/92-metrics-reference.md).
+The `deploy/monitoring/` directory of the source has ready-made rules; see [chapter 17](17-monitoring.md). The full description of every metric is in [Appendix C](92-metrics-reference.md).
 
 ## Common mistakes
 
@@ -1212,7 +1212,7 @@ The `deploy/monitoring/` directory of the source has ready-made rules; see [chap
 - [13 Accounting and sessions](13-accounting.md)
 - [17 Monitoring, status and logs](17-monitoring.md)
 - [18 Day-to-day operations](18-operations.md)
-- [19 Performance tuning and load testing](../manual.zh-TW/19-performance.md)
-- [20 Security hardening](../manual.zh-TW/20-security.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
+- [19 Performance tuning and load testing](19-performance.md)
+- [20 Security hardening](20-security.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)

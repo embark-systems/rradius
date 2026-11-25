@@ -91,7 +91,7 @@ In that case:
 - TACACS+ replies ERROR.
 - This does not count as a failed login, so [login failure lockout](#login-failure-lockout) does not count it.
 
-The reason for this design: if the server answered Access-Reject while a backend was down, the NAS would treat it as "wrong password". The user would be shut out, and might even be locked by the NAS's own failure counter. Staying silent lets the NAS ask another server. The `Discarded: database` line of `status` is this counter ([Chapter 17](../manual.zh-TW/17-monitoring.md)).
+The reason for this design: if the server answered Access-Reject while a backend was down, the NAS would treat it as "wrong password". The user would be shut out, and might even be locked by the NAS's own failure counter. Staying silent lets the NAS ask another server. The `Discarded: database` line of `status` is this counter ([Chapter 17](17-monitoring.md)).
 
 ### The received name and the account name
 
@@ -130,7 +130,7 @@ show = "SELECT username, enabled FROM users WHERE username = ?1"
 | `accounts.enable`, `disable`, `delete` | — | The subcommand of the same name | `?1` is the account name |
 | `accounts.show` | — | `user show` | The query result is printed as it is, one column per line |
 
-A subcommand whose statement is not set cannot be used. Only the `user` command reads `[accounts]`, and it reads it once each time it runs, independent of reload (Appendix A marks it "command"). See [Appendix A](../manual.zh-TW/90-config-reference.md) for the full fields.
+A subcommand whose statement is not set cannot be used. Only the `user` command reads `[accounts]`, and it reads it once each time it runs, independent of reload (Appendix A marks it "command"). See [Appendix A](90-config-reference.md) for the full fields.
 
 Things to watch for:
 
@@ -257,7 +257,7 @@ rradius_password_checks_total{scheme="crypt",result="ok"} 4
 
 `scheme` takes a fixed set of values: `clear`, `none` (no prefix), `crypt`, `md5`, `smd5`, `sha`, `ssha`, `sha224`, `ssha224`, `sha256`, `ssha256`, `sha384`, `ssha384`, `sha512`, `ssha512`, `pbkdf2-sha1` (`{PBKDF2}` counts here too), `pbkdf2-sha256`, `pbkdf2-sha512`, `x-pbkdf2`, `ns-mta-md5`, `nthash`, `argon2` and `unknown` (an unknown prefix). `result` is `ok` or `failed`.
 
-While you migrate old accounts, use it to see how many logins still use the old formats. For the full list of metrics see [Appendix C](../manual.zh-TW/92-metrics-reference.md).
+While you migrate old accounts, use it to see how many logins still use the old formats. For the full list of metrics see [Appendix C](92-metrics-reference.md).
 
 ## Migrate password hashes from an old system
 
@@ -384,7 +384,7 @@ INSERT INTO users (username, password, origin) VALUES
   ('o''brien', '{nthash}9d232eea31049319fc8ab84300855a34', 'nt');
 ```
 
-- **Have the file ready before the first start.** A migration file that has been applied cannot be changed (a change gives `migration file '…' changed after it was applied`; see [Chapter 18](../manual.zh-TW/18-operations.md)); to add accounts later, add a file with the next number.
+- **Have the file ready before the first start.** A migration file that has been applied cannot be changed (a change gives `migration file '…' changed after it was applied`; see [Chapter 18](18-operations.md)); to add accounts later, add a file with the next number.
 - **Convert account names to lower case and remove the domain first,** to match the settings in [Normalize user names and realms](#normalize-user-names-and-realms). If names with different case stay in the table, the lookup does not find them: with `lowercase = true`, the row `Alice` is never matched.
 - **Two accounts that differ only in case** become the same name after lowercasing. In the example, `users.username` is a `PRIMARY KEY`, so the `INSERT` of the row that is now a duplicate fails (`UNIQUE constraint failed`), and the whole migration file fails with it. Find them before the import and decide which to keep.
 - **Single quotes in SQL strings are written twice** (`o''brien` above). When a program generates the file, handle the quotes in both account names and hashes.
@@ -549,7 +549,7 @@ The table needs a `DEFAULT` account. In the test it stores `{clear}guest-passwor
 
 ## lua handler
 
-The lua handler runs a separate Lua script, for rules that tables and SQL cannot express. For how to write scripts and the functions available, see [Chapter 10](10-lua-policies.md) and [Appendix D](../manual.zh-TW/93-lua-reference.md).
+The lua handler runs a separate Lua script, for rules that tables and SQL cannot express. For how to write scripts and the functions available, see [Chapter 10](10-lua-policies.md) and [Appendix D](93-lua-reference.md).
 
 ```toml
 # rradius.toml (excerpt)
@@ -666,7 +666,7 @@ Rules:
 - Each chain is built once, at startup and at reload.
 - A named chain must set its own `policy` and `username`; it does not inherit them from `[auth]`. If `[auth]` sets `policy` or `[auth.username]` but has no `[[auth.handlers]]`, `check` fails.
 
-The example scenario `remote-access` works this way: the VPN gateway uses the `vpn` chain (LDAP), and the jump host uses the `mfa` chain (Lua two-step verification). For the LDAP part see [Chapter 08](08-ldap-and-ad.md), and for two-step verification see [Chapter 15](../manual.zh-TW/15-access-recipes.md).
+The example scenario `remote-access` works this way: the VPN gateway uses the `vpn` chain (LDAP), and the jump host uses the `mfa` chain (Lua two-step verification). For the LDAP part see [Chapter 08](08-ldap-and-ad.md), and for two-step verification see [Chapter 15](15-access-recipes.md).
 
 A change of chain only needs a reload. Run it outside the terminal that runs the server:
 
@@ -910,6 +910,6 @@ These three metrics appear only when `[auth.lockout]` is set. **Verified.**
 - [10 Writing policies in Lua](10-lua-policies.md)
 - [11 802.1X and EAP](11-eap.md)
 - [12 TACACS+ device administration](12-tacacs.md)
-- [17 Monitoring, status and logs](../manual.zh-TW/17-monitoring.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
+- [17 Monitoring, status and logs](17-monitoring.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)

@@ -261,7 +261,7 @@ How the settings fit together:
 | `required_groups` of the ldap handler | no group required | yes | Accept only if the user belongs to one of the groups |
 | `group_reply` of the ldap handler | none | yes | Reply attributes added when the user belongs to a group |
 
-For the full description of each key, see [Appendix A](../manual.zh-TW/90-config-reference.md); for the other keys of the ldap handler (`ca_file`, timeouts, number of connections and so on), see [chapter 08](08-ldap-and-ad.md).
+For the full description of each key, see [Appendix A](90-config-reference.md); for the other keys of the ldap handler (`ca_file`, timeouts, number of connections and so on), see [chapter 08](08-ldap-and-ad.md).
 
 - The second half of `filter` makes disabled accounts in AD (bit 2 of `userAccountControl`) impossible to find, the same as if they did not exist. For the OpenLDAP form (`pwdAccountLockedTime`) see "Log in with directory accounts" in [chapter 08](08-ldap-and-ad.md); check it on your own directory first.
 - `required_groups` looks at `memberOf` by default and counts only direct members. To count nested groups in AD, use `group_base_dn` plus `group_filter = "(member:1.2.840.113556.1.4.1941:={dn})"`; see "Decide by group whether a user may log in" in [chapter 08](08-ldap-and-ad.md) (this form has not been tested on AD).
@@ -533,5 +533,5 @@ Waiting takes time, so think about three things first:
 - [11 802.1X and EAP](11-eap.md)
 - [13 Accounting and sessions](13-accounting.md)
 - [14 Scenarios: broadband and ISP](14-isp-recipes.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix D: Lua API reference](../manual.zh-TW/93-lua-reference.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix D: Lua API reference](93-lua-reference.md)

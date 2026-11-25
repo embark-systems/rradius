@@ -7,7 +7,7 @@
 > - Adjust the log level and format, and read every authentication record
 > - Turn on a trace for a specific user or client for a limited time, without a restart
 
-Prerequisites: you have finished [Chapter 03](03-quick-start.md), so you have a working quick-start scenario and the two commands `rradiusd` and `rradius-bench`. The full description of every metric is in [Appendix C](../manual.zh-TW/92-metrics-reference.md).
+Prerequisites: you have finished [Chapter 03](03-quick-start.md), so you have a working quick-start scenario and the two commands `rradiusd` and `rradius-bench`. The full description of every metric is in [Appendix C](92-metrics-reference.md).
 
 In this chapter:
 
@@ -131,7 +131,7 @@ The server opens this HTTP port only if the configuration file has `[metrics]` (
 | `metrics.bind` | `127.0.0.1` | restart | The address to listen on |
 | `metrics.port` | `9812` | restart | The TCP port to listen on |
 
-The full key table is in [Appendix A](../manual.zh-TW/90-config-reference.md).
+The full key table is in [Appendix A](90-config-reference.md).
 
 This port is simple:
 
@@ -227,7 +227,7 @@ A few rules to know when reading:
 
 - **Three types.** A counter only goes up, and you read it with `rate()` or `increase()`. A gauge is the current value and can go up and down. A histogram is the distribution of response times.
 - **Label combinations exist from the start.** For example `access_challenge` has a line with `0` even if it never happened. So a query does not compute a wrong rate because some value appears "for the first time".
-- **Some metric families appear only when the matching setting exists.** For example, without `[auth.lockout]` there is no `rradius_auth_lockout_*`. The conditions for each are listed in [Appendix C](../manual.zh-TW/92-metrics-reference.md).
+- **Some metric families appear only when the matching setting exists.** For example, without `[auth.lockout]` there is no `rradius_auth_lockout_*`. The conditions for each are listed in [Appendix C](92-metrics-reference.md).
 - **Client names come from the configuration.** The `client` label of `rradius_radius_client_responses_total` is the `name` of a `[[radius.clients]]` entry, so it does not grow with traffic. When a reload removes a client, its samples disappear with it.
 
 The metric families this chapter covers:
@@ -372,7 +372,7 @@ The table below is arranged from the description text and the `for` setting of `
 | `RradiusDown` | The process died, or the `[metrics]` address cannot be reached from Prometheus; look at the state and logs in systemd or the container |
 | `RradiusNoLeader` | The node is cut off, or the cluster lost its majority. The node cannot write: accounting goes to the spool and logins that need a write are rejected; see [Chapter 16](16-cluster.md#when-there-is-no-leader) |
 | `RradiusNotCaughtUp` | The local replica has been behind the cluster for more than 5 minutes: the node just joined or just restarted, or there is a lot of data; if there is no progress, look at the log |
-| `RradiusOverload` | More requests are coming in than the node can handle: look for a slow database, directory or script; read it together with `RradiusSlowLogins` and [Chapter 21](../manual.zh-TW/21-troubleshooting.md) |
+| `RradiusOverload` | More requests are coming in than the node can handle: look for a slow database, directory or script; read it together with `RradiusSlowLogins` and [Chapter 21](21-troubleshooting.md) |
 | `RradiusDiscardingForTheDatabase` | The database cannot answer, or there is no leader to write to; read it together with `RradiusNoLeader` |
 | `RradiusManyRejects` | A directory failure, a configuration error, or someone trying passwords; look at the reject reasons in the log |
 | `RradiusInvalidPackets` | Usually the shared secret of one device is wrong |
@@ -387,7 +387,7 @@ The table below is arranged from the description text and the `for` setting of `
 | `RradiusNamedQueryFailing` | The `reason` label is `timeout`, `error` or `shape` (the columns of the result do not match the labels and value); see [Chapter 09](09-external-databases.md#named-queries-turn-sql-into-metrics) |
 | `RradiusReloadFailed` | The node keeps running with the old configuration; the log says why; fix it and reload again |
 | `RradiusLogLinesDropped` | The place the log goes to is too slow, see [When log lines are dropped](#when-log-lines-are-dropped) |
-| `RradiusEapSessionsLost` | More 802.1X conversations at the same time than the node keeps; some were pushed out or refused; see [Chapter 21](../manual.zh-TW/21-troubleshooting.md#eap-卡住或失敗) |
+| `RradiusEapSessionsLost` | More 802.1X conversations at the same time than the node keeps; some were pushed out or refused; see [Chapter 21](21-troubleshooting.md#eap-is-stuck-or-fails) |
 
 **Thresholds are a starting point, not the right answer.** The rules were written from the meaning of the metrics and from synthetic data, and were not calibrated on your traffic. After going live, look at a few weeks of real numbers, and then adjust the `for` times and the ratio and time thresholds such as `RradiusManyRejects` and `RradiusSlowLogins`.
 
@@ -825,7 +825,7 @@ When SIGTERM or Ctrl+C makes the server prepare to exit, it waits at most 5 seco
 - [13 Accounting and sessions](13-accounting.md)
 - [16 Clusters and high availability](16-cluster.md)
 - [18 Day-to-day operations](18-operations.md)
-- [19 Performance tuning and load testing](../manual.zh-TW/19-performance.md)
-- [21 Troubleshooting](../manual.zh-TW/21-troubleshooting.md)
-- [Appendix A: Configuration reference](../manual.zh-TW/90-config-reference.md)
-- [Appendix C: Metrics reference](../manual.zh-TW/92-metrics-reference.md)
+- [19 Performance tuning and load testing](19-performance.md)
+- [21 Troubleshooting](21-troubleshooting.md)
+- [Appendix A: Configuration reference](90-config-reference.md)
+- [Appendix C: Metrics reference](92-metrics-reference.md)
