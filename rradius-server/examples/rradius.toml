@@ -183,8 +183,6 @@ secret_api_file = "api.secret"
 
 [radius]
 bind = "0.0.0.0"          # or a list: ["192.0.2.1", "2001:db8::1"]
-auth_port = 1812
-acct_port = 1813
 # Access-Requests without a Message-Authenticator are discarded by default, which
 # protects against BlastRADIUS. A device that cannot send one needs "no" or "auto"
 # (single-host clients only) here or on its client entry below.
@@ -305,8 +303,6 @@ secret_file = "192.secret"
 # Counters in the Prometheus text format at GET /metrics. Anyone who can reach this port
 # can read them: there is no authentication, so bind it to an internal address only.
 [metrics]
-bind = "127.0.0.1"
-port = 9812
 
 # TACACS+ starts only when this section is present. Port 49 needs privileges.
 # [tacacs]

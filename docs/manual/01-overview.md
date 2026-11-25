@@ -139,7 +139,7 @@ usage: rradiusd --version
 usage: rradiusd schema [--lang en|zh-TW]
 usage: rradiusd config show [--config <path>]
 usage: rradiusd config diff <a.toml> <b.toml>
-usage: rradiusd config init [--lang en|zh-TW]
+usage: rradiusd config init [--full] [--lang en|zh-TW]
 usage: rradiusd tuning [--config <path>]
 usage: rradiusd user add|passwd|enable|disable|delete|show [--config <path>] <name>
   add and passwd read the password from standard input

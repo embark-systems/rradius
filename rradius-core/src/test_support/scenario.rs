@@ -63,6 +63,17 @@ pub fn rewrite(scenario: &Path, file: &str, nodes: &mut HashMap<String, String>)
     let mut section = String::new();
     let mut ports = HashMap::new();
     let mut out = String::new();
+    // The keys the file sets, by `section.key`: a port it leaves out is the default one, which tests
+    // running at once would share, so those are given a free port of their own below.
+    let mut set = std::collections::HashSet::new();
+    let mut current = String::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.starts_with('#')) {
+        if line.starts_with('[') {
+            current = line.trim_matches(|c| c == '[' || c == ']').to_string();
+        } else if let Some((key, _)) = line.split_once('=') {
+            set.insert(format!("{current}.{}", key.trim()));
+        }
+    }
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
@@ -71,6 +82,14 @@ pub fn rewrite(scenario: &Path, file: &str, nodes: &mut HashMap<String, String>)
         let Some((key, value)) = trimmed.split_once('=').filter(|_| !trimmed.starts_with('#')) else {
             out.push_str(line);
             out.push('\n');
+            if trimmed == "[radius]" || trimmed == "[metrics]" {
+                let keys: &[&str] = if section == "radius" { &["auth_port", "acct_port"] } else { &["port"] };
+                for key in keys.iter().filter(|key| !set.contains(&format!("{section}.{key}"))) {
+                    let port = free_port();
+                    ports.insert(format!("{section}.{key}"), port);
+                    out.push_str(&format!("{key} = {port}\n"));
+                }
+            }
             continue;
         };
         let (key, value) = (key.trim(), value.trim());

@@ -33,8 +33,6 @@ script = "allocate.lua"
 
 [radius]
 bind = "127.0.0.1"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 [[radius.clients]]
@@ -43,8 +41,6 @@ address = "127.0.0.1"
 secret_file = "localhost.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812
 
 # 現在在線的 session：rradiusd session list。位址池本身就記著誰在用哪個位址，
 # 所以直接查它：狀態是 active 而且還沒到期的列。

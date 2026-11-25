@@ -16,8 +16,6 @@ migrations_dir = "migrations"
 
 [radius]
 bind = "0.0.0.0"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 # 整個管理網段的交換器共用一個 client。
@@ -27,5 +25,3 @@ address = "10.40.0.0/24"
 secret_file = "switches.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812

@@ -31,8 +31,6 @@ verifies_password = true
 
 [radius]
 bind = "0.0.0.0"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 [[radius.clients]]
@@ -41,5 +39,3 @@ address = "10.95.0.0/24"
 secret_file = "hotspot.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812

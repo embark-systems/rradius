@@ -29,8 +29,6 @@ reply_query = """WITH d AS (SELECT vlan FROM devices WHERE name = ?)
 
 [radius]
 bind = "0.0.0.0"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 [radius.eap]
@@ -54,5 +52,3 @@ disable = "UPDATE devices SET enabled = 0 WHERE name = ?1"
 show = "SELECT name, vlan, enabled FROM devices WHERE name = ?1"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812

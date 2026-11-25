@@ -12,7 +12,7 @@ use std::path::Path;
 
 pub const USAGE: &str = "usage: rradiusd config show [--config <path>]\n\
                          usage: rradiusd config diff <a.toml> <b.toml>\n\
-                         usage: rradiusd config init [--lang en|zh-TW]";
+                         usage: rradiusd config init [--full] [--lang en|zh-TW]";
 
 /// What `show` prints in place of a secret.
 pub const HIDDEN: &str = "<hidden>";
@@ -35,9 +35,8 @@ pub fn run(args: &[String], extensions: &Extensions) -> i32 {
         ["show"] => show(crate::config::default_config_path(), extensions),
         ["show", "--config", path] => show(path, extensions),
         ["diff", a, b] => diff(a, b, extensions),
-        ["init"] => init(Lang::En, extensions),
-        ["init", "--lang", name] => match Lang::parse(name) {
-            Some(lang) => init(lang, extensions),
+        ["init", options @ ..] => match init_options(options) {
+            Some((lang, full)) => init(lang, full, extensions),
             None => usage(),
         },
         _ => usage(),
@@ -322,9 +321,24 @@ fn setting_path(path: &str) -> String {
 }
 
 /// What `init` prints, in `lang`.
-fn init(lang: Lang, extensions: &Extensions) -> Result<(String, i32), String> {
+fn init(lang: Lang, full: bool, extensions: &Extensions) -> Result<(String, i32), String> {
     let secrets = [random_secret()?, random_secret()?, random_secret()?];
-    Ok((init_text(lang, extensions, &secrets)?, 0))
+    let text = if full { init_text(lang, extensions, &secrets)? } else { minimal_init_text(lang, &secrets) };
+    Ok((text, 0))
+}
+
+/// The language and `--full` of `init`'s arguments, in any order; none for anything else.
+fn init_options(options: &[&str]) -> Option<(Lang, bool)> {
+    let (mut lang, mut full) = (Lang::En, false);
+    let mut rest = options.iter();
+    while let Some(option) = rest.next() {
+        match *option {
+            "--full" if !full => full = true,
+            "--lang" => lang = Lang::parse(rest.next()?)?,
+            _ => return None,
+        }
+    }
+    Some((lang, full))
 }
 
 /// `SECRET_LEN` random letters and digits.
@@ -351,15 +365,17 @@ pub fn random_secret() -> Result<String, String> {
 pub fn init_text(lang: Lang, extensions: &Extensions, secrets: &[String; 3]) -> Result<String, String> {
     let schema = crate::schema::build_in(crate::cli::program_name(), extensions, lang)?;
     let working: toml::Table = format!(
-        "dictionary = \"/usr/share/rradius/dictionary\"\n\
+        "dictionary = {}\n\
          include = [\"conf.d/*.toml\"]\n\
          [lua]\nscript = \"auth.lua\"\n\
          [cluster]\ndata_dir = \"data\"\nsecret_raft = \"{}\"\nsecret_api = \"{}\"\n\
-         [[cluster.nodes]]\nid = 1\nraft = \"127.0.0.1:8100\"\napi = \"127.0.0.1:8200\"\n\
          [radius]\n\
          [[radius.clients]]\nname = \"example\"\naddress = \"127.0.0.1\"\nsecret = \"{}\"\n\
          [metrics]\n",
-        secrets[0], secrets[1], secrets[2]
+        dictionary_value(),
+        secrets[0],
+        secrets[1],
+        secrets[2]
     )
     .parse()
     .map_err(|e| format!("config init: {e}"))?;
@@ -385,6 +401,78 @@ pub fn init_text(lang: Lang, extensions: &Extensions, secrets: &[String; 3]) -> 
     out.push('\n');
     write_section(&mut out, &schema, "", Some(&working), false);
     Ok(out)
+}
+
+/// The default dictionary path as a TOML string: what `--version` prints, so that a program built
+/// with a prefix writes its own.
+fn dictionary_value() -> String {
+    toml::Value::String(crate::config::default_dictionary_path().to_string()).to_string()
+}
+
+/// The minimal starting configuration: the settings a working node needs and nothing else, with
+/// a short comment each. `init_text` has every setting of the schema as well.
+pub fn minimal_init_text(lang: Lang, secrets: &[String; 3]) -> String {
+    let dictionary = dictionary_value();
+    match lang {
+        Lang::En => format!(
+            "# rradius configuration made by `config init`; `config init --full` prints every setting.\n\
+             # Every node of the cluster needs the same secret_raft and secret_api; the example\n\
+             # client's secret goes into the NAS too. Create the script auth.lua.\n\
+             \n\
+             # Change it when the dictionary is installed somewhere else.\n\
+             dictionary = {dictionary}\n\
+             # The files of conf.d/ next to this one are read with it.\n\
+             include = [\"conf.d/*.toml\"]\n\
+             \n\
+             [lua]\n\
+             script = \"auth.lua\"\n\
+             \n\
+             [cluster]\n\
+             data_dir = \"data\"\n\
+             secret_raft = \"{}\"\n\
+             secret_api = \"{}\"\n\
+             \n\
+             [radius]\n\
+             \n\
+             [[radius.clients]]\n\
+             name = \"example\"\n\
+             address = \"127.0.0.1\"\n\
+             secret = \"{}\"\n\
+             \n\
+             # /metrics, /livez and /readyz on 127.0.0.1:9812, which the status command reads;\n\
+             # no authentication, so bind it to an inside address only.\n\
+             [metrics]\n",
+            secrets[0], secrets[1], secrets[2]
+        ),
+        Lang::ZhTw => format!(
+            "# 由 `config init` 產生的 rradius 設定檔；`config init --full` 會印出所有設定。\n\
+             # 叢集的每個節點都要用相同的 secret_raft 與 secret_api；範例用戶端的 secret 也要設在 NAS 上。要自己建立腳本 auth.lua。\n\
+             \n\
+             # 字典裝在別的地方時改這一行。\n\
+             dictionary = {dictionary}\n\
+             # 這個檔案旁邊 conf.d/ 的檔案會一起讀。\n\
+             include = [\"conf.d/*.toml\"]\n\
+             \n\
+             [lua]\n\
+             script = \"auth.lua\"\n\
+             \n\
+             [cluster]\n\
+             data_dir = \"data\"\n\
+             secret_raft = \"{}\"\n\
+             secret_api = \"{}\"\n\
+             \n\
+             [radius]\n\
+             \n\
+             [[radius.clients]]\n\
+             name = \"example\"\n\
+             address = \"127.0.0.1\"\n\
+             secret = \"{}\"\n\
+             \n\
+             # 在 127.0.0.1:9812 回答 /metrics、/livez 與 /readyz，status 指令讀的就是它；沒有認證，只能綁內部位址。\n\
+             [metrics]\n",
+            secrets[0], secrets[1], secrets[2]
+        ),
+    }
 }
 
 /// Writes the settings of the table at `path`, whose `schema` is given: those `working` has as
@@ -607,6 +695,43 @@ mod tests {
             assert_eq!(english, lang == Lang::En, "{text}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_minimal_init_text() -> Result<(), String> {
+        let secrets = ["R".repeat(SECRET_LEN), "A".repeat(SECRET_LEN), "C".repeat(SECRET_LEN)];
+        for lang in [Lang::En, Lang::ZhTw] {
+            let text = minimal_init_text(lang, &secrets);
+            let parsed: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{e}\n{text}"))?;
+            assert!(text.lines().count() <= 40, "{} lines\n{text}", text.lines().count());
+            // The dictionary stays, at the path `--version` prints; the nodes are the default.
+            assert_eq!(parsed.get("dictionary").and_then(toml::Value::as_str), Some(crate::config::default_dictionary_path()), "{text}");
+            assert!(!text.contains("[[cluster.nodes]]") && !text.contains("# acct_port"), "{text}");
+            let cluster = parsed.get("cluster").and_then(toml::Value::as_table).ok_or("no cluster")?;
+            assert_eq!(cluster.get("secret_raft").and_then(toml::Value::as_str), Some(secrets[0].as_str()));
+            assert_eq!(cluster.get("secret_api").and_then(toml::Value::as_str), Some(secrets[1].as_str()));
+            let clients = parsed.get("radius").and_then(|radius| radius.get("clients")).and_then(toml::Value::as_array).ok_or("no clients")?;
+            assert_eq!(clients.len(), 1);
+            assert_eq!(clients[0].get("secret").and_then(toml::Value::as_str), Some(secrets[2].as_str()));
+            assert_eq!(parsed.get("lua").and_then(|lua| lua.get("script")).and_then(toml::Value::as_str), Some("auth.lua"));
+            assert_eq!(parsed.get("metrics").and_then(toml::Value::as_table).map(toml::Table::len), Some(0), "{text}");
+            assert!(text.contains("config init --full"), "the minimal text says where the rest is\n{text}");
+            assert!(text.find("include = ").zip(text.find("\n[lua]")).is_some_and(|(include, lua)| include < lua), "{text}");
+            assert_eq!(text.contains("makes") || text.contains("made by"), lang == Lang::En, "{text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_options() {
+        assert_eq!(init_options(&[]), Some((Lang::En, false)));
+        assert_eq!(init_options(&["--full"]), Some((Lang::En, true)));
+        assert_eq!(init_options(&["--lang", "zh-TW"]), Some((Lang::ZhTw, false)));
+        assert_eq!(init_options(&["--full", "--lang", "zh-TW"]), Some((Lang::ZhTw, true)));
+        assert_eq!(init_options(&["--lang", "en", "--full"]), Some((Lang::En, true)));
+        for bad in [&["--verbose"][..], &["--lang"], &["--lang", "fr"], &["--full", "--full"], &["extra"]] {
+            assert_eq!(init_options(bad), None, "{bad:?}");
+        }
     }
 
     /// `config show` prints the settings of the file and of the files it includes together, and

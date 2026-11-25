@@ -470,7 +470,7 @@ deb、rpm 與 FreeBSD port 裝好之後，都要自己建立設定檔。以下�
 # rradiusd config init > /etc/rradius/rradius.toml
 ```
 
-`config init` 印出一份可以直接用的底稿：叢集密碼和範例用戶端的共用密碼都是隨機產生的；`dictionary` 已經指向 `/usr/share/rradius/dictionary`；有 `include = ["conf.d/*.toml"]`，`conf.d/` 裡的 `.toml` 檔會一起讀進來；有一個 `[metrics]`。加上 `--lang zh-TW` 時，註解是中文。
+`config init` 印出一份可以直接用的底稿：叢集密碼和範例用戶端的共用密碼都是隨機產生的；`dictionary` 寫的是這個版本預設的字典位置（套件安裝是 `/usr/share/rradius/dictionary`）；沒有 `[[cluster.nodes]]`，所以是單節點；有 `include = ["conf.d/*.toml"]`，`conf.d/` 裡的 `.toml` 檔會一起讀進來；有一個 `[metrics]`。加上 `--lang zh-TW` 時，註解是中文。輸出大約 30 行；要看每個設定與預設值，用 `config init --full`。
 
 ### 2. 修改三個地方
 
@@ -485,7 +485,7 @@ data_dir = "/var/lib/rradius"
 listen = "127.0.0.1"
 ```
 
-- `listen`：底稿有 `[[cluster.nodes]]`，沒設 `listen` 時叢集埠會綁在所有介面上，`check` 會警告 `cluster.listen is not set`。單機設成 `127.0.0.1` 即可；叢集的做法見第 16 章。
+- 叢集：底稿沒有 `[[cluster.nodes]]`，是監聽 `127.0.0.1` 的單節點，不用設 `listen`。要組叢集時才加 `[[cluster.nodes]]` 並設 `listen`，做法見第 16 章。
 - 底稿的 `[lua]` 指向 `auth.lua`，這個檔案要自己建，放在 `/etc/rradius/auth.lua`。腳本怎麼寫見第 10 章；只想先讓設定通過檢查，可以寫一行 `return "reject"`。
 - 範例用戶端 `127.0.0.1` 要換成你的 NAS（第 05 章）。
 
@@ -578,8 +578,8 @@ default dictionary: /usr/share/rradius/dictionary
 **解法：** 把 `data_dir` 改成 `/var/lib/rradius`（FreeBSD 是 `/var/db/rradius`），確認擁有者是 `rradius`。
 
 **症狀：** `check` 或其他指令出現 `cluster.listen is not set, so the cluster's Raft and API ports are on all interfaces …` 警告。
-**原因：** 設定有 `[[cluster.nodes]]`，卻沒有設 `cluster.listen`。
-**解法：** 單機設 `listen = "127.0.0.1"`；叢集見第 16 章。
+**原因：** 設定有 `[[cluster.nodes]]`，卻沒有設 `cluster.listen`（`config init` 的底稿沒有 `[[cluster.nodes]]`，不會出現）。
+**解法：** 單機設 `listen = "127.0.0.1"`，或拿掉 `[[cluster.nodes]]`；叢集見第 16 章。
 
 **症狀：** Compose 部署時，指令輸出一直出現 `has mode 644, which others can reach or its group can write`。
 **原因：** `init-secrets.sh` 刻意把祕密檔設成 644，見[Docker Compose](#docker-compose)的說明。

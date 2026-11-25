@@ -33,8 +33,6 @@ script = "static.lua"
 
 [radius]
 bind = "127.0.0.1"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 [[radius.clients]]
@@ -43,5 +41,3 @@ address = "127.0.0.1"
 secret_file = "localhost.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812

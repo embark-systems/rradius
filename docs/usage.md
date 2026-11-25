@@ -204,13 +204,14 @@ dictionary = "/usr/share/rradius/dictionary"
 ```bash
 rradiusd config show --config /etc/rradius/rradius.toml   # 補上預設值後的生效設定
 rradiusd config diff node1.toml node2.toml                 # 比較兩個節點的設定
-rradiusd config init --lang zh-TW > rradius.toml           # 起始設定檔，說明用繁體中文
+rradiusd config init --lang zh-TW > rradius.toml           # 最小的起始設定檔（約 30 行），說明用繁體中文
+rradiusd config init --full > rradius.toml                 # 完整註解版，列出每個設定與預設值
 ```
 
 - **`config show`：** 先和 `check` 一樣載入設定（有錯時印出相同訊息，狀態 2），再把檔案裡已有的區段中省略的欄位補上預設值，以 TOML 印出。檔案沒寫的區段（例如沒有 `[tacacs]`）不會加上。啟動時才算出的預設值（`[radius] sockets`、`[cluster] read_connections`）用執行這個指令的機器算出的值，並在第一行註明。沒有 `--config` 時讀預設的設定檔。
 - **密碼一律顯示成 `<hidden>`，** 例如用戶端的 `secret`、`secret_raft`、`secret_api`、LDAP 的 `bind_password`。輸出可以貼給別人看，但檔案路徑（例如 `secret_file`）照樣顯示。
 - **`config diff`：** 兩個檔案都先補上預設值再比，所以一邊寫出預設值、另一邊省略不算差異。每行一個不同的欄位：`radius.max_auth_inflight: 4096 | 8192`，只有一邊有時寫 `(absent)`。`radius.clients`、`tacacs.clients` 依 `name`（沒有時依 `address`）配對，順序不同不算差異，路徑寫成 `radius.clients[core-switches].secret`；其他清單（例如 `auth.handlers`）依位置比較，因為順序有意義。密碼不同時只寫 `differs (hidden)`。`cluster.node_id` 和 `cluster.listen` 列在最後的 `node-specific:`，不算差異。相同時印 `no differences`，狀態 0；有差異時狀態 1；設定有錯或參數不對時狀態 2。它不讀設定檔引用的檔案（Lua 腳本、密碼檔、憑證），只比路徑。
-- **`config init`：** 印出一份起始設定檔，可以直接存檔使用：`dictionary`、`include = ["conf.d/*.toml"]`、`[lua] script`、`[cluster]`（含一個節點）、`[radius]` 和一個範例用戶端，以及開在 `127.0.0.1:9812` 的 `[metrics]`（`status` 指令要用，見 2.8 節；這個埠沒有認證，不要改綁對外位址）。`secret_raft`、`secret_api` 和範例用戶端的 `secret` 是每次不同的 32 個隨機英數字元；叢集的其他節點要用同樣的叢集密碼，用戶端的 `secret` 也要設在 NAS 上。其他欄位都以註解列出，附預設值和說明（`--lang` 選英文或繁體中文），拿掉 `#` 就能設定。存檔後把 `dictionary` 指向實際安裝的字典檔、建立 `auth.lua`，`check` 就會通過。
+- **`config init`：** 印出一份最小的起始設定檔（約 30 行），可以直接存檔使用：`dictionary`（值是這個版本預設的字典位置，與 `--version` 第三行相同；字典放在別處就改它）、`include = ["conf.d/*.toml"]`、`[lua] script`、`[cluster]`（沒有 `[[cluster.nodes]]`，所以是監聽 `127.0.0.1` 的單節點）、`[radius]` 和一個範例用戶端，以及開在 `127.0.0.1:9812` 的 `[metrics]`（`status` 指令要用，見 2.8 節；這個埠沒有認證，不要改綁對外位址）。`secret_raft`、`secret_api` 和範例用戶端的 `secret` 是每次不同的 32 個隨機英數字元；叢集的其他節點要用同樣的叢集密碼，用戶端的 `secret` 也要設在 NAS 上。其他欄位不列出。加上 `--full` 會印出完整註解版：同樣的工作設定，其餘欄位都以註解列出，附預設值和說明，拿掉 `#` 就能設定。`--lang` 選英文或繁體中文，兩種都適用。存檔後建立 `auth.lua`（字典不在預設位置時也改 `dictionary`），`check` 就會通過。
 
 ### 2.1 `[lua]`
 
