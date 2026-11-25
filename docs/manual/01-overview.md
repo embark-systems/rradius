@@ -192,7 +192,7 @@ $ echo 'Message-Authenticator=0x00' | radclient 127.0.0.1:1812 status "$(cat loc
 
 The last line is a Status-Server request. `radius.status_server` is on by default (chapter 05).
 
-> **Not verified on real equipment:** The external tool commands in this section were not run again for this version. The previous version of the manual tested them with `radclient` from FreeRADIUS 3.2.10 (older versions may not add the Message-Authenticator automatically). The fact that `Message-Authenticator` is required by default was checked against the code and the measurements in chapters 05 and 21.
+> **Not verified on real hardware:** The external tool commands in this section were not run again for this version. The previous version of the manual tested them with `radclient` from FreeRADIUS 3.2.10 (older versions may not add the Message-Authenticator automatically). The fact that `Message-Authenticator` is required by default was checked against the code and the measurements in chapters 05 and 21.
 
 ## Core and enterprise editions
 
@@ -248,7 +248,7 @@ The formats used in the book:
 
 - The first line of a configuration example says which file it belongs in, for example `# rradius.toml`.
 - Commands start with `$ `, and the actual output follows. Where long output is cut, the cut is marked with `…`.
-- `> **Note:** ` marks things that are easy to get wrong. `> **Warning:** ` marks things that affect security or can interrupt service. `> **Not verified on real equipment:** ` means the passage was only checked against the code and the tests, and was not run on real devices or services.
+- `> **Note:** ` marks things that are easy to get wrong. `> **Warning:** ` marks things that affect security or can interrupt service. `> **Not verified on real hardware:** ` means the passage was only checked against the code and the tests, and was not run on real devices or services.
 - Shared secrets and cluster secrets always go in files, generated with `openssl rand -hex 32`. The examples do not contain plain-text secrets.
 
 ## Common mistakes
