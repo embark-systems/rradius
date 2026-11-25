@@ -20,12 +20,12 @@ cd rradius-server
 ../target/release/rradiusd serve --config examples/scenarios/quick-start/rradius.toml
 ```
 
-也可以用 Docker：先執行 `docker/init-secrets.sh`，再 `docker compose up --build`（單機）或用 `compose.cluster.yaml`（三台），見[使用文件 1.1 節](docs/usage.md#11-docker)。發行檔用 `packages/tarball/release.sh` 產生，見 [`packages/tarball/README.md`](packages/tarball/README.md)。
+也可以用 Docker：先執行 `docker/init-secrets.sh`，再 `docker compose up --build`（單機）或用 `compose.cluster.yaml`（三台），見[使用文件 1.1 節](docs/usage.zh-TW.md#11-docker)。發行檔用 `packages/tarball/release.sh` 產生，見 [`packages/tarball/README.md`](packages/tarball/README.md)。
 
 ## 文件
 
 - [使用手冊](docs/manual.zh-TW/README.md)：依主題說明，包含部署情境，並附設定、命令與指標的參考附錄，每個情境都有可以直接啟動的設定檔，放在 [`rradius-server/examples/scenarios/`](rradius-server/examples/scenarios/)，並有自動測試。
-- [使用文件](docs/usage.md)：所有設定與功能的參考。
+- [使用文件](docs/usage.zh-TW.md)：所有設定與功能的參考。
 - [變更紀錄](CHANGELOG.md)與[安全政策](SECURITY.md)：每個版本改了什麼，以及怎麼私下回報漏洞（這兩份用英文寫）。
 
 ## 專案結構
