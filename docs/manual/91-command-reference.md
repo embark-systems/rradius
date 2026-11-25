@@ -351,7 +351,7 @@ no differences
 
 ### config init
 
-Prints a configuration draft to standard output. The cluster secrets and the shared secret of the example client are generated randomly (32 characters). `--lang zh-TW` makes the comments Chinese. For the contents of the draft and what to change next, see [03 First start and first login](03-quick-start.md).
+Prints a configuration draft to standard output. The cluster secrets and the shared secret of the example client are generated randomly (32 characters). The comments are in English by default; `--lang zh-TW` makes them Traditional Chinese. For the contents of the draft and what to change next, see [03 First start and first login](03-quick-start.md).
 
 ```console
 $ rradiusd config init --lang zh-TW > rradius.toml

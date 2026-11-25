@@ -734,6 +734,21 @@ mod tests {
         }
     }
 
+    /// Without `--lang`, `config init` and `config init --full` print English; with `--lang zh-TW`
+    /// both print Traditional Chinese. This runs the whole way from the arguments to the text.
+    #[test]
+    fn test_init_default_language_is_english() -> Result<(), String> {
+        let extensions = crate::extensions::builtin();
+        let has_chinese = |text: &str| text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+        for (options, chinese) in [(&[][..], false), (&["--full"], false), (&["--lang", "en"], false), (&["--lang", "zh-TW"], true), (&["--full", "--lang", "zh-TW"], true)] {
+            let (lang, full) = init_options(options).ok_or_else(|| format!("{options:?} not accepted"))?;
+            let (text, status) = init(lang, full, &extensions)?;
+            assert_eq!(status, 0, "{options:?}");
+            assert_eq!(has_chinese(&text), chinese, "{options:?}: {text}");
+        }
+        Ok(())
+    }
+
     /// `config show` prints the settings of the file and of the files it includes together, and
     /// `config diff` tells the one that adds a client through an included file from the other.
     #[test]

@@ -263,21 +263,21 @@ fn inline(node: &mut Value, definitions: &Map<String, Value>, depth: usize) -> R
 /// Where each top-level key is described in the usage document.
 const USAGE: &str = "https://github.com/embark-systems/rradius/blob/main/docs/usage.md";
 const CHAPTERS: &[(&str, &str)] = &[
-    ("dictionary", "#2-設定檔總覽"),
-    ("include", "#2-設定檔總覽"),
+    ("dictionary", "#2-configuration-overview"),
+    ("include", "#2-configuration-overview"),
     ("lua", "#21-lua"),
     ("cluster", "#22-cluster"),
-    ("radius", "#23-radius-與-tacacs"),
-    ("tacacs", "#23-radius-與-tacacs"),
-    ("runtime", "#24-過載與重送"),
-    ("metrics", "#28-統計-metrics"),
-    ("shutdown", "#216-停止-shutdown"),
-    ("databases", "#217-外部資料庫-databases"),
-    ("log", "#210-記錄-log"),
-    ("accounts", "#214-帳號管理-accounts"),
-    ("sessions", "#219-線上-session-sessions"),
-    ("queries", "#220-命名查詢-queries"),
-    ("auth", "#3-認證串接-auth"),
+    ("radius", "#23-radius-and-tacacs"),
+    ("tacacs", "#23-radius-and-tacacs"),
+    ("runtime", "#24-overload-and-retransmission"),
+    ("metrics", "#28-metrics-metrics"),
+    ("shutdown", "#216-shutdown-shutdown"),
+    ("databases", "#217-external-databases-databases"),
+    ("log", "#210-logging-log"),
+    ("accounts", "#214-account-management-accounts"),
+    ("sessions", "#219-online-sessions-sessions"),
+    ("queries", "#220-named-queries-queries"),
+    ("auth", "#3-auth-chains-auth"),
 ];
 
 /// The schema of the configuration file of `program`, with the sections of `extensions`, its
@@ -481,6 +481,22 @@ mod tests {
     }
 
     const BASE: &str = "dictionary = \"d\"\n[lua]\nscript = \"s.lua\"\n";
+
+    /// The links of the schema's descriptions point at headings that exist in docs/usage.md.
+    #[test]
+    fn test_usage_anchors_exist() {
+        let usage = include_str!("../../docs/usage.md");
+        // GitHub's anchor of a heading: lower case, only letters, digits, `-` and `_` kept, spaces to hyphens.
+        let anchors: Vec<String> = usage
+            .lines()
+            .filter_map(|line| line.strip_prefix('#').map(|rest| rest.trim_start_matches('#').trim()))
+            .map(|title| title.to_lowercase().chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).map(|c| if c == ' ' { '-' } else { c }).collect::<String>())
+            .map(|slug| format!("#{slug}"))
+            .collect();
+        for (key, chapter) in CHAPTERS {
+            assert!(anchors.iter().any(|a| a == chapter), "{key}: no heading of docs/usage.md has the anchor {chapter}");
+        }
+    }
 
     #[test]
     fn test_an_extension_adds_a_section() -> Result<(), String> {

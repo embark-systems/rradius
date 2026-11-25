@@ -61,7 +61,7 @@ The type, default and reload behavior of every key are listed in full in [Append
 
 **Goal:** build a single-server configuration that starts and keeps all its secrets in files. The other sections of this chapter use it for their examples.
 
-`rradiusd config init --lang zh-TW` prints a minimal template of about 30 lines with randomly generated passwords. `rradiusd config init --full --lang zh-TW` prints the full version, where every section has an explanation in Chinese (settings that are commented out show their defaults); it is a good way to find out which keys exist. You need to change one thing yourself: the template writes the cluster passwords and the shared secret of the example client directly in the file. This manual puts them in files that `*_file` points to (see [Keeping secrets in files](#keeping-secrets-in-files)).
+`rradiusd config init` prints a minimal template of about 30 lines with randomly generated passwords, with English comments. `rradiusd config init --full` prints the full version, where every section has an explanation (settings that are commented out show their defaults); add `--lang zh-TW` to either command to get the comments in Traditional Chinese; it is a good way to find out which keys exist. You need to change one thing yourself: the template writes the cluster passwords and the shared secret of the example client directly in the file. This manual puts them in files that `*_file` points to (see [Keeping secrets in files](#keeping-secrets-in-files)).
 
 The version below is tidied up. Create a working directory and put these files in it:
 
