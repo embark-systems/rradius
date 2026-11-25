@@ -216,7 +216,7 @@ package() {
     local stage="$work/stage-$program-$target/$name"
     mkdir -p "$stage/bin"
     cp "$(binary_of "$program" "$target")" "$stage/bin/$binary"
-    local docs='rradius-server/examples docs/usage.md docs/manual.zh-TW share/dictionary* share/LICENSE share/NOTICE'
+    local docs='rradius-server/examples docs/usage.md docs/manual docs/manual.zh-TW share/dictionary* share/LICENSE share/NOTICE'
     # $docs holds a glob, expanded inside $work/src.
     # shellcheck disable=SC2086
     (cd "$work/src" && tar -cf - $docs) | tar -xf - -C "$stage"

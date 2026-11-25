@@ -2,7 +2,7 @@
 
 Alerting rules for `rradius-server` for Prometheus, and a way to get the alerts to a monitoring
 system that takes SNMP traps. The manual,
-[docs/manual.zh-TW/17-monitoring.md](../../docs/manual.zh-TW/17-monitoring.md#告警規則與-alertmanager), explains what each alert
+[docs/manual/17-monitoring.md](../../docs/manual/17-monitoring.md#alert-rules-and-alertmanager), explains what each alert
 means and what to do about it.
 
 | File | What it is |

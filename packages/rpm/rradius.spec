@@ -45,7 +45,8 @@ install -D -m 0755 target/release/rradiusd %{buildroot}%{_bindir}/rradiusd
 install -d %{buildroot}%{_datadir}/rradius
 cp -a share/. %{buildroot}%{_datadir}/rradius/
 install -d %{buildroot}%{_docdir}/%{name}
-cp -a docs/manual.zh-TW %{buildroot}%{_docdir}/%{name}/manual
+cp -a docs/manual %{buildroot}%{_docdir}/%{name}/manual
+cp -a docs/manual.zh-TW %{buildroot}%{_docdir}/%{name}/manual.zh-TW
 install -m 0644 docs/usage.md %{buildroot}%{_docdir}/%{name}/usage.md
 cp -a rradius-server/examples %{buildroot}%{_docdir}/%{name}/examples
 install -m 0644 packages/common/README.packages %{buildroot}%{_docdir}/%{name}/README.packages

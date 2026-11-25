@@ -1,5 +1,5 @@
 # One node on a Synology NAS (Container Manager project). The manual,
-# docs/manual.zh-TW/02-install.md (the Synology NAS section), says how to get the image and the two folders onto the NAS.
+# docs/manual/02-install.md (the Synology NAS section), says how to get the image and the two folders onto the NAS.
 #
 #   /volume1/docker/rradius/compose.yaml   this file
 #   /volume1/docker/rradius/config/        a copy of docker/config (edit rradius.toml)

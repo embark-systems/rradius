@@ -1,4 +1,4 @@
-//! The scenarios of the user manual (docs/manual.zh-TW, mostly chapters 14 and 15), each started as the manual starts it, from
+//! The scenarios of the user manual (docs/manual, mostly chapters 14 and 15), each started as the manual starts it, from
 //! the files in examples/scenarios, so that what the manual tells people to copy works.
 //!
 //! The configuration is copied into a temporary directory with its file paths made absolute,
