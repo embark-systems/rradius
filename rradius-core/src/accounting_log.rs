@@ -32,6 +32,84 @@ pub fn timestamp(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{date:02}T{:02}:{:02}:{:02}.{:03}Z", second / 3600, second / 60 % 60, second % 60, since.subsec_millis())
 }
 
+/// A time as RFC 3339 with an offset: `YYYY-MM-DDTHH:MM:SS`, then optionally `.` and fractional
+/// seconds (at least one digit; more than nine are cut), then `Z`, `+HH:MM` or `-HH:MM`. Times
+/// before 1970 are refused. The inverse of `timestamp` for what that writes.
+pub fn parse_timestamp(text: &str) -> Result<SystemTime, String> {
+    let wrong = || format!("{text:?} is not a time like 2026-11-25T10:00:00Z or 2026-11-25T18:00:00.5+08:00");
+    let bytes = text.as_bytes();
+    let number = |from: usize, to: usize| -> Option<i64> {
+        let digits = bytes.get(from..to)?;
+        if !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(digits).ok()?.parse().ok()
+    };
+    let at = |index: usize, expected: u8| bytes.get(index) == Some(&expected);
+    if !(at(4, b'-') && at(7, b'-') && at(10, b'T') && at(13, b':') && at(16, b':')) {
+        return Err(wrong());
+    }
+    let (Some(year), Some(month), Some(date), Some(hour), Some(minute), Some(second)) = (number(0, 4), number(5, 7), number(8, 10), number(11, 13), number(14, 16), number(17, 19)) else {
+        return Err(wrong());
+    };
+    let mut end = 19;
+    let mut nanos = 0u32;
+    if at(end, b'.') {
+        let digits = bytes[end + 1..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+        if digits == 0 {
+            return Err(wrong());
+        }
+        let used = digits.min(9);
+        let fraction: u32 = text[end + 1..end + 1 + used].parse().map_err(|_| wrong())?;
+        nanos = fraction * 10u32.pow(9 - used as u32);
+        end += 1 + digits;
+    }
+    let offset = match bytes.get(end..) {
+        Some(b"Z") => 0,
+        Some([sign @ (b'+' | b'-'), ..]) if bytes.len() == end + 6 && at(end + 3, b':') => {
+            let (Some(hours), Some(minutes)) = (number(end + 1, end + 3), number(end + 4, end + 6)) else {
+                return Err(wrong());
+            };
+            if hours > 23 || minutes > 59 {
+                return Err(wrong());
+            }
+            let seconds = hours * 3600 + minutes * 60;
+            if *sign == b'+' {
+                seconds
+            } else {
+                -seconds
+            }
+        }
+        _ => return Err(wrong()),
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return Err(wrong()),
+    };
+    if year < 1970 || date < 1 || date > days_in_month || hour > 23 || minute > 59 || second > 59 {
+        return Err(wrong());
+    }
+    let seconds = days_from_civil(year, month, date) * DAY + hour * 3600 + minute * 60 + second - offset;
+    let seconds = u64::try_from(seconds).map_err(|_| wrong())?;
+    Ok(UNIX_EPOCH + Duration::new(seconds, nanos))
+}
+
+/// The days from 1970-01-01 to the given date in the proleptic Gregorian calendar: the inverse of
+/// `civil`.
+fn days_from_civil(year: i64, month: i64, date: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + date - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 /// The year, month and day of `day`, counted from 1970-01-01, in the proleptic Gregorian calendar.
 fn civil(day: i64) -> (i64, i64, i64) {
     let z = day + 719_468;
@@ -98,6 +176,38 @@ pub fn attributes_json(attributes: &[(String, String)]) -> String {
     out
 }
 
+/// `attributes_json`, and after the attributes the TLVs of `groups`: for each name a list with an
+/// object for every instance of it, in order.
+pub fn attributes_json_with_groups(attributes: &[(String, String)], groups: &[(String, Vec<(String, String)>)]) -> String {
+    let mut out = attributes_json(attributes);
+    if groups.is_empty() {
+        return out;
+    }
+    out.pop();
+    let mut names: Vec<&str> = Vec::new();
+    for (name, _) in groups {
+        if !names.contains(&name.as_str()) {
+            names.push(name);
+        }
+    }
+    for name in names {
+        if out.len() > 1 {
+            out.push(',');
+        }
+        json_string(name, &mut out);
+        out.push_str(":[");
+        for (at, (_, leaves)) in groups.iter().filter(|(other, _)| other == name).enumerate() {
+            if at > 0 {
+                out.push(',');
+            }
+            out.push_str(&attributes_json(leaves));
+        }
+        out.push(']');
+    }
+    out.push('}');
+    out
+}
+
 impl AccountingRecord {
     /// The request as one line of JSON, without the newline: `time`, then `node` when given,
     /// `client`, `source`, `transport`, `handling` and `attributes`.
@@ -116,7 +226,7 @@ impl AccountingRecord {
         line.push_str(",\"handling\":");
         json_string(self.handling, &mut line);
         line.push_str(",\"attributes\":");
-        line.push_str(&attributes_json(&self.attributes));
+        line.push_str(&attributes_json_with_groups(&self.attributes, &self.groups));
         line.push('}');
         line
     }
@@ -298,7 +408,85 @@ mod tests {
             transport: "udp",
             handling: "script",
             attributes: [("Acct-Status-Type", "Start"), ("Acct-Session-Id", "s-1"), ("Class", "a"), ("Class", "b")].map(|(name, value)| (name.to_string(), value.to_string())).to_vec(),
+            groups: Vec::new(),
         }
+    }
+
+    /// spec Accounting Find Command: `--at` is RFC 3339 with an offset.
+    #[test]
+    fn test_parse_timestamp() -> Result<(), String> {
+        let at = |seconds: u64, millis: u64| UNIX_EPOCH + Duration::from_secs(seconds) + Duration::from_millis(millis);
+        // 2026-11-15T08:00:00Z is 1_794_729_600 seconds after the epoch.
+        assert_eq!(parse_timestamp("2026-11-15T08:00:00Z")?, at(1_794_729_600, 0));
+        assert_eq!(parse_timestamp("2026-11-15T08:00:00.123Z")?, at(1_794_729_600, 123));
+        assert_eq!(parse_timestamp("2026-11-15T16:00:00+08:00")?, at(1_794_729_600, 0));
+        assert_eq!(parse_timestamp("2026-11-15T02:30:00-05:30")?, at(1_794_729_600, 0));
+        assert_eq!(parse_timestamp("2026-11-15T08:00:00.5Z")?, at(1_794_729_600, 500));
+        assert_eq!(parse_timestamp("2026-11-15T08:00:00.1234567891Z")?, UNIX_EPOCH + Duration::new(1_794_729_600, 123_456_789));
+        assert_eq!(parse_timestamp("1970-01-01T00:00:00Z")?, UNIX_EPOCH);
+        // A leap day, and the day before the next leap day does not exist.
+        assert_eq!(parse_timestamp("2028-02-29T00:00:00Z")?, at(1_835_395_200, 0));
+        for wrong in [
+            "2026-02-29T00:00:00Z",
+            "2026-13-01T00:00:00Z",
+            "2026-11-31T00:00:00Z",
+            "2026-11-15T24:00:00Z",
+            "2026-11-15T08:60:00Z",
+            "2026-11-15T08:00:60Z",
+            "2026-11-15T08:00:00",
+            "2026-11-15",
+            "2026-11-15 08:00:00Z",
+            "2026-11-15T08:00:00.Z",
+            "2026-11-15T08:00:00+0800",
+            "2026-11-15T08:00:00+24:00",
+            "2026-11-15T08:00:00+08:60",
+            "2026-11-15T08:00:00Zjunk",
+            "1969-12-31T23:59:59Z",
+            "1970-01-01T00:00:00+01:00",
+            "",
+        ] {
+            assert!(parse_timestamp(wrong).is_err(), "{wrong:?}");
+        }
+        Ok(())
+    }
+
+    /// Every time `timestamp` writes is read back as it was.
+    #[test]
+    fn test_parse_timestamp_reads_what_timestamp_writes() -> Result<(), String> {
+        for millis in [0u64, 1, 999, 86_399_999, 951_782_400_000, 1_794_729_600_123, 4_102_444_799_999] {
+            let time = UNIX_EPOCH + Duration::from_millis(millis);
+            assert_eq!(parse_timestamp(&timestamp(time))?, time, "{millis}");
+        }
+        Ok(())
+    }
+
+    /// spec Accounting Log Lines, Example: two ranges in one request, and Scenario: A request
+    /// without port ranges.
+    #[test]
+    fn test_json_line_with_port_ranges() {
+        let pairs = |items: &[(&str, &str)]| items.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect::<Vec<_>>();
+        let first = pairs(&[("IP-Port-Range-Alloc", "Allocation"), ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.7"), ("IP-Port-Range-Range-Start", "1024"), ("IP-Port-Range-Range-End", "2047")]);
+        let second = pairs(&[("IP-Port-Range-Alloc", "Deallocation"), ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.8")]);
+        let ranges = AccountingRecord {
+            attributes: pairs(&[
+                ("Acct-Status-Type", "Interim-Update"),
+                ("IP-Port-Range-Alloc", "Allocation"),
+                ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.7"),
+                ("IP-Port-Range-Range-Start", "1024"),
+                ("IP-Port-Range-Range-End", "2047"),
+                ("IP-Port-Range-Alloc", "Deallocation"),
+                ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.8"),
+            ]),
+            groups: vec![("IP-Port-Range".to_string(), first), ("IP-Port-Range".to_string(), second)],
+            ..record()
+        };
+        let line = ranges.json_line(None);
+        let expected = r#""attributes":{"Acct-Status-Type":"Interim-Update","IP-Port-Range-Alloc":["Allocation","Deallocation"],"IP-Port-Range-Ext-IPv4-Addr":["198.51.100.7","198.51.100.8"],"IP-Port-Range-Range-Start":"1024","IP-Port-Range-Range-End":"2047","IP-Port-Range":[{"IP-Port-Range-Alloc":"Allocation","IP-Port-Range-Ext-IPv4-Addr":"198.51.100.7","IP-Port-Range-Range-Start":"1024","IP-Port-Range-Range-End":"2047"},{"IP-Port-Range-Alloc":"Deallocation","IP-Port-Range-Ext-IPv4-Addr":"198.51.100.8"}]}}"#;
+        assert!(line.ends_with(expected), "{line}");
+        // The line is JSON, and a request with no attributes at all still gets a valid object.
+        let empty = AccountingRecord { attributes: Vec::new(), groups: vec![("IP-Port-Range".to_string(), pairs(&[("IP-Port-Range-Alloc", "Allocation")]))], ..record() };
+        assert!(empty.json_line(None).ends_with(r#""attributes":{"IP-Port-Range":[{"IP-Port-Range-Alloc":"Allocation"}]}}"#), "{}", empty.json_line(None));
+        assert!(serde_json::from_str::<serde_json::Value>(&line).is_ok());
     }
 
     /// spec Accounting Log Lines, Example: a line.

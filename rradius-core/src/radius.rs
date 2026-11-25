@@ -402,12 +402,25 @@ fn encode_address(data_type: &str, text: &str) -> Option<Vec<u8>> {
 /// out, and so is all of one that is invalid (RFC 6929 section 2.8), with the rest of the request
 /// going on.
 pub fn request_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_secret: &[u8]) -> Vec<(String, AttrValue)> {
-    decoded_attributes(packet, dictionary, shared_secret, false)
+    decoded_attributes(packet, dictionary, shared_secret, false, None)
 }
+
+/// The TLV attributes an accounting record also holds one object for each instance of, so that a
+/// request with several keeps which sub-attribute came from which (RFC 8045 `IP-Port-Range`).
+const GROUPED_TLVS: &[&str] = &["IP-Port-Range"];
+
+/// What one instance of a grouped TLV holds, by the name of the TLV.
+type Groups = Vec<(String, Vec<(String, AttrValue)>)>;
+
+/// The same, with the values as an `AccountingRecord` has them.
+type GroupTexts = Vec<(String, Vec<(String, String)>)>;
 
 /// `request_attributes`, with `unknown` also an attribute the dictionary does not name, as
 /// `Attr-<type>` with its octets.
-fn decoded_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_secret: &[u8], unknown: bool) -> Vec<(String, AttrValue)> {
+///
+/// With `groups`, each instance of an extended attribute named in `GROUPED_TLVS` that is valid is
+/// also pushed there with what it holds, in the order it holds it.
+fn decoded_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_secret: &[u8], unknown: bool, mut groups: Option<&mut Groups>) -> Vec<(String, AttrValue)> {
     let mut result = Vec::new();
     let attributes = &packet.attributes;
     let mut at = 0;
@@ -428,7 +441,14 @@ fn decoded_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_sec
                         if unknown && !extended_named(dictionary, number, *extended, data) {
                             result.push((format!("Attr-{number}"), AttrValue::Bytes(value.clone())));
                         } else {
+                            let before = result.len();
                             read_extended(dictionary, number, *extended, data, &mut result);
+                            if let Some(groups) = groups.as_deref_mut() {
+                                let grouped = dictionary.get(0, &[number, u32::from(*extended)]).map(|attribute| attribute.name.as_str()).filter(|name| GROUPED_TLVS.contains(name));
+                                if let Some(name) = grouped.filter(|_| result.len() > before) {
+                                    groups.push((name.to_string(), result[before..].to_vec()));
+                                }
+                            }
                         }
                     }
                 }
@@ -480,29 +500,51 @@ fn extended_named(dictionary: &Dictionary, top: u32, extended: u8, data: &[u8]) 
     rest.first().is_some_and(|number| dictionary.get(u32::from_be_bytes(*vendor), &[top, u32::from(extended), u32::from(*number)]).is_some())
 }
 
-/// The attributes of an accounting request as an `AccountingRecord` has them.
-fn accounting_attributes(packet: &RadiusPacket, dictionary: &Dictionary, shared_secret: &[u8]) -> Vec<(String, String)> {
+/// The text of an attribute value as an `AccountingRecord` has it: a number by its name in the
+/// dictionary when it has one, text as it is, other octets as `0x` and hexadecimal.
+fn attribute_text(dictionary: &Dictionary, name: &str, value: AttrValue) -> String {
     let hex = |bytes: &[u8]| format!("0x{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
-    decoded_attributes(packet, dictionary, shared_secret, true)
+    match value {
+        AttrValue::Bytes(bytes) if name.starts_with("Attr-") && dictionary.get_by_name(name).is_none() => hex(&bytes),
+        AttrValue::Bytes(bytes) => match String::from_utf8(bytes) {
+            Ok(text) if !text.chars().any(char::is_control) => text,
+            Ok(text) => hex(text.as_bytes()),
+            Err(e) => hex(e.as_bytes()),
+        },
+        AttrValue::Number(number) if number.fract() == 0.0 && number >= 0.0 => match dictionary.value_name(name, number as u64) {
+            Some(named) => named.to_string(),
+            None => format!("{}", number as u64),
+        },
+        AttrValue::Number(number) if number.fract() == 0.0 => format!("{}", number as i64),
+        AttrValue::Number(number) => number.to_string(),
+    }
+}
+
+/// The attributes of an accounting request as an `AccountingRecord` has them, and one list of
+/// sub-attributes for each valid instance of the TLVs in `GROUPED_TLVS`.
+fn accounting_content(packet: &RadiusPacket, dictionary: &Dictionary, shared_secret: &[u8]) -> (Vec<(String, String)>, GroupTexts) {
+    let mut groups = Groups::new();
+    let attributes = decoded_attributes(packet, dictionary, shared_secret, true, Some(&mut groups))
         .into_iter()
         .map(|(name, value)| {
-            let text = match value {
-                AttrValue::Bytes(bytes) if name.starts_with("Attr-") && dictionary.get_by_name(&name).is_none() => hex(&bytes),
-                AttrValue::Bytes(bytes) => match String::from_utf8(bytes) {
-                    Ok(text) if !text.chars().any(char::is_control) => text,
-                    Ok(text) => hex(text.as_bytes()),
-                    Err(e) => hex(e.as_bytes()),
-                },
-                AttrValue::Number(number) if number.fract() == 0.0 && number >= 0.0 => match dictionary.value_name(&name, number as u64) {
-                    Some(named) => named.to_string(),
-                    None => format!("{}", number as u64),
-                },
-                AttrValue::Number(number) if number.fract() == 0.0 => format!("{}", number as i64),
-                AttrValue::Number(number) => number.to_string(),
-            };
+            let text = attribute_text(dictionary, &name, value);
             (name, text)
         })
-        .collect()
+        .collect();
+    let groups = groups
+        .into_iter()
+        .map(|(tlv, leaves)| {
+            let leaves = leaves
+                .into_iter()
+                .map(|(name, value)| {
+                    let text = attribute_text(dictionary, &name, value);
+                    (name, text)
+                })
+                .collect();
+            (tlv, leaves)
+        })
+        .collect();
+    (attributes, groups)
 }
 
 /// Adds what an attribute holds to `result`, or nothing at all if a TLV in it is invalid.
@@ -2142,13 +2184,15 @@ impl RadiusServer {
             trace_exchange(&self.dictionary, client, source.ip(), &packet, response.as_deref());
         }
         if !self.accounting_observers.is_empty() && kind == PacketKind::Acct && response.as_ref().and_then(|response| response.first()) == Some(&ACCOUNTING_RESPONSE) {
+            let (attributes, groups) = accounting_content(&packet, &self.dictionary, &client.secret);
             let record = crate::extension::AccountingRecord {
                 time: std::time::SystemTime::now(),
                 client: client.name.clone(),
                 source: source.ip(),
                 transport: if client.secret == crate::clients::RADSEC_SECRET { "radsec" } else { "udp" },
                 handling,
-                attributes: accounting_attributes(&packet, &self.dictionary, &client.secret),
+                attributes,
+                groups,
             };
             for observer in &self.accounting_observers {
                 observer.observe(&record);
@@ -9070,6 +9114,120 @@ pub(crate) mod tests {
         let vendor_hex = format!("0x{vendor:08x}0104beef");
         let extended_hex = format!("0x{extended:02x}0102");
         assert_eq!(attributes, vec![("Acct-Status-Type", "Start"), ("Attr-26", vendor_hex.as_str()), (named.as_str(), "a=b"), ("Attr-241", extended_hex.as_str())]);
+        Ok(())
+    }
+
+    /// One `IP-Port-Range` attribute (RFC 8045, Extended-Type 6 of 241) from its sub-attributes,
+    /// each a TLV type and its value.
+    fn port_range(subs: &[(u8, Vec<u8>)]) -> (u8, Vec<u8>) {
+        let mut value = vec![6u8];
+        for (kind, bytes) in subs {
+            value.push(*kind);
+            value.push(u8::try_from(bytes.len() + 2).unwrap_or(u8::MAX));
+            value.extend_from_slice(bytes);
+        }
+        (241, value)
+    }
+
+    /// The accounting attributes of a request with `attributes`, as the log has them.
+    fn logged(attributes: Vec<(u8, Vec<u8>)>) -> Vec<(String, String)> {
+        let bytes = RadiusPacket::create_accounting_request(1, attributes, b"xyzzy5461");
+        let Ok(packet) = RadiusPacket::parse(&bytes) else { return Vec::new() };
+        accounting_content(&packet, &share_dictionary(), b"xyzzy5461").0
+    }
+
+    /// The groups of the accounting content of a request with `attributes`.
+    fn grouped(attributes: Vec<(u8, Vec<u8>)>) -> Vec<(String, Vec<(String, String)>)> {
+        let bytes = RadiusPacket::create_accounting_request(1, attributes, b"xyzzy5461");
+        let Ok(packet) = RadiusPacket::parse(&bytes) else { return Vec::new() };
+        accounting_content(&packet, &share_dictionary(), b"xyzzy5461").1
+    }
+
+    fn texts(attributes: &[(String, String)]) -> Vec<(&str, &str)> {
+        attributes.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect()
+    }
+
+    const ALLOC: u8 = 8;
+    const EXT_ADDR: u8 = 3;
+    const RANGE_START: u8 = 9;
+    const RANGE_END: u8 = 10;
+    const LOCAL_ID: u8 = 11;
+
+    /// An allocation of ports 1024 to 2047 of 198.51.100.7 is named by the sub-attributes of
+    /// `IP-Port-Range` (241.6), with the value names `Allocation` and `Deallocation`, and not by
+    /// those `IP-Port-Range-Start` and `IP-Port-Range-End` of `IP-Port-Limit-Info` (241.5).
+    #[test]
+    fn test_port_range_is_named_by_its_sub_attributes() -> Result<(), String> {
+        let allocation = logged(vec![(40, vec![0, 0, 0, 1]), port_range(&[(ALLOC, vec![0, 0, 0, 1]), (EXT_ADDR, vec![198, 51, 100, 7]), (RANGE_START, vec![0, 0, 4, 0]), (RANGE_END, vec![0, 0, 7, 255])])]);
+        assert_eq!(
+            texts(&allocation),
+            vec![("Acct-Status-Type", "Start"), ("IP-Port-Range-Alloc", "Allocation"), ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.7"), ("IP-Port-Range-Range-Start", "1024"), ("IP-Port-Range-Range-End", "2047")]
+        );
+        let release = logged(vec![port_range(&[(ALLOC, vec![0, 0, 0, 2]), (EXT_ADDR, vec![198, 51, 100, 7])])]);
+        assert_eq!(texts(&release), vec![("IP-Port-Range-Alloc", "Deallocation"), ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.7")]);
+        assert!(!allocation.iter().any(|(name, _)| name == "IP-Port-Range-Start" || name == "IP-Port-Range-End"), "{allocation:?}");
+        Ok(())
+    }
+
+    /// Two ranges in one request, a single port, a sub-attribute that is missing, the text of a
+    /// `Local-Id`: every sub-attribute comes out as it came in, in order, and none is invented.
+    #[test]
+    fn test_port_ranges_in_one_request() -> Result<(), String> {
+        let attributes = logged(vec![
+            port_range(&[(ALLOC, vec![0, 0, 0, 1]), (EXT_ADDR, vec![198, 51, 100, 7]), (RANGE_START, vec![0, 0, 4, 0]), (RANGE_END, vec![0, 0, 7, 255])]),
+            port_range(&[(ALLOC, vec![0, 0, 0, 1]), (EXT_ADDR, vec![198, 51, 100, 7]), (RANGE_START, vec![0, 0, 16, 0]), (RANGE_END, vec![0, 0, 16, 0]), (LOCAL_ID, b"vrf-7".to_vec())]),
+            port_range(&[(ALLOC, vec![0, 0, 0, 2])]),
+        ]);
+        assert_eq!(
+            texts(&attributes),
+            vec![
+                ("IP-Port-Range-Alloc", "Allocation"),
+                ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.7"),
+                ("IP-Port-Range-Range-Start", "1024"),
+                ("IP-Port-Range-Range-End", "2047"),
+                ("IP-Port-Range-Alloc", "Allocation"),
+                ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.7"),
+                ("IP-Port-Range-Range-Start", "4096"),
+                ("IP-Port-Range-Range-End", "4096"),
+                ("IP-Port-Range-Local-Id", "vrf-7"),
+                ("IP-Port-Range-Alloc", "Deallocation"),
+            ]
+        );
+        Ok(())
+    }
+
+    /// A sub-attribute type the dictionary does not name is left out and does not spoil the
+    /// others; a sub-attribute that is not valid takes its whole attribute with it and no other.
+    #[test]
+    fn test_port_range_unknown_and_invalid_sub_attributes() -> Result<(), String> {
+        let unknown = logged(vec![port_range(&[(ALLOC, vec![0, 0, 0, 1]), (200, vec![1, 2, 3]), (EXT_ADDR, vec![198, 51, 100, 7])])]);
+        assert_eq!(texts(&unknown), vec![("IP-Port-Range-Alloc", "Allocation"), ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.7")]);
+        // The second TLV says it is 2 octets long, which cannot hold its own header and a value.
+        let broken = (241u8, vec![6, ALLOC, 6, 0, 0, 0, 1, EXT_ADDR, 2]);
+        let attributes = logged(vec![broken, port_range(&[(ALLOC, vec![0, 0, 0, 2])])]);
+        assert_eq!(texts(&attributes), vec![("IP-Port-Range-Alloc", "Deallocation")]);
+        Ok(())
+    }
+
+    /// Each valid `IP-Port-Range` is a group of its own, in the order of the packet, with what it
+    /// holds; an invalid one is none, and another TLV, or a request without one, makes none.
+    #[test]
+    fn test_port_range_groups_keep_the_instances_apart() -> Result<(), String> {
+        let groups = grouped(vec![
+            port_range(&[(ALLOC, vec![0, 0, 0, 1]), (EXT_ADDR, vec![198, 51, 100, 7]), (RANGE_START, vec![0, 0, 4, 0]), (RANGE_END, vec![0, 0, 7, 255])]),
+            (241u8, vec![6, ALLOC, 6, 0, 0, 0, 1, EXT_ADDR, 2]),
+            port_range(&[(ALLOC, vec![0, 0, 0, 2]), (EXT_ADDR, vec![198, 51, 100, 8])]),
+        ]);
+        let names: Vec<&str> = groups.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["IP-Port-Range", "IP-Port-Range"]);
+        assert_eq!(
+            texts(&groups[0].1),
+            vec![("IP-Port-Range-Alloc", "Allocation"), ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.7"), ("IP-Port-Range-Range-Start", "1024"), ("IP-Port-Range-Range-End", "2047")]
+        );
+        assert_eq!(texts(&groups[1].1), vec![("IP-Port-Range-Alloc", "Deallocation"), ("IP-Port-Range-Ext-IPv4-Addr", "198.51.100.8")]);
+        // IP-Port-Limit-Info (241.5) is a TLV too, and is not one that is grouped.
+        assert!(grouped(vec![(241u8, vec![5, 2, 6, 0, 0, 0, 9])]).is_empty());
+        assert!(grouped(vec![(40, vec![0, 0, 0, 1])]).is_empty());
         Ok(())
     }
 

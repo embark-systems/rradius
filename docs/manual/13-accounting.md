@@ -379,6 +379,8 @@ configuration ok
 | `handling` | `script`：腳本接受；`spool`：寫進了計費 spool |
 | `attributes` | 請求的屬性，以字典名稱為鍵。列舉值寫成名稱（`Start`），不是數字。同一個屬性出現多次時是一個陣列 |
 
+請求帶 RFC 8045 的 `IP-Port-Range`（營運商的 NAS 或 CGN 用它回報某位用戶分配或釋放的公網位址與埠）時，`attributes` 的最後多一個鍵 `IP-Port-Range`，是一個陣列，每個 `IP-Port-Range` 一個物件，鍵是子屬性的字典名稱，順序照封包；只有一個也是陣列。原本攤平的鍵照舊在，同名的寫成陣列，所以原本的讀法不受影響。這個鍵存在的原因是：一個封包有好幾段時，攤平的陣列只能靠順序對應，某一段缺一個子屬性就會錯位，分組把每一段的欄位留在一起。
+
 哪些會寫、哪些不會：
 
 - 只寫**有回覆**的請求。腳本沒有接受、沒有回覆的請求不寫。
@@ -427,6 +429,37 @@ Accounting log
 ```
 
 `--json` 時這一段的鍵是 `acct_log`。`Dropped` 或 `Failed` 一直增加，就是記錄檔漏了紀錄：檢查磁碟空間與檔案權限。
+
+### 公網位址與埠的反查
+
+營運商用 CGNAT（許多用戶共用一個公網位址）時，被問到「某個時刻，這個公網位址與埠是誰」，答案要從記錄檔找。`rradiusd accounting find` 只讀記錄檔，不連叢集、不需要設定檔，所以可以對備份出來的檔案執行：
+
+```console
+$ rradiusd accounting find --ip 198.51.100.7 --port 1500 --at 2026-11-25T10:30:00Z --file accounting.jsonl
+198.51.100.7:1024-2047 allocated 2026-11-25T10:00:00.120Z ended 2026-11-25T11:00:00Z ended_by release time_source received identity "Acct-Session-Id=s-1 client=bng1" client=bng1 User-Name=alice Acct-Session-Id=s-1 Framed-IP-Address=100.64.0.5
+$ rradiusd accounting find --ip 198.51.100.7 --port 4096 --at 2026-11-25T10:30:00Z --file accounting.jsonl --json
+[{"allocated":"2026-11-25T10:00:00.120Z","attributes":{"Acct-Session-Id":"s-1","Framed-IP-Address":"100.64.0.5","User-Name":"alice","client":"bng1"},"ended_by":"release","ext_ip":"198.51.100.7","identity":"Acct-Session-Id=s-1 client=bng1","port_end":4096,"port_start":4096,"released":"2026-11-25T11:00:00Z","time_source":"received"}]
+$ rradiusd accounting find --ip 198.51.100.7 --port 1500 --at 2026-11-25T11:30:00Z --file accounting.jsonl
+$ echo $?
+1
+```
+
+- **時間要有時區**，例如 `2026-11-25T10:00:00Z` 或 `2026-11-25T18:00:00+08:00`。`--file` 可以給多次，沒給或給 `-` 就讀標準輸入。命令不讀 `.gz`，壓縮檔用 `zcat accounting.jsonl.2.gz | rradiusd accounting find --ip … --at …`。
+- **誰持有：** `IP-Port-Range-Alloc` 為 `Allocation` 的區段開始持有，`Deallocation` 結束持有；釋放沒帶起訖埠時，結束同一對象先前分配的全部。同一個 client 與 `Acct-Session-Id` 的 `Stop` 也結束它的持有——RFC 沒有規定這一點，這是命令的決定，輸出的 `ended_by` 會標成 `stop`，你可以據此判斷。沒有釋放也沒有 Stop 的，輸出 `ended ... still held`（JSON 的 `released` 是 `null`）。
+- **時間依據：** 事件時間優先取 `Event-Timestamp`，沒有的話取收到時間減 `Acct-Delay-Time`，再沒有就是收到時間；輸出的 `time_source` 標明是哪一種。NAS 重送或排隊會讓收到的時間比事件晚，邊界附近的結果要以 `time_source` 為準判斷。
+- **不假設有用戶名：** 輸出只列那一行有的識別屬性（`User-Name`、`Acct-Session-Id`、`Framed-IP-Address`、`NAS-Identifier`、`NAS-IP-Address`、`client`）。
+- **結束碼：** 0 有找到、1 沒有、2 是參數或檔案有誤（訊息指出檔名與行號）。
+
+**保存期限。** 命令不保存任何資料。記錄檔留多久，由輪替的工具（logrotate、newsyslog）與企業版匯出的 `keep_days` 決定；各地對營運商日誌的法定保存期限不同，由你自己決定，rradius 不設預設值也不替你刪檔。
+
+> **未實機驗證：** 這個功能沒有對真實的 CGN 或 BNG 試過。測試用的封包是照 RFC 8045 的屬性定義手工組出來的，所以各家設備實際送什麼（例如是否有 `Ext-IPv4-Addr`、釋放是否只送一部分埠、`Stop` 時是否另外送釋放）要在你的設備上確認。
+
+**已知限制：**
+
+- 釋放只要與持有的埠有重疊就整筆結束，不拆分；設備若只釋放一部分埠，剩下的埠在查詢時會被當成已釋放，也就是會漏報。
+- 沒有 `Ext-IPv4-Addr`、起訖埠或任何識別的區段無法比對，命令在標準錯誤印出這類區段的個數。
+- 只帶內網位址、要再跟 BNG 的 session 對起來的獨立 CGN，這一版不支援；IPv6 公網位址不支援。
+- 事件依時間排序，整批載入記憶體：記憶體隨相關行（含 `IP-Port-Range` 與 `Stop`）的數量增加，先依日期選好檔案再查。
 
 > **注意：** 記錄檔裡有 `User-Name` 等個人資料，留存期限與存取權限要照你的規範處理。
 

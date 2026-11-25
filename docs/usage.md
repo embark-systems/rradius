@@ -1381,6 +1381,7 @@ queue = 65536                               # 預設；等著寫進檔案的筆�
   ```
 
   `time` 是收到的時間（RFC 3339、UTC、到毫秒），`client` 是 client 的名稱，`source` 是來源位址，`transport` 是 `udp`（企業版的 RadSec 是 `radsec`），`handling` 是 `script`（腳本收下）或 `spool`（放進計費暫存，2.11 節；企業版的代理是 `proxy`）。`attributes` 是一個物件，鍵是字典裡的屬性名稱，字典裡沒有的屬性寫成 `Attr-<編號>`、值是 `0x` 開頭的十六進位，出現不只一次的屬性寫成陣列。
+- **埠區段（RFC 8045）：** 請求帶 `IP-Port-Range` 屬性時（營運商把許多用戶放在同一個公網位址後面，NAS 或 CGN 用它回報分配與釋放的埠），`attributes` 的最後多一個鍵 `IP-Port-Range`：一個陣列，每個 `IP-Port-Range` 一個物件，鍵是子屬性的字典名稱（`IP-Port-Range-Alloc`、`IP-Port-Range-Ext-IPv4-Addr`、`IP-Port-Range-Range-Start`、`IP-Port-Range-Range-End`、`IP-Port-Range-Local-Id` 等），依封包的順序；只有一個也是陣列。原本攤平的鍵（`IP-Port-Range-Range-Start` 等，同名的寫成陣列）照舊保留，所以既有的讀法不變；沒有這個屬性的請求，行與以前相同。子屬性不合法的屬性兩邊都不出現，字典沒有的子屬性不寫。查詢用 `accounting find`（見下）。
 - **只記回覆過的請求。** 送出 Accounting-Response 的才記；NAS 重送、由重送快取回答的不再記一次；腳本拒絕或沒有回覆的不記。
 - **檔案：** 以附加模式開啟，不存在時建立，權限 0640（再受 umask 限制）。不壓縮、不依日期換檔、不上傳，也不刪舊檔，換檔交給 logrotate 這類工具（見下面的例子）。叢集裡每個節點各寫自己機器上的檔案，行裡沒有節點編號，要合併時請用路徑或檔名區分節點。
 - **不會拖慢回覆。** 回覆後只把這一筆放進佇列，由專門的執行緒每 10 ms 取出一批寫進檔案（不 fsync），所以一行最晚約 10 ms 後才出現在檔案裡。佇列滿了（超過 `queue` 筆）時，新的那一筆不寫，計入 `rradius_accounting_log_dropped_total`，計費照常回覆。寫入失敗時（例如磁碟滿了），那一批不寫，計入 `rradius_accounting_log_failures_total{stage="write"}` 並記一行 WARN（同樣的錯誤一分鐘最多一行），下一批照常再試。
@@ -1409,6 +1410,21 @@ queue = 65536                               # 預設；等著寫進檔案的筆�
 - **`delaycompress`：** 搬走之後、SIGHUP 之前寫的幾行會進入搬走的檔案，不會遺失；延到下一次才壓縮，就不會壓到還在寫的檔案。SIGHUP 的重新載入因為設定檔有別的錯誤而失敗時，也不會重新開檔，會繼續寫搬走的檔案，所以要留意 `rradius_reload_total{result="error"}`。
 - **不要用 `copytruncate`。** 複製之後、截斷之前寫進去的行會遺失。
 - 不是用 systemd 時，把 `postrotate` 換成對 rradiusd 程序送 SIGHUP 的指令（2.9 節）。
+
+**反查誰用了某個公網位址與埠：`accounting find`。** 營運商用 CGNAT 時，要回答「某個時刻，這個公網位址與埠是誰」。`rradiusd accounting find` 只讀上面的記錄檔，不連叢集、不需要設定檔，所以可以對備份出來的檔案執行：
+
+```
+rradiusd accounting find --ip <公網 IPv4> --port <埠> --at <時間> [--file <路徑>]... [--json]
+```
+
+- `--at` 是 RFC 3339，要有時區，例如 `2026-11-25T10:00:00Z` 或 `2026-11-25T18:00:00+08:00`，可以帶小數秒。
+- `--file` 可以給多次；`-`，或完全不給 `--file`，讀標準輸入。壓縮檔用 `zcat accounting.jsonl.2.gz | rradiusd accounting find …`（命令本身不讀 `.gz`）。檔案不必先依時間排好：命令依事件時間自己排序，但含 `IP-Port-Range` 與 `Stop` 的行會整批載入記憶體，所以先依日期選好檔案。
+- **持有規則（RFC 8045）：** `IP-Port-Range-Alloc` 是 `Allocation` 時開始持有該公網位址與 `Range-Start` 到 `Range-End` 的埠；`Deallocation` 時結束同一對象（同一個 `IP-Port-Range-Local-Id`，沒有的話同一個 client 與 `Acct-Session-Id`，再沒有的話同一個 client 與 `User-Name`、`Framed-IP-Address`）、同一位址且埠有重疊的持有，整筆結束（不拆分）；釋放沒有起訖埠時，結束該對象的全部持有。**同一個 client 與 `Acct-Session-Id` 的 `Stop` 也會結束它的全部持有**——RFC 沒有規定這一點，這是本命令的決定，結果的 `ended_by` 會標成 `stop`。沒有釋放也沒有 Stop 的，視為仍持有。
+- **時間：** 每一行的事件時間依序取 `Event-Timestamp`，否則取 `time` 減 `Acct-Delay-Time`，否則取 `time`；結果的 `time_source` 標明用的是 `Event-Timestamp`、`received-minus-delay` 或 `received`。
+- **輸出：** 每個持有一行；`--json` 輸出一個陣列（鍵 `ext_ip`、`port_start`、`port_end`、`allocated`、`released`、`ended_by`、`time_source`、`identity`、`attributes`）。`attributes` 只放那一行有的 `User-Name`、`Acct-Session-Id`、`Framed-IP-Address`、`NAS-Identifier`、`NAS-IP-Address` 與 `client`，**不假設一定有用戶名**。
+- **結束碼：** 0 是列出了至少一個持有，1 是沒有，2 是參數、檔案或某一行不是 JSON 物件（訊息指出檔名與行號）。
+- **看不到的：** 沒有 `Ext-IPv4-Addr` 或起訖埠的分配、沒有任何識別（`Local-Id`、`Acct-Session-Id`、`User-Name` 加 `Framed-IP-Address`）的區段無法比對，命令在標準錯誤印出這類區段的個數。只有內網位址、要再與 BNG 的 session 對起來的獨立 CGN，這一版不支援；IPv6 公網位址不支援。
+- **保存：** 這個命令不保存任何資料，記錄檔留多久由 logrotate 或 newsyslog 與（企業版）`keep_days` 決定，法定的保存期限由你自己決定，沒有預設值。
 
 **和企業版流水帳的差別：** rradius-enterprise 的 `[accounting_export.packets]` 記的是同樣的請求，每行的欄位相同，另外多了 `node`。兩個可以同時開，同一筆在兩邊都會寫。
 
