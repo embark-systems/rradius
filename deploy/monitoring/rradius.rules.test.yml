@@ -155,7 +155,7 @@ tests:
         exp_alerts:
           - exp_labels: {severity: warning, instance: "a:9812", query: pool_usage}
             exp_annotations:
-              summary: "Named query pool_usage has not succeeded for 2 minutes on a:9812"
+              summary: "Named query pool_usage has not succeeded for more than 2 minutes on a:9812"
               description: "The numbers of the query are as old as its last success."
 
   - interval: 1m
