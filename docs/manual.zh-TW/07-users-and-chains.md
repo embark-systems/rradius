@@ -757,7 +757,7 @@ lock_seconds = 60
 | `lock_seconds` | `300` | 鎖多久，秒 |
 | `max_entries` | `100000` | 每個節點最多記住幾個鍵 |
 | `account_max_failures` | —（不設帳號總上限） | 同一個帳號不分來源的失敗總數上限，要大於 `max_failures` |
-| `max_in_flight` | `max_failures` 的 5 倍 | 同一個鍵同時最多幾個登入在等結果 |
+| `max_in_flight` | `max_failures` 的 5 倍 | 同一個鍵同時最多幾個登入在等結果；已計的失敗也佔位置（見下文） |
 
 每個值都要大於 0；可以 reload。沒有這一節就完全不計數。
 
@@ -781,6 +781,8 @@ lock_seconds = 60
 登入成功會清掉這個鍵的失敗次數。不存在的帳號也照樣計數與鎖定，所以從回應看不出某個帳號存不存在。
 
 `max_in_flight` 處理另一種猜法：一次送出一大批，在任何一筆失敗之前全部進來。每一筆登入在處理器執行之前先佔一個位置，結果出來才歸還；同一個鍵佔滿 `max_in_flight` 個位置時，再來的直接拒絕。
+
+窗口內已計的失敗也佔位置：等待中的登入加上已計的失敗，要少於 `max_in_flight`（`max_failures` 比它大時用 `max_failures`）。所以一個窗口內，不論錯誤密碼是一次湧入還是陸續到達，鎖定前最多檢查這麼多次（預設值是 50）。已有 `k` 次失敗紀錄的鍵，最多同時有 50 − `k` 個登入在等結果；登入成功會清掉計數。沒有鎖定、也沒有登入在等結果的鍵永遠有一個位置，所以 reload 把上限調到低於已計的失敗數時，下一次失敗就鎖住它。
 
 ### 目標：鎖住連續打錯的設備
 
@@ -819,7 +821,7 @@ rradius_auth_lockout_untracked_total 0
 | 指標 | 意思 |
 | --- | --- |
 | `rradius_auth_lockouts_total` | 開始了幾次鎖定 |
-| `rradius_auth_lockout_rejected_total` | 因為鎖定或同時登入太多而拒絕的登入數 |
+| `rradius_auth_lockout_rejected_total` | 因為鎖定或沒有空位置而拒絕的登入數 |
 | `rradius_auth_lockout_untracked_total` | 表格塞滿了鎖定中的鍵，沒有計數的失敗數 |
 
 這三個指標只在設定了 `[auth.lockout]` 時才出現。**已驗證**。

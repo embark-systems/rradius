@@ -407,7 +407,7 @@ lock_seconds = 300
 | `lock_seconds` | 300 | How long it stays locked |
 | `max_entries` | 100000 | How many pairs each node remembers at most |
 | `account_max_failures` | not set | Upper limit of the total failures of one account regardless of source; must be greater than `max_failures` |
-| `max_in_flight` | 5 times `max_failures` | Logins of the same pair waiting for a result at the same time; any more are refused immediately |
+| `max_in_flight` | 5 times `max_failures` | Logins of the same pair waiting for a result at the same time, any more are refused immediately; failures counted in the window take places too, so wrong passwords are checked at most this many times (or `max_failures`, if larger) before the lock ([Chapter 7](07-users-and-chains.md)) |
 
 - The unit of counting is "account + source device": the source is `Calling-Station-Id` for RADIUS and `rem_addr` for TACACS+; when there is none, it is an empty string.
 - While locked, requests are refused immediately and the password is not checked, even if it is correct. A successful login clears the count.

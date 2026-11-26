@@ -757,7 +757,7 @@ lock_seconds = 60
 | `lock_seconds` | `300` | How long the lock lasts, in seconds |
 | `max_entries` | `100000` | The most keys each node remembers |
 | `account_max_failures` | — (no total limit per account) | The limit on the total failures of one account from all origins; must be greater than `max_failures` |
-| `max_in_flight` | 5 times `max_failures` | The most logins that can wait for a result at the same time for one key |
+| `max_in_flight` | 5 times `max_failures` | The most logins that can wait for a result at the same time for one key; counted failures take slots too (see below) |
 
 Every value must be greater than 0; it can be reloaded. Without this section nothing is counted at all.
 
@@ -781,6 +781,8 @@ What counts as one failure: a login the chain rejects, and not because the backe
 A successful login clears the failure count of this key. Accounts that do not exist are counted and locked just the same, so you cannot tell from the responses whether an account exists.
 
 `max_in_flight` deals with another way of guessing: send a large batch at once, so that all of them arrive before any one fails. Every login takes a slot before the handlers run and returns it when the result is out; when one key has used all `max_in_flight` slots, later logins are rejected at once.
+
+The failures counted in the window take slots as well: the logins waiting plus the failures counted must stay below `max_in_flight` (below `max_failures`, if that is larger). So within one window, wrong passwords are checked at most that many times before the lock (50 with the default values), whether they arrive together or one after another. A key with `k` counted failures can have at most 50 − `k` logins waiting; a successful login clears the count. A key that is not locked and has no login waiting always gets one slot, so after a reload that lowers the limits below the failures already counted, the next failure locks it.
 
 ### Goal: lock a device that keeps entering wrong passwords
 
@@ -819,7 +821,7 @@ rradius_auth_lockout_untracked_total 0
 | Metric | Meaning |
 | --- | --- |
 | `rradius_auth_lockouts_total` | How many locks have started |
-| `rradius_auth_lockout_rejected_total` | Logins rejected because of a lock or too many simultaneous logins |
+| `rradius_auth_lockout_rejected_total` | Logins rejected because of a lock or because no slot was free |
 | `rradius_auth_lockout_untracked_total` | Failures not counted because the table was full of locked keys |
 
 These three metrics appear only when `[auth.lockout]` is set. **Verified.**
