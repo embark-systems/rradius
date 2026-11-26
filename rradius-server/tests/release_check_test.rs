@@ -2,7 +2,8 @@
 //! the Release workflow must have passed for the commit (unless `--no-ci-check`), and the version
 //! of `rradius-server/Cargo.toml` must be the version of the changelog, the spec and the FreeBSD
 //! Makefile. The script runs in a small git repository of its own, with a stand-in for
-//! `.github/scripts/require-release-run.sh` (the real one needs `gh` and the network).
+//! `.github/scripts/require-release-run.sh` (the real one needs `gh` and the network). The real
+//! gate is tested at the end, with a stand-in `gh`.
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -246,5 +247,65 @@ fn test_check_release_usage_errors_exit_with_2() -> TestResult {
         assert!(stderr(&output).contains("usage:"), "{args:?}: {}", stderr(&output));
     }
     assert!(!repo.called());
+    Ok(())
+}
+
+const GATE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../.github/scripts/require-release-run.sh");
+
+/// The real gate script in a git repository with an `origin`, and a stand-in `gh` in front of the
+/// system `PATH`: it prints `stdout` and `stderr` and exits with `code`.
+fn run_gate(code: i32, stdout: &str, stderr: &str) -> Result<Output, Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let script = dir.path().join(".github/scripts/require-release-run.sh");
+    std::fs::create_dir_all(script.parent().ok_or("no parent")?)?;
+    std::fs::copy(GATE, &script)?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    let gh = dir.path().join("bin/gh");
+    std::fs::create_dir_all(gh.parent().ok_or("no parent")?)?;
+    std::fs::write(&gh, format!("#!/bin/sh\n[ -z '{stdout}' ] || echo '{stdout}'\n[ -z '{stderr}' ] || echo '{stderr}' >&2\nexit {code}\n"))?;
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))?;
+    for args in [&["init", "-q"][..], &["remote", "add", "origin", "https://github.com/example/repo.git"][..]] {
+        let output = Command::new("git").args(args).current_dir(dir.path()).env("PATH", SYSTEM_PATH).output()?;
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    let path = format!("{}:{SYSTEM_PATH}", dir.path().join("bin").display());
+    Ok(Command::new("/bin/sh").arg(&script).arg("abc123").env_clear().env("PATH", path).current_dir(Path::new("/")).output()?)
+}
+
+#[test]
+fn test_gate_reports_a_gh_failure_apart_from_a_missing_run() -> TestResult {
+    let output = run_gate(4, "", "HTTP 401: Bad credentials")?;
+    assert_eq!(output.status.code(), Some(1));
+    let message = stderr(&output);
+    assert!(message.contains("gh could not look up the runs of release.yml in example/repo"), "{message}");
+    assert!(message.contains("HTTP 401: Bad credentials"), "{message}");
+    assert!(message.contains("gh auth status"), "{message}");
+    assert!(!message.contains("no passed run"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn test_gate_reports_a_missing_run_when_gh_works() -> TestResult {
+    let output = run_gate(0, "0", "")?;
+    assert_eq!(output.status.code(), Some(1));
+    let message = stderr(&output);
+    assert!(message.contains("no passed run of release.yml for abc123 in example/repo"), "{message}");
+    assert!(!message.contains("could not look up"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn test_gate_passes_when_a_run_passed() -> TestResult {
+    let output = run_gate(0, "1", "")?;
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("release.yml passed for abc123"), "{}", stdout(&output));
+    Ok(())
+}
+
+#[test]
+fn test_gate_treats_output_that_is_not_a_number_as_a_failure() -> TestResult {
+    let output = run_gate(0, "oops", "")?;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("could not look up"), "{}", stderr(&output));
     Ok(())
 }
