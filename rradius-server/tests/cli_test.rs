@@ -2243,19 +2243,33 @@ fn test_pinned_worker_threads() {
     let server = Server { child, dir, config, auth_port };
     assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
     let threads_before = std::fs::read_dir(format!("/proc/{}/task", server.child.id())).unwrap().count();
-    // Pinned by now: the threads these start come from pinned workers.
+    // Pinned by now: the threads these start come from pinned workers. Each asks as a user of
+    // its own, so that the log tells the requests apart.
     let asks: Vec<_> = (0..32u8).map(|i| {
         let port = server.auth_port;
         std::thread::spawn(move || {
             let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
-            let packet = RadiusPacket::create_access_request(i, [i; 16], vec![(1, b"alice".to_vec())], b"s");
+            let user = format!("alice{i}").into_bytes();
+            let packet = RadiusPacket::create_access_request(i, [i; 16], vec![(1, user)], b"s");
+            let sent = std::time::Instant::now();
             socket.send_to(&packet, ("127.0.0.1", port)).unwrap();
             let mut buf = [0u8; 4096];
-            socket.recv_from(&mut buf).is_ok()
+            if socket.recv_from(&mut buf).is_ok() {
+                return None;
+            }
+            // Wait once more: a late answer and no answer at all are different faults.
+            let late = socket.recv_from(&mut buf).is_ok().then(|| sent.elapsed());
+            Some((i, late))
         })
     }).collect();
-    assert!(asks.into_iter().all(|ask| ask.join().unwrap()), "every request answered");
+    // Every thread is waited for, so the log read after them covers every request.
+    let unanswered: Vec<(u8, Option<Duration>)> = asks.into_iter().filter_map(|ask| ask.join().unwrap()).collect();
+    assert!(
+        unanswered.is_empty(),
+        "no answer within 30 s, as (request, time of a late answer), from user alice<request>: {unanswered:?}; stderr: {}",
+        server.stderr()
+    );
     let threads_after = std::fs::read_dir(format!("/proc/{}/task", server.child.id())).unwrap().count();
     assert!(threads_after > threads_before, "no thread started after pinning: {threads_before} then {threads_after}");
     // As many workers as the server counts CPUs, which a cgroup limit can make fewer than `all`.
