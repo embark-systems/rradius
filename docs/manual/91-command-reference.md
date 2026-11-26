@@ -166,6 +166,7 @@ The convention of `rradiusd` is: 0 for success, 2 for a usage or configuration e
 | `user` | Success | No matching account, SQL failed | Wrong arguments or error in the configuration, `[accounts]` lacks this action, empty password or the two passwords differ | The cluster cannot be reached, or did not answer within 30 seconds |
 | `session` | There is data | There are no sessions | Wrong arguments or error in the configuration, `[sessions]` lacks this action, SQL failed | Same as `user` |
 | `query` | Success, including no queries and no rows | — | Wrong arguments or error in the configuration, `queries.<name>` is not set, SQL failed | Same as `user` |
+| `accounting find` | A hold was listed | No hold for that address, port and time | Wrong arguments, an address or time that is not valid, a file that cannot be read | — |
 | `cluster` | Success | `remove`: the node is not in the cluster, the leader refused, the leader changed twice in a row | Wrong arguments or error in the configuration, wrong API secret, the node to remove still answers, only one or two voters would remain without `--force`, the last voter | No answer within 30 seconds; `remove` got no response after it was sent |
 | Enterprise commands | — | — | Always 2 | — |
 
@@ -879,7 +880,7 @@ $ sed -n 's/^usage: rradiusd \([a-z-]*\) \([a-z|]*\).*/\1 \2/p' help.txt \
 
 The second part produces pairs such as `config show`, `user add` and `cluster remove`; it passes only if it prints nothing.
 
-**2. Flags that the book has in excess.** `comm -13 flags-help.txt flags-book.txt` lists the flags that are in the book but not in `rradiusd help`. They should all come from the `--help` of `rradius-bench`, from the old flag `--check`, and from `--help`. Add the flags of `rradius-bench --help`, `rradius-bench run --help` and `rradius-bench calibrate --help` to `flags-help.txt` and compare again; what remains can only be `--check`.
+**2. Flags that the book has in excess.** `comm -13 flags-help.txt flags-book.txt` lists the flags that are in the book but not in `rradiusd help`. They should all come from the `--help` of `rradius-bench`, from the old flag `--check`, and from `--help`. Add the flags of `rradius-bench --help`, `rradius-bench run --help` and `rradius-bench calibrate --help` to `flags-help.txt` and compare again; what remains can only be `--check` and `--load-syntax` (not a flag: it comes from this chapter's link to the `--load` syntax).
 
 **3. Flags and defaults of `rradius-bench`.** Every flag of `rradius-bench run --help` must be in the table of [rradius-bench run](#rradius-bench-run), and `[default: …]` must agree with the "Default" column of the table; the same goes for `calibrate --help`.
 

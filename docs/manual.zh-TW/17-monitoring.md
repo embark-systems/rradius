@@ -383,7 +383,7 @@ rradius 輸出的是 Prometheus 指標，**沒有內建 SNMP**。依你的監控
 | `RradiusExternalDatabaseUnreachable` | 設了 `required_for_ready` 的外部資料庫連不上；這個節點的 `/readyz` 回 503，負載平衡器會把它移出。查資料庫與網路 |
 | `RradiusExternalDatabaseFailing` | 呼叫外部資料庫失敗（`reason="unavailable"`）：資料庫掛了、慢，或網路不通 |
 | `RradiusExternalDatabasePoolFull` | 連線池用滿超過 5 分鐘，呼叫在排隊：查詢變慢，或 `pool_size` 太小 |
-| `RradiusNamedQueryStale` | 具名查詢超過 2 分鐘沒有成功，依賴它的數字（例如位址池使用率）是舊的；看 `RradiusNamedQueryFailing` 與日誌 |
+| `RradiusNamedQueryStale` | 具名查詢距上次成功超過 2 分鐘，而且持續了 2 分鐘（告警約在那次成功 4 分鐘後出現；從未成功過的查詢，在 Prometheus 第一次看到它 2 分鐘後出現），依賴它的數字（例如位址池使用率）是舊的；看 `RradiusNamedQueryFailing` 與日誌 |
 | `RradiusNamedQueryFailing` | `reason` 標籤是 `timeout`、`error` 或 `shape`（結果的欄位不符合標籤與數值），見[第 9 章](09-external-databases.md#具名查詢把-sql-變成指標) |
 | `RradiusReloadFailed` | 節點照舊設定運作；日誌寫了原因，修好再重新載入 |
 | `RradiusLogLinesDropped` | 日誌的去處太慢，見[日誌行被丟棄的時候](#日誌行被丟棄的時候) |

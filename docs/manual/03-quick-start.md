@@ -458,7 +458,7 @@ quick-start is a ready-made scenario. If you want to start from a blank file, us
 
 ```console
 $ mkdir ~/rradius-lab/blank && cd ~/rradius-lab/blank
-$ rradiusd config init --lang zh-TW > rradius.toml
+$ rradiusd config init > rradius.toml
 ```
 
 What this starting configuration contains:

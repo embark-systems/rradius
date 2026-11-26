@@ -68,7 +68,7 @@ Rules for `bind`:
 
 - The array has at least one address, and the same address cannot appear twice.
 - `0.0.0.0` means all IPv4 addresses and `::` means all IPv6 addresses. If you write `0.0.0.0` you cannot also write another IPv4 address (the same goes for `::`), but `["0.0.0.0", "::"]` is allowed.
-- An IPv4 address cannot be written in IPv6 form (`::ffff:10.0.0.1`). Write `10.0.0.1` instead.
+- An IPv4 address written in IPv6 form (`::ffff:10.0.0.1`) is refused when the array has other addresses too. Write `10.0.0.1` instead.
 
 For the error messages, see [Common mistakes](#common-mistakes).
 
@@ -460,7 +460,7 @@ The settings you usually find on a NAS are named differently by each vendor, but
 **Cause:** `sockets` was set above 1 on a platform other than Linux.
 **Fix:** Remove the line and use the default.
 
-> **Note:** When a client is written in a file that is read in, the client errors above still start with the name of the main configuration file (for example `rradius.toml:`), not that file. Use `name` to find which client it is.
+> **Note:** When a client is written in a file that is read in, the client errors above still start with the name of the main configuration file (for example `rradius.toml:`), not that file, and end with where the entry came from, for example `(in conf.d/extra.toml line 2)`.
 
 ## Related chapters
 

@@ -438,6 +438,7 @@ $ rradius-bench run … --load acct-start,concurrency=1 --requests 1
 $ wc -l acct.jsonl*
        1 acct.jsonl
        2 acct.jsonl.1
+       3 total
 ```
 
 SIGHUP 之後的計費寫進新的 `acct.jsonl`，舊檔不再增加。
