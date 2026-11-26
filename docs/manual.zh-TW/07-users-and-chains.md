@@ -811,7 +811,7 @@ $ rradius-bench run … --user alice --password alice-password --attr 31=text:aa
 
 ```console
 $ curl -s http://127.0.0.1:9812/metrics | grep '^rradius_auth_lockout'
-rradius_auth_lockout_rejected_total 2
+rradius_auth_lockout_rejected_total 1
 rradius_auth_lockouts_total 1
 rradius_auth_lockout_untracked_total 0
 ```
