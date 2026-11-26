@@ -5,8 +5,9 @@
 # Debian 12 has the oldest glibc (2.36) of the releases still in use, and a deb depends on the
 # glibc it was built against, so a deb built here installs on Debian 12 and 13 and on Ubuntu 22.04
 # and later. The rust image supplies the toolchain (1.99, as the Dockerfile uses). A platform other
-# than the machine's runs under emulation: slow, but the same build. The crates are cached in a
-# Docker volume per platform.
+# than the machine's runs under emulation: slow, but the same build. Without --platform the package
+# is for DOCKER_DEFAULT_PLATFORM, or else for the platform of the Docker engine. The crates are
+# cached in a Docker volume per --platform.
 set -eu
 root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 out="$root/dist"
@@ -27,13 +28,21 @@ case "$platform" in
     *) echo "docker-build.sh: platform must be linux/amd64 or linux/arm64" >&2; exit 2 ;;
 esac
 "$root/packages/common/check-release.sh" "$commit" $ci_flag
+# docker run is always told the platform: without it, it takes the rust image that is on the
+# machine, also one of another architecture that an earlier build left there.
+run_platform=${platform:-${DOCKER_DEFAULT_PLATFORM:-}}
+if [ -z "$run_platform" ]; then
+    run_platform=$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}') || {
+        echo "docker-build.sh: cannot ask docker for its platform; give --platform" >&2
+        exit 1
+    }
+fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/src" "$out"
 git -C "$root" archive "$commit" | tar -x -C "$work/src"
 cache=rradius-deb-cargo-$(echo "${platform:-native}" | tr / -)
-# shellcheck disable=SC2086
-docker run --rm ${platform:+--platform $platform} \
+docker run --rm --platform "$run_platform" \
     -v "$cache:/usr/local/cargo/registry" \
     -v "$work/src:/src:ro" -v "$out:/out" \
     rust:1.99-bookworm sh -c '
