@@ -93,8 +93,6 @@ reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 
 [radius]
 bind = "127.0.0.1"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 [[radius.clients]]
@@ -103,8 +101,6 @@ address = "127.0.0.1"
 secret_file = "localhost.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812
 
 [sessions]
 list = "SELECT username, nas, session_id, started, updated FROM accounting WHERE stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
@@ -123,10 +119,10 @@ show = "SELECT username, nas, session_id, started, updated FROM accounting WHERE
 | `auth.policy` | `first_match` | `first_match` | 可以 | 驗證鏈怎麼決定（第 7 章） |
 | `auth.handlers` | 一個 sql 處理器 | 無 | 可以 | `user_query` 查密碼，`reply_query` 查回覆屬性 |
 | `radius.bind` | `127.0.0.1` | `0.0.0.0` | 要重啟 | RADIUS 監聽的位址 |
-| `radius.auth_port`、`acct_port` | `1812`、`1813` | `1812`、`1813` | 要重啟 | 認證埠、計費埠 |
+| `radius.auth_port`、`acct_port` | 沒寫 | `1812`、`1813` | 要重啟 | 認證埠、計費埠 |
 | `radius.status_server` | `true` | `true` | 要重啟 | 回應 Status-Server |
 | `radius.clients` | `127.0.0.1` | 無 | 可以 | 允許送請求的用戶端（第 5 章） |
-| `metrics.bind`、`port` | `127.0.0.1`、`9812` | `127.0.0.1`、`9812` | 要重啟 | 指標埠，`status` 讀它 |
+| `metrics.bind`、`port` | 沒寫（有空的 `[metrics]` 表就開指標埠） | `127.0.0.1`、`9812` | 要重啟 | 指標埠，`status` 讀它 |
 | `sessions.list`、`show` | 兩段 SQL | 無 | 只有指令讀，不必 reload | `session list`、`session show` 執行的查詢（第 13 章） |
 
 示範帳號在 `migrations/2_demo_users.sql`：

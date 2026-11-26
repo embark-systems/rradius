@@ -218,7 +218,7 @@ $ curl -s http://127.0.0.1:9812/metrics | grep -A6 '^# HELP rradius_radius_respo
 # HELP rradius_radius_responses_total RADIUS responses sent, excluding replays and Status-Server.
 # TYPE rradius_radius_responses_total counter
 rradius_radius_responses_total{code="access_accept"} 1
-rradius_radius_responses_total{code="access_reject"} 5
+rradius_radius_responses_total{code="access_reject"} 4
 rradius_radius_responses_total{code="access_challenge"} 0
 rradius_radius_responses_total{code="accounting_response"} 1
 ```
@@ -427,9 +427,9 @@ A built-in SNMP agent would have to handle SNMP encoding and (for v3) authentica
 
 ### What was verified
 
-The following was recorded earlier and was not rerun this time:
+Except where a date is given, the following was recorded earlier and was not rerun this time:
 
-- **Rules:** `promtool check rules` passed; every `rradius_*` metric name used by the 19 rules was checked against `/metrics` of a running server or the source code; `promtool test rules` used 9 synthetic time series to verify the alerts that should and should not fire.
+- **Rules:** run again on 2026-11-26 in the `prom/prometheus` container: `promtool check rules` passed (19 rules), and so did `promtool test rules`, whose test file has 9 test cases with 22 synthetic time series and covers 10 of the 19 rules. Recorded earlier: every `rradius_*` metric name used by the 19 rules was checked against `/metrics` of a running server or the source code.
 - **Notification:** `amtool check-config` passed; the path of Alertmanager sending a webhook to `snmp_notifier` and then a v2c trap to `snmptrapd` was tested locally in containers.
 - **Not verified:** the thresholds of the rules under real traffic, SNMP v3 traps, a real monitoring system (Zabbix, a traditional NMS) as the receiver, and reading rradius with `snmpwalk` (not supported).
 
@@ -449,18 +449,18 @@ Node
   Applied index             5
   Seconds without a leader  0
   Version                   0.1.0
-  Seconds running           41
+  Seconds running           33
 
 Reload
-  Successful                1
+  Successful                0
   Failed                    0
-  Last success (Unix time)  1795384693
+  Last success (Unix time)  0
 
 RADIUS
-  Auth requests              0.0/s (8)
+  Auth requests              0.0/s (5)
   Acct requests              0.0/s (1)
-  Access-Accept              0.0/s (2)
-  Access-Reject              0.0/s (6)
+  Access-Accept              0.0/s (1)
+  Access-Reject              0.0/s (4)
   Access-Challenge           0.0/s (0)
   Accounting-Response        0.0/s (1)
   Duplicates                 0.0/s (0)
@@ -469,15 +469,15 @@ RADIUS
   Discarded: invalid         0.0/s (1)
   Discarded: database        0.0/s (0)
   Discarded: no leader       0.0/s (0)
-  In bytes                   0.0 B/s (396 B)
-  Out bytes                  0.0 B/s (128 B)
+  In bytes                   0.0 B/s (627 B)
+  Out bytes                  0.0 B/s (261 B)
   Auth in progress           0
   Auth limit                 4096
   Acct in progress           0
   Acct limit                 4096
 
 Queries
-  accounts_by_state last success (seconds ago)  2
+  accounts_by_state last success (seconds ago)  3
   accounts_by_state rows                        2
   accounts_by_state failed runs                 0.0/s (0)
 
@@ -488,8 +488,8 @@ TACACS+
   Accounting        0.0/s (0)
   Replies           0.0/s (1)
   Malformed         0.0/s (0)
-  In bytes          0.0 B/s (46 B)
-  Out bytes         0.0 B/s (28 B)
+  In bytes          0.0 B/s (52 B)
+  Out bytes         0.0 B/s (18 B)
 …
 ```
 
@@ -505,12 +505,12 @@ $ rradius-bench run --server 127.0.0.1 --auth-port 1812 --secret "$S" \
 $ rradiusd status --config rradius.toml
 …
 RADIUS
-  Auth requests              200.5/s (414)
+  Auth requests              200.4/s (410)
   Acct requests              0.0/s (1)
-  Access-Accept              200.5/s (408)
+  Access-Accept              200.4/s (406)
 …
-  Auth p50 (ms)              0.15
-  Auth p99 (ms)              0.25
+  Auth p50 (ms)              0.168
+  Auth p99 (ms)              0.665
 …
 ```
 
@@ -558,13 +558,13 @@ When used with `--cluster`, there is a member table at the top. The first row "a
 
 ```console
 $ rradiusd status --config rradius.toml --json
-{"address":"127.0.0.1:9812","counter_reset":false,"interval_seconds":1.003252166,"ready":{"status":200,"text":"ok"},"sections":[{"items":[{"key":"ready","label":"Ready","value":"ok"},…
+{"address":"127.0.0.1:9812","counter_reset":false,"interval_seconds":1.00382475,"ready":{"status":200,"text":"ok"},"sections":[{"items":[{"key":"ready","label":"Ready","value":"ok"},…
 ```
 
 (The real output is one single line; it is abridged here. The keys of an object are sorted alphabetically.)
 
 - `sections` is an array, and each element has `key`, `title` and `items`.
-- Each item has `key`, `label`, and one of two sets: `value` (the current value) or `rate` plus `total` (rate and total). For example `{"key":"auth_requests","label":"Auth requests","rate":200.65753617774516,"total":618}`.
+- Each item has `key`, `label`, and one of two sets: `value` (the current value) or `rate` plus `total` (rate and total). For example `{"key":"auth_requests","label":"Auth requests","rate":200.23415441789018,"total":613}`.
 - When a program reads it, use `key`, not `label`. In this measurement the section keys were, in order, `node`, `reload`, `radius`, `radius_top_clients`, `queries`, `tacacs`, `eap`, `acct_spool`, `acct_log`, `netlogon`, `log`.
 
 ## The sections of status

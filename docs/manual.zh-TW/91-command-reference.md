@@ -49,7 +49,7 @@
 
 幾個全部指令共通的規則：
 
-- **`--config <path>`：** 沒寫時讀 `/etc/rradius/rradius.toml`。實際的預設路徑是建置時決定的，`rradiusd --version` 的第二行會印出來。讀不到預設的設定檔時，訊息後面會多一行 `(the default configuration; give --config <path> for another)`。
+- **`--config <path>`：** 沒寫時讀 `/etc/rradius/rradius.toml`。實際的預設路徑是建置時決定的，`rradiusd --version` 的第二行會印出來。`serve` 與 `status` 讀不到預設的設定檔時，訊息後面會多一行 `(the default configuration; give --config <path> for another)`。
 - **旗標的位置：** `status`、`user`、`session`、`cluster` 的旗標可以放在子指令後面的任何位置，`user show --config a.toml dave` 與 `user show dave --config a.toml` 相同。其他指令要照用法的順序寫：例如 `config --config a.toml show`、`query --json list` 都是用法錯誤。同一個旗標寫兩次也是用法錯誤。
 - **輸出：** 結果寫到標準輸出，錯誤與用法說明寫到標準錯誤。管理指令只把 `WARN` 以上的日誌寫到標準錯誤，所以 `check` 會印出祕密檔權限之類的警告。
 - **子指令沒有自己的 `--help`。** 參數不對時，指令會印出自己的用法並以結束碼 2 結束；完整的用法清單用 `rradiusd help`。
@@ -271,6 +271,8 @@ usage: rradiusd query list [--config <path>] [--json]
 usage: rradiusd query <name> [--config <path>] [--json]
 usage: rradiusd cluster members|remove [--config <path>] [--force] [<node_id>]
   remove takes a node id, and --force to leave one or two voters
+usage: rradiusd accounting find --ip <address> --port <port> --at <time> [--file <path>]... [--json]
+  --file - or no --file reads standard input; --at is RFC 3339, such as 2026-11-25T10:00:00Z
 without --config, the configuration is /etc/rradius/rradius.toml
 ```
 
@@ -357,8 +359,8 @@ no differences
 ```console
 $ rradiusd config init --lang zh-TW > rradius.toml
 $ head -2 rradius.toml
-# 由 `config init` 產生的 rradius 設定檔。
-# 叢集的每個節點都要用相同的 secret_raft 與 secret_api；範例用戶端的 secret 也要設在 NAS 上。
+# 由 `config init` 產生的 rradius 設定檔；`config init --full` 會印出所有設定。
+# 叢集的每個節點都要用相同的 secret_raft 與 secret_api；範例用戶端的 secret 也要設在 NAS 上。要自己建立腳本 auth.lua。
 ```
 
 ## tuning

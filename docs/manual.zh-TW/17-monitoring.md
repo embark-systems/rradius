@@ -218,7 +218,7 @@ $ curl -s http://127.0.0.1:9812/metrics | grep -A6 '^# HELP rradius_radius_respo
 # HELP rradius_radius_responses_total RADIUS responses sent, excluding replays and Status-Server.
 # TYPE rradius_radius_responses_total counter
 rradius_radius_responses_total{code="access_accept"} 1
-rradius_radius_responses_total{code="access_reject"} 5
+rradius_radius_responses_total{code="access_reject"} 4
 rradius_radius_responses_total{code="access_challenge"} 0
 rradius_radius_responses_total{code="accounting_response"} 1
 ```
@@ -427,9 +427,9 @@ iso.3.6.1.4.1.98789.2.3 = STRING: "1/1 alerts are firing:
 
 ### 驗證過什麼
 
-以下是先前的記載，本次沒有重跑：
+除了寫出日期的部分，以下是先前的記載，本次沒有重跑：
 
-- **規則：** `promtool check rules` 通過；19 條規則用到的每個 `rradius_*` 指標名稱，都對照過執行中伺服器的 `/metrics` 或原始碼；`promtool test rules` 以 9 組合成的時間序列驗證該響與不該響的告警。
+- **規則：** 2026-11-26 在 `prom/prometheus` 容器重跑：`promtool check rules` 通過（19 條規則），`promtool test rules` 也通過；測試檔有 9 個測試案例、22 條合成的時間序列，涵蓋 19 條規則中的 10 條。先前的記載：19 條規則用到的每個 `rradius_*` 指標名稱，都對照過執行中伺服器的 `/metrics` 或原始碼。
 - **通知：** `amtool check-config` 通過；Alertmanager 送 webhook 給 `snmp_notifier`、再發 v2c trap 到 `snmptrapd` 這條路，在本機容器實測過。
 - **沒有驗證：** 規則在真實流量下的門檻、SNMP v3 trap、真實的監控系統（Zabbix、傳統 NMS）當接收端、用 `snmpwalk` 讀 rradius（不支援）。
 
@@ -449,18 +449,18 @@ Node
   Applied index             5
   Seconds without a leader  0
   Version                   0.1.0
-  Seconds running           41
+  Seconds running           33
 
 Reload
-  Successful                1
+  Successful                0
   Failed                    0
-  Last success (Unix time)  1795384693
+  Last success (Unix time)  0
 
 RADIUS
-  Auth requests              0.0/s (8)
+  Auth requests              0.0/s (5)
   Acct requests              0.0/s (1)
-  Access-Accept              0.0/s (2)
-  Access-Reject              0.0/s (6)
+  Access-Accept              0.0/s (1)
+  Access-Reject              0.0/s (4)
   Access-Challenge           0.0/s (0)
   Accounting-Response        0.0/s (1)
   Duplicates                 0.0/s (0)
@@ -469,15 +469,15 @@ RADIUS
   Discarded: invalid         0.0/s (1)
   Discarded: database        0.0/s (0)
   Discarded: no leader       0.0/s (0)
-  In bytes                   0.0 B/s (396 B)
-  Out bytes                  0.0 B/s (128 B)
+  In bytes                   0.0 B/s (627 B)
+  Out bytes                  0.0 B/s (261 B)
   Auth in progress           0
   Auth limit                 4096
   Acct in progress           0
   Acct limit                 4096
 
 Queries
-  accounts_by_state last success (seconds ago)  2
+  accounts_by_state last success (seconds ago)  3
   accounts_by_state rows                        2
   accounts_by_state failed runs                 0.0/s (0)
 
@@ -488,8 +488,8 @@ TACACS+
   Accounting        0.0/s (0)
   Replies           0.0/s (1)
   Malformed         0.0/s (0)
-  In bytes          0.0 B/s (46 B)
-  Out bytes         0.0 B/s (28 B)
+  In bytes          0.0 B/s (52 B)
+  Out bytes         0.0 B/s (18 B)
 …
 ```
 
@@ -505,12 +505,12 @@ $ rradius-bench run --server 127.0.0.1 --auth-port 1812 --secret "$S" \
 $ rradiusd status --config rradius.toml
 …
 RADIUS
-  Auth requests              200.5/s (414)
+  Auth requests              200.4/s (410)
   Acct requests              0.0/s (1)
-  Access-Accept              200.5/s (408)
+  Access-Accept              200.4/s (406)
 …
-  Auth p50 (ms)              0.15
-  Auth p99 (ms)              0.25
+  Auth p50 (ms)              0.168
+  Auth p99 (ms)              0.665
 …
 ```
 
@@ -558,13 +558,13 @@ p50、p99 是從這一秒內 histogram 各區間的增量內插出來的，單�
 
 ```console
 $ rradiusd status --config rradius.toml --json
-{"address":"127.0.0.1:9812","counter_reset":false,"interval_seconds":1.003252166,"ready":{"status":200,"text":"ok"},"sections":[{"items":[{"key":"ready","label":"Ready","value":"ok"},…
+{"address":"127.0.0.1:9812","counter_reset":false,"interval_seconds":1.00382475,"ready":{"status":200,"text":"ok"},"sections":[{"items":[{"key":"ready","label":"Ready","value":"ok"},…
 ```
 
 （實際輸出是一整行；這裡刪節了。物件的鍵依字母排序。）
 
 - `sections` 是陣列，每一項有 `key`、`title`、`items`。
-- 每個 item 有 `key`、`label`，以及 `value`（當下的值）或 `rate`＋`total`（速率與總數）其中一組。例如 `{"key":"auth_requests","label":"Auth requests","rate":200.65753617774516,"total":618}`。
+- 每個 item 有 `key`、`label`，以及 `value`（當下的值）或 `rate`＋`total`（速率與總數）其中一組。例如 `{"key":"auth_requests","label":"Auth requests","rate":200.23415441789018,"total":613}`。
 - 給程式讀的時候用 `key`，不要用 `label`。這次實測的區段 key 依序是 `node`、`reload`、`radius`、`radius_top_clients`、`queries`、`tacacs`、`eap`、`acct_spool`、`acct_log`、`netlogon`、`log`。
 
 ## status 的各個區段

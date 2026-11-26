@@ -49,7 +49,7 @@ Every command in this appendix was actually run. The output in the examples is c
 
 Rules that all commands share:
 
-- **`--config <path>`:** when it is not given, the command reads `/etc/rradius/rradius.toml`. The actual default path is decided at build time; the second line of `rradiusd --version` prints it. When the default configuration file cannot be read, the message has one more line, `(the default configuration; give --config <path> for another)`.
+- **`--config <path>`:** when it is not given, the command reads `/etc/rradius/rradius.toml`. The actual default path is decided at build time; the second line of `rradiusd --version` prints it. When `serve` or `status` cannot read the default configuration file, the message has one more line, `(the default configuration; give --config <path> for another)`.
 - **Position of flags:** the flags of `status`, `user`, `session` and `cluster` can be placed anywhere after the subcommand; `user show --config a.toml dave` and `user show dave --config a.toml` are the same. The other commands need the order shown in the usage: for example `config --config a.toml show` and `query --json list` are usage errors. Giving the same flag twice is also a usage error.
 - **Output:** results go to standard output; errors and usage text go to standard error. Administration commands write only `WARN` and above of the log to standard error, so `check` prints warnings such as secret file permissions.
 - **Subcommands have no `--help` of their own.** When the arguments are wrong, the command prints its own usage and exits with code 2; use `rradiusd help` for the full usage list.
@@ -271,6 +271,8 @@ usage: rradiusd query list [--config <path>] [--json]
 usage: rradiusd query <name> [--config <path>] [--json]
 usage: rradiusd cluster members|remove [--config <path>] [--force] [<node_id>]
   remove takes a node id, and --force to leave one or two voters
+usage: rradiusd accounting find --ip <address> --port <port> --at <time> [--file <path>]... [--json]
+  --file - or no --file reads standard input; --at is RFC 3339, such as 2026-11-25T10:00:00Z
 without --config, the configuration is /etc/rradius/rradius.toml
 ```
 
@@ -357,8 +359,8 @@ Prints a configuration draft to standard output. The cluster secrets and the sha
 ```console
 $ rradiusd config init --lang zh-TW > rradius.toml
 $ head -2 rradius.toml
-# 由 `config init` 產生的 rradius 設定檔。
-# 叢集的每個節點都要用相同的 secret_raft 與 secret_api；範例用戶端的 secret 也要設在 NAS 上。
+# 由 `config init` 產生的 rradius 設定檔；`config init --full` 會印出所有設定。
+# 叢集的每個節點都要用相同的 secret_raft 與 secret_api；範例用戶端的 secret 也要設在 NAS 上。要自己建立腳本 auth.lua。
 ```
 
 ## tuning

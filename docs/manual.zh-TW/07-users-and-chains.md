@@ -734,7 +734,7 @@ RADIUS 的 User-Password 依 RFC 2865 第 5.2 節固定是 16 到 128 個位元�
 每次拒絕記一行 WARN，只有用戶端名稱與長度，不含密碼，而且有限速，被灌請求時不會灌爆日誌：
 
 ```text
-… WARN rradius_core::radius: RADIUS client nas1: Access-Request refused, its User-Password is 240 octets, not 16 to 128 in whole blocks of 16
+… WARN rradius_core::lua_engine: RADIUS client nas1: Access-Request refused, its User-Password is 240 octets, not 16 to 128 in whole blocks of 16
 ```
 
 > **升級注意：** 以前超過 128 個位元組的 User-Password 會被解開、照常驗證；現在被拒絕。不補齊到 16 倍數的 NAS 也會被拒絕。升級前用認證紀錄確認沒有 `handler="length"` 的行；有的話是 NAS 的設定問題，不是密碼錯。
