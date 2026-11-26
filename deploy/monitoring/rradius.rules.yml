@@ -131,7 +131,7 @@ groups:
         for: 2m
         labels: {severity: warning}
         annotations:
-          summary: "Named query {{ $labels.query }} has not succeeded for 2 minutes on {{ $labels.instance }}"
+          summary: "Named query {{ $labels.query }} has not succeeded for more than 2 minutes on {{ $labels.instance }}"
           description: "The numbers of the query are as old as its last success."
 
       - alert: RradiusNamedQueryFailing
