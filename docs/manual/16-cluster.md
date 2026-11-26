@@ -1080,9 +1080,9 @@ First measure the highest write throughput at that RTT, take half of it, and div
 | 19.8 ms | 350/s | 17.1, 17.1, 21.5 s (leader last) | 14.8 s | 1,500–2,600 per node, about 3.6–6.2% | 0.1–6.9 s (6.9 when the leader was stopped) |
 
 - **Upgrading one node at a time, the other two keep answering.** Most of the requests that timed out were sent to the node being stopped (the client did not switch to another node).
-- **The executables of the core edition and the enterprise edition have the same name (`rradiusd`),** so when you change versions you only replace that file, and you confirm with `rradiusd --version` which version each node is. A cluster with nodes of two different versions at the same time was not tested for this manual and is not guaranteed to work; if you need to do it, try it first on a test cluster.
+- **The executables of the core edition and the enterprise edition have the same name (`rradiusd`),** so when you change versions you only replace that file, and `rradiusd --version` shows which edition and version number each node runs. A cluster with nodes of both editions at the same time was not tested for this manual and is not guaranteed to work; if you need to do it, try it first on a test cluster. For two builds of the core edition in one cluster, see [chapter 18, "Upgrading the program"](18-operations.md#upgrading-the-program).
 - **Upgrading one node takes about 16 to 21 seconds** (about 15 seconds to stop, plus the start and catching up), and the leader takes the longest; when the leader is stopped, the write gap on the other nodes is the longest.
-- Not tested: old and new versions mixed (this time the same image was restarted), and the catch-up time with a large amount of data.
+- Not tested in this measurement: old and new versions mixed (the same image was restarted; two builds were measured separately, see [chapter 18](18-operations.md#upgrading-the-program)), and the catch-up time with a large amount of data.
 
 ### Three topologies
 
