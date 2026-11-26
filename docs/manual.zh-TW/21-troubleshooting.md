@@ -230,7 +230,7 @@ rradius.toml: radius client 'localhost': unknown auth chain 'staff' (no [auth.ch
 rradius.toml: radius clients: duplicate client network '127.0.0.1/32'
 ```
 
-- 兩個用戶端的位址相同（單一位址會寫成 `/32`）不行；名稱相同則不會被擋，實測可以通過 `check`。名稱會出現在日誌與指標上，請自己保持唯一。
+- 兩個用戶端的位址相同（單一位址會寫成 `/32`）或名稱相同都不行：`check` 會失敗，訊息是 `duplicate client network` 或 `duplicate client name`。名稱會出現在日誌與指標上。
 
 EAP 憑證：
 

@@ -93,8 +93,6 @@ reply_query = "SELECT attribute, value FROM user_reply WHERE username = ?"
 
 [radius]
 bind = "127.0.0.1"
-auth_port = 1812
-acct_port = 1813
 status_server = true
 
 [[radius.clients]]
@@ -103,8 +101,6 @@ address = "127.0.0.1"
 secret_file = "localhost.secret"
 
 [metrics]
-bind = "127.0.0.1"
-port = 9812
 
 [sessions]
 list = "SELECT username, nas, session_id, started, updated FROM accounting WHERE stopped IS NULL AND updated > strftime('%s', 'now') - 900 ORDER BY started, session_id"
@@ -123,10 +119,10 @@ Section by section (for defaults and whether each setting can be reloaded, see t
 | `auth.policy` | `first_match` | `first_match` | Yes | How the auth chain decides (chapter 07) |
 | `auth.handlers` | One sql handler | None | Yes | `user_query` looks up the password, `reply_query` looks up the reply attributes |
 | `radius.bind` | `127.0.0.1` | `0.0.0.0` | Restart needed | The address RADIUS listens on |
-| `radius.auth_port`, `acct_port` | `1812`, `1813` | `1812`, `1813` | Restart needed | Authentication port, accounting port |
+| `radius.auth_port`, `acct_port` | Not set | `1812`, `1813` | Restart needed | Authentication port, accounting port |
 | `radius.status_server` | `true` | `true` | Restart needed | Answer Status-Server |
 | `radius.clients` | `127.0.0.1` | None | Yes | The clients allowed to send requests (chapter 05) |
-| `metrics.bind`, `port` | `127.0.0.1`, `9812` | `127.0.0.1`, `9812` | Restart needed | The metrics port, which `status` reads |
+| `metrics.bind`, `port` | Not set (an empty `[metrics]` table turns the port on) | `127.0.0.1`, `9812` | Restart needed | The metrics port, which `status` reads |
 | `sessions.list`, `show` | Two SQL queries | None | Only the commands read it, no reload needed | The queries that `session list` and `session show` run (chapter 13) |
 
 The demo accounts are in `migrations/2_demo_users.sql`:

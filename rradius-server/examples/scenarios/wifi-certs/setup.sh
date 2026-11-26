@@ -10,6 +10,8 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:-$here}
 mkdir -p "$out/certs"
+# Absolute from here on: the script works inside certs/, and the paths in crl-db/ca.cnf have to hold from there.
+out=$(CDPATH= cd -- "$out" && pwd)
 umask 077
 cd "$out/certs"
 if [ -e ca.pem ]; then

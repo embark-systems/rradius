@@ -308,9 +308,41 @@ $ echo 'User-Name=ops1,User-Password=<驗證碼>,State=<State 的值>,Message-Au
 
 > **未實機驗證：** `oathtool` 與 `radclient` 的這兩行沒有在本版跑過；演算法的部分對照了 `rradius-core/src/totp.rs`。
 
-真的跳板機：輸入密碼之後，它會顯示 `Enter your code`，把驗證碼當成下一次的密碼、連同 `State` 送回來。SSH 跳板機用 pam_radius 時，`/etc/pam_radius.conf` 寫一行 rradius 的位址、共用密碼（`jump-host.secret` 的內容）與逾時，逾時建議 5 秒以上；用推播時要更長，見〈單檔範例〉。
+真的跳板機：輸入密碼之後，它會顯示 `Enter your code`，把驗證碼當成下一次的密碼、連同 `State` 送回來。
 
-> **未實機驗證：** pam_radius 的設定沒有在真的跳板機上跑過。
+**用 pam_radius 的 SSH 跳板機。** 以下步驟適用 Debian 12（`libpam-radius-auth` 2.0.0-1、OpenSSH 9.2）。這個模組不送 Message-Authenticator，rradius 預設會丟掉它的請求（[第 5 章](05-radius-clients.md#message-authenticator-與-proxy-state)）。只對跳板機這個用戶端放寬：
+
+```toml
+# rradius.toml
+[[radius.clients]]
+name = "jump-host"
+address = "10.60.0.20"
+secret_file = "jump-host.secret"
+auth = "mfa"
+require_message_authenticator = "no"
+```
+
+> **警告：** 設了之後，rradius 無法確認這個用戶端的請求在途中沒有被改過，對 BlastRADIUS 的防護變弱。只在這個用戶端設定，`limit_proxy_state` 保持 `yes`（預設值），並讓跳板機與 rradius 之間的流量走你信任的網路。
+
+在跳板機上：
+
+1. 用 `apt install libpam-radius-auth` 安裝模組。精簡安裝的系統還要有套件 `netbase`（`/etc/services`）。每個要登入的人都要有本機帳號（`useradd -m ops1`）：pam_radius 只檢查密碼，不會建立帳號。
+2. 模組讀的是 `/etc/pam_radius_auth.conf`。套件裝好的這個檔案裡有生效中的範例伺服器行：刪掉或註解掉，只留 rradius 這一行，內容是 rradius 的位址、共用密碼（`jump-host.secret` 的內容）與逾時秒數。檔案只讓 root 讀（`chmod 600`）。
+
+   ```text
+   10.60.0.10 <jump-host.secret 的內容> 5
+   ```
+
+   逾時建議 5 秒以上；用推播時要更長，見〈單檔範例〉。
+3. 在 `/etc/pam.d/sshd` 把 `@include common-auth` 那一行換成下面這行。之後 SSH 的密碼登入由 rradius 檢查，不再比對本機密碼。
+
+   ```text
+   auth required pam_radius_auth.so
+   ```
+
+4. 在 `/etc/ssh/sshd_config` 把 `KbdInteractiveAuthentication no`（Debian 12 出廠值）改成 `yes`：沒改就不會出現輸入驗證碼的提示，登入失敗。`UsePAM yes` 本來就有。重新啟動 sshd（`systemctl restart ssh`），在新的登入成功之前，保留一個已經登入的連線。
+
+> **只在容器驗證過（2026-11-26）：** 照這些設定，經 SSH 的兩段式登入成功，錯的密碼與錯的驗證碼被拒；沒有本機帳號或 `KbdInteractiveAuthentication no` 時登不進去。容器裡是直接啟動 sshd，沒有經過 systemd。沒有在真的跳板機上驗證。
 
 本章用一個會處理 challenge 的測試用戶端驗證過第二步：正確的驗證碼得到 Access-Accept，同一個 `State` 再送一次得到 Access-Reject。伺服器的認證紀錄：
 

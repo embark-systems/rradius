@@ -308,9 +308,41 @@ $ echo 'User-Name=ops1,User-Password=<code>,State=<State value>,Message-Authenti
 
 > **Not verified on real hardware:** These two lines with `oathtool` and `radclient` have not been run in this version; the algorithm part was checked against `rradius-core/src/totp.rs`.
 
-On a real jump host: after you enter the password, it shows `Enter your code`, and it sends the code back as the next password together with `State`. For an SSH jump host that uses pam_radius, write one line in `/etc/pam_radius.conf` with the rradius address, the shared secret (the content of `jump-host.secret`) and a timeout; a timeout of 5 seconds or more is recommended, and with push approval it must be longer, see "Single-file examples".
+On a real jump host: after you enter the password, it shows `Enter your code`, and it sends the code back as the next password together with `State`.
 
-> **Not verified on real hardware:** The pam_radius setting has not been run on a real jump host.
+**SSH jump host with pam_radius.** The steps below are for Debian 12 (`libpam-radius-auth` 2.0.0-1, OpenSSH 9.2). The module sends no Message-Authenticator, so rradius drops its requests by default ([chapter 05](05-radius-clients.md#message-authenticator-and-proxy-state)). Allow this for the jump host's client only:
+
+```toml
+# rradius.toml
+[[radius.clients]]
+name = "jump-host"
+address = "10.60.0.20"
+secret_file = "jump-host.secret"
+auth = "mfa"
+require_message_authenticator = "no"
+```
+
+> **Warning:** With this setting rradius cannot check that a request from this client was not changed on the way, which weakens the protection against BlastRADIUS. Set it on this client only, leave `limit_proxy_state` at `yes` (the default), and keep the traffic between the jump host and rradius on a network you trust.
+
+On the jump host:
+
+1. Install the module with `apt install libpam-radius-auth`. A minimal system also needs the package `netbase` (`/etc/services`). Create a local account for everyone who logs in (`useradd -m ops1`): pam_radius checks the password but does not create accounts.
+2. The module reads `/etc/pam_radius_auth.conf`. The file that the package installs has example server lines that are in effect: remove them or comment them out, so that only the rradius line is left, with the address of rradius, the shared secret (the content of `jump-host.secret`) and a timeout in seconds. Keep the file readable by root only (`chmod 600`).
+
+   ```text
+   10.60.0.10 <content of jump-host.secret> 5
+   ```
+
+   A timeout of 5 seconds or more is recommended; with push approval it must be longer, see "Single-file examples".
+3. In `/etc/pam.d/sshd`, replace the line `@include common-auth` with the line below. From then on rradius checks password logins over SSH instead of the local password.
+
+   ```text
+   auth required pam_radius_auth.so
+   ```
+
+4. In `/etc/ssh/sshd_config`, change `KbdInteractiveAuthentication no` (what Debian 12 ships) to `yes`: without it the code prompt cannot appear and the login fails. `UsePAM yes` is already set. Restart sshd (`systemctl restart ssh`), and keep a session that is already logged in open until a new login works.
+
+> **Verified in containers only (2026-11-26):** with these settings the two-step login over SSH succeeded, and a wrong password and a wrong code were refused; it failed without the local account or with `KbdInteractiveAuthentication no`. The containers started sshd directly, not through systemd. Not verified on a real jump host.
 
 For this chapter the second step was verified with a test client that handles challenges: the correct code gets an Access-Accept, and sending the same `State` again gets an Access-Reject. The server's authentication records:
 

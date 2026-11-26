@@ -292,7 +292,7 @@ Keep the last row only for devices where you are sure there is no proxy in betwe
 The warning when `auto` learns `no` from the first request:
 
 ```text
-… WARN rradius_core::radius: RADIUS client 'localhost-v6' (::1): the first request had no Message-Authenticator, so require_message_authenticator (auto) became no and stays no until the server restarts; …
+… WARN rradius_core::lua_engine: RADIUS client 'localhost-v6' (::1): the first request had no Message-Authenticator, so require_message_authenticator (auto) became no and stays no until the server restarts; …
 ```
 
 > **Warning:** What `auto` learns is "what the first request looked like". If the first request is forged by an attacker, the result is `no`. When you are sure the device supports it, write `yes` directly.

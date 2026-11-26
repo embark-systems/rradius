@@ -734,7 +734,7 @@ According to section 5.2 of RFC 2865, the RADIUS User-Password is always 16 to 1
 Each rejection writes one WARN line with only the client name and the length, without the password, and it is rate limited, so a flood of requests does not flood the log:
 
 ```text
-… WARN rradius_core::radius: RADIUS client nas1: Access-Request refused, its User-Password is 240 octets, not 16 to 128 in whole blocks of 16
+… WARN rradius_core::lua_engine: RADIUS client nas1: Access-Request refused, its User-Password is 240 octets, not 16 to 128 in whole blocks of 16
 ```
 
 > **Upgrade note:** A User-Password longer than 128 octets used to be decrypted and verified as usual; now it is rejected. A NAS that does not pad to a multiple of 16 is rejected too. Before you upgrade, check the authentication log for lines with `handler="length"`; if there are any, it is a NAS configuration problem, not a wrong password.

@@ -292,7 +292,7 @@ reload 之後再送一次同樣的請求，結果是 `accept 1`。再加上 `--a
 `auto` 從第一個請求學到 `no` 時的警告：
 
 ```text
-… WARN rradius_core::radius: RADIUS client 'localhost-v6' (::1): the first request had no Message-Authenticator, so require_message_authenticator (auto) became no and stays no until the server restarts; …
+… WARN rradius_core::lua_engine: RADIUS client 'localhost-v6' (::1): the first request had no Message-Authenticator, so require_message_authenticator (auto) became no and stays no until the server restarts; …
 ```
 
 > **警告：** `auto` 學到的是「第一個請求長什麼樣子」。若第一個請求是攻擊者偽造的，結果就是 `no`。能確定設備支援時，直接寫 `yes`。

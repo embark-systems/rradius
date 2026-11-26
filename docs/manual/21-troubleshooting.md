@@ -230,7 +230,7 @@ rradius.toml: radius client 'localhost': unknown auth chain 'staff' (no [auth.ch
 rradius.toml: radius clients: duplicate client network '127.0.0.1/32'
 ```
 
-- Two clients with the same address are not allowed (a single address is written as `/32`). The same name is not blocked: in testing it passes `check`. Names appear in logs and metrics, so keep them unique yourself.
+- Two clients with the same address or the same name are not allowed (a single address is written as `/32`): `check` fails with `duplicate client network` or `duplicate client name`. Names appear in logs and metrics.
 
 EAP certificates:
 
