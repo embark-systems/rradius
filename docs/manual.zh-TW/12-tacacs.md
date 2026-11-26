@@ -303,7 +303,7 @@ $ tacacs_client -H 127.0.0.1 -p 4949 -k $K -u noc1 authorize -c service=shell cm
 $ tacacs_client -H 127.0.0.1 -p 4949 -k $K -u noc1 authorize -c service=shell cmd=show cmd-arg=running-config
 ```
 
-> **未實機驗證：** `tacacs_client` 的指令沿用舊版手冊，本版沒有重跑；它的參數依版本可能不同，以 `tacacs_client --help` 為準。本章表格裡的授權結果是用能解開回覆的測試用戶端實測的（見〈用腳本授權〉）。
+> **未實機驗證：** `tacacs_client` 的指令本版沒有重跑；它的參數依版本可能不同，以 `tacacs_client --help` 為準。本章表格裡的授權結果是用能解開回覆的測試用戶端實測的（見〈用腳本授權〉）。
 
 ## 認證方式：ASCII、PAP、CHAP、MS-CHAP
 
@@ -784,7 +784,7 @@ aaa accounting commands 15 default stop-only group RRADIUS
 
 > **警告：** 一定要保留 `local` 當備援，並且在改設定之前先確認本機的緊急帳號能登入。rradius 停機或網路不通時，設備會改用本機帳號；沒有備援就會把自己鎖在設備外面。先只開認證（`aaa authentication login`），確認能登入，再開 exec 授權，最後才開指令授權（`aaa authorization commands`）：授權規則設錯時，連 `exit` 都可能被拒絕。多台 rradius 時，在 `aaa group server` 列多個 `server name`，設備會依序嘗試。
 
-> **未實機驗證：** 本章沒有用真的路由器或交換器測試，以上是 TACACS+ 設備通常需要的設定項目；這組 IOS 指令沿用舊版手冊，不同版本的指令可能不同，上線前請在實驗設備上確認。
+> **未實機驗證：** 本章沒有用真的路由器或交換器測試，以上是 TACACS+ 設備通常需要的設定項目；這組 IOS 指令沒有在設備上跑過，不同版本的指令可能不同，上線前請在實驗設備上確認。
 
 ## 監看 TACACS+
 

@@ -414,7 +414,7 @@ Notes:
 
 ### When the pool is nearly full
 
-When a pool is nearly full, two things matter: whether logins get slow or rejected, and whether a user who goes offline and comes back still gets the same prefix. The first is measured on a real server. The second is mostly measured by simulation. They are described separately. **All the numbers in this section come from chapter 19 of the old manual and from the change `ipv6-prefix-pool` (2026-11-16 to 17, recorded in `docs/spectra/changes/archive/2026-11-16-ipv6-prefix-pool/`), and were not measured again. They all measure the current design, which stores only allocated prefixes and has the `released` hold**, not the earlier design with one pre-generated row per prefix.
+When a pool is nearly full, two things matter: whether logins get slow or rejected, and whether a user who goes offline and comes back still gets the same prefix. The first is measured on a real server. The second is mostly measured by simulation. They are described separately. **All the numbers in this section come from earlier measurements and from the change `ipv6-prefix-pool` (2026-11-16 to 17, recorded in `docs/spectra/changes/archive/2026-11-16-ipv6-prefix-pool/`), and were not measured again. They all measure the current design, which stores only allocated prefixes and has the `released` hold**, not the earlier design with one pre-generated row per prefix.
 
 #### Login speed: Docker, single node
 
@@ -436,7 +436,7 @@ Capacity 65,536 (`2001:db8::/40` cut into /56), a single node in Docker (7 CPUs 
 
 #### Login speed: larger pools, three-node cluster
 
-Another machine and another measurement (Apple M4 Max, 14 CPUs, macOS, server and `rradius-bench` on the same machine, PAP logins, new users logging in for the first time; the old chapter gives the date 2026-11-18). **These numbers can be compared only with each other in this section, not with the Docker table above.** The pool is first filled to the stated usage with real logins (`allocate.lua`). "`released`" means all the filled prefixes were changed to `released`. A pool filled by writing directly to the table with prefixes scattered at random is much faster (about 7,000 per second at 65,536 and 99% reserved), because the prefixes and free slots filled by real logins are in runs. So measure with pools filled by real logins.
+Another machine and another measurement (Apple M4 Max, 14 CPUs, macOS, server and `rradius-bench` on the same machine, PAP logins, new users logging in for the first time; measured on 2026-11-18). **These numbers can be compared only with each other in this section, not with the Docker table above.** The pool is first filled to the stated usage with real logins (`allocate.lua`). "`released`" means all the filled prefixes were changed to `released`. A pool filled by writing directly to the table with prefixes scattered at random is much faster (about 7,000 per second at 65,536 and 99% reserved), because the prefixes and free slots filled by real logins are in runs. So measure with pools filled by real logins.
 
 Single node, 64 concurrent:
 
@@ -472,7 +472,7 @@ Three-node cluster (three `rradiusd` processes on the same machine, capacity 65,
 
 ### Does the user get the same prefix when they come back
 
-**Measured on a server (the old chapter gives the date 2026-11-18):** capacity 16,384, single node. Users log in in order and send Start, the NAS sends Accounting-On, the users come back in random order, and the test checks whether each gets the original prefix. With the hold (`HOLD_SECONDS` 24 hours), at 70%, 90% and 95% usage 100% got the same prefix back, with no rejects. With only the hash starting point (`HOLD_SECONDS` set to 0, so all holds expire and are deleted), it was about 55% at 70%, about 41% at 90% and about 37% at 95%. Conclusion: **to be stable across a reboot, rely on the `released` hold, not on the hash starting point.**
+**Measured on a server (measured on 2026-11-18):** capacity 16,384, single node. Users log in in order and send Start, the NAS sends Accounting-On, the users come back in random order, and the test checks whether each gets the original prefix. With the hold (`HOLD_SECONDS` 24 hours), at 70%, 90% and 95% usage 100% got the same prefix back, with no rejects. With only the hash starting point (`HOLD_SECONDS` set to 0, so all holds expire and are deleted), it was about 55% at 70%, about 41% at 90% and about 37% at 95%. Conclusion: **to be stable across a reboot, rely on the `released` hold, not on the hash starting point.**
 
 **Simulation:** capacity 65,536, the online time of users follows an exponential distribution (mean one day), and the offline time follows an exponential distribution, or 80% are short disconnects with a mean of 3 minutes and 20% are long absences. After a warm-up, the test measures whether each re-login gets the prefix it had last time. Two independently written simulations were checked against each other. This is not a server measurement, and it does not simulate concurrency or clusters. The main points:
 
@@ -812,7 +812,7 @@ Writes of both authentication and accounting go through the cluster leader. Ever
 
 ### Scale
 
-Below is the **extra cost per login after the merge**, taken from chapter 22 of the old manual and **not measured again** (I did not find the raw files for this group in the change records, only the record in the old chapter). Conditions: Apple M4 Max (14 CPUs, macOS), server and `rradius-bench` on the same machine, single node. 64 concurrent PAP logins, with 2,000 different users each logging in for the first time. The IPv4 pool and the prefix pool each have 16,384 entries, with 43% taken beforehand in a scattered way and about 55% at the end of the measurement. Each ran twice.
+Below is the **extra cost per login after the merge**, taken from an earlier measurement and **not measured again** (I did not find the raw files for this group in the change records, only the earlier record). Conditions: Apple M4 Max (14 CPUs, macOS), server and `rradius-bench` on the same machine, single node. 64 concurrent PAP logins, with 2,000 different users each logging in for the first time. The IPv4 pool and the prefix pool each have 16,384 entries, with 43% taken beforehand in a scattered way and about 55% at the end of the measurement. Each ran twice.
 
 | Example | Logins per second | p50 | p99 |
 | --- | --- | --- | --- |

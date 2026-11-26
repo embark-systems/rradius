@@ -107,6 +107,7 @@ After the build, check that the program runs:
 $ ./target/release/rradiusd --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 ```
 
 The text in parentheses on the first line of `--version` is the edition: `(community)` for the core edition and `(enterprise)` for the enterprise edition. Both editions' executables are named `rradiusd` and share the same configuration, data directory, service and user, so install only one of them on a machine. To keep both side by side for comparison, put them in different directories and run them by full path.
@@ -263,6 +264,7 @@ $ docker build -t rradius-server .
 $ docker run --rm rradius-server --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 ```
 
 What is in the image:

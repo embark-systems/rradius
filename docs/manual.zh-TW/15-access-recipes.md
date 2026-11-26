@@ -310,7 +310,7 @@ $ echo 'User-Name=ops1,User-Password=<驗證碼>,State=<State 的值>,Message-Au
 
 真的跳板機：輸入密碼之後，它會顯示 `Enter your code`，把驗證碼當成下一次的密碼、連同 `State` 送回來。SSH 跳板機用 pam_radius 時，`/etc/pam_radius.conf` 寫一行 rradius 的位址、共用密碼（`jump-host.secret` 的內容）與逾時，逾時建議 5 秒以上；用推播時要更長，見〈單檔範例〉。
 
-> **未實機驗證：** pam_radius 的設定沒有在真的跳板機上跑過，來自舊版手冊。
+> **未實機驗證：** pam_radius 的設定沒有在真的跳板機上跑過。
 
 本章用一個會處理 challenge 的測試用戶端驗證過第二步：正確的驗證碼得到 Access-Accept，同一個 `State` 再送一次得到 Access-Reject。伺服器的認證紀錄：
 

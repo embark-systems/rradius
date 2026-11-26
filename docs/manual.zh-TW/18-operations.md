@@ -224,6 +224,7 @@ WARN hiqlite::store::state_machine::sqlite::writer: SQL writer is shutting down
 $ rradiusd --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 ```
 
 第二行是沒有給 `--config` 時讀的設定檔，建置時就決定了。

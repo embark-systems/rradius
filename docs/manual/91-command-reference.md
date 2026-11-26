@@ -252,6 +252,7 @@ $ echo $?
 $ rradiusd --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 $ rradiusd help
 usage: rradiusd serve [--config <path>]
 usage: rradiusd check [--config <path>]
@@ -888,7 +889,7 @@ $ echo session >> kinds.txt
 $ while read k; do grep -qF "\`$k\`" 91-command-reference.md || echo "missing: $k"; done < kinds.txt
 ```
 
-There are 20 kinds at the moment.
+There are 22 kinds at the moment.
 
 **5. Enterprise commands.** Take the names from `COMMANDS_NEEDING_ENTERPRISE` in `extension.rs` and run each against the core; every one must give `not supported by this program` and exit code 2, and must appear in the table of [Enterprise-only commands](#enterprise-only-commands).
 

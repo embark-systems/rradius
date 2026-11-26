@@ -435,7 +435,6 @@ $ curl -s http://127.0.0.1:9812/metrics | grep '^rradius_auth_lockout'
 rradius_auth_lockout_rejected_total 1
 rradius_auth_lockouts_total 1
 rradius_auth_lockout_untracked_total 0
-rradius_auth_lockout_untracked_total 0
 ```
 
 When `rradius_auth_lockout_untracked_total` goes up, the table is full and all of it is locked pairs, so new pairs are not tracked. Tested with `max_entries = 1` and `max_failures = 1`: `alice` types one wrong password and is locked, then `bob` types a wrong one:

@@ -420,7 +420,7 @@ $pw = Read-Host -AsSecureString "RRADIUS1 的密碼"
 New-ADComputer -Name RRADIUS1 -SamAccountName 'RRADIUS1$' -AccountPassword $pw -Enabled $true
 ```
 
-> **未實機驗證：** 這段 `New-ADComputer` 沿用舊版手冊，沒有在 Windows Server 上跑過。
+> **未實機驗證：** 這段 `New-ADComputer` 沒有在 Windows Server 上跑過。
 
 Samba AD 網域控制站預設不接受 MS-CHAPv2。在每台網域控制站的 `/etc/samba/smb.conf` 的 `[global]` 加上下面這行，再重新啟動 samba：
 
@@ -687,7 +687,7 @@ filter = "(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:
 
 **症狀：** 兩台節點輪流出現 `STATUS_ACCESS_DENIED`。
 **原因：** 兩台節點共用了同一個電腦帳號。
-**解法：** 每台節點用自己的電腦帳號。（沿用舊版手冊的說法，未實機驗證；原理見[準備電腦帳號](#準備電腦帳號)。）
+**解法：** 每台節點用自己的電腦帳號。（未實機驗證；原理見[準備電腦帳號](#準備電腦帳號)。）
 
 **症狀：** Samba 網域控制站，密碼正確仍被拒絕，日誌有 `STATUS_WRONG_PASSWORD`。
 **原因：** `smb.conf` 沒有 `ntlm auth = mschapv2-and-ntlmv2-only`，Samba 不接受 MS-CHAPv2。

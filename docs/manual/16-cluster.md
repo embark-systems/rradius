@@ -882,7 +882,7 @@ $ docker build -t rradius-server:latest .
 
   ```yaml
   images:
-    - name: rradiusd
+    - name: rradius-server
       newName: registry.example.com/rradius-server
       newTag: "1.0"
   ```
@@ -1003,7 +1003,7 @@ What this book verified: after making a copy in a working directory, `kubectl ku
 
 ## Across data centers
 
-What happens to the cluster when the three nodes are in different data centers, with a few to a few dozen milliseconds between the nodes? The numbers in this section were simulated on one host, and **they are for judging "is it worth designing in this direction", not a promise for a real wide-area network.** Measurements without a date were carried over from the old manual and were not measured again; those with a date were measured on that day. The raw numbers and the measurement scripts are not in this repository.
+What happens to the cluster when the three nodes are in different data centers, with a few to a few dozen milliseconds between the nodes? The numbers in this section were simulated on one host, and **they are for judging "is it worth designing in this direction", not a promise for a real wide-area network.** Measurements without a date were not measured again for this manual; those with a date were measured on that day. The raw numbers and the measurement scripts are not in this repository.
 
 ### Test conditions
 

@@ -435,7 +435,6 @@ $ curl -s http://127.0.0.1:9812/metrics | grep '^rradius_auth_lockout'
 rradius_auth_lockout_rejected_total 1
 rradius_auth_lockouts_total 1
 rradius_auth_lockout_untracked_total 0
-rradius_auth_lockout_untracked_total 0
 ```
 
 `rradius_auth_lockout_untracked_total` 增加，表示表格滿了而且全是鎖住的組，新的組沒被追蹤。實測 `max_entries = 1`、`max_failures = 1`，`alice` 打錯一次被鎖住，接著 `bob` 打錯：

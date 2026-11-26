@@ -358,8 +358,8 @@ rradius outputs Prometheus metrics and has **no built-in SNMP**. Choose one by y
 
 | Your monitoring system | What to do | Verified? |
 | --- | --- | --- |
-| Prometheus and Alertmanager (or a system that can receive Alertmanager webhooks) | Load `rradius.rules.yml`; Alertmanager sends the alerts | The syntax and logic of the rules were checked with `promtool` (as recorded in the earlier version of the chapter); no real notification channel was connected |
-| Only receives SNMP traps | The Alertmanager webhook goes to `snmp_notifier`, which sends SNMP traps (v2c or v3) | Recorded in the earlier version: tested locally with three containers, Alertmanager, `snmp_notifier` and `snmptrapd`; `snmptrapd` received a v2c trap carrying the alert name, node, severity and summary. v3 and a real monitoring system were not tested. It was not rerun this time, **not verified on real hardware** |
+| Prometheus and Alertmanager (or a system that can receive Alertmanager webhooks) | Load `rradius.rules.yml`; Alertmanager sends the alerts | The syntax and logic of the rules were checked with `promtool` (checked earlier, not rerun this time); no real notification channel was connected |
+| Only receives SNMP traps | The Alertmanager webhook goes to `snmp_notifier`, which sends SNMP traps (v2c or v3) | Tested earlier and not rerun this time: tested locally with three containers, Alertmanager, `snmp_notifier` and `snmptrapd`; `snmptrapd` received a v2c trap carrying the alert name, node, severity and summary. v3 and a real monitoring system were not tested. It was not rerun this time, **not verified on real hardware** |
 | A monitoring system that can read HTTP (for example the HTTP agent item of Zabbix) | Read `GET /metrics` directly, pick the metrics to watch, and set your own thresholds; the thresholds in the rules file can serve as a reference | **Not verified on real hardware** |
 | Only knows SNMP polling (`snmpwalk` must see rradius numbers) | **Not supported** | See [Why there is no SNMP polling](#why-there-is-no-snmp-polling) |
 
@@ -393,7 +393,7 @@ The table below is arranged from the description text and the `for` setting of `
 
 ### Turning alerts into SNMP traps
 
-`snmp_notifier` (a separate open-source project, <https://github.com/maxwo/snmp_notifier>, not part of rradius) receives the Alertmanager webhook and sends one SNMP trap for each group of alerts. The steps below come from `deploy/monitoring/README.md` and the earlier version of the chapter. The flags and behavior of `snmp_notifier` are **not verified on real hardware**; go by its own `--help`.
+`snmp_notifier` (a separate open-source project, <https://github.com/maxwo/snmp_notifier>, not part of rradius) receives the Alertmanager webhook and sends one SNMP trap for each group of alerts. The steps below come from `deploy/monitoring/README.md`. The flags and behavior of `snmp_notifier` are **not verified on real hardware**; go by its own `--help`.
 
 1. Put the `route` and `receivers` of `alertmanager.yml` into your Alertmanager configuration. The receiver sends alerts to `http://snmp-notifier:9464/alerts`, and also sends them when resolved (`send_resolved: true`).
 2. Start `snmp_notifier`, pointing at the monitoring system that receives traps:
@@ -407,7 +407,7 @@ The table below is arranged from the description text and the `for` setting of `
 3. Its default trap OID (`1.3.6.1.4.1.98789.1`) is not yours; replace it with a subtree under your own enterprise number. When an alert has an `oid` label (or you name the label with `--trap.oid-label`), that alert uses this value as the trap OID. `rradius.rules.yml` currently sets no `oid` label; to give important alerts different OIDs, add it to the `labels` of the rule yourself.
 4. **The v2c community string is plain text.** For authentication and encryption use v3: `--snmp.version=V3` with the `--snmp.authentication-*` and `--snmp.private-*` options.
 
-A received trap looks like this (output of `snmptrapd`, tidied up, taken from the earlier version of the chapter):
+A received trap looks like this (output of `snmptrapd`, tidied up, recorded earlier and not rerun):
 
 ```
 iso.3.6.1.6.3.1.1.4.1.0 = OID: iso.3.6.1.4.1.98789.1
@@ -427,7 +427,7 @@ A built-in SNMP agent would have to handle SNMP encoding and (for v3) authentica
 
 ### What was verified
 
-The following is recorded from the earlier version of the chapter and was not rerun this time:
+The following was recorded earlier and was not rerun this time:
 
 - **Rules:** `promtool check rules` passed; every `rradius_*` metric name used by the 19 rules was checked against `/metrics` of a running server or the source code; `promtool test rules` used 9 synthetic time series to verify the alerts that should and should not fire.
 - **Notification:** `amtool check-config` passed; the path of Alertmanager sending a webhook to `snmp_notifier` and then a v2c trap to `snmptrapd` was tested locally in containers.

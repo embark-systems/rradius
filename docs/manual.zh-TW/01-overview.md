@@ -192,7 +192,7 @@ $ echo 'Message-Authenticator=0x00' | radclient 127.0.0.1:1812 status "$(cat loc
 
 最後一行是 Status-Server，`radius.status_server` 預設開啟（第 5 章）。
 
-> **未實機驗證：** 這一節的外部工具指令沒有在本版重跑；舊版手冊用 FreeRADIUS 3.2.10 的 `radclient` 測過（較舊的版本可能不會自動加 Message-Authenticator）。`Message-Authenticator` 被預設要求這一點，則對照了程式碼與第 05、21 章的實測。
+> **未實機驗證：** 這一節的外部工具指令沒有在本版重跑；先前用 FreeRADIUS 3.2.10 的 `radclient` 測過（較舊的版本可能不會自動加 Message-Authenticator）。`Message-Authenticator` 被預設要求這一點，則對照了程式碼與第 05、21 章的實測。
 
 ## 核心與企業版
 

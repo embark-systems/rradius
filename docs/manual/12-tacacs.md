@@ -303,7 +303,7 @@ $ tacacs_client -H 127.0.0.1 -p 4949 -k $K -u noc1 authorize -c service=shell cm
 $ tacacs_client -H 127.0.0.1 -p 4949 -k $K -u noc1 authorize -c service=shell cmd=show cmd-arg=running-config
 ```
 
-> **Not verified on real hardware:** The `tacacs_client` commands come from the previous manual and were not re-run for this version; its arguments may differ between versions, so go by `tacacs_client --help`. The authorization results in the tables of this chapter were measured with a test client that can decode the reply (see "Authorize with a script").
+> **Not verified on real hardware:** The `tacacs_client` commands were not re-run for this version; its arguments may differ between versions, so go by `tacacs_client --help`. The authorization results in the tables of this chapter were measured with a test client that can decode the reply (see "Authorize with a script").
 
 ## Authentication types: ASCII, PAP, CHAP, MS-CHAP
 
@@ -784,7 +784,7 @@ aaa accounting commands 15 default stop-only group RRADIUS
 
 > **Warning:** Always keep `local` as the fallback, and make sure the local emergency account can log in before you change the configuration. When rradius is down or the network is cut, the device falls back to the local account; without a fallback you lock yourself out of the device. Turn on authentication only (`aaa authentication login`) first and confirm you can log in, then turn on exec authorization, and turn on command authorization (`aaa authorization commands`) last: with a wrong authorization rule, even `exit` may be denied. With several rradius servers, list several `server name` lines in `aaa group server`; the device tries them in order.
 
-> **Not verified on real hardware:** This chapter was not tested with a real router or switch. The above lists the settings TACACS+ devices usually need; the IOS commands come from the previous manual and may differ between versions, so confirm them on a lab device before going live.
+> **Not verified on real hardware:** This chapter was not tested with a real router or switch. The above lists the settings TACACS+ devices usually need; the IOS commands were not run on a device and may differ between versions, so confirm them on a lab device before going live.
 
 ## Watching TACACS+
 
