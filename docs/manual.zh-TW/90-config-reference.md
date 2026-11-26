@@ -341,7 +341,7 @@ secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 | `auth.lockout.lock_seconds` | 整數 | `300` | | 可 | 鎖定多久，秒，要大於 0。 |
 | `auth.lockout.max_entries` | 整數 | `100000` | | 可 | 每個節點最多記住幾個鍵，要大於 0。滿了先丟過期的，再丟最舊的未鎖定的；鎖定中的不丟。 |
 | `auth.lockout.account_max_failures` | 整數 | —（沒有帳號總上限） | | 可 | 同一個帳號不分來源的失敗總數，達到就對所有來源鎖定。要大於 `max_failures`。 |
-| `auth.lockout.max_in_flight` | 整數 | `max_failures` 的 5 倍 | | 可 | 同一個鍵同時最多有幾個登入在等待判定，多的直接拒絕，要大於 0。帳號總上限依 `account_max_failures` 按比例放大。 |
+| `auth.lockout.max_in_flight` | 整數 | `max_failures` 的 5 倍 | | 可 | 同一個鍵同時最多有幾個登入在等待判定，多的直接拒絕，要大於 0。窗口內已計的失敗也佔名額，所以鎖定前錯誤密碼最多檢查這麼多次（`max_failures` 較大時用它）。帳號總上限依 `account_max_failures` 按比例放大。 |
 
 > **注意：** 設了 `account_max_failures`，猜密碼的人只要故意打錯，就能把別人的帳號對所有來源鎖住。
 

@@ -341,7 +341,7 @@ Limits login failures. If the same key (account plus source device) fails `max_f
 | `auth.lockout.lock_seconds` | integer | `300` | | yes | How long the lock lasts, in seconds; must be greater than 0. |
 | `auth.lockout.max_entries` | integer | `100000` | | yes | Most keys each node remembers; must be greater than 0. When full, expired ones are dropped first, then the oldest unlocked ones; locked ones are not dropped. |
 | `auth.lockout.account_max_failures` | integer | — (no total limit per account) | | yes | Total failures of one account from all sources; when reached, the account is locked for all sources. Must be greater than `max_failures`. |
-| `auth.lockout.max_in_flight` | integer | 5 times `max_failures` | | yes | Most logins of the same key that can wait for a decision at the same time; more are rejected directly. Must be greater than 0. The total limit per account scales in proportion to `account_max_failures`. |
+| `auth.lockout.max_in_flight` | integer | 5 times `max_failures` | | yes | Most logins of the same key that can wait for a decision at the same time; more are rejected directly. Failures counted in the window take places too, so wrong passwords are checked at most this many times (or `max_failures`, if larger) before the lock. Must be greater than 0. The total limit per account scales in proportion to `account_max_failures`. |
 
 > **Warning:** If you set `account_max_failures`, someone guessing passwords can lock other people's accounts for all sources just by getting the password wrong on purpose.
 

@@ -407,7 +407,7 @@ lock_seconds = 300
 | `lock_seconds` | 300 | 鎖多久 |
 | `max_entries` | 100000 | 每個節點最多記住幾組 |
 | `account_max_failures` | 不設 | 同一個帳號不分來源的失敗總數上限，必須大於 `max_failures` |
-| `max_in_flight` | `max_failures` 的 5 倍 | 同一組同時在等結果的登入數，多的直接拒絕 |
+| `max_in_flight` | `max_failures` 的 5 倍 | 同一組同時在等結果的登入數，多的直接拒絕；窗口內已計的失敗也佔名額，所以鎖定前錯誤密碼最多檢查這麼多次（`max_failures` 較大時用它）（[第 7 章](07-users-and-chains.md)） |
 
 - 計數的單位是「帳號＋來源裝置」：RADIUS 的來源是 `Calling-Station-Id`，TACACS+ 是 `rem_addr`，沒有時是空字串。
 - 鎖住期間直接拒絕，不驗密碼，密碼對也一樣。登入成功會清掉計數。

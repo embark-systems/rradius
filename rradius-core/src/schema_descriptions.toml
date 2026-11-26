@@ -83,8 +83,8 @@ en = "Failures of one account from any device that lock it for every device; mus
 zh-TW = "同一個帳號不分來源的失敗總數，達到就對所有來源鎖定；必須大於 max_failures。不設定就沒有帳號總上限。猜密碼的人可以用它把帳號鎖住。"
 
 [fields."auth.lockout.max_in_flight"]
-en = "Logins of one key that may be waiting for a decision at once; one more is rejected. The account-wide limit scales with account_max_failures. Default 5 times max_failures."
-zh-TW = "同一個鍵同時最多有幾個登入在等待判定，多的直接拒絕。帳號總上限依 account_max_failures 按比例放大。預設是 max_failures 的 5 倍。"
+en = "Logins of one key that may be waiting for a decision at once; one more is rejected. Failures counted in the window take places too, so wrong passwords are checked at most this many times (or max_failures, if larger) before the lock. The account-wide limit scales with account_max_failures. Default 5 times max_failures."
+zh-TW = "同一個鍵同時最多有幾個登入在等待判定，多的直接拒絕。窗口內已計的失敗也佔名額，所以鎖定前錯誤密碼最多檢查這麼多次（max_failures 較大時用它）。帳號總上限依 account_max_failures 按比例放大。預設是 max_failures 的 5 倍。"
 
 [fields."auth.allow_mschapv1"]
 en = "Whether the chains verify MS-CHAPv1 logins. Default false: without the key they are refused before any handler runs and are not counted by auth.lockout; PAP, CHAP, MS-CHAPv2 and EAP are not affected."

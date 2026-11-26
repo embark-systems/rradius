@@ -399,7 +399,7 @@ Main chapter: [Chapter 07](07-users-and-chains.md).
 
 Type: counter. Labels: none. Present when: with `[auth.lockout]`. Alert: —.
 
-The number of logins that were rejected directly because the account plus source, or the whole account, is locked, or because too many logins are waiting for a decision at the same time.
+The number of logins that were rejected directly because the account plus source, or the whole account, is locked, or because no slot was free: too many logins are waiting for a decision, counting the failures in the window ([Chapter 7](07-users-and-chains.md)).
 
 #### `rradius_auth_lockouts_total`
 

@@ -1804,7 +1804,7 @@ max_entries = 100000          # 每個節點最多記住幾個鍵，預設 10000
 ```
 
 - **鍵：** 同一個帳號（小寫）加來源裝置：RADIUS 的 `Calling-Station-Id`，TACACS+ 的 `rem_addr`（沒有就是空的）。同一個鍵在視窗內失敗達到 `max_failures` 次，就在 `lock_seconds` 內直接拒絕，連正確的密碼也不驗；換一台裝置不受影響。鎖定期間不延長。
-- **同時進行的登入：** 登入在判定前先佔一個名額，判定後放回。同一個鍵等待判定的登入達到 `max_in_flight`（預設 `max_failures` 的 5 倍，必須大於 0）時，再來的登入直接拒絕並計入 `rradius_auth_lockout_rejected_total`；等待中的登入不占失敗額度，所以多台設備同時重新連線、全部密碼正確時不會被擋，也不會被鎖。設了 `account_max_failures` 時，帳號不分來源的名額是 `max_in_flight × account_max_failures ÷ max_failures`（無條件進位）。取捨：同時開始的一批錯誤登入在任何一個失敗之前就都放行，所以一批最多多猜 `max_in_flight − max_failures` 次（預設是 `max_failures` 的 4 倍）才被鎖；要更嚴就把 `max_in_flight` 設小，但不要低於 `max_failures`：設得比 `max_failures` 小只限制同時進行的數量，不會讓鎖定提早，還會擋掉同時重新連線的正確登入。升級後沒改設定，並行名額就是預設的 5 倍，比舊版寬。
+- **同時進行的登入：** 登入在判定前先佔一個名額，判定後放回。同一個鍵等待判定的登入達到 `max_in_flight`（預設 `max_failures` 的 5 倍，必須大於 0）時，再來的登入直接拒絕並計入 `rradius_auth_lockout_rejected_total`；等待中的登入不占失敗額度，所以沒有已計的失敗時，多台設備同時重新連線、全部密碼正確不會被擋，也不會被鎖。設了 `account_max_failures` 時，帳號不分來源的名額是 `max_in_flight × account_max_failures ÷ max_failures`（無條件進位）。窗口內已計的失敗也占名額：等待中的登入加上已計的失敗要少於 `max_in_flight`（`max_failures` 較大時用它），例外是沒有鎖定、也沒有登入在等待的鍵永遠有一個名額。取捨：錯誤登入在累積足夠的失敗之前就會放行，所以不論是同時還是陸續到達，一個窗口內最多多猜 `max_in_flight − max_failures` 次（預設是 `max_failures` 的 4 倍）才被鎖；要更嚴就把 `max_in_flight` 設小，但不要低於 `max_failures`：設得比 `max_failures` 小只限制同時進行的數量，不會讓鎖定提早，還會擋掉同時重新連線的正確登入。升級後沒改設定，並行名額就是預設的 5 倍，比舊版寬。
 - **只算真正的拒絕：** 資料庫、LDAP 或網域控制站掛掉，以及密碼驗證逾時（`unavailable`）不算，EAP-TLS 憑證登入與 EAP-AKA'／SIM 不算，成功登入把這個鍵的計數清零。帳號不存在也照算，所以鎖定不會洩漏哪些帳號存在。
 - **範圍：** 驗證鏈涵蓋的登入：RADIUS 的 PAP、CHAP、MS-CHAP，PEAP／TTLS 的內層，和 TACACS+ 的驗證（跨連線，斷線重連不會歸零）。**不涵蓋**沒設驗證鏈、直接由 `[lua].script` 驗證的登入，也不涵蓋 TACACS+ 的第二因素流程。
 - **每個節點各自計數，** 記在記憶體裡：重啟歸零，叢集裡攻擊者可以分散到各節點，實際的上限約為節點數倍。設定重新載入時保留計數；移除 `[auth.lockout]` 並重新載入後，計數清空。
