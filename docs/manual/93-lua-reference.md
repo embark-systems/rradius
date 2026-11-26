@@ -474,9 +474,9 @@ The Luau built-in names a script can see (tested by listing every key of `_G`):
 
 ```text
 _G _VERSION assert bit32 buffer collectgarbage coroutine debug error gcinfo
-getmetatable integer ipairs math newproxy next os pairs pcall print rawequal
-rawget rawlen rawset select setmetatable string table tonumber tostring type
-typeof unpack utf8 vector xpcall
+getmetatable ipairs math newproxy next os pairs pcall print rawequal rawget
+rawlen rawset select setmetatable string table tonumber tostring type typeof
+unpack utf8 vector xpcall
 ```
 
 Removed:
@@ -485,6 +485,7 @@ Removed:
 | --- | --- |
 | `require`, `loadstring`, `getfenv`, `setfenv` | Do not exist; they are `nil` |
 | `io` | Does not exist; a script cannot read or write files |
+| `integer` | Does not exist; Luau removed this library (earlier builds of rradius had it), so a script that calls `integer.…` fails |
 | `os.execute` and similar | Do not exist; `os.time()` and `os.clock()` can be used |
 
 - `print` exists, but it writes to the program's standard output, not to the log, and under systemd or in a container you usually cannot see it. Always use `log`.

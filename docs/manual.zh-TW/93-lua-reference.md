@@ -474,9 +474,9 @@ send_coa(target, attributes)
 
 ```text
 _G _VERSION assert bit32 buffer collectgarbage coroutine debug error gcinfo
-getmetatable integer ipairs math newproxy next os pairs pcall print rawequal
-rawget rawlen rawset select setmetatable string table tonumber tostring type
-typeof unpack utf8 vector xpcall
+getmetatable ipairs math newproxy next os pairs pcall print rawequal rawget
+rawlen rawset select setmetatable string table tonumber tostring type typeof
+unpack utf8 vector xpcall
 ```
 
 拿掉的：
@@ -485,6 +485,7 @@ typeof unpack utf8 vector xpcall
 | --- | --- |
 | `require`、`loadstring`、`getfenv`、`setfenv` | 不存在，是 `nil` |
 | `io` | 不存在，腳本不能讀寫檔案 |
+| `integer` | 不存在；Luau 拿掉了這個程式庫（較早建置的 rradius 有它），呼叫 `integer.…` 的腳本會出錯 |
 | `os.execute` 等 | 不存在；`os.time()`、`os.clock()` 可以用 |
 
 - `print` 存在，但寫到程式的標準輸出，不是日誌，用 systemd 或容器跑時通常看不到。一律用 `log`。
