@@ -674,7 +674,7 @@ node 2  voter            raft 127.0.0.1:27002  api 127.0.0.1:27012
 node 3  voter    leader  raft 127.0.0.1:27003  api 127.0.0.1:27013
 ```
 
-移除會讓叢集只剩兩個 voter 時：
+接著把節點 3 也移出去，同樣先停掉它。這次移除會讓叢集只剩兩個 voter，所以：
 
 ```console
 $ rradiusd cluster remove --config node1.toml 3
@@ -690,6 +690,14 @@ node 3  not in the cluster (listed in this configuration)
 `not in the cluster (listed in this configuration)` 表示設定裡有、叢集裡沒有。
 
 被移除的節點要再加回來，就照[加入節點](#加入節點)的條件：清空它的 `data_dir` 再啟動。上面的節點 3 清空 `data3` 後啟動，2 秒內就以 voter 身分回到叢集。
+
+**移除後只剩一個 voter 時**（原本兩個 voter、停掉其中一個），`remove --force` 第一次沒有完成，看來是因為這個變更需要目前 voter 的過半數同意，而被移除的節點正是其中之一。2026-11-27 在一台機器上用兩個節點實測：
+
+1. `cluster remove --force <id>` 30 秒後以結束碼 3 結束（`… may have been made …`），`cluster members` 顯示停掉的節點是 `learner`。
+2. 馬上再執行一次，以結束碼 1 結束（`ChangeMembershipError`、`InProgress`）。
+3. 帶著原本的資料把停掉的節點再啟動，等約 20 秒，停掉它，再執行一次 `cluster remove --force <id>`，印出 `removed node <id>`。
+
+同一次測試裡，改用空的 `data_dir` 啟動該節點，變更沒有完成（觀察約 20 秒）；所以資料沒了的節點，不要指望能移除。只有兩個 voter 的叢集要三思。
 
 `cluster remove` 的結束碼：0 成功；1 是沒有這個成員，或叢集拒絕移除；2 是參數、設定錯誤，或檢查沒通過；3 是 30 秒內沒有回應。結束碼 3 時，移除可能已經做了，訊息會叫你用 `cluster members` 確認，不要直接重跑。
 

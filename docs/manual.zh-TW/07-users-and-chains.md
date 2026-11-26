@@ -308,6 +308,22 @@ show = "SELECT username, enabled, origin FROM users WHERE username = ?1"
 
 ### 驗證
 
+這個情境只定義了用戶端 `nas`（`10.90.0.0/24`）。要從本機執行下面的登入，先在 `rradius.toml` 加一個 127.0.0.1 的用戶端：
+
+```toml
+[[radius.clients]]
+name = "localhost"
+address = "127.0.0.1"
+secret_file = "localhost.secret"
+```
+
+建立它的密鑰，再啟動伺服器：
+
+```console
+$ openssl rand -hex 32 > localhost.secret
+$ chmod 600 localhost.secret
+```
+
 啟動伺服器後，逐一用 PAP 登入：
 
 ```console
@@ -706,7 +722,7 @@ allowed = "[a-z0-9._-]+"
 | `prefix` | `false` | `A\B\c` | `c` |
 | `both` | `true` | `CORP\Alice@Corp` | `alice`（先 prefix 再 suffix） |
 
-整理之後是空字串，或不符合 `allowed`，鏈直接拒絕，不執行任何處理器，認證紀錄的 `handler` 是 `normalization`。日誌只寫原因，不寫收到的名稱，因為它來自外部，可能含有控制字元：
+整理之後是空字串，或不符合 `allowed`，鏈直接拒絕，不執行任何處理器，認證紀錄的 `handler` 是 `normalization`。那一行 WARN 只寫原因，不寫收到的名稱，因為名稱來自外部，可能含有控制字元；接著的認證紀錄在 `user` 欄位記了它：
 
 ```text
 … WARN rradius_core::lua_engine: auth chain: rejecting a request from client localhost: the user name does not match the allowed pattern

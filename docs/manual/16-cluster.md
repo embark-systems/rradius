@@ -674,7 +674,7 @@ node 2  voter            raft 127.0.0.1:27002  api 127.0.0.1:27012
 node 3  voter    leader  raft 127.0.0.1:27003  api 127.0.0.1:27013
 ```
 
-When the removal would leave the cluster with only two voters:
+Now take out node 3 as well. Stop it first, in the same way. This removal would leave the cluster with only two voters, so:
 
 ```console
 $ rradiusd cluster remove --config node1.toml 3
@@ -690,6 +690,14 @@ node 3  not in the cluster (listed in this configuration)
 `not in the cluster (listed in this configuration)` means it is in the configuration and not in the cluster.
 
 To add a removed node back, follow the conditions of [Add a node](#add-a-node): empty its `data_dir` and start it. Node 3 above came back into the cluster as a voter within 2 seconds after `data3` was emptied and it was started.
+
+**When only one voter would remain** (two voters, one of them stopped), `remove --force` did not finish on the first try, apparently because the change needs a majority of the current voters and the node being removed is one of them. Tested on 2026-11-27 with two nodes on one machine:
+
+1. `cluster remove --force <id>` ends with exit code 3 after 30 seconds (`… may have been made …`), and `cluster members` shows the stopped node as `learner`.
+2. Running it again right away ends with exit code 1 (`ChangeMembershipError`, `InProgress`).
+3. Start the stopped node again with its data, wait about 20 seconds, stop it, and run `cluster remove --force <id>` once more. It prints `removed node <id>`.
+
+Starting that node with an empty `data_dir` instead did not complete the change in the same test (watched for about 20 seconds), so do not count on removing a node whose data is lost. Think twice before running a cluster with only two voters.
 
 Exit codes of `cluster remove`: 0 success; 1 there is no such member, or the cluster refused the removal; 2 a bad argument or configuration, or a check did not pass; 3 no answer within 30 seconds. With exit code 3 the removal may already have been done, and the message tells you to confirm with `cluster members` and not to simply run it again.
 

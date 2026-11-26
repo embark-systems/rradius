@@ -615,9 +615,10 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 | 送出後 30 秒內沒有回應 | `the removal of node <id> may have been made, …; check with cluster members` | 3 |
 
 - `--force` 只用在 `remove`，讓上面「只剩一個或兩個 voter」的情況照樣移除。`members --force` 是用法錯誤。
+- 兩個 voter、停掉其中一個時，第一次對它執行 `remove --force` 以結束碼 3 結束，節點變成 `learner`；完成方法見[移除節點](16-cluster.md#移除節點)。
 - API 密碼不對：`… refused the api secret: [cluster] secret_api differs from the cluster's`，結束碼 2，立刻出現（`user`、`session`、`query`、`client`、`dpsk`、`aka` 與 `cluster`、`status --cluster` 都一樣）。叢集都沒有回應：`the cluster did not answer within 30 s`，結束碼 3。
 
-> **未實機驗證：** 表中「成功」「只剩一個或兩個 voter」「最後一個 voter」「送出後沒有回應」這幾列需要多節點叢集，只對照了 `cluster_commands.rs` 與它的測試；其他各列在單節點上實測過。
+> **未實機驗證：** 表中「成功」「只剩一個或兩個 voter」「送出後沒有回應」這幾列在 2026-11-27 用一台機器上的多個程序跑過，沒有跨主機；「最後一個 voter」只對照了 `cluster_commands.rs` 與它的測試；其他各列在單節點上實測過。
 
 ## 舊的旗標寫法
 
@@ -684,7 +685,7 @@ rradius-bench run [OPTIONS] --server <SERVER> --secret <SECRET> --load <LOADS>
 | `--metrics-url` | — | 伺服器的 `http://host:port/metrics`，報告量測期間計數器的變化；只接受 `http://` |
 | `--json` | 關 | 報告改印 JSON |
 | `--tls-version` | `1.2` | EAP 負載的 TLS 版本，`1.2` 或 `1.3`；`1.3` 只能用在 `eap-tls` |
-| `--ca-file` | — | 檢查伺服器 EAP 憑證用的 CA；沒給時任何憑證都接受 |
+| `--ca-file` | — | 檢查伺服器 EAP 憑證用的 CA，`--transport tls` 時也檢查 RadSec 憑證；沒給時任何憑證都接受 |
 | `--tls-name` | `--server` 的值 | 配合 `--ca-file`，伺服器憑證必須符合的名稱 |
 | `--cert-file`、`--key-file` | — | `eap-tls` 登入用的憑證與私鑰；`--transport tls` 也要 |
 | `--eap-fragment` | `1000` | 一個 EAP-Response 最多帶幾個位元組的 TLS 資料 |
@@ -880,7 +881,7 @@ $ sed -n 's/^usage: rradiusd \([a-z-]*\) \([a-z|]*\).*/\1 \2/p' help.txt \
 
 第二段產生 `config show`、`user add`、`cluster remove` 這類組合，沒有輸出才算通過。
 
-**2. 書裡多出來的旗標。** `comm -13 flags-help.txt flags-book.txt` 列出書裡有、`rradiusd help` 沒有的旗標。這些應該全部來自 `rradius-bench` 的 `--help`、舊的旗標 `--check`，以及 `--help`。把 `rradius-bench --help`、`rradius-bench run --help`、`rradius-bench calibrate --help` 的旗標也加進 `flags-help.txt` 再比，剩下的只能是 `--check` 和 `--load-syntax`（不是旗標：來自本章指向 `--load` 語法的連結）。
+**2. 書裡多出來的旗標。** `comm -13 flags-help.txt flags-book.txt` 列出書裡有、`rradiusd help` 沒有的旗標。這些應該全部來自 `rradius-bench` 的 `--help`、舊的旗標 `--check`，以及 `--help`。把 `rradius-bench --help`、`rradius-bench run --help`、`rradius-bench calibrate --help` 的旗標也加進 `flags-help.txt` 再比，剩下的只能是 `--check`。
 
 **3. `rradius-bench` 的旗標與預設值。** `rradius-bench run --help` 每個旗標都要在 [rradius-bench run](#rradius-bench-run) 的表裡，`[default: …]` 要與表的「預設」一致；`calibrate --help` 同理。
 

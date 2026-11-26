@@ -414,7 +414,7 @@ Notes:
 
 ### When the pool is nearly full
 
-When a pool is nearly full, two things matter: whether logins get slow or rejected, and whether a user who goes offline and comes back still gets the same prefix. The first is measured on a real server. The second is mostly measured by simulation. They are described separately. **All the numbers in this section come from earlier measurements and from the change `ipv6-prefix-pool` (2026-11-16 to 17, recorded in `docs/spectra/changes/archive/2026-11-16-ipv6-prefix-pool/`), and were not measured again. They all measure the current design, which stores only allocated prefixes and has the `released` hold**, not the earlier design with one pre-generated row per prefix.
+When a pool is nearly full, two things matter: whether logins get slow or rejected, and whether a user who goes offline and comes back still gets the same prefix. The first is measured on a real server. The second is mostly measured by simulation. They are described separately. **All the numbers in this section come from earlier measurements (2026-11-16 to 18), including those of the change `ipv6-prefix-pool` (recorded in `docs/spectra/changes/archive/2026-11-16-ipv6-prefix-pool/`), and were not measured again. They all measure the current design, which stores only allocated prefixes and has the `released` hold**, not the earlier design with one pre-generated row per prefix.
 
 #### Login speed: Docker, single node
 
