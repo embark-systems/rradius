@@ -133,6 +133,7 @@ $ packages/deb/docker-build.sh --platform linux/amd64 --out dist
 - `--platform` can be `linux/amd64` or `linux/arm64`. When it is not the local architecture, the build runs under emulation, which is slower but gives the same result.
 - The container is Debian 12. The package depends on the build environment's glibc; a package built on Debian 12 also installs on newer distributions.
 - `--commit <rev>` selects which commit to build. The default is `HEAD`.
+- Before building, the script checks that the Release workflow has passed for the commit (this needs `gh`, signed in) and that the version in `Cargo.toml`, the changelog, the spec and the FreeBSD Makefile is the same. `--no-ci-check` skips only the workflow check, for example when you run `build.sh` in a container without `gh`; the version check always runs. `packages/rpm/build.sh` does the same and takes the same option.
 
 To build directly on the local machine, you need the Rust toolchain, cmake, g++, make, debhelper and dpkg-dev:
 

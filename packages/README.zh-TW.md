@@ -49,6 +49,8 @@ packages/rpm/build.sh --out dist
 
 兩個腳本都用 `git archive` 取已提交的內容（`--commit <rev>` 指定哪一個提交），所以沒提交的改動不會進套件。
 
+建置之前，每個腳本都會對那個提交跑 `common/check-release.sh`：該提交的 Release workflow 必須已經通過（和 `tarball/release.sh` 同一個檢查，需要登入 `gh`），而且 `rradius-server/Cargo.toml` 的版本要等於 `deb/debian/changelog`、`rpm/rradius.spec`、`freebsd/net/rradius/Makefile` 的版本；不一致時會指出是哪個檔案並停止建置。`--no-ci-check` 只略過 workflow 檢查（在沒有 `gh` 的容器裡建，或建的提交不在 GitHub 上）；版本檢查一定會跑。
+
 FreeBSD：把 `freebsd/net/rradius` 放進 ports 樹的 `net/`，並在 ports 樹的 `UIDs` 和 `GIDs` 加上 `rradius`（port 用 `USERS`、`GROUPS` 建立用戶），`make makesum` 產生 `distinfo`，再 `make package`。`Makefile.crates` 由 `freebsd/generate-crates.py` 從 `Cargo.lock` 產生，`Cargo.lock` 一變就重跑（`--check` 只檢查是否過期）。port 抓的是 GitHub 的標籤 `v<版本>`，發佈前要先有這個標籤。
 
 ## 驗證了什麼
@@ -62,4 +64,4 @@ FreeBSD：把 `freebsd/net/rradius` 放進 ports 樹的 `net/`，並在 ports �
 | 服務檔 | 只有 `common/rradius.service` 一份；`deb/build.sh` 建置時把它複製進 `debian/`。 |
 | 服務檔驗證 | `systemd-analyze verify` 沒有錯誤；沒有實際啟動 |
 | FreeBSD port | **沒有在 FreeBSD 驗證。** 沒有 `distinfo`（要在 FreeBSD 用 `make makesum` 產生），沒有跑過 `make`、`portlint`、`poudriere`；rc.d 腳本只過了 `sh -n`；`Makefile.crates` 的筆數與 `Cargo.lock` 相同 |
-| 版本和更新 | 版本來自 `rradius-server/Cargo.toml`；改版本時要同步 `deb/debian/changelog`、`rpm/rradius.spec`、`freebsd/net/rradius/Makefile`，沒有自動檢查 |
+| 版本和更新 | 版本來自 `rradius-server/Cargo.toml`；改版本時要同步 `deb/debian/changelog`、`rpm/rradius.spec`、`freebsd/net/rradius/Makefile`，建 deb 或 rpm 時由 `common/check-release.sh` 檢查 |

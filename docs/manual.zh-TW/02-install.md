@@ -133,6 +133,7 @@ $ packages/deb/docker-build.sh --platform linux/amd64 --out dist
 - `--platform` 可以是 `linux/amd64` 或 `linux/arm64`。不是本機架構時用模擬執行，比較慢，結果相同。
 - 容器是 Debian 12。套件依賴建置環境的 glibc，在 Debian 12 建的套件也能裝在比它新的發行版上。
 - `--commit <rev>` 指定要建哪一個提交，預設是 `HEAD`。
+- 建置之前，腳本會檢查該提交的 Release workflow 已經通過（需要登入的 `gh`），以及 `Cargo.toml`、changelog、spec 和 FreeBSD Makefile 的版本一致。`--no-ci-check` 只略過 workflow 檢查，例如在沒有 `gh` 的容器裡跑 `build.sh`；版本檢查一定會跑。`packages/rpm/build.sh` 做同樣的檢查，也有同一個選項。
 
 在本機直接建，需要 Rust 工具鏈、cmake、g++、make、debhelper、dpkg-dev：
 
