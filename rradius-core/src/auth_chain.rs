@@ -1161,16 +1161,40 @@ mod tests {
     }
 
     /// Wrong logins that all start together do not get more guesses than `max_in_flight`.
-    #[tokio::test]
-    async fn test_parallel_wrong_logins_stop_at_the_limit() -> Result<(), String> {
-        let (chain, _lockout) = lockout_chain("lock_parallel", 3, Duration::from_secs(5)).await?;
-        let here = from_device("radius", "Calling-Station-Id", "AA-BB-CC-DD-EE-01");
-        let guesses = ["g"; 50].map(|g| pap("alice", g));
-        let results = futures::future::join_all(guesses.iter().map(|credentials| chain.authenticate(credentials, &here))).await;
-        let checked = results.iter().filter(|result| result.handler == "sql").count();
-        assert_eq!(checked, 15, "only as many as max_in_flight reach the password check");
-        assert_eq!(results.iter().filter(|result| result.handler == "lockout").count(), 35);
-        Ok(())
+    #[test]
+    fn test_parallel_wrong_logins_stop_at_the_limit() -> Result<(), String> {
+        // A query runs on a blocking thread of the runtime that asks. With only one such thread,
+        // and that one held, no login is decided before all of them have started.
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().map_err(|e| e.to_string())?;
+        runtime.block_on(async {
+            let (chain, _lockout) = lockout_chain("lock_parallel", 3, Duration::from_secs(5)).await?;
+            let here = from_device("radius", "Calling-Station-Id", "AA-BB-CC-DD-EE-01");
+            let guesses = ["g"; 50].map(|g| pap("alice", g));
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let holder = tokio::task::spawn_blocking(move || held.recv());
+            let started = std::cell::Cell::new(0);
+            let logins = futures::future::join_all(guesses.iter().map(|credentials| {
+                let (chain, here, started) = (&chain, &here, &started);
+                async move {
+                    // Counted and given to the lockout in the same poll.
+                    started.set(started.get() + 1);
+                    chain.authenticate(credentials, here).await
+                }
+            }));
+            let release_when_all_started = async {
+                while started.get() < guesses.len() {
+                    tokio::task::yield_now().await;
+                }
+                release.send(()).map_err(|e| e.to_string())
+            };
+            let (results, released) = futures::future::join(logins, release_when_all_started).await;
+            released?;
+            holder.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            let checked = results.iter().filter(|result| result.handler == "sql").count();
+            assert_eq!(checked, 15, "only as many as max_in_flight reach the password check");
+            assert_eq!(results.iter().filter(|result| result.handler == "lockout").count(), 35);
+            Ok(())
+        })
     }
 
     /// Spec Authentication Failure Lockout: right logins that are decided together do not use up

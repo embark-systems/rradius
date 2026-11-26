@@ -4498,28 +4498,37 @@ pub(crate) mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn test_requests_timed_separately() {
+    async fn test_requests_timed_separately() -> Result<(), String> {
+        const AT_ONCE: usize = 6;
         let script = "local s = 0 for i = 1, 3000000 do s += i end return 'accept'";
-        // Calibrate how long one run takes on this machine, then set the limit to
-        // one and a half runs: each run alone is about two thirds of the limit,
-        // the two together take longer than it (the spec's proportions).
-        let vms = Arc::new(LuaVms::with_count(1).unwrap());
-        let engine = LuaAuthEngine::new(vms.clone(), test_db(), script).unwrap().with_max_execution(Duration::from_secs(60));
-        let started = std::time::Instant::now();
-        assert!(engine.authenticate(test_request()).await.accepted());
-        let one_run = started.elapsed();
-
-        // Two runs at once on the one VM each stay under 1.5 runs, though together they take two.
-        let engine = Arc::new(LuaAuthEngine::new(vms.clone(), test_db(), script).unwrap().with_max_execution(one_run * 3 / 2));
-        let (a, b) = (engine.clone(), engine.clone());
-        let (a, b) = tokio::join!(
-            tokio::spawn(async move { a.authenticate(test_request()).await }),
-            tokio::spawn(async move { b.authenticate(test_request()).await })
-        );
-        assert!(a.unwrap().accepted() && b.unwrap().accepted(), "one run took {:?}", one_run);
+        let vms = Arc::new(LuaVms::with_count(1).map_err(|e| e.to_string())?);
+        let engine = |limit: Duration| LuaAuthEngine::new(vms.clone(), test_db(), script).map(|engine| engine.with_max_execution(limit));
+        // How long one run takes on this machine. Other tests share the processor, so one
+        // sample says little.
+        let alone = engine(Duration::from_secs(60))?;
+        let (mut quickest, mut slowest) = (Duration::MAX, Duration::ZERO);
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            assert!(alone.authenticate(test_request()).await.accepted());
+            let took = started.elapsed();
+            (quickest, slowest) = (quickest.min(took), slowest.max(took));
+        }
+        // Six runs at once on the one VM each take about one run and may take three, though
+        // together they take six.
+        let shared = Arc::new(engine(slowest * 3)?);
+        let runs: Vec<_> = (0..AT_ONCE)
+            .map(|_| {
+                let shared = shared.clone();
+                tokio::spawn(async move { shared.authenticate(test_request()).await })
+            })
+            .collect();
+        for run in runs {
+            let result = run.await.map_err(|e| e.to_string())?;
+            assert!(result.accepted(), "one run alone took {quickest:?} to {slowest:?}");
+        }
         // The limit is effective at this scale.
-        let tight = LuaAuthEngine::new(vms, test_db(), script).unwrap().with_max_execution(one_run / 2);
-        assert!(!tight.authenticate(test_request()).await.accepted());
+        assert!(!engine(quickest / 4)?.authenticate(test_request()).await.accepted());
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
