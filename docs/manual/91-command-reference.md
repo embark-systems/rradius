@@ -615,9 +615,10 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 | No response within 30 seconds after sending | `the removal of node <id> may have been made, …; check with cluster members` | 3 |
 
 - `--force` is used only with `remove`, so that the "only one or two voters remain" cases above are removed anyway. `members --force` is a usage error.
+- With two voters and one of them stopped, the first `remove --force` of the stopped one ends with exit code 3 and leaves it a `learner`; see [Remove a node](16-cluster.md#remove-a-node) for how to finish it.
 - Wrong API secret: `… refused the api secret: [cluster] secret_api differs from the cluster's`, exit code 2, and it appears immediately (the same for `user`, `session`, `query`, `client`, `dpsk`, `aka`, and for `cluster` and `status --cluster`). The cluster does not answer at all: `the cluster did not answer within 30 s`, exit code 3.
 
-> **Not verified on real hardware:** the rows "Success", "Only one or two voters would remain", "The last voter" and "No response within 30 seconds after sending" in the table need a multi-node cluster, and were checked only against `cluster_commands.rs` and its tests; the other rows were tested on a single node.
+> **Not verified on real hardware:** the rows "Success", "Only one or two voters would remain" and "No response within 30 seconds after sending" were run on 2026-11-27 with several processes on one machine, not on several hosts; the row "The last voter" was checked only against `cluster_commands.rs` and its tests; the other rows were tested on a single node.
 
 ## Old flag syntax
 
@@ -684,7 +685,7 @@ Flags and defaults (`rradius-bench run --help` is authoritative):
 | `--metrics-url` | — | `http://host:port/metrics` of the server; the report shows how the counters changed during the measurement; only `http://` is accepted |
 | `--json` | Off | The report is printed as JSON |
 | `--tls-version` | `1.2` | TLS version of EAP loads, `1.2` or `1.3`; `1.3` works only with `eap-tls` |
-| `--ca-file` | — | CA used to check the server's EAP certificate; when not given, any certificate is accepted |
+| `--ca-file` | — | CA used to check the server's EAP certificate and, with `--transport tls`, its RadSec certificate; when not given, any certificate is accepted |
 | `--tls-name` | The value of `--server` | With `--ca-file`, the name the server certificate must match |
 | `--cert-file`, `--key-file` | — | Certificate and private key for an `eap-tls` login; also needed by `--transport tls` |
 | `--eap-fragment` | `1000` | Most bytes of TLS data one EAP-Response carries |

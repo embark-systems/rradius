@@ -308,6 +308,22 @@ show = "SELECT username, enabled, origin FROM users WHERE username = ?1"
 
 ### Check it
 
+The scenario defines only the client `nas` (`10.90.0.0/24`). To run the logins from this machine, add a client for 127.0.0.1 to `rradius.toml`:
+
+```toml
+[[radius.clients]]
+name = "localhost"
+address = "127.0.0.1"
+secret_file = "localhost.secret"
+```
+
+Create its secret, then start the server:
+
+```console
+$ openssl rand -hex 32 > localhost.secret
+$ chmod 600 localhost.secret
+```
+
 After the server starts, log in with PAP, one account at a time:
 
 ```console
@@ -706,7 +722,7 @@ The order is fixed: remove the realm first, then lower the case, and check `allo
 | `prefix` | `false` | `A\B\c` | `c` |
 | `both` | `true` | `CORP\Alice@Corp` | `alice` (prefix first, then suffix) |
 
-If the result is an empty string, or does not match `allowed`, the chain rejects at once, runs no handler, and `handler` in the authentication log is `normalization`. The log gives only the reason and not the received name, because it comes from outside and may contain control characters:
+If the result is an empty string, or does not match `allowed`, the chain rejects at once, runs no handler, and `handler` in the authentication log is `normalization`. The WARN line gives only the reason and not the received name, because the name comes from outside and may contain control characters; the authentication record that follows has it in `user`:
 
 ```text
 … WARN rradius_core::lua_engine: auth chain: rejecting a request from client localhost: the user name does not match the allowed pattern
