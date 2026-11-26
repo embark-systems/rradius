@@ -738,10 +738,11 @@ pub(crate) mod tests {
         let started = std::time::Instant::now();
         assert!(!engine.authenticate(login("carol")).await.accepted(), "not answered");
         let waited = started.elapsed();
-        // About 2 s: a script that gave up at once, or still waited for the 30 s it has before the
-        // waits were shortened, is what this is after. The upper limit has room for a machine busy
-        // with other tests, where this took longer than 4 s.
-        assert!(waited >= Duration::from_millis(1500) && waited < Duration::from_secs(10), "{waited:?}");
+        // The script counts whole seconds, so its wait of 2 s can end after little more than 1 s:
+        // the first question is held for 1 s at least. A script that gave up at once, or still
+        // waited for the 30 s it has before the waits were shortened, is what this is after. The
+        // upper limit has room for a machine busy with other tests, where this took longer than 4 s.
+        assert!(waited >= Duration::from_secs(1) && waited < Duration::from_secs(10), "{waited:?}");
         Ok(())
     }
 }
