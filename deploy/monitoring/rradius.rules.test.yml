@@ -163,7 +163,7 @@ tests:
     input_series:
       - series: 'rradius_reload_total{result="error", instance="a:9812"}'
         values: '0 0 1 1 1 1'
-      - series: 'rradius_reload_total{result="success", instance="a:9812"}'
+      - series: 'rradius_reload_total{result="ok", instance="a:9812"}'
         values: '0 1 2 3 4 5'
     alert_rule_test:
       - eval_time: 3m

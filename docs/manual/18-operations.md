@@ -438,6 +438,7 @@ $ rradius-bench run … --load acct-start,concurrency=1 --requests 1
 $ wc -l acct.jsonl*
        1 acct.jsonl
        2 acct.jsonl.1
+       3 total
 ```
 
 Accounting after the SIGHUP goes to the new `acct.jsonl`, and the old file no longer grows.

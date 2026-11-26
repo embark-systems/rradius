@@ -554,11 +554,13 @@ spool 的設定、重送規則與腳本的寫法見[第 13 章](13-accounting.md
 
 ### 伺服器丟棄
 
-同時處理的請求超過 `max_auth_inflight`（或 `max_acct_inflight`）時，多的直接丟掉。實測把 `max_auth_inflight` 設成 2，用 30 個並行送 bcrypt 帳號的登入：
+同時處理的請求超過 `max_auth_inflight`（或 `max_acct_inflight`）時，多的直接丟掉。實測把 `max_auth_inflight` 設成 2，用 30 個並行送 bcrypt 帳號的登入。其中 28 個被丟掉，日誌只有一行：
 
 ```text
-… WARN rradius_core::radius: RADIUS authentication overloaded: discarded 28 packets
+… WARN rradius_core::radius: RADIUS authentication overloaded: discarded 1 packets
 ```
+
+每個埠每秒最多寫一行這種日誌。第一個丟棄立刻寫出；之後的累計到下一行，而下一行要等到一秒以上之後又有封包被丟棄才會寫（這裡是送第二波時出現 `discarded 28 packets`）。準確的數量看 `status` 或指標。
 
 `status` 的 `Discarded: overload` 增加，`Auth limit` 顯示目前的上限。
 

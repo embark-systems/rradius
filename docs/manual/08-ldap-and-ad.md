@@ -388,7 +388,7 @@ Key points:
 - This is a named chain, and only the VPN gateway with `auth = "vpn"` goes through it. The jump host in the same scenario goes through a different `mfa` chain ([chapter 15](15-access-recipes.md)).
 - If the directory server certificate is not signed by a CA the system trusts, add `ca_file`.
 
-This configuration passes `check` (`check` does not connect to the directory). **Verified**: copy `rradius-server/examples/scenarios/remote-access/` as described in chapter 03, change `dictionary` to the real path of the dictionary and the password files to 0600, and `check` prints `configuration ok` (plus a warning that two clients still use the public secret that comes with the example).
+This configuration passes `check` (`check` does not connect to the directory). **Verified**: copy `rradius-server/examples/scenarios/remote-access/` as described in chapter 03, change `dictionary` to the real path of the dictionary and the password files to 0600, and `check` prints `configuration ok` (plus four warnings: `cluster.secret_raft`, `cluster.secret_api` and the shared secrets of the clients `vpn-gw` and `jump-host` are still the public values that come with the example).
 
 > **Not verified on real hardware:** This scenario has not been run against a real AD. The filter that excludes disabled accounts is AD syntax and does not apply in the OpenLDAP test directory of this chapter.
 

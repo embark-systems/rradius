@@ -383,7 +383,7 @@ The table below is arranged from the description text and the `for` setting of `
 | `RradiusExternalDatabaseUnreachable` | An external database with `required_for_ready` cannot be reached; the `/readyz` of this node answers 503 and the load balancer moves it out. Check the database and the network |
 | `RradiusExternalDatabaseFailing` | Calls to an external database fail (`reason="unavailable"`): the database is down or slow, or the network is broken |
 | `RradiusExternalDatabasePoolFull` | The connection pool has been full for more than 5 minutes and calls are queueing: queries got slow, or `pool_size` is too small |
-| `RradiusNamedQueryStale` | A named query has not succeeded for more than 2 minutes, so numbers that depend on it (for example address pool usage) are old; look at `RradiusNamedQueryFailing` and the log |
+| `RradiusNamedQueryStale` | A named query's last success has stayed more than 2 minutes old for 2 minutes (the alert comes about 4 minutes after that success, or 2 minutes after Prometheus first sees a query that never succeeded), so numbers that depend on it (for example address pool usage) are old; look at `RradiusNamedQueryFailing` and the log |
 | `RradiusNamedQueryFailing` | The `reason` label is `timeout`, `error` or `shape` (the columns of the result do not match the labels and value); see [Chapter 09](09-external-databases.md#named-queries-turn-sql-into-metrics) |
 | `RradiusReloadFailed` | The node keeps running with the old configuration; the log says why; fix it and reload again |
 | `RradiusLogLinesDropped` | The place the log goes to is too slow, see [When log lines are dropped](#when-log-lines-are-dropped) |

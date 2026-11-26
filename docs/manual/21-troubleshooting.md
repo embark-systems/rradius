@@ -554,11 +554,13 @@ For the spool settings, the replay rules and how to write the script see [Chapte
 
 ### The server discards
 
-When more requests are being handled at once than `max_auth_inflight` (or `max_acct_inflight`), the extra ones are dropped. In testing, `max_auth_inflight` was set to 2 and 30 parallel logins of bcrypt accounts were sent:
+When more requests are being handled at once than `max_auth_inflight` (or `max_acct_inflight`), the extra ones are dropped. In testing, `max_auth_inflight` was set to 2 and 30 parallel logins of bcrypt accounts were sent. 28 of them were discarded, and the log had one line:
 
 ```text
-… WARN rradius_core::radius: RADIUS authentication overloaded: discarded 28 packets
+… WARN rradius_core::radius: RADIUS authentication overloaded: discarded 1 packets
 ```
+
+Each port writes at most one such line a second. The first discard is written at once; the ones that follow are added to the next line, which is written only when a packet is discarded again a second or more later (here, a second burst brought `discarded 28 packets`). For the exact number, use the count in `status` or the metric.
 
 `Discarded: overload` in `status` grows, and `Auth limit` shows the current limit.
 

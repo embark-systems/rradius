@@ -34,10 +34,10 @@ In this chapter:
 
 ## How to read this reference
 
-This appendix is built from `rradiusd schema --lang zh-TW` (JSON Schema) and the output of `rradiusd config show`, checked against `rradius-core/src/config.rs` and `reload.rs` to add the defaults and conditions that the schema does not state. After you update the program, trust these two commands on your version:
+This appendix is built from `rradiusd schema` (JSON Schema) and the output of `rradiusd config show`, checked against `rradius-core/src/config.rs` and `reload.rs` to add the defaults and conditions that the schema does not state. After you update the program, trust these two commands on your version:
 
 ```console
-$ rradiusd schema --lang zh-TW > schema.json
+$ rradiusd schema > schema.json
 $ rradiusd config show --config rradius.toml
 # computed on this machine: radius.sockets = 1, cluster.read_connections = 28
 …

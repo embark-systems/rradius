@@ -166,6 +166,7 @@ interval_ms = 60000
 | `user` | 成功 | 沒有符合的帳號、SQL 失敗 | 參數或設定有錯、`[accounts]` 缺少這個動作、密碼空白或兩次不同 | 連不到叢集，或 30 秒內沒有回答 |
 | `session` | 有資料 | 沒有 session | 參數或設定有錯、`[sessions]` 缺少這個動作、SQL 失敗 | 同 `user` |
 | `query` | 成功，包括沒有任何查詢、查無資料列 | — | 參數或設定有錯、`queries.<name>` 沒設定、SQL 失敗 | 同 `user` |
+| `accounting find` | 列出了持有紀錄 | 那個位址、埠與時間查不到 | 參數不對、位址或時間格式不對、檔案讀不到 | — |
 | `cluster` | 成功 | `remove`：叢集裡沒有這個節點、leader 拒絕、leader 連續換了兩次 | 參數或設定有錯、API 密碼不對、要移除的節點還在回應、移除後只剩一或兩個 voter 而沒有 `--force`、最後一個 voter | 30 秒內沒有回答；`remove` 送出後沒有回應 |
 | 企業版的指令 | — | — | 一律 2 | — |
 
@@ -879,7 +880,7 @@ $ sed -n 's/^usage: rradiusd \([a-z-]*\) \([a-z|]*\).*/\1 \2/p' help.txt \
 
 第二段產生 `config show`、`user add`、`cluster remove` 這類組合，沒有輸出才算通過。
 
-**2. 書裡多出來的旗標。** `comm -13 flags-help.txt flags-book.txt` 列出書裡有、`rradiusd help` 沒有的旗標。這些應該全部來自 `rradius-bench` 的 `--help`、舊的旗標 `--check`，以及 `--help`。把 `rradius-bench --help`、`rradius-bench run --help`、`rradius-bench calibrate --help` 的旗標也加進 `flags-help.txt` 再比，剩下的只能是 `--check`。
+**2. 書裡多出來的旗標。** `comm -13 flags-help.txt flags-book.txt` 列出書裡有、`rradiusd help` 沒有的旗標。這些應該全部來自 `rradius-bench` 的 `--help`、舊的旗標 `--check`，以及 `--help`。把 `rradius-bench --help`、`rradius-bench run --help`、`rradius-bench calibrate --help` 的旗標也加進 `flags-help.txt` 再比，剩下的只能是 `--check` 和 `--load-syntax`（不是旗標：來自本章指向 `--load` 語法的連結）。
 
 **3. `rradius-bench` 的旗標與預設值。** `rradius-bench run --help` 每個旗標都要在 [rradius-bench run](#rradius-bench-run) 的表裡，`[default: …]` 要與表的「預設」一致；`calibrate --help` 同理。
 

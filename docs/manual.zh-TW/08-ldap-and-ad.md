@@ -388,7 +388,7 @@ auth = "vpn"
 - 這是具名的鏈，只有 `auth = "vpn"` 的 VPN 閘道走這裡。同一個情境的跳板機走另一條 `mfa` 鏈（[第 15 章](15-access-recipes.md)）。
 - 目錄伺服器的憑證不是系統信任的 CA 簽的時候，加 `ca_file`。
 
-這份設定過得了 `check`（`check` 不會連到目錄）。**已驗證**：照第 3 章的方式複製 `rradius-server/examples/scenarios/remote-access/`，把 `dictionary` 改成字典的實際路徑、密碼檔改成 0600 之後，`check` 印 `configuration ok`（另外警告兩個用戶端還在用範例附的公開 secret）。
+這份設定過得了 `check`（`check` 不會連到目錄）。**已驗證**：照第 3 章的方式複製 `rradius-server/examples/scenarios/remote-access/`，把 `dictionary` 改成字典的實際路徑、密碼檔改成 0600 之後，`check` 印 `configuration ok`（另外有四行警告：`cluster.secret_raft`、`cluster.secret_api`，以及用戶端 `vpn-gw`、`jump-host` 的 shared secret 還是範例附的公開值）。
 
 > **未實機驗證：** 這個情境沒有接上真正的 AD 跑過。過濾停用帳號的寫法是 AD 的語法，在本章的 OpenLDAP 測試目錄裡不適用。
 
