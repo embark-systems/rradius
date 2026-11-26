@@ -493,7 +493,7 @@ TACACS+
 …
 ```
 
-- `0.0/s (8)`: the first number is the rate over this second, and the number in parentheses is the total since the start.
+- `0.0/s (5)`: the first number is the rate over this second, and the number in parentheses is the total since the start.
 - Byte items such as `In bytes` and `Out bytes` are shown as `58.6 KiB/s (1.0 MiB)`: the units are B, KiB, MiB, GiB and TiB, each 1024 times the one before (unlike the 1000-based units common on network interfaces and cloud bills), the rate has one decimal place, and the total is a whole number in B. `--json` and `/metrics` do no conversion: `rate` is bytes per second and `total` is bytes, for programs to read.
 - When there is no traffic in this second, the p50 and p99 lines of RADIUS and TACACS+ do not appear.
 
