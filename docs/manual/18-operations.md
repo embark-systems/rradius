@@ -235,7 +235,23 @@ The upgrade steps:
 2. Replace one node at a time as in [Rolling restart of a cluster](#rolling-restart-of-a-cluster). For a single node, stop it, replace the program and start it.
 3. After each node, look at `Version` in `status` and at the log.
 
-> **Not verified on real hardware:** Nodes of different versions working together in one cluster. This manual had only one version to test, and the rolling upgrade steps are written from the program's start-up and join behavior. If a new version changes the format of the cluster data, read the notes for that version.
+`--version` prints the version number, so it cannot tell two builds with the same number apart: the two builds measured below both print `rradiusd 0.1.0 (community)`. To see whether a node already has the new program, compare the file (for example with `sha256sum /usr/bin/rradiusd`).
+
+**Measured on 2026-11-26** with the core edition: three Debian 12 arm64 virtual machines on one Mac, installed from deb packages and run by systemd, upgraded from commit `782d193` to commit `a33a028` with `dpkg -i`. The two builds use the same cluster data format, and the configuration and migration files were not changed. Each node received 20 accounting requests and 20 PAP logins per second without retransmission, and a request without a reply within 1 second counted as lost. Each situation was run once.
+
+| Situation | The node being stopped | The other two nodes |
+| --- | --- | --- |
+| Upgrade each follower | No reply for about 12 s; stop to caught up 17.3 and 17.2 s | Nothing lost |
+| Upgrade the leader and start it at once | No reply for 16.4 s; stop to caught up 21.8 s | Accounting lost for 0.85 s, no login lost |
+| Keep the leader stopped for 20 s | No reply while it was down | Accounting lost for 7.15 s, no login lost |
+| New-version leader with two old-version followers, 60 s | Not stopped | All 3,600 logins and 3,600 accounting requests answered |
+
+- Stopping a node took 14.6 s every time. It still answers for about 5 s after it is told to stop.
+- A leader that was started again within about 1 s was back before the others began an election: it stayed the leader.
+- While the old-version leader served new-version followers during the upgrade, nothing was lost except at the node being stopped.
+- Every accounting request that got a reply was in the database of all three nodes. Requests without a reply can still be written: all the accounting requests that the other two nodes left unanswered while the leader was stopped were found in the database afterwards. The accounting script has to be safe to run twice ([chapter 13](13-accounting.md)).
+
+> **Not verified on real hardware:** Different versions on separate physical hosts or under high load, and a new version that changes the format of the cluster data or adds migrations. For such a version, read its notes and try it on a test cluster first.
 
 ## Adding a migration
 
