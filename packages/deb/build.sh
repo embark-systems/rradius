@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the deb from the committed source: packages/deb/build.sh [--out <dir>] [--commit <rev>]
+# Builds the deb from the committed source: packages/deb/build.sh [--out <dir>] [--commit <rev>] [--no-ci-check]
 # The Rust toolchain (1.99 or newer, as the Dockerfile uses), cmake, g++, make, debhelper and
 # dpkg-dev must be installed; the build downloads the crates. Run it in a container of the rust
 # image when the machine has no such toolchain (packages/README.md).
@@ -7,13 +7,16 @@ set -eu
 root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 out="$root/dist"
 commit=HEAD
+ci_flag=
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) out=$2; shift 2 ;;
         --commit) commit=$2; shift 2 ;;
-        *) echo "usage: packages/deb/build.sh [--out <dir>] [--commit <rev>]" >&2; exit 2 ;;
+        --no-ci-check) ci_flag=--no-ci-check; shift ;;
+        *) echo "usage: packages/deb/build.sh [--out <dir>] [--commit <rev>] [--no-ci-check]" >&2; exit 2 ;;
     esac
 done
+"$root/packages/common/check-release.sh" "$commit" $ci_flag
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/rradius-src"

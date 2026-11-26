@@ -49,6 +49,8 @@ packages/rpm/build.sh --out dist
 
 Both scripts take the committed content with `git archive` (`--commit <rev>` selects which commit), so uncommitted changes do not go into the package.
 
+Before building, each script runs `common/check-release.sh` on that commit: the Release workflow must have passed for the commit (the same check as `tarball/release.sh`, which needs `gh` signed in), and the version in `rradius-server/Cargo.toml` must be the version in `deb/debian/changelog`, `rpm/rradius.spec` and `freebsd/net/rradius/Makefile`. A mismatch names each file and stops the build. `--no-ci-check` skips only the workflow check (for a build in a container without `gh`, or of a commit that is not on GitHub); the version check always runs.
+
 FreeBSD: put `freebsd/net/rradius` under `net/` in the ports tree, add `rradius` to the `UIDs` and `GIDs` files of the ports tree (the port creates the user with `USERS` and `GROUPS`), run `make makesum` to generate `distinfo`, then `make package`. `Makefile.crates` is generated from `Cargo.lock` by `freebsd/generate-crates.py`; rerun it whenever `Cargo.lock` changes (`--check` only checks whether it is out of date). The port fetches the GitHub tag `v<version>`, so the tag must exist before you publish.
 
 ## What has been verified
@@ -62,4 +64,4 @@ FreeBSD: put `freebsd/net/rradius` under `net/` in the ports tree, add `rradius`
 | Service file | There is only one copy, `common/rradius.service`; `deb/build.sh` copies it into `debian/` at build time. |
 | Service file verification | `systemd-analyze verify` reports no errors; the service was not actually started |
 | FreeBSD port | **Not verified on FreeBSD.** There is no `distinfo` (generate it on FreeBSD with `make makesum`), and `make`, `portlint` and `poudriere` have not been run; the rc.d script passed only `sh -n`; the number of entries in `Makefile.crates` matches `Cargo.lock` |
-| Version and updates | The version comes from `rradius-server/Cargo.toml`; when you change it, also update `deb/debian/changelog`, `rpm/rradius.spec` and `freebsd/net/rradius/Makefile`; nothing checks this automatically |
+| Version and updates | The version comes from `rradius-server/Cargo.toml`; when you change it, also update `deb/debian/changelog`, `rpm/rradius.spec` and `freebsd/net/rradius/Makefile`; `common/check-release.sh` checks it when a deb or rpm is built |
