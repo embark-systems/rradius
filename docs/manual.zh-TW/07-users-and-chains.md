@@ -404,7 +404,7 @@ SELECT '{clear}' || value FROM radcheck WHERE username = ?
 SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?
 ```
 
-（MySQL 的 `||` 預設是邏輯 OR，不是串接，所以要寫 `CONCAT`。上面兩行取自舊版手冊，未在真實資料庫上重新執行。）
+（MySQL 的 `||` 預設是邏輯 OR，不是串接，所以要寫 `CONCAT`。上面兩行未在真實資料庫上執行。）
 
 ### 上線前
 
@@ -813,7 +813,6 @@ $ rradius-bench run … --user alice --password alice-password --attr 31=text:aa
 $ curl -s http://127.0.0.1:9812/metrics | grep '^rradius_auth_lockout'
 rradius_auth_lockout_rejected_total 2
 rradius_auth_lockouts_total 1
-rradius_auth_lockout_untracked_total 0
 rradius_auth_lockout_untracked_total 0
 ```
 

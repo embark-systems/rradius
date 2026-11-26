@@ -420,7 +420,7 @@ $pw = Read-Host -AsSecureString "Password for RRADIUS1"
 New-ADComputer -Name RRADIUS1 -SamAccountName 'RRADIUS1$' -AccountPassword $pw -Enabled $true
 ```
 
-> **Not verified on real hardware:** This `New-ADComputer` snippet comes from the previous version of the manual and has not been run on Windows Server.
+> **Not verified on real hardware:** This `New-ADComputer` snippet has not been run on Windows Server.
 
 A Samba AD domain controller does not accept MS-CHAPv2 by default. On every domain controller, add the following line to `[global]` in `/etc/samba/smb.conf`, then restart samba:
 
@@ -687,7 +687,7 @@ You can also split this into two named chains, one for the VPN gateway and one f
 
 **Symptom:** Two nodes take turns showing `STATUS_ACCESS_DENIED`.
 **Cause:** The two nodes share the same computer account.
-**Fix:** Each node uses its own computer account. (This follows the previous version of the manual and is not verified on real equipment; for the reason see [Prepare the computer account](#prepare-the-computer-account).)
+**Fix:** Each node uses its own computer account. (This is not verified on real equipment; for the reason see [Prepare the computer account](#prepare-the-computer-account).)
 
 **Symptom:** On a Samba domain controller, a correct password is still rejected, and the log has `STATUS_WRONG_PASSWORD`.
 **Cause:** `smb.conf` does not have `ntlm auth = mschapv2-and-ntlmv2-only`, so Samba does not accept MS-CHAPv2.

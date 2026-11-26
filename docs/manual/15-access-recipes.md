@@ -310,7 +310,7 @@ $ echo 'User-Name=ops1,User-Password=<code>,State=<State value>,Message-Authenti
 
 On a real jump host: after you enter the password, it shows `Enter your code`, and it sends the code back as the next password together with `State`. For an SSH jump host that uses pam_radius, write one line in `/etc/pam_radius.conf` with the rradius address, the shared secret (the content of `jump-host.secret`) and a timeout; a timeout of 5 seconds or more is recommended, and with push approval it must be longer, see "Single-file examples".
 
-> **Not verified on real hardware:** The pam_radius setting has not been run on a real jump host. It comes from the previous version of the manual.
+> **Not verified on real hardware:** The pam_radius setting has not been run on a real jump host.
 
 For this chapter the second step was verified with a test client that handles challenges: the correct code gets an Access-Accept, and sending the same `State` again gets an Access-Reject. The server's authentication records:
 

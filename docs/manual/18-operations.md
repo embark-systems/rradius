@@ -224,6 +224,7 @@ Use `--version` to see the core's version:
 $ rradiusd --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 ```
 
 The second line is the configuration file that is read when `--config` is not given. It is fixed at build time.

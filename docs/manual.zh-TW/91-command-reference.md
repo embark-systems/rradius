@@ -252,6 +252,7 @@ $ echo $?
 $ rradiusd --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 $ rradiusd help
 usage: rradiusd serve [--config <path>]
 usage: rradiusd check [--config <path>]
@@ -888,7 +889,7 @@ $ echo session >> kinds.txt
 $ while read k; do grep -qF "\`$k\`" 91-command-reference.md || echo "missing: $k"; done < kinds.txt
 ```
 
-目前是 20 種。
+目前是 22 種。
 
 **5. 企業版的指令。** 從 `extension.rs` 的 `COMMANDS_NEEDING_ENTERPRISE` 取出名稱，對核心逐一執行，每一個都要得到 `not supported by this program`、結束碼 2，而且出現在[只有企業版才有的指令](#只有企業版才有的指令)的表裡。
 

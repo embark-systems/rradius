@@ -107,6 +107,7 @@ $ cargo build --locked --release -p rradius-server -p rradius-bench
 $ ./target/release/rradiusd --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 ```
 
 `--version` 第一行括號裡寫的是版本類型：核心版是 `(community)`，企業版是 `(enterprise)`。兩個版本的執行檔都叫 `rradiusd`，共用同一份設定、資料目錄、服務與用戶，所以一台機器只裝其中一個；要並存做比對時，放在不同的目錄，用完整路徑執行。
@@ -263,6 +264,7 @@ $ docker build -t rradius-server .
 $ docker run --rm rradius-server --version
 rradiusd 0.1.0 (community)
 default config: /etc/rradius/rradius.toml
+default dictionary: /usr/share/rradius/dictionary
 ```
 
 image 的內容：

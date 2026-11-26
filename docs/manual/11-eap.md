@@ -450,7 +450,7 @@ Each gate can stop a device, and they take effect at different speeds:
 | Disable in the table (for example `enabled = 0`, judged by `certificate_query`) | At the next login, across the whole cluster | Everyday disabling; blocks only at rradius |
 | Revocation list (`crl_file`) | After the new list is on every node and SIGHUP is sent | When the CA issues CRLs, or the same certificate is used in other systems |
 
-(This comparison table comes from the old manual and has not been measured again.) When the CA offers only online lookup (OCSP), you need the enterprise edition (see the enterprise note at the start of this chapter).
+(This comparison table has not been measured again.) When the CA offers only online lookup (OCSP), you need the enterprise edition (see the enterprise note at the start of this chapter).
 
 ### Update the CRL on a schedule
 
@@ -464,11 +464,11 @@ This schedule itself (the download source, the CA's CRL distribution point) has 
 
 ### ECDSA or RSA for the server certificate
 
-When login volume is high, switch the server certificate to **ECDSA P-256**: the CPU cost of each full handshake is about one third of RSA 2048 (source: a measurement in the old `docs/usage.md`, not measured again in this chapter; for the baseline rows see [Chapter 19](19-performance.md)).
+When login volume is high, switch the server certificate to **ECDSA P-256**: the CPU cost of each full handshake is about one third of RSA 2048 (source: an earlier measurement, not measured again in this chapter; for the baseline rows see [Chapter 19](19-performance.md)).
 
 - **Use the P-256 curve, not P-384.** Community reports say old Android (7.0) supports only P-256, and a P-384 certificate chain fails there (not official documentation, not verified on a real device). The same goes for the CA and intermediate certificates.
 - **The server uses only one certificate at a time.** Before you switch to ECDSA, connect once with each kind of device.
-- **Generate the EC private key with OpenSSL 3.** The old documentation records that rradius cannot read EC private keys generated with the LibreSSL that ships with macOS (`failed to parse private key`); this was not verified again. To generate ECDSA, replace `-newkey rsa:2048` with `-newkey ec -pkeyopt ec_paramgen_curve:prime256v1`.
+- **Generate the EC private key with OpenSSL 3.** An earlier note records that rradius cannot read EC private keys generated with the LibreSSL that ships with macOS (`failed to parse private key`); this was not verified again. To generate ECDSA, replace `-newkey rsa:2048` with `-newkey ec -pkeyopt ec_paramgen_curve:prime256v1`.
 
 ### Monitoring
 

@@ -132,6 +132,7 @@ This list takes the RFC numbers from the code comments in `rradius-core/src`, th
 | RFC 5080 | Retransmit detection: how long an answered request stays in the duplicate cache, and how a retransmit is recognized | `radius.rs` | [05](05-radius-clients.md) |
 | RFC 5997 | Status-Server: answered without running a script and without entering the duplicate cache | `radius.rs` | [05](05-radius-clients.md) |
 | RFC 3579 | RADIUS carrying EAP, and the Message-Authenticator check | `radius.rs`, `eap.rs` | [05](05-radius-clients.md), [11](11-eap.md) |
+| RFC 8045 | `IP-Port-Range`: the public address and port ranges that a CGN reports in accounting, kept as one group per range and searched by `accounting find` | `radius.rs`, `accounting_find.rs` | [13](13-accounting.md), [91](91-command-reference.md) |
 
 **EAP**
 
@@ -243,6 +244,7 @@ The official title of every RFC mentioned in this appendix, checked on 2026-11-2
 | RFC 6960 | X.509 Internet Public Key Infrastructure Online Certificate Status Protocol - OCSP |
 | RFC 7585 | Dynamic Peer Discovery for RADIUS/TLS and RADIUS/DTLS Based on the Network Access Identifier (NAI) |
 | RFC 7914 | The scrypt Password-Based Key Derivation Function |
+| RFC 8045 | RADIUS Extensions for IP Port Configuration and Reporting |
 | RFC 8907 | The Terminal Access Controller Access-Control System Plus (TACACS+) Protocol |
 | RFC 9048 | Improved Extensible Authentication Protocol Method for 3GPP Mobile Network Authentication and Key Agreement (EAP-AKA') |
 | RFC 9190 | EAP-TLS 1.3: Using the Extensible Authentication Protocol with TLS 1.3 |
@@ -255,7 +257,7 @@ $ grep -rhoE 'RFC ?[0-9]{3,5}' rradius-core/src | sed 's/RFC */RFC /' | sort -u
 $ grep -rhoE 'RFC ?[0-9]{3,5}' docs/spectra/specs | sed 's/RFC */RFC /' | sort -u
 ```
 
-Result on 2026-11-23: the first command prints 31 lines. One of them, `RFC 822`, is picked up by accident from the certificate field name `RFC822Name` and is not a citation of an RFC, so there are 30 numbers. The second command prints 29 numbers. Every number from both is already placed in one of the tables in this appendix. For each new number, open the code that holds the comment and confirm that the core really implements it before you add it to [RFCs implemented by the core](#rfcs-implemented-by-the-core); a number that is only a hook or is rejected goes into [RFCs mentioned in the code but not implemented by the core](#rfcs-mentioned-in-the-code-but-not-implemented-by-the-core).
+Result on 2026-11-26: the first command prints 32 lines. One of them, `RFC 822`, is picked up by accident from the certificate field name `RFC822Name` and is not a citation of an RFC, so there are 31 numbers. The second command prints 31 numbers. Every number from both is placed in one of the tables in this appendix, except `RFC 1994`, which only the bench tool spec cites (the CHAP load of the TACACS+ benchmark) and no code comment does. For each new number, open the code that holds the comment and confirm that the core really implements it before you add it to [RFCs implemented by the core](#rfcs-implemented-by-the-core); a number that is only a hook or is rejected goes into [RFCs mentioned in the code but not implemented by the core](#rfcs-mentioned-in-the-code-but-not-implemented-by-the-core).
 
 ## Common mistakes
 

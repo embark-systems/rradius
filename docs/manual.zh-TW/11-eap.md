@@ -450,7 +450,7 @@ Access-Accept
 | 資料表停用（例如 `enabled = 0`，由 `certificate_query` 判斷） | 下一次登入，整個叢集 | 日常的停用；只擋 rradius 這裡 |
 | 撤銷清單（`crl_file`） | 新清單放上每個節點並送 SIGHUP 之後 | CA 會發 CRL，同一張憑證也用在別的系統時 |
 
-（這張比較表來自舊版手冊，未重新量測。）CA 只提供線上查詢（OCSP）時需要企業版（見本章開頭的企業版說明）。
+（這張比較表未重新量測。）CA 只提供線上查詢（OCSP）時需要企業版（見本章開頭的企業版說明）。
 
 ### 排程更新 CRL
 
@@ -464,11 +464,11 @@ CRL 有 Next Update，rradius 過期後仍照用（見上），所以要自己�
 
 ### 伺服器憑證用 ECDSA 還是 RSA
 
-登入量大時，伺服器憑證改用 **ECDSA P-256**：每次完整握手的 CPU 大約是 RSA 2048 的三分之一（來源：舊版 `docs/usage.md` 的量測，本章未重新量測；基準列見[第 19 章](19-performance.md)）。
+登入量大時，伺服器憑證改用 **ECDSA P-256**：每次完整握手的 CPU 大約是 RSA 2048 的三分之一（來源：先前的量測，本章未重新量測；基準列見[第 19 章](19-performance.md)）。
 
 - **曲線用 P-256，不要用 P-384。** 有社群回報舊版 Android（7.0）只支援 P-256，P-384 的憑證鏈會失敗（非官方文件，未實機驗證）。CA 與中繼憑證也一樣。
 - **伺服器一次只用一張憑證。** 換成 ECDSA 之前，先用各種設備各連一次。
-- **用 OpenSSL 3 產生 EC 私鑰。** 舊版文件記載 macOS 內建的 LibreSSL 產生的 EC 私鑰 rradius 讀不了（`failed to parse private key`），本次未重新驗證。ECDSA 的產生指令是把 `-newkey rsa:2048` 換成 `-newkey ec -pkeyopt ec_paramgen_curve:prime256v1`。
+- **用 OpenSSL 3 產生 EC 私鑰。** 先前的記載指出 macOS 內建的 LibreSSL 產生的 EC 私鑰 rradius 讀不了（`failed to parse private key`），本次未重新驗證。ECDSA 的產生指令是把 `-newkey rsa:2048` 換成 `-newkey ec -pkeyopt ec_paramgen_curve:prime256v1`。
 
 ### 監控
 

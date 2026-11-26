@@ -882,7 +882,7 @@ $ docker build -t rradius-server:latest .
 
   ```yaml
   images:
-    - name: rradiusd
+    - name: rradius-server
       newName: registry.example.com/rradius-server
       newTag: "1.0"
   ```
@@ -1003,7 +1003,7 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 
 ## 跨機房
 
-三個節點分在不同機房、節點之間隔著幾毫秒到幾十毫秒時，叢集會怎樣？本節的數字是在一台主機上模擬出來的，**用來判斷「值不值得往這個方向設計」，不是對真實廣域網路的承諾。** 沒有標日期的量測，是從舊版手冊搬來的，沒有重新量測；標了日期的是那天量的。原始數字與量測腳本不在這個 repo 裡。
+三個節點分在不同機房、節點之間隔著幾毫秒到幾十毫秒時，叢集會怎樣？本節的數字是在一台主機上模擬出來的，**用來判斷「值不值得往這個方向設計」，不是對真實廣域網路的承諾。** 沒有標日期的量測，沒有為本手冊重新量測；標了日期的是那天量的。原始數字與量測腳本不在這個 repo 裡。
 
 ### 量測條件
 

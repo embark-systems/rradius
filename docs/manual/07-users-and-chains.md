@@ -404,7 +404,7 @@ SELECT '{clear}' || value FROM radcheck WHERE username = ?
 SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?
 ```
 
-(In MySQL, `||` is a logical OR by default, not concatenation, so write `CONCAT`. The two lines above come from an older version of the manual and were not run again on a real database.)
+(In MySQL, `||` is a logical OR by default, not concatenation, so write `CONCAT`. The two lines above were not run on a real database.)
 
 ### Before going live
 
@@ -813,7 +813,6 @@ Metrics:
 $ curl -s http://127.0.0.1:9812/metrics | grep '^rradius_auth_lockout'
 rradius_auth_lockout_rejected_total 2
 rradius_auth_lockouts_total 1
-rradius_auth_lockout_untracked_total 0
 rradius_auth_lockout_untracked_total 0
 ```
 

@@ -132,6 +132,7 @@
 | RFC 5080 | 重送偵測：已回答的請求在重複快取裡留多久、怎麼認出重送 | `radius.rs` | [05](05-radius-clients.md) |
 | RFC 5997 | Status-Server：不執行腳本、不進重複快取就回答 | `radius.rs` | [05](05-radius-clients.md) |
 | RFC 3579 | RADIUS 承載 EAP，以及 Message-Authenticator 的檢查 | `radius.rs`、`eap.rs` | [05](05-radius-clients.md)、[11](11-eap.md) |
+| RFC 8045 | `IP-Port-Range`：CGN 在計費裡回報的公網位址與埠區段，每個區段一組，由 `accounting find` 反查 | `radius.rs`、`accounting_find.rs` | [13](13-accounting.md)、[91](91-command-reference.md) |
 
 **EAP**
 
@@ -243,6 +244,7 @@
 | RFC 6960 | X.509 Internet Public Key Infrastructure Online Certificate Status Protocol - OCSP |
 | RFC 7585 | Dynamic Peer Discovery for RADIUS/TLS and RADIUS/DTLS Based on the Network Access Identifier (NAI) |
 | RFC 7914 | The scrypt Password-Based Key Derivation Function |
+| RFC 8045 | RADIUS Extensions for IP Port Configuration and Reporting |
 | RFC 8907 | The Terminal Access Controller Access-Control System Plus (TACACS+) Protocol |
 | RFC 9048 | Improved Extensible Authentication Protocol Method for 3GPP Mobile Network Authentication and Key Agreement (EAP-AKA') |
 | RFC 9190 | EAP-TLS 1.3: Using the Extensible Authentication Protocol with TLS 1.3 |
@@ -255,7 +257,7 @@ $ grep -rhoE 'RFC ?[0-9]{3,5}' rradius-core/src | sed 's/RFC */RFC /' | sort -u
 $ grep -rhoE 'RFC ?[0-9]{3,5}' docs/spectra/specs | sed 's/RFC */RFC /' | sort -u
 ```
 
-2026-11-23 的結果：第一個指令印出 31 行，其中 `RFC 822` 是憑證欄位名稱 `RFC822Name` 被順帶抓到，不是引用 RFC，所以是 30 個編號；第二個指令印出 29 個編號。兩邊的每一個編號都已經歸到本附錄的某一個表。每個新出現的編號都要打開註解所在的程式，確認核心真的實作了，才放進[核心實作的 RFC](#核心實作的-rfc)；只是掛點或被拒的，放進[程式碼提到、但核心沒有實作的 RFC](#程式碼提到但核心沒有實作的-rfc)。
+2026-11-26 的結果：第一個指令印出 32 行，其中 `RFC 822` 是憑證欄位名稱 `RFC822Name` 被順帶抓到，不是引用 RFC，所以是 31 個編號；第二個指令印出 31 個編號。兩邊的每一個編號都歸在本附錄的某一個表，只有 `RFC 1994` 例外：只有 bench 工具的規格引用它（TACACS+ 壓測的 CHAP 負載），程式碼註解沒有。每個新出現的編號都要打開註解所在的程式，確認核心真的實作了，才放進[核心實作的 RFC](#核心實作的-rfc)；只是掛點或被拒的，放進[程式碼提到、但核心沒有實作的 RFC](#程式碼提到但核心沒有實作的-rfc)。
 
 ## 常見錯誤
 
