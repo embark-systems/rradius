@@ -4450,7 +4450,7 @@ pub(crate) mod tests {
             .eval_async()
             .await
             .unwrap();
-        let expected = "_G _VERSION assert bit32 buffer collectgarbage coroutine debug error gcinfo getmetatable integer ipairs math newproxy next os pairs pcall print rawequal rawget rawlen rawset select setmetatable string table tonumber tostring type typeof unpack utf8 vector xpcall";
+        let expected = "_G _VERSION assert bit32 buffer collectgarbage coroutine debug error gcinfo getmetatable ipairs math newproxy next os pairs pcall print rawequal rawget rawlen rawset select setmetatable string table tonumber tostring type typeof unpack utf8 vector xpcall";
         assert_eq!(names.join(" "), expected);
     }
 
