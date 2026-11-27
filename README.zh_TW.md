@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/rradius-stacked-dark.svg">
+    <img src="docs/logo/rradius-stacked-light.svg" alt="rradius 標誌" width="360">
+  </picture>
+</p>
+
 # rradius
 
 [English](README.md) | 繁體中文
@@ -45,4 +52,4 @@ RadSec、依 realm 轉送與漫遊、Disconnect／CoA、從資料表管理 NAS�
 
 ## 授權
 
-BSD 2-Clause，見 [`LICENSE`](LICENSE)。`share/` 的 RADIUS 字典另有授權，見 [`share/LICENSE`](share/LICENSE) 與 [`share/NOTICE`](share/NOTICE)。
+BSD 2-Clause，見 [`LICENSE`](LICENSE)。`share/` 的 RADIUS 字典另有授權，見 [`share/LICENSE`](share/LICENSE) 與 [`share/NOTICE`](share/NOTICE)。`docs/logo/` 的標誌不適用本授權。
