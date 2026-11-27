@@ -1692,7 +1692,7 @@ mod tests {
 
     #[test]
     fn test_role() {
-        let members = Members { voters: [1, 2].into_iter().collect(), nodes: BTreeMap::new() };
+        let members = Members { voters: [1, 2].into_iter().collect(), ..Members::default() };
         let leading = radius_view(0.0, 0.0, (0.0, 0.0), true);
         let following = radius_view(0.0, 0.0, (0.0, 0.0), false);
         assert_eq!(role(2, &members, Some(1), Some(&leading)), "leader", "its own metrics count first");
@@ -1709,7 +1709,7 @@ mod tests {
         let start = Instant::now();
         let socket = |last: u8| Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, last)), 9812));
         let known = Known {
-            members: Members { voters: [1, 2].into_iter().collect(), nodes: BTreeMap::new() },
+            members: Members { voters: [1, 2].into_iter().collect(), ..Members::default() },
             leader: Some(1),
             from: Source::Cluster,
             targets: vec![(1, "10.0.0.1:9812".to_string(), socket(1)), (2, "10.0.0.2:9812".to_string(), socket(2))],

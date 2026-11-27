@@ -15,7 +15,7 @@ use crate::lua_engine::LEADER_QUORUM_ACK_WITHIN_MS;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,7 +53,12 @@ pub(crate) struct Member {
 /// The cluster's members: voters and every node with its addresses.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Members {
+    /// Those that vote once a change in progress is done; every voter when there is none.
     pub(crate) voters: BTreeSet<u64>,
+    /// Those that vote before a change in progress and not after it.
+    pub(crate) leaving: BTreeSet<u64>,
+    /// Whether a change of the members is in progress.
+    pub(crate) changing: bool,
     pub(crate) nodes: BTreeMap<u64, Member>,
 }
 
@@ -254,16 +259,25 @@ impl Progress {
     }
 }
 
+/// What the time limit needs to know of the command it ends.
+#[derive(Default)]
+struct Reached {
+    /// A `Progress`.
+    progress: AtomicU8,
+    /// The node a removal was sent for was one of exactly two voters.
+    one_of_two: AtomicBool,
+}
+
 /// Runs `cluster` with its arguments, the word `cluster` not included. Prints the result and
 /// returns the exit status.
 pub async fn run(args: &[String]) -> i32 {
     crate::logging::init_for_command();
     let outcome = match prepare(args) {
         Ok((parsed, cluster, api)) => {
-            let progress = AtomicU8::new(Progress::Checking as u8);
-            match tokio::time::timeout(CLUSTER_WAIT, act(&parsed.action, &cluster.nodes, &api, &progress)).await {
+            let reached = Reached::default();
+            match tokio::time::timeout(CLUSTER_WAIT, act(&parsed.action, &cluster.nodes, &api, &reached)).await {
                 Ok(outcome) => outcome,
-                Err(_) => timed_out(&parsed.action, Progress::load(&progress)),
+                Err(_) => timed_out(&parsed.action, Progress::load(&reached.progress), reached.one_of_two.load(Ordering::SeqCst)),
             }
         }
         Err(e) => Outcome::failed(STATUS_MISTAKE, e),
@@ -316,24 +330,29 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
 
 /// What to say when the time limit ends the command, by how far a removal got: once the request
 /// may have reached the leader, saying only that the cluster did not answer would send the
-/// operator to run it again, and find the node gone.
-fn timed_out(action: &Action, progress: Progress) -> Outcome {
+/// operator to run it again, and find the node gone. While the leader has not accepted the removal
+/// of one of two voters, the change may be waiting for that node; once accepted, it is committed.
+fn timed_out(action: &Action, progress: Progress, one_of_two: bool) -> Outcome {
     let limit = CLUSTER_WAIT.as_secs();
     let message = match (action, progress) {
         (Action::Remove { node, .. }, Progress::Sending) => format!("the removal of node {node} may have been made, but the cluster did not answer within {limit} s; check with cluster members"),
         (Action::Remove { node, .. }, Progress::Sent) => format!("the leader accepted the removal of node {node}, but its members did not show it within {limit} s; check with cluster members"),
         _ => format!("the cluster did not answer within {limit} s"),
     };
+    let message = match action {
+        Action::Remove { node, .. } if one_of_two && progress == Progress::Sending => and_steps(&message, *node),
+        _ => message,
+    };
     Outcome::failed(STATUS_UNREACHABLE, message)
 }
 
-async fn act(action: &Action, configured: &[ClusterNode], api: &Api, progress: &AtomicU8) -> Outcome {
+async fn act(action: &Action, configured: &[ClusterNode], api: &Api, reached: &Reached) -> Outcome {
     match action {
         Action::Members => match find_leader(api, configured).await {
             Ok((leader, metrics)) => Outcome::done(member_lines(&metrics.members, leader.id, configured)),
             Err(e) => Outcome::failed(STATUS_MISTAKE, e),
         },
-        Action::Remove { node, force } => remove(api, configured, *node, *force, progress).await,
+        Action::Remove { node, force } => remove(api, configured, *node, *force, reached).await,
     }
 }
 
@@ -449,7 +468,7 @@ fn taken_by_another<'a>(own: &ClusterNode, members: &'a Members) -> Option<&'a M
 /// The configured nodes as members, all of them voters.
 fn configured_members(configured: &[ClusterNode]) -> Members {
     let nodes = configured.iter().map(|node| (node.id, Member { raft: node.raft.clone(), api: node.api.clone() })).collect();
-    Members { voters: configured.iter().map(|node| node.id).collect(), nodes }
+    Members { voters: configured.iter().map(|node| node.id).collect(), nodes, ..Members::default() }
 }
 
 /// Moves the nodes in `silent` to the end, keeping the order within both groups.
@@ -463,7 +482,7 @@ struct LeaderAddress {
     api: String,
 }
 
-async fn remove(api: &Api, configured: &[ClusterNode], node: u64, force: bool, progress: &AtomicU8) -> Outcome {
+async fn remove(api: &Api, configured: &[ClusterNode], node: u64, force: bool, reached: &Reached) -> Outcome {
     let (leader, metrics) = match find_leader(api, configured).await {
         Ok(found) => found,
         Err(e) => return Outcome::failed(STATUS_MISTAKE, e),
@@ -479,7 +498,8 @@ async fn remove(api: &Api, configured: &[ClusterNode], node: u64, force: bool, p
     }
     let mut target = leader.api;
     let mut redirected = false;
-    progress.store(Progress::Sending as u8, Ordering::SeqCst);
+    reached.one_of_two.store(one_of_two_voters(&metrics.members, node), Ordering::SeqCst);
+    reached.progress.store(Progress::Sending as u8, Ordering::SeqCst);
     loop {
         match api.leave(&target, node).await {
             Ok(()) => break,
@@ -487,10 +507,10 @@ async fn remove(api: &Api, configured: &[ClusterNode], node: u64, force: bool, p
                 redirected = true;
                 target = address;
             }
-            Err(answer) => return failed_removal(node, answer),
+            Err(answer) => return failed_removal(node, &metrics.members, answer),
         }
     }
-    progress.store(Progress::Sent as u8, Ordering::SeqCst);
+    reached.progress.store(Progress::Sent as u8, Ordering::SeqCst);
     // Done once the leader's members no longer include the node. Ask the node that took the
     // request first; only when it no longer leads, look for the leader again.
     loop {
@@ -512,15 +532,46 @@ async fn remove(api: &Api, configured: &[ClusterNode], node: u64, force: bool, p
     }
 }
 
-/// What a removal request that did not succeed ends with. Only a refusal is status 1: a request
-/// with no answer may still have been made, which is what status 3 says.
-fn failed_removal(node: u64, answer: Answer) -> Outcome {
+/// What a removal request that did not succeed ends with, `members` being what the cluster had
+/// before it. Only a refusal is status 1: a request with no answer may still have been made,
+/// which is what status 3 says.
+fn failed_removal(node: u64, members: &Members, answer: Answer) -> Outcome {
     match answer {
         Answer::Secret(e) => Outcome::failed(STATUS_MISTAKE, e),
         Answer::Leader(address) => Outcome::failed(STATUS_NO_MATCH, format!("the leader moved twice; last to {address}; run the command again")),
+        // openraft refuses a change while an earlier one is not committed. When that one takes
+        // only this node out of the voters and leaves one, it waits for this node's own vote.
+        Answer::Refused(e) if e.contains("InProgress") => {
+            let message = if leaving_one_of_two(members, node) {
+                and_steps(&e, node)
+            } else {
+                format!("{e}\nrun this command again once cluster members shows no change in progress")
+            };
+            Outcome::failed(STATUS_NO_MATCH, message)
+        }
         Answer::Refused(e) => Outcome::failed(STATUS_NO_MATCH, e),
-        Answer::Unanswered(e) => Outcome::failed(STATUS_UNREACHABLE, format!("{e}; the removal of node {node} may have been made; check with cluster members")),
+        Answer::Unanswered(e) => {
+            let message = format!("{e}; the removal of node {node} may have been made; check with cluster members");
+            let message = if one_of_two_voters(members, node) { and_steps(&message, node) } else { message };
+            Outcome::failed(STATUS_UNREACHABLE, message)
+        }
     }
+}
+
+/// `message`, then how to finish a removal that waits for the removed node's own vote.
+fn and_steps(message: &str, node: u64) -> String {
+    format!("{message}\nthe change needs node {node} to commit: start it again with its data, wait about 20 s, stop it, and run this command again")
+}
+
+/// Whether `node` is one of exactly two voters, with no change in progress. Taking it out of the
+/// voters then needs its own vote, which a stopped node cannot give.
+fn one_of_two_voters(members: &Members, node: u64) -> bool {
+    !members.changing && members.voters.len() == 2 && members.voters.contains(&node)
+}
+
+/// Whether the change in progress takes `node`, and no other, out of the voters and leaves one.
+fn leaving_one_of_two(members: &Members, node: u64) -> bool {
+    members.voters.len() == 1 && members.leaving.len() == 1 && members.leaving.contains(&node)
 }
 
 /// Whether removing `node` leaves enough voters: none left is refused, one or two only with `force`.
@@ -542,7 +593,13 @@ fn member_lines(members: &Members, leader: u64, configured: &[ClusterNode]) -> S
         .nodes
         .iter()
         .map(|(id, member)| {
-            let role = if members.voters.contains(id) { "voter" } else { "learner" };
+            let role = if members.voters.contains(id) {
+                "voter"
+            } else if members.leaving.contains(id) {
+                "leaving"
+            } else {
+                "learner"
+            };
             let lead = if *id == leader { "leader" } else { "" };
             let unlisted = if configured.iter().any(|node| node.id == *id) { "" } else { "  (not in this configuration)" };
             format!("node {id}  {role:<7}  {lead:<6}  raft {}  api {}{unlisted}", member.raft, member.api)
@@ -551,6 +608,9 @@ fn member_lines(members: &Members, leader: u64, configured: &[ClusterNode]) -> S
     let mut missing: Vec<u64> = configured.iter().map(|node| node.id).filter(|id| !members.nodes.contains_key(id)).collect();
     missing.sort_unstable();
     lines.extend(missing.into_iter().map(|id| format!("node {id}  not in the cluster (listed in this configuration)")));
+    if members.changing {
+        lines.push("a change of the members is in progress".to_string());
+    }
     lines.join("\n")
 }
 
@@ -573,15 +633,12 @@ fn parse_metrics(body: &[u8]) -> Result<Metrics, String> {
 
 fn parse_membership(membership: &Value) -> Result<Members, String> {
     // During a change there are two voter sets; the last is the one the cluster moves to.
-    let voters = membership
-        .get("configs")
-        .and_then(Value::as_array)
-        .and_then(|configs| configs.last())
-        .and_then(Value::as_array)
-        .ok_or("membership without voters")?
-        .iter()
-        .map(|id| id.as_u64().ok_or("a voter id that is not a number"))
-        .collect::<Result<BTreeSet<u64>, _>>()?;
+    let (last, earlier) = membership.get("configs").and_then(Value::as_array).and_then(|configs| configs.split_last()).ok_or("membership without voters")?;
+    let voters = voter_set(last)?;
+    let mut leaving = BTreeSet::new();
+    for set in earlier {
+        leaving.extend(voter_set(set)?.difference(&voters));
+    }
     let mut nodes = BTreeMap::new();
     for node in membership.get("nodes").and_then(Value::as_object).ok_or("membership without nodes")?.values() {
         let field = |name: &str| node.get(name).and_then(Value::as_str).map(str::to_string);
@@ -590,7 +647,13 @@ fn parse_membership(membership: &Value) -> Result<Members, String> {
             _ => return Err("a member without its id or addresses".to_string()),
         };
     }
-    Ok(Members { voters, nodes })
+    Ok(Members { voters, leaving, changing: !earlier.is_empty(), nodes })
+}
+
+/// The node ids of one voter set of a membership.
+fn voter_set(set: &Value) -> Result<BTreeSet<u64>, String> {
+    let ids = set.as_array().ok_or("membership without voters")?;
+    ids.iter().map(|id| id.as_u64().ok_or_else(|| "a voter id that is not a number".to_string())).collect()
 }
 
 /// The leader's api address in a 409 answer that names it.
@@ -795,7 +858,7 @@ mod tests {
 
     fn members(voters: &[u64], learners: &[u64]) -> Members {
         let nodes = voters.iter().chain(learners).map(|id| (*id, Member { raft: format!("node{id}:8100"), api: format!("node{id}:8200") })).collect();
-        Members { voters: voters.iter().copied().collect(), nodes }
+        Members { voters: voters.iter().copied().collect(), nodes, ..Members::default() }
     }
 
     /// A metrics answer as a follower gave it in a three-node cluster on 2026-11-13, shortened.
@@ -867,16 +930,62 @@ mod tests {
              node 3  voter            raft node3:8100  api node3:8200\n\
              node 5  learner          raft node5:8100  api node5:8200"
         );
+        // The spec's other example: voters 1, 2, 3 with leader 2, all of them listed.
+        assert_eq!(
+            member_lines(&members(&[1, 2, 3], &[]), 2, &configured(&[1, 2, 3])),
+            "node 1  voter            raft node1:8100  api node1:8200\n\
+             node 2  voter    leader  raft node2:8100  api node2:8200\n\
+             node 3  voter            raft node3:8100  api node3:8200"
+        );
+    }
+
+    /// The metrics of leader 1 with `configs` as its voter sets and `ids` as its nodes.
+    fn metrics_with_voter_sets(configs: &str, ids: &[u64]) -> String {
+        let nodes: Vec<String> = ids.iter().map(|id| format!(r#""{id}":{{"id":{id},"addr_raft":"node{id}:8100","addr_api":"node{id}:8200"}}"#)).collect();
+        format!(r#"{{"id":1,"current_leader":1,"membership_config":{{"membership":{{"configs":{configs},"nodes":{{{}}}}}}}}}"#, nodes.join(","))
+    }
+
+    /// Scenario: A change of the members is in progress.
+    #[test]
+    fn test_member_lines_during_a_change() -> Result<(), String> {
+        let shown = |configs: &str, ids: &[u64], listed: &[u64]| -> Result<String, String> {
+            let metrics = parse_metrics(metrics_with_voter_sets(configs, ids).as_bytes())?;
+            Ok(member_lines(&metrics.members, 1, &configured(listed)))
+        };
+        // The spec's example: voters 1 and 2 changing to voter 1.
+        assert_eq!(
+            shown("[[1,2],[1]]", &[1, 2], &[1, 2])?,
+            "node 1  voter    leader  raft node1:8100  api node1:8200\n\
+             node 2  leaving          raft node2:8100  api node2:8200\n\
+             a change of the members is in progress"
+        );
+        // A node added as a voter leaves nobody; a learner stays one; the line comes last.
+        assert_eq!(
+            shown("[[1],[1,2]]", &[1, 2, 5], &[1, 2, 5, 9])?,
+            "node 1  voter    leader  raft node1:8100  api node1:8200\n\
+             node 2  voter            raft node2:8100  api node2:8200\n\
+             node 5  learner          raft node5:8100  api node5:8200\n\
+             node 9  not in the cluster (listed in this configuration)\n\
+             a change of the members is in progress"
+        );
+        // One voter set: no change in progress.
+        assert_eq!(
+            shown("[[1]]", &[1, 2], &[1, 2])?,
+            "node 1  voter    leader  raft node1:8100  api node1:8200\n\
+             node 2  learner          raft node2:8100  api node2:8200"
+        );
+        Ok(())
     }
 
     #[test]
     fn test_failed_removal() {
-        let status = |answer| failed_removal(4, answer).status;
+        let four = members(&[1, 2, 3, 4], &[]);
+        let status = |answer| failed_removal(4, &four, answer).status;
         assert_eq!(status(Answer::Refused("node1:8200: HTTP 500".to_string())), STATUS_NO_MATCH);
         assert_eq!(status(Answer::Leader("node2:8200".to_string())), STATUS_NO_MATCH);
         assert_eq!(status(Answer::Secret("refused".to_string())), STATUS_MISTAKE);
         // No answer is not a refusal: the change may have been made.
-        let unanswered = failed_removal(4, Answer::Unanswered("node1:8200: connection refused".to_string()));
+        let unanswered = failed_removal(4, &four, Answer::Unanswered("node1:8200: connection refused".to_string()));
         assert_eq!(unanswered.status, STATUS_UNREACHABLE);
         assert!(unanswered.stderr.contains("may have been made") && unanswered.stderr.contains("cluster members"), "{}", unanswered.stderr);
     }
@@ -890,11 +999,86 @@ mod tests {
             (&remove, Progress::Sending, "the removal of node 4 may have been made"),
             (&remove, Progress::Sent, "the leader accepted the removal of node 4"),
         ] {
-            let outcome = timed_out(action, progress);
+            let outcome = timed_out(action, progress, false);
             assert_eq!(outcome.status, STATUS_UNREACHABLE);
             assert!(outcome.stderr.contains(says), "{progress:?}: {}", outcome.stderr);
         }
         assert_eq!(Progress::load(&AtomicU8::new(Progress::Sent as u8)), Progress::Sent);
+    }
+
+    /// The refusal of a second change as a two-node cluster gave it on 2026-11-27.
+    const IN_PROGRESS: &str = r#"node1:8200: HTTP 500 Internal Server Error: {"ClientWriteError":{"APIError":{"ChangeMembershipError":{"InProgress":{"committed":{"leader_id":{"term":1,"node_id":1},"index":4},"membership_log_id":{"leader_id":{"term":1,"node_id":1},"index":10}}}}}}"#;
+
+    const NODE_2_STEPS: &str = "\nthe change needs node 2 to commit: start it again with its data, wait about 20 s, stop it, and run this command again";
+
+    /// Voter 2 leaving, as the leader has it while voters 1 and 2 change to voter 1.
+    fn node_2_leaving() -> Members {
+        Members { leaving: [2].into_iter().collect(), changing: true, ..members(&[1], &[2]) }
+    }
+
+    /// Scenarios: First removal of one of two voters; The leader accepted the removal; The stopped
+    /// node was the leader.
+    #[test]
+    fn test_removing_one_of_two_voters_without_an_end() {
+        let two = members(&[1, 2], &[]);
+        assert!(one_of_two_voters(&two, 2));
+        // Not with three voters, not for a node that does not vote, not while a change is in progress.
+        assert!(!one_of_two_voters(&members(&[1, 2, 3], &[]), 2));
+        assert!(!one_of_two_voters(&members(&[1, 2], &[5]), 5));
+        assert!(!one_of_two_voters(&Members { changing: true, ..members(&[1, 2], &[]) }, 2));
+        assert!(!one_of_two_voters(&node_2_leaving(), 2));
+        let remove = Action::Remove { node: 2, force: true };
+        let outcome = timed_out(&remove, Progress::Sending, true);
+        assert_eq!(outcome.status, STATUS_UNREACHABLE);
+        assert!(outcome.stderr.contains("check with cluster members") && outcome.stderr.ends_with(NODE_2_STEPS), "{}", outcome.stderr);
+        assert_eq!(format!("{}{NODE_2_STEPS}", timed_out(&remove, Progress::Sending, false).stderr), outcome.stderr);
+        // Nothing sent, or the leader already accepted it: nothing waits for the node.
+        for progress in [Progress::Checking, Progress::Sent] {
+            assert_eq!(timed_out(&remove, progress, true), timed_out(&remove, progress, false), "{progress:?}");
+        }
+        assert_eq!(timed_out(&remove, Progress::Checking, true).stderr, "the cluster did not answer within 30 s");
+        let accepted = timed_out(&remove, Progress::Sent, true);
+        assert_eq!(accepted.status, STATUS_UNREACHABLE);
+        assert!(accepted.stderr.starts_with("the leader accepted the removal of node 2") && !accepted.stderr.contains("needs node"), "{}", accepted.stderr);
+        let unanswered = failed_removal(2, &two, Answer::Unanswered("node1:8200: timed out".to_string()));
+        assert_eq!(unanswered.status, STATUS_UNREACHABLE);
+        assert!(unanswered.stderr.contains("may have been made") && unanswered.stderr.ends_with(NODE_2_STEPS), "{}", unanswered.stderr);
+        let unanswered = failed_removal(2, &members(&[1, 2, 3], &[]), Answer::Unanswered("node1:8200: timed out".to_string()));
+        assert!(!unanswered.stderr.contains("needs node"), "{}", unanswered.stderr);
+    }
+
+    /// Scenario: Running the removal again.
+    #[test]
+    fn test_removal_refused_while_the_node_is_leaving() {
+        let refused = failed_removal(2, &node_2_leaving(), Answer::Refused(IN_PROGRESS.to_string()));
+        assert_eq!(refused, Outcome::failed(STATUS_NO_MATCH, format!("{IN_PROGRESS}{NODE_2_STEPS}")));
+    }
+
+    /// Scenario: Another change is in progress.
+    #[test]
+    fn test_removal_refused_by_another_change() {
+        let other = Members { changing: true, ..members(&[1, 2, 3], &[4]) };
+        let refused = failed_removal(3, &other, Answer::Refused(IN_PROGRESS.to_string()));
+        assert_eq!(refused, Outcome::failed(STATUS_NO_MATCH, format!("{IN_PROGRESS}\nrun this command again once cluster members shows no change in progress")));
+        // Any other refusal is what the node said, and nothing more, whoever is leaving.
+        let said = "node1:8200: HTTP 500 Internal Server Error: broken";
+        assert_eq!(failed_removal(2, &node_2_leaving(), Answer::Refused(said.to_string())), Outcome::failed(STATUS_NO_MATCH, said.to_string()));
+    }
+
+    /// Scenario: A change that needs more than the removed node.
+    #[test]
+    fn test_removal_refused_while_more_voters_are_needed() -> Result<(), String> {
+        let waiting = |configs: &str, node: u64| -> Result<Outcome, String> {
+            let metrics = parse_metrics(metrics_with_voter_sets(configs, &[1, 2, 3]).as_bytes())?;
+            Ok(failed_removal(node, &metrics.members, Answer::Refused(IN_PROGRESS.to_string())))
+        };
+        let again = Outcome::failed(STATUS_NO_MATCH, format!("{IN_PROGRESS}\nrun this command again once cluster members shows no change in progress"));
+        // The spec's example: voters 1, 2, 3 changing to 1, 2 wait for node 2 as well as node 3.
+        assert_eq!(waiting("[[1,2,3],[1,2]]", 3)?, again);
+        // One voter would be left, but two are leaving: neither of them alone gets it committed.
+        assert_eq!(waiting("[[1,2,3],[1]]", 2)?, again);
+        assert_eq!(waiting("[[1,2,3],[1]]", 3)?, again);
+        Ok(())
     }
 
     /// With no node answering, the members are those of the configuration.

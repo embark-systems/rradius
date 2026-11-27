@@ -351,6 +351,7 @@ node 3  voter            raft 127.0.0.1:27003  api 127.0.0.1:27013
 ```
 
 - `voter`: a node that votes and counts toward the majority. A node that has just joined and is still catching up is a `learner` for a while.
+- `leaving`: a node that votes before a change of the members that is in progress, and not after it. While there is such a change, the last line is `a change of the members is in progress`. An ordinary change can show both for a moment; when they stay, see [Remove a node](#remove-a-node).
 - `leader`: the current leader. Which node is the leader is not fixed.
 - You can use the configuration file of any node; the command finds the leader by itself.
 - Exit codes: 0 success; 2 a bad argument or configuration, or a wrong API secret; 3 no node reported a leader within 30 seconds.
@@ -702,15 +703,39 @@ node 3  not in the cluster (listed in this configuration)
 
 To add a removed node back, follow the conditions of [Add a node](#add-a-node): empty its `data_dir` and start it. Node 3 above came back into the cluster as a voter within 2 seconds after `data3` was emptied and it was started. Starting it with the data it had does not bring it back: the node ends by itself (see [When a removed node starts again](#when-a-removed-node-starts-again)).
 
-**When only one voter would remain** (two voters, one of them stopped), `remove --force` did not finish on the first try, apparently because the change needs a majority of the current voters and the node being removed is one of them. Tested on 2026-11-27 with two nodes on one machine:
+**When only one voter would remain** (two voters, one of them stopped), `remove --force` does not finish on the first try, apparently because the change needs a majority of the current voters and the node being removed is one of them. The command says what to do. Run on 2026-11-27 with two nodes on one machine, node 2, a follower, stopped:
 
-1. `cluster remove --force <id>` ends with exit code 3 after 30 seconds (`… may have been made …`), and `cluster members` shows the stopped node as `learner`.
-2. Running it again right away ends with exit code 1 (`ChangeMembershipError`, `InProgress`).
-3. Start the stopped node again with its data, wait about 20 seconds, stop it, and run `cluster remove --force <id>` once more. It prints `removed node <id>`.
+```console
+$ rradiusd cluster remove --force --config node1.toml 2
+the removal of node 2 may have been made, but the cluster did not answer within 30 s; check with cluster members
+the change needs node 2 to commit: start it again with its data, wait about 20 s, stop it, and run this command again
+$ rradiusd cluster members --config node1.toml
+node 1  voter    leader  raft 127.0.0.1:27001  api 127.0.0.1:27011
+node 2  leaving          raft 127.0.0.1:27002  api 127.0.0.1:27012
+a change of the members is in progress
+$ rradiusd cluster remove --force --config node1.toml 2
+127.0.0.1:27011: HTTP 500 Internal Server Error: {"ClientWriteError":{"APIError":{"ChangeMembershipError":{"InProgress":{"committed":{"leader_id":{"term":1,"node_id":1},"index":4},"membership_log_id":{"leader_id":{"term":1,"node_id":1},"index":9}}}}}}
+the change needs node 2 to commit: start it again with its data, wait about 20 s, stop it, and run this command again
+```
 
-Starting that node with an empty `data_dir` instead did not complete the change in the same test (watched for about 20 seconds), so do not count on removing a node whose data is lost. Think twice before running a cluster with only two voters.
+The first command ends with exit code 3 after 30 seconds, the second with exit code 1 at once; the second line of each says how to finish:
 
-The node started in step 3 is still in the member list at that time (as `learner`), so it starts as usual and serves. The three steps were run again the same day with a version in which a removed node ends, with the same result; starting that node again after the removal has finished ends it with exit code 1 (see [When a removed node starts again](#when-a-removed-node-starts-again)).
+1. Start the stopped node again with its data, wait about 20 seconds, and stop it.
+2. Run `cluster remove --force <id>` once more. It prints `removed node <id>`:
+
+```console
+$ rradiusd cluster remove --force --config node1.toml 2
+removed node 2
+$ rradiusd cluster members --config node1.toml
+node 1  voter    leader  raft 127.0.0.1:27001  api 127.0.0.1:27011
+node 2  not in the cluster (listed in this configuration)
+```
+
+The node started in step 1 is still in the member list at that time (shown as `leaving`), so it starts as usual and serves, and does not end by itself; in the integration test the cluster accepted writes again about 4 seconds after it started (measured once). Starting that node again after the removal has finished ends it with exit code 1 (see [When a removed node starts again](#when-a-removed-node-starts-again)).
+
+**When the stopped node was the leader,** the node that is left cannot become the leader alone, so `cluster members` and `cluster remove` can only wait and, after 30 seconds, print `the cluster did not answer within 30 s` (exit code 3); no removal has been sent. Start the stopped node again, and stop it only when `cluster members` shows the other node as `leader`; if it leads again, stop it and start it once more (in one run on 2026-11-27 the other node led after the second start). Then remove it as above.
+
+With an empty `data_dir` instead, a test on 2026-11-27 did not complete the change (watched for about 20 seconds), so do not count on removing a node whose data is lost. Think twice before running a cluster with only two voters.
 
 Exit codes of `cluster remove`: 0 success; 1 there is no such member, or the cluster refused the removal; 2 a bad argument or configuration, or a check did not pass; 3 no answer within 30 seconds. With exit code 3 the removal may already have been done, and the message tells you to confirm with `cluster members` and not to simply run it again.
 
@@ -729,7 +754,7 @@ There are two ways out:
 
 What counts as removed:
 
-- A node is removed only when the member list of the current leader (a node that says it is the leader and was acknowledged by a majority within the last 5 seconds) omits it, and that list is newer than the one the local data remembers (or the local list itself already omits the node). It does not count as removed when any such leader lists it. A node still on the list starts as usual, including a `learner`, such as the stopped node halfway through [removing one of two voters](#remove-a-node).
+- A node is removed only when the member list of the current leader (a node that says it is the leader and was acknowledged by a majority within the last 5 seconds) omits it, and that list is newer than the one the local data remembers (or the local list itself already omits the node). It does not count as removed when any such leader lists it. A node still on the list starts as usual, including a `learner`, and the stopped node halfway through [removing one of two voters](#remove-a-node) (`leaving`).
 - The question goes over the API ports to the other nodes of `[[cluster.nodes]]` and those the local data remembers.
 - A running node that has had no leader for more than 5 seconds, or whose own member list does not have it as a voter (it is not there, or it is a `learner`), asks every 5 seconds; once it finds it has been removed, it stops answering and ends with exit code 1.
 
@@ -1203,7 +1228,15 @@ The `deploy/monitoring/` directory of the source has ready-made rules; see [chap
 
 **Symptom:** `cluster members` hangs for 30 seconds and prints `the cluster did not answer within 30 s`, exit code 3.
 **Cause:** None of the nodes in the configuration answers, or none has a leader.
-**Fix:** Confirm that the nodes are running and the API ports can be reached; when the majority is lost, bring the nodes back first.
+**Fix:** Confirm that the nodes are running and the API ports can be reached; when the majority is lost, bring the nodes back first. With two voters and the leader stopped, see [Remove a node](#remove-a-node).
+
+**Symptom:** `cluster remove` ends with `the change needs node 2 to commit: start it again with its data, wait about 20 s, stop it, and run this command again`, or, with one `voter` left, `cluster members` keeps showing a `leaving` node and `a change of the members is in progress`.
+**Cause:** A removal that would leave one voter waits for the removed node's own vote.
+**Fix:** Follow the steps of [Remove a node](#remove-a-node).
+
+**Symptom:** `cluster remove` is refused with `InProgress` and ends with `run this command again once cluster members shows no change in progress`.
+**Cause:** An earlier change of the members is not committed yet.
+**Fix:** Wait until `cluster members` no longer prints `a change of the members is in progress`, and run the command again. If the line stays, finish that change first.
 
 **Symptom:** `cluster remove` prints `node 4 still answers at 127.0.0.1:27014: stop it first, then remove it`.
 **Cause:** The node to remove is still running.

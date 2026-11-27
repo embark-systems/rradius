@@ -24,6 +24,14 @@ impl Nodes {
         Ok(())
     }
 
+    /// Stops a node as `docker stop` does and waits for it to exit.
+    fn terminate(&mut self, index: usize) {
+        if let Some(mut child) = self.0[index].take() {
+            let _ = Command::new("kill").args(["-TERM", &child.id().to_string()]).status();
+            let _ = child.wait();
+        }
+    }
+
     fn kill(&mut self, index: usize) {
         if let Some(mut child) = self.0[index].take() {
             let _ = child.kill();
@@ -382,10 +390,7 @@ impl MigratingCluster {
 
     /// Stops a node as `docker stop` does and waits for it to exit.
     fn terminate(&mut self, index: usize) {
-        if let Some(mut child) = self.nodes.0[index].take() {
-            let _ = Command::new("kill").args(["-TERM", &child.id().to_string()]).status();
-            let _ = child.wait();
-        }
+        self.nodes.terminate(index);
     }
 
     /// Changes node `index + 1`'s configuration for its next start.
@@ -1271,6 +1276,67 @@ fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {
 
     drop(nodes);
     assert!(started.elapsed() < Duration::from_secs(120), "the test took {:?}", started.elapsed());
+    Ok(())
+}
+
+/// Scenarios: First removal of one of two voters; Running the removal again; Following the
+/// steps. Of two voters, the stopped one is removed only after it has come back once, which is
+/// what `cluster remove` says and chapter 16 of the manual describes.
+#[test]
+fn test_removing_one_of_two_voters() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let ports = Ports::new(2);
+    let mut nodes = Nodes(vec![None, None], (1..=2).map(|n| dir.path().join(format!("node{n}.log"))).collect());
+    for i in 0..2 {
+        std::fs::write(dir.path().join(format!("node{}.toml", i + 1)), ports.config(i, &[0, 1])).map_err(|e| e.to_string())?;
+        nodes.start(i, dir.path()).map_err(|e| format!("node {}: {e}", i + 1))?;
+    }
+    let path = |name: String| dir.path().join(name).display().to_string();
+    let mut members = (None, String::new(), String::new());
+    let up = eventually(Duration::from_secs(60), || {
+        members = cluster_command(&["members", "--config", &path("node1.toml".to_string())]).unwrap_or_default();
+        voters_and_leader(&members.1).0 == [1, 2] && voters_and_leader(&members.1).1.is_some()
+    });
+    assert!(up, "{members:?}");
+    let leader = voters_and_leader(&members.1).1.ok_or("no leader")?;
+    // The follower goes: without the leader, nothing could ask for its removal.
+    let gone = 3 - leader;
+    let (gone_index, kept_index) = ((gone - 1) as usize, (leader - 1) as usize);
+    let config = path(format!("node{leader}.toml"));
+    let writes = |limit: Duration| eventually(limit, || send(ports.auth[kept_index], &access_request(1, "write"), Duration::from_secs(2)).map(|r| r.code) == Some(radius::ACCESS_ACCEPT));
+    assert!(writes(Duration::from_secs(60)), "the cluster did not accept writes");
+    nodes.terminate(gone_index);
+
+    let steps = format!("the change needs node {gone} to commit: start it again with its data, wait about 20 s, stop it, and run this command again");
+    let remove = || cluster_command(&["remove", "--force", "--config", &config, &gone.to_string()]);
+    let first = remove()?;
+    assert_eq!(first.0, Some(3), "{first:?}");
+    assert!(first.1.is_empty() && first.2.contains("check with cluster members") && first.2.ends_with(&steps), "{first:?}");
+    let listed = cluster_command(&["members", "--config", &config])?;
+    assert_eq!(listed.0, Some(0), "{listed:?}");
+    assert!(listed.1.lines().any(|line| line.starts_with(&format!("node {gone}  leaving "))), "{listed:?}");
+    assert!(listed.1.ends_with("\na change of the members is in progress"), "{listed:?}");
+    let again = remove()?;
+    assert_eq!(again.0, Some(1), "{again:?}");
+    assert!(again.1.is_empty() && again.2.contains("InProgress") && again.2.ends_with(&steps), "{again:?}");
+    eprintln!("one of two voters:\n{}\n{}\n{}", first.2, listed.1, again.2);
+
+    // The steps. A write is accepted again only once the change, earlier in the log, is
+    // committed.
+    let started = Instant::now();
+    nodes.start(gone_index, dir.path()).map_err(|e| format!("node {gone}: {e}"))?;
+    assert!(writes(Duration::from_secs(60)), "the change was not committed");
+    eprintln!("one of two voters: writes again {:?} after node {gone} started", started.elapsed());
+    std::thread::sleep(Duration::from_secs(20).saturating_sub(started.elapsed()));
+    // Still a member, so it has not ended by itself.
+    let running = nodes.0[gone_index].as_mut().map(|child| matches!(child.try_wait(), Ok(None)));
+    assert_eq!(running, Some(true), "node {gone} ended by itself");
+    nodes.terminate(gone_index);
+    let last = remove()?;
+    assert_eq!(last, (Some(0), format!("removed node {gone}"), String::new()));
+    let left = cluster_command(&["members", "--config", &config])?;
+    assert_eq!(voters_and_leader(&left.1), (vec![leader], Some(leader)), "{left:?}");
+    assert!(left.1.contains(&format!("node {gone}  not in the cluster (listed in this configuration)")) && !left.1.contains("in progress"), "{left:?}");
     Ok(())
 }
 
