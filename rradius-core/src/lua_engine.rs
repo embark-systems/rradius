@@ -596,6 +596,25 @@ impl Db {
         tokio::time::timeout(limit, usable).await.is_ok()
     }
 
+    /// For startup: like `wait_usable_leader`, and also waits for a read through that leader to be
+    /// answered. A node that has just restarted may only remember a leader that is gone: Raft
+    /// keeps the vote, so its state alone says there is one.
+    pub async fn wait_answering_leader(&self, limit: Duration) -> bool {
+        let answering = async {
+            loop {
+                if read_raft(&self.client).await.is_some_and(|reading| reading.usable_leader) {
+                    // The leader answers only while a quorum still follows it.
+                    let read = self.client.query_consistent("SELECT 1", Vec::new());
+                    if tokio::time::timeout(LEADER_READ_WAIT, read).await.is_ok_and(|rows| rows.is_ok()) {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        };
+        tokio::time::timeout(limit, answering).await.is_ok()
+    }
+
     /// Notes that this node has caught up with the cluster, for `rradius_cluster_caught_up`.
     pub fn note_caught_up(&self) {
         self.cluster.caught_up.store(true, Ordering::Relaxed);
@@ -719,28 +738,30 @@ impl Db {
 
     /// Waits until this node's replica has everything the cluster committed before now: writes a
     /// marker of its own through the leader, then reads the local replica until it is there.
-    /// Entries apply in order, so the marker comes after all that was committed before it.
+    /// Entries apply in order, so the marker comes after all that was committed before it. A write
+    /// the cluster cannot take at the moment, as during an election, is made again until `limit`.
     pub async fn catch_up(&self, node_id: u64, limit: Duration) -> Result<(), String> {
         let mut token = [0u8; 16];
         getrandom::fill(&mut token).map_err(|e| format!("no random marker: {e}"))?;
         let token: String = token.iter().map(|byte| format!("{byte:02x}")).collect();
         let node = node_id.to_string();
-        let caught_up = async {
-            self.client.execute("CREATE TABLE IF NOT EXISTS rradius_nodes (node INTEGER PRIMARY KEY, token TEXT NOT NULL)".to_string(), Vec::new()).await.map_err(|e| format!("cannot write the marker: {e}"))?;
-            self.client
-                .execute("INSERT OR REPLACE INTO rradius_nodes (node, token) VALUES (?, ?)".to_string(), vec![hiqlite::Param::Integer(node_id as i64), hiqlite::Param::Text(token.clone())])
-                .await
-                .map_err(|e| format!("cannot write the marker: {e}"))?;
+        let deadline = tokio::time::Instant::now() + limit;
+        let left = || deadline.saturating_duration_since(tokio::time::Instant::now());
+        let late = || format!("this node's replica did not catch up with the cluster within {limit:?}");
+        // Both statements leave the same behind when made twice.
+        write_marker(left(), late, || self.client.execute("CREATE TABLE IF NOT EXISTS rradius_nodes (node INTEGER PRIMARY KEY, token TEXT NOT NULL)", Vec::new())).await?;
+        write_marker(left(), late, || self.client.execute("INSERT OR REPLACE INTO rradius_nodes (node, token) VALUES (?, ?)", vec![hiqlite::Param::Integer(node_id as i64), hiqlite::Param::Text(token.clone())])).await?;
+        let replicated = async {
             loop {
                 // An error means the replica does not even have the table yet.
                 let rows = self.query_with_params("SELECT token FROM rradius_nodes WHERE node = ?", &[node.as_str()]).await.unwrap_or_default();
                 if rows.first().and_then(|row| row.first()).is_some_and(|(_, value)| *value == DbValue::Text(token.clone())) {
-                    return Ok(());
+                    return;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         };
-        tokio::time::timeout(limit, caught_up).await.map_err(|_| format!("this node's replica did not catch up with the cluster within {limit:?}"))?
+        tokio::time::timeout_at(deadline, replicated).await.map_err(|_| late())
     }
 
     /// Like `query_values`, read on the leader, so that it holds what the cluster committed before
@@ -1527,6 +1548,9 @@ impl DbFailures {
     }
 }
 
+/// How long `wait_answering_leader` gives one read before it asks again.
+const LEADER_READ_WAIT: Duration = Duration::from_secs(2);
+
 /// How long `applied_migrations` waits before it reads again after the cluster could not take the read.
 const MIGRATION_READ_RETRY: Duration = Duration::from_millis(200);
 
@@ -1560,6 +1584,18 @@ where
         }
         tokio::time::sleep(interval.min(deadline - now)).await;
     }
+}
+
+/// One write of `Db::catch_up`'s marker, made again while the cluster cannot take it. At the end
+/// of `limit` the error is the last one the write gave, or `late` if it never answered.
+async fn write_marker<T, Fut>(limit: Duration, late: impl FnOnce() -> String, write: impl FnMut() -> Fut) -> Result<T, String>
+where
+    Fut: Future<Output = Result<T, hiqlite::Error>>,
+{
+    retry_until(limit, MIGRATION_READ_RETRY, cluster_unavailable, write).await.map_err(|end| match end {
+        RetryEnd::Failed(e) => format!("cannot write the marker: {e}"),
+        RetryEnd::NoAnswer => late(),
+    })
 }
 
 /// Whether `error` says the cluster could not take the statement, rather than refusing it.
@@ -3812,6 +3848,51 @@ pub(crate) mod tests {
     async fn test_retry_until_reports_no_answer() {
         let result: Result<(), RetryEnd<String>> = retry_until(Duration::from_millis(50), Duration::from_millis(1), |_: &String| true, std::future::pending).await;
         assert_eq!(result, Err(RetryEnd::NoAnswer));
+    }
+
+    /// What a write gets during an election, in a variant that can be made here.
+    fn no_leader_yet() -> hiqlite::Error {
+        hiqlite::Error::LeaderChange("has to forward request to: None, None".into())
+    }
+
+    /// Scenario: Marker write during an election; Example: failures while writing the marker.
+    #[tokio::test]
+    async fn test_marker_write_waits_out_an_election() {
+        let calls = AtomicUsize::new(0);
+        let result = write_marker(Duration::from_secs(30), || "late".to_string(), || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move { if n < 2 { Err(no_leader_yet()) } else { Ok(n) } }
+        })
+        .await;
+        assert_eq!(result, Ok(2));
+    }
+
+    #[tokio::test]
+    async fn test_marker_write_gives_the_last_error_at_the_limit() -> Result<(), String> {
+        let calls = AtomicUsize::new(0);
+        let result: Result<(), String> = write_marker(Duration::from_millis(500), || "late".to_string(), || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(no_leader_yet()) }
+        })
+        .await;
+        assert!(calls.load(Ordering::SeqCst) >= 2, "it tried again");
+        let error = result.err().ok_or("the write succeeded")?;
+        assert!(error.contains("cannot write the marker") && error.contains("forward request to"), "{error}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_marker_write_does_not_repeat_an_sql_error() -> Result<(), String> {
+        let calls = AtomicUsize::new(0);
+        let result: Result<(), String> = write_marker(Duration::from_secs(30), || "late".to_string(), || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(hiqlite::Error::Sqlite("syntax error".into())) }
+        })
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let error = result.err().ok_or("the write succeeded")?;
+        assert!(error.contains("syntax error"), "{error}");
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -322,7 +322,7 @@ With `cluster.stop_without_leader_ms` set, if no leader is found at startup (for
 cluster was not ready: no usable leader within 53.980820917s, and stop_without_leader_ms is set
 ```
 
-Fix: first bring up a majority of the nodes. Do not count on a node without `stop_without_leader_ms` to start and answer from its own data: depending on the role it had when it stopped, it can instead exit with code 1 or, without `migrations_dir`, stay in startup without serving (see [Restart the whole cluster](16-cluster.md#restart-the-whole-cluster)). For a node that loses the leader while running, see [Cluster has no leader](#cluster-has-no-leader).
+Fix: first bring up a majority of the nodes. Without `stop_without_leader_ms`, a node that has joined the cluster before starts after `migrations_wait_ms` and answers from its local copy, which may be old; with `migrations_dir`, every file has to be applied in that copy (see [Restart the whole cluster](16-cluster.md#restart-the-whole-cluster)). For a node that loses the leader while running, see [Cluster has no leader](#cluster-has-no-leader).
 
 ## Client matching fails
 

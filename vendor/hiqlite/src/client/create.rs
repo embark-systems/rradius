@@ -83,8 +83,7 @@ impl Client {
             inner: Arc::new(db_client),
         };
 
-        slf.find_set_active_leader().await;
-
+        // The stream tasks look for the leader: this returns while there is none.
         #[cfg(feature = "cache")]
         slf.open_stream(
             secret.clone(),

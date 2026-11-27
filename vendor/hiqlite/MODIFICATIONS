@@ -14,9 +14,21 @@ crates.io, with these changes, made for rradius:
    two tests at the end of that file are not built here (see change 2: the library's own tests
    do not compile without the removed dev-dependencies); they were run in a copy of the file in
    a small crate on Linux.
+5. src/client/mgmt.rs: the last step of the shutdown, telling the SQL client's stream task to
+   end, is waited for at most 1 second. A node without a leader, with a request already waiting
+   for that task, ran into the 20 second shutdown limit there and reported an error, after Raft,
+   the log writer and the SQL writer had already stopped. The cache layer's send is unchanged
+   (rradius does not build the `cache` feature).
+6. src/client/create.rs and src/client/stream.rs: a local client looks for the leader in its
+   stream task, before the first connection, not before `new_local` returns. `start_node` of a
+   node that has joined its cluster returns while there is no leader; before, a former follower
+   restarted without a majority never got a client. Reads through the leader wait meanwhile.
+   Until the leader is found the client takes this node for it (`is_leader_db` says so too), so
+   a write goes to the local Raft, which names the leader it knows of for the client to send it
+   to, and fails at once when it knows none. A remote client is unchanged.
 
 Everything else is as published. To move to a newer hiqlite, take its source the same way and
-make change 1 again, unless it is no longer needed.
+make changes 1, 4, 5 and 6 again, unless they are no longer needed.
 
 The build prints one rustc warning ("unreachable call" in src/error.rs): it is in the published
 code, which cargo only hides for registry crates.

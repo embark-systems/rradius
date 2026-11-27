@@ -600,7 +600,13 @@ impl Client {
                 .await
                 .expect("To always get an answer from SQL writer");
 
-            let _ = tx_client_db.send_async(ClientStreamReq::Shutdown).await;
+            // This only ends the client's stream task. Looking for a leader with a request
+            // already in the channel, it does not take another: not waited for long.
+            let _ = time::timeout(
+                Duration::from_secs(1),
+                tx_client_db.send_async(ClientStreamReq::Shutdown),
+            )
+            .await;
         }
 
         if let Some(tx) = tx_shutdown {

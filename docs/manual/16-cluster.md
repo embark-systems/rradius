@@ -84,9 +84,9 @@ Accounting can be replayed, and can also be recorded twice because of a retransm
 When a node starts, it does not answer requests at once. It does these things in order:
 
 1. Start the local cluster node. A node that starts for the first time has to join the cluster first.
-2. Wait for a leader that can accept writes, for at most `migrations_wait_ms` (60000 ms by default).
+2. Wait for a leader that can accept writes and has answered a read, for at most `migrations_wait_ms` (60000 ms by default). What the node remembers from before it stopped is not enough. When no leader answers in time, the node does not go on to steps 3 and 4: it exits, or serves from its local copy, as [Restart the whole cluster](#restart-the-whole-cluster) describes.
 3. If there is a `migrations_dir`, apply the migrations that are not yet applied ([chapter 18](18-operations.md)).
-4. Write a marker of its own through the leader, and wait until the local copy reads this marker back. Only then has it caught up. The log says `cluster node N has caught up with the cluster`.
+4. Write a marker of its own through the leader, and wait until the local copy reads this marker back. Only then has it caught up. A write the cluster cannot take at that moment, as during an election, is made again until `migrations_wait_ms`. The log says `cluster node N has caught up with the cluster`.
 5. Open the RADIUS, TACACS+ and metrics ports. The log says `Servers started`.
 
 Step 4 guarantees that a node that was down for two hours answers its first request with the accounts added during those two hours already visible. The metrics port also opens only after this, so during startup even `/livez` cannot be reached.
@@ -314,7 +314,7 @@ configuration ok
 
 ### Start them together
 
-Start the three nodes together: the node that comes up first waits until a majority has gathered before it starts serving. Open a terminal for each node, or put them in the background like this and write the logs to files:
+Start the three nodes together. On the first start node 1 creates the cluster: nodes 2 and 3 serve only after they have joined it, but node 1 does not wait for them, and started alone it creates the cluster and serves. Open a terminal for each node, or put them in the background like this and write the logs to files:
 
 ```console
 $ for n in 1 2 3; do rradiusd serve --config node$n.toml > node$n.log 2>&1 & done
@@ -523,7 +523,7 @@ rradius_acct_spool_bytes 0
 
 Stop a node (SIGTERM) and start it again. It comes back with the data in its own `data_dir`, takes the writes made during its downtime from the leader, and serves only after it has caught up. This is the standard way for upgrades, for changing the `[cluster]` settings and for replacing host hardware.
 
-> **Note:** When you start a node in the few seconds right after the cluster got its majority back and is still electing, the node's read of "which migrations the cluster has applied" gets `has to forward request to: None`. Now it reads again every 200 ms until the leader answers, with `migrations_wait_ms` as the upper limit; after that it exits with exit code 1, and the last line is `not ready to apply migrations: cannot read applied migrations: …`, carrying the last error. Older versions did not read again, and in this situation exited after a few seconds, so you had to rely on `Restart=on-failure` of systemd or the restart policy of the container to start it once more. This retry is covered by a unit test; the gap during an election itself has not been reproduced on multiple real machines. The later step, writing the catch-up marker, is not retried: with `migrations_dir`, a node that hits an election there exits with exit code 1 (see [Restart the whole cluster](#restart-the-whole-cluster)).
+> **Note:** When you start a node in the few seconds right after the cluster got its majority back and is still electing, the node's read of "which migrations the cluster has applied" gets `has to forward request to: None`. Now it reads again every 200 ms until the leader answers, with `migrations_wait_ms` as the upper limit; after that it exits with exit code 1, and the last line is `not ready to apply migrations: cannot read applied migrations: …`, carrying the last error. Older versions did not read again, and in this situation exited after a few seconds, so you had to rely on `Restart=on-failure` of systemd or the restart policy of the container to start it once more. This retry is covered by a unit test; the gap during an election itself has not been reproduced on multiple real machines. The later step, writing the catch-up marker, is retried too (see [Restart the whole cluster](#restart-the-whole-cluster)).
 
 ### After a forced stop
 
@@ -582,23 +582,25 @@ When a host is broken and its data cannot be recovered, replace it with a new ho
 
 ### Restart the whole cluster
 
-Stopping all three nodes together and starting them together is the same as the first start: every node waits until a majority has gathered and it has caught up before it serves, for at most `migrations_wait_ms`. So `migrations_wait_ms` has to be longer than the time you expect "the last node comes up" to take.
+When all three nodes are stopped and started together, each node waits for a leader and, once there is one, catches up before it serves. It waits for the leader for at most `migrations_wait_ms`, so that value has to be longer than the time you expect "the last node comes up" to take. A node that still has no leader then does what the table below shows for a node restarted alone.
 
-With `migrations_dir`, a node can also exit during such a start. On 2026-11-27, with three nodes on one machine, 3 of 9 simultaneous starts had one node exit with exit code 1, `cannot write the marker: ClientWriteError: has to forward request to: None, None`: it wrote its catch-up marker during an election, and that write is not retried. Run the nodes under something that starts them again (`Restart=on-failure` of systemd, the restart policy of a container); started once more, the node came up.
+A write of the catch-up marker that meets an election is made again until `migrations_wait_ms`. Tested on 2026-11-27 with three nodes on one machine and `migrations_wait_ms = 15000`: before each of 10 restarts of all three nodes, one former follower ran alone, without a majority, for 20 seconds. No node exited, and all three had caught up about 6.6 seconds after the start. Before this write was retried, a node exited in 4 of 10 such restarts (`cannot write the marker: … has to forward request to: None, None`).
 
-When only one node is restarted and the other two have not come back (without `stop_without_leader_ms`, and with all migrations already applied locally), the program is designed like this: if it cannot get a leader, it compares the migrations already applied in the local copy, and when they match it prints a warning and serves from the local copy. In fact the result depends on the role the node had and on the order in which the nodes stopped. Tested on 2026-11-27 with three nodes on one machine and `migrations_wait_ms = 15000`:
+When only one node is restarted and the other two have not come back: a node that has joined the cluster before does not wait without limit for a leader, whatever its role was when it stopped. When no leader has answered it within `migrations_wait_ms` (60 seconds by default), this happens:
 
-| The node restarted alone | With `migrations_dir` | Without `migrations_dir` |
-| --- | --- | --- |
-| Was the leader when it stopped | Serves from the local copy, as designed (4 of 4) | Not tested |
-| Was a follower, stopped while the leader was still running | Exit code 1, `cannot read applied migrations: no answer within …` (1 of 1) | Serves, warning `serving before catching up` (2 of 2) |
-| Was a follower, stopped after the leader | Exit code 1, `node N did not join within 15s` (4 of 4) | Neither serves nor exits, watched for 60 seconds (2 of 2); this wait has no time limit |
+| Settings and local copy | What the node does |
+| --- | --- |
+| No `stop_without_leader_ms`, no `migrations_dir` | Prints a warning and serves from its local copy |
+| No `stop_without_leader_ms`, every file of `migrations_dir` applied in the local copy | Prints the same warning and serves from its local copy |
+| No `stop_without_leader_ms`, a file not applied in the local copy | Exits with code 1, `no leader to apply migration file '…', which this node has not applied` |
+| No `stop_without_leader_ms`, a file recorded as applied under another name or with other content | Exits with code 2 |
+| `stop_without_leader_ms` set | Exits with code 1, `cluster was not ready: no usable leader within …, and stop_without_leader_ms is set`, without answering any request |
 
-The warning of a node that serves as designed reads `cluster node 1: no usable leader within 3.981301833s; serving without a leader before catching up, so answers come from this node's replica, which may be behind`, and `rradius_cluster_caught_up` is 0. After the other two nodes come back, the log says `cluster node 1 has caught up with the cluster` and `rradius_cluster_caught_up` becomes 1.
+The warning reads `cluster node 1: no usable leader within …; serving without a leader before catching up, so answers come from this node's replica, which may be behind`, and `rradius_cluster_caught_up` is 0. After the other nodes come back, the log says `cluster node 1 has caught up with the cluster` and the metric becomes 1.
 
-A node with `stop_without_leader_ms` set does not serve from old data: once its startup has got as far as looking for a leader and there is none, it exits with exit code 1. According to the code, the setting does not reach one case: without `migrations_dir`, a follower stopped after the leader waits earlier in startup, without a limit, as in the table (not tested with this setting).
+Tested on 2026-11-27 with three nodes on one machine and `migrations_wait_ms = 10000`, restarting a follower alone, once stopped while the leader was still running and once stopped after the leader: with and without `migrations_dir` it served from its local copy, and with `migrations_dir` and `stop_without_leader_ms = 10000` it exited with code 1. A former leader (node 1 in the test) restarted alone, stopped while the others were still running, served from its local copy in the same way, with and without `migrations_dir`. Stopping a node that serves without a leader (SIGTERM, default `[shutdown]` times) ended it with exit code 0, after about 20 seconds for a former follower and about 15 seconds for a former leader.
 
-Conclusion: when you have lost the majority, do not count on restarting one node to make it serve; bring the other nodes back first.
+A node restarted alone answers read-only logins from a copy that may be old, and writes fail until a majority is back (see [When there is no leader](#when-there-is-no-leader)).
 
 ## Add a node
 
@@ -820,7 +822,7 @@ When you deploy, remember:
 - The NAS configures all three nodes as servers. When `stop_without_leader_ms` is set, a node that is cut off stops answering, and the NAS asks another one.
 - RADIUS uses the node's physical address, not the WireGuard address; requests also have to come from a network in `radius.clients`, or there is no answer. When the host you manage from is not in that network, temporarily add a `[[radius.clients]]` with only its address, test after a reload, and remove it when you are done.
 - With EAP, one login has to finish on the same node: configure the NAS for primary and backup, or let the load balancer pin the node by source ([chapter 11](11-eap.md)).
-- When one node starts first and the others have not, it waits until a majority has gathered (for at most `migrations_wait_ms`). That is waiting, not a failure; it can serve only after the log shows `RADIUS Server listening`.
+- When the nodes do not start at the same time: on the first start, nodes 2 and 3 wait until they have joined the cluster that node 1 creates; with `migrations_dir`, as in this example, a node that has not joined within `migrations_wait_ms` exits with code 1 (`did not join within …`), and without it the node waits until it joins; after a restart, a node waits for a leader for at most `migrations_wait_ms` and then does what [Restart the whole cluster](#restart-the-whole-cluster) describes. The wait is not a failure; a node can serve only after its log shows `RADIUS Server listening`.
 - Set every node to restart automatically (`Restart=on-failure` of systemd, `restart: unless-stopped` of Docker), because in some situations the server exits on its own with exit code 1 so that the process manager restarts it (see [After a forced stop](#after-a-forced-stop)).
 
 ## Deploy with Docker Compose
@@ -928,7 +930,7 @@ The three pods start together and begin to serve after a leader is elected; `rol
 
 Every point corresponds to a behavior described earlier in this chapter:
 
-- **`podManagementPolicy: Parallel`:** the three pods start together. A node serves only after a majority has gathered, and if they started one by one, the first would wait forever.
+- **`podManagementPolicy: Parallel`:** the three pods start together. With `stop_without_leader_ms` set, a restarted node that finds no leader within `migrations_wait_ms` exits with code 1 and is started again, so if the pods of a stopped cluster started one by one, the first would never become ready and the other two would not be started.
 - **`publishNotReadyAddresses: true` (headless Service):** pods that are not ready yet keep their DNS names. Otherwise nodes that are waiting for a leader cannot find each other, and no leader can be elected.
 - **`nodes` uses DNS names:** in the form `rradius-0.rradius-cluster:8100`; `listen = "0.0.0.0"`, because the other pods connect through the pod address.
 - **Probes:** the metrics port opens only after the node has caught up with the cluster, so only the `startupProbe` runs first (`/livez`, every 5 seconds, at most 60 times). After that the `livenessProbe` looks at `/livez` and the `readinessProbe` at `/readyz`.
@@ -1163,9 +1165,9 @@ The `deploy/monitoring/` directory of the source has ready-made rules; see [chap
 **Cause:** Node 1 has not created the cluster yet, or the other nodes have not started.
 **Fix:** Wait. When `has caught up with the cluster` appears, it is fine. If it never appears, confirm that all three nodes have started and that the `raft` and `api` addresses can reach each other.
 
-**Symptom:** The node exits after starting and prints `not ready to apply migrations: node 2 did not join within 10s (the limit is migrations_wait_ms; raise it if a migration file takes longer)`, exit code 1.
-**Cause:** A majority could not gather within `migrations_wait_ms`: the other nodes are not running, or cannot be reached.
-**Fix:** Bring the other nodes up first; when you restart together, set `migrations_wait_ms` longer.
+**Symptom:** A node that starts for the first time exits and prints `not ready to apply migrations: node 2 did not join within 10s (the limit is migrations_wait_ms; raise it if a migration file takes longer)`, exit code 1.
+**Cause:** It could not join the cluster within `migrations_wait_ms`: the other nodes are not running, or cannot be reached.
+**Fix:** Bring the other nodes up first; when you start them together, set `migrations_wait_ms` longer.
 
 **Symptom:** At startup it prints `cannot start cluster node 2: node id 2 is in use: …`, exit code 2.
 **Cause:** A node with a different address in the cluster already uses this id and is still running.

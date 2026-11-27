@@ -189,6 +189,15 @@ async fn client_stream(
     let mut shutdown = false;
     let mut failed_retries: u32 = 0;
 
+    // A local client starts without having looked for the leader, so that a node starts while
+    // there is none: looked for here, before the first connection. Reads through the leader wait
+    // meanwhile. Until it is found the client takes this node for the leader, so a write goes to
+    // the local Raft, which names the leader it knows of for the client to send it to, and fails
+    // at once when it knows none. A remote client has looked already.
+    if client.inner.state.is_some() {
+        client.find_set_active_leader().await;
+    }
+
     loop {
         let ws = match try_connect(
             &leader,

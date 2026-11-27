@@ -84,9 +84,9 @@ leader 停掉時，剩下的節點會自己選出新的 leader，不需要人介
 一個節點啟動時，不會馬上開始回應請求。它依序做這些事：
 
 1. 啟動本機的叢集節點。第一次啟動的節點要先加入叢集。
-2. 等到有可以寫入的 leader，最多等 `migrations_wait_ms`（預設 60000 毫秒）。
+2. 等到有可以寫入、而且回應過一次讀取的 leader，最多等 `migrations_wait_ms`（預設 60000 毫秒）。節點停下前記得的狀態不算數。時間內沒有 leader 回應時，節點不做第 3、4 步，而是照[整個叢集一起重開](#整個叢集一起重開)的說明結束，或用本機副本服務。
 3. 有 `migrations_dir` 的話，套用還沒套用的 migration（[第 18 章](18-operations.md)）。
-4. 透過 leader 寫一筆自己的記號，等本機副本讀回這筆記號，才算追上進度。日誌寫 `cluster node N has caught up with the cluster`。
+4. 透過 leader 寫一筆自己的記號，等本機副本讀回這筆記號，才算追上進度。叢集當下不能接受這筆寫入時（例如正在選舉），會重試到 `migrations_wait_ms`。日誌寫 `cluster node N has caught up with the cluster`。
 5. 開 RADIUS、TACACS+ 與指標埠，日誌寫 `Servers started`。
 
 第 4 步保證：一個停機兩個小時才回來的節點，回答的第一個請求就看得到這兩個小時裡新增的帳號。指標埠也是在這之後才開，所以啟動期間連 `/livez` 都連不上。
@@ -314,7 +314,7 @@ configuration ok
 
 ### 一起啟動
 
-三個節點要一起啟動：第一個起來的節點要等到湊滿過半數才會開始服務。每個節點開一個終端機，或像這樣放到背景，日誌寫進檔案：
+三個節點要一起啟動。第一次啟動時叢集由節點 1 建立：節點 2、3 要加入之後才會服務；節點 1 不等它們，單獨啟動時就自己建立叢集並開始服務。每個節點開一個終端機，或像這樣放到背景，日誌寫進檔案：
 
 ```console
 $ for n in 1 2 3; do rradiusd serve --config node$n.toml > node$n.log 2>&1 & done
@@ -523,7 +523,7 @@ rradius_acct_spool_bytes 0
 
 停掉一個節點（SIGTERM）再啟動，它用自己 `data_dir` 裡的資料回來，從 leader 補上停機期間的寫入，追上之後才服務。這是升級、改 `[cluster]` 設定、換主機硬體時的標準做法。
 
-> **注意：** 叢集剛恢復過半數、還在選舉的那幾秒裡啟動節點，節點讀「叢集已套用哪些 migration」會得到 `has to forward request to: None`。現在它每 200 ms 重讀一次，等到 leader 回答，上限是 `migrations_wait_ms`；超過才以結束碼 1 結束，最後一行是 `not ready to apply migrations: cannot read applied migrations: …`，帶最後一次的錯誤。舊版沒有重讀，這個情況會在幾秒後直接結束，要靠 systemd 的 `Restart=on-failure` 或容器的重啟政策再啟動一次。這段重試由單元測試涵蓋，選舉空窗本身沒有在多台實機上重現過。之後寫「追上進度」標記的那一步不會重試：有 `migrations_dir` 時，節點在那裡遇到選舉會以結束碼 1 結束（見[整個叢集一起重開](#整個叢集一起重開)）。
+> **注意：** 叢集剛恢復過半數、還在選舉的那幾秒裡啟動節點，節點讀「叢集已套用哪些 migration」會得到 `has to forward request to: None`。現在它每 200 ms 重讀一次，等到 leader 回答，上限是 `migrations_wait_ms`；超過才以結束碼 1 結束，最後一行是 `not ready to apply migrations: cannot read applied migrations: …`，帶最後一次的錯誤。舊版沒有重讀，這個情況會在幾秒後直接結束，要靠 systemd 的 `Restart=on-failure` 或容器的重啟政策再啟動一次。這段重試由單元測試涵蓋，選舉空窗本身沒有在多台實機上重現過。之後寫「追上進度」標記的那一步也會重試（見[整個叢集一起重開](#整個叢集一起重開)）。
 
 ### 強制結束之後
 
@@ -582,23 +582,25 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 
 ### 整個叢集一起重開
 
-三個節點一起停、一起啟動，跟第一次啟動一樣：每個節點等到湊滿過半數、追上進度才服務，最多等 `migrations_wait_ms`。所以 `migrations_wait_ms` 要比你預期「最後一個節點起來」所需的時間長。
+三個節點一起停、一起啟動時，每個節點先等 leader 出現，追上進度才服務。等 leader 最多等 `migrations_wait_ms`，所以它要比你預期「最後一個節點起來」所需的時間長。到時間仍沒有 leader 的節點，照下表「單獨重開一個節點」的方式處理。
 
-有 `migrations_dir` 時，這樣啟動也可能有節點結束。2026-11-27 在一台機器上跑三個節點，9 次同時啟動中有 3 次有一個節點以結束碼 1 結束：`cannot write the marker: ClientWriteError: has to forward request to: None, None`。原因是它在選舉中寫「追上進度」的標記，而這個寫入不會重試。節點要放在會把它再啟動起來的東西底下（systemd 的 `Restart=on-failure`、容器的重啟政策）；再啟動一次就起來了。
+寫「追上進度」標記時遇到選舉，會重試到 `migrations_wait_ms`。2026-11-27 在一台機器上跑三個節點、`migrations_wait_ms = 15000` 實測：三個節點一起重開 10 次，每次重開前先讓一個舊 follower 在沒有過半數的情況下單獨跑 20 秒；沒有節點結束，三個節點在啟動後約 6.6 秒追上進度。這筆寫入還不會重試時，同樣的重開 10 次中有 4 次有節點結束（`cannot write the marker: … has to forward request to: None, None`）。
 
-只重開一個節點、另外兩個還沒回來時（沒有設 `stop_without_leader_ms`、所有 migration 本機都已套用），程式的設計是：等不到 leader 就比對本機副本已套用的 migration，相符時印出警告，用本機副本服務。實際上，結果取決於節點停下時的角色與各節點停下的順序。2026-11-27 在一台機器上跑三個節點、`migrations_wait_ms = 15000` 實測：
+只重開一個節點、另外兩個還沒回來時：已經加入過叢集的節點不會無限期等 leader，結果與它停下時的角色無關。在 `migrations_wait_ms`（預設 60 秒）內沒有 leader 回應時：
 
-| 單獨重開的節點 | 有 `migrations_dir` | 沒有 `migrations_dir` |
-| --- | --- | --- |
-| 停下時是 leader | 照設計用本機副本服務（4 次中 4 次） | 沒有測 |
-| 是 follower，停下時 leader 還在跑 | 結束碼 1，`cannot read applied migrations: no answer within …`（1 次中 1 次） | 服務，警告 `serving before catching up`（2 次中 2 次） |
-| 是 follower，在 leader 之後停下 | 結束碼 1，`node N did not join within 15s`（4 次中 4 次） | 觀察 60 秒，不服務也不結束（2 次中 2 次）；這段等待沒有時間上限 |
+| 設定與本機副本 | 節點的行為 |
+| --- | --- |
+| 沒設 `stop_without_leader_ms`，沒有 `migrations_dir` | 印出警告，用本機副本服務 |
+| 沒設 `stop_without_leader_ms`，`migrations_dir` 的檔案本機都已套用 | 印出同樣的警告，用本機副本服務 |
+| 沒設 `stop_without_leader_ms`，有檔案本機還沒套用 | 結束碼 1，`no leader to apply migration file '…', which this node has not applied` |
+| 沒設 `stop_without_leader_ms`，有檔案以另一個名稱或另一份內容記為已套用 | 結束碼 2 |
+| 設了 `stop_without_leader_ms` | 結束碼 1，`cluster was not ready: no usable leader within …, and stop_without_leader_ms is set`，不回應任何請求 |
 
-照設計服務的節點，警告是 `cluster node 1: no usable leader within 3.981301833s; serving without a leader before catching up, so answers come from this node's replica, which may be behind`，`rradius_cluster_caught_up` 是 0。另外兩個節點回來後，日誌寫 `cluster node 1 has caught up with the cluster`，`rradius_cluster_caught_up` 變成 1。
+警告是 `cluster node 1: no usable leader within …; serving without a leader before catching up, so answers come from this node's replica, which may be behind`，`rradius_cluster_caught_up` 是 0。其他節點回來後，日誌寫 `cluster node 1 has caught up with the cluster`，這個指標變成 1。
 
-設了 `stop_without_leader_ms` 的節點不會用舊資料服務：啟動走到找 leader 這一步而找不到時，以結束碼 1 結束。依程式碼，這個設定管不到一種情況：沒有 `migrations_dir` 而在 leader 之後停下的 follower，會像表格那樣停在更早的啟動步驟，沒有時間上限（沒有用這個設定實測）。
+2026-11-27 在一台機器上跑三個節點、`migrations_wait_ms = 10000`，單獨重開一個 follower 實測，停下時 leader 還在跑、以及在 leader 之後停下各一種：有、沒有 `migrations_dir` 都用本機副本服務；有 `migrations_dir` 並設 `stop_without_leader_ms = 10000` 時以結束碼 1 結束。在其他節點還在跑時停下的原 leader（測試中是節點 1），單獨重開後，有、沒有 `migrations_dir` 同樣用本機副本服務。停掉一個沒有 leader 而在服務的節點（SIGTERM，`[shutdown]` 用預設時間）會以結束碼 0 結束：原 follower 約 20 秒，原 leader 約 15 秒。
 
-結論：失去多數節點時，不要指望重開某個節點就能讓它服務；先把其他節點救回來。
+單獨重開的節點用可能是舊的副本回答只讀資料的登入，寫入要等過半數回來（見[沒有 leader 時](#沒有-leader-時)）。
 
 ## 加入節點
 
@@ -820,7 +822,7 @@ configuration ok
 - NAS 把三個節點都設成伺服器。設了 `stop_without_leader_ms` 的話，被隔開的節點會停止回應，NAS 就會換問別台。
 - RADIUS 走節點的實體位址，不是 WireGuard 位址；請求也要從 `radius.clients` 的網段送出，否則不會有回應。管理用的主機不在那個網段時，暫時加一個只有它位址的 `[[radius.clients]]`，reload 後測，測完再移除。
 - 用 EAP 的話，一次登入要在同一個節點完成：NAS 設成主備，或讓負載平衡器依來源固定節點（[第 11 章](11-eap.md)）。
-- 一台先起來、其他的還沒起來時，它會等到湊滿過半數（最多 `migrations_wait_ms`），那是等待，不是故障；日誌出現 `RADIUS Server listening` 才能服務。
+- 節點不是同時啟動時：第一次啟動，節點 2、3 要等到加入節點 1 建立的叢集；有 `migrations_dir`（如這個範例）時，`migrations_wait_ms` 內沒加入的節點以結束碼 1 結束（`did not join within …`），沒有時會一直等到加入為止；重開時，節點最多等 `migrations_wait_ms` 讓 leader 出現，之後照[整個叢集一起重開](#整個叢集一起重開)的說明處理。這段等待不是故障；日誌出現 `RADIUS Server listening` 才能服務。
 - 每個節點都要設自動重啟（systemd `Restart=on-failure`、Docker `restart: unless-stopped`），因為伺服器在某些情況下會主動以結束碼 1 結束，讓行程管理程式重開它（見[強制結束之後](#強制結束之後)）。
 
 ## 用 Docker Compose 部署
@@ -928,7 +930,7 @@ $ kubectl rollout status statefulset/rradius
 
 每一點都對應到本章前面的行為：
 
-- **`podManagementPolicy: Parallel`：** 三個 pod 一起啟動。節點要湊滿過半數才服務，一個一個啟動的話，第一個會一直等。
+- **`podManagementPolicy: Parallel`：** 三個 pod 一起啟動。設了 `stop_without_leader_ms` 時，重開的節點在 `migrations_wait_ms` 內找不到 leader 就以結束碼 1 結束、再被啟動；整組停掉的叢集如果一個一個啟動，第一個 pod 永遠不會 ready，另外兩個也就不會被啟動。
 - **`publishNotReadyAddresses: true`（headless Service）：** 還沒就緒的 pod 也保有 DNS 名稱。不然還在等 leader 的節點彼此找不到，就選不出 leader。
 - **`nodes` 用 DNS 名稱：** `rradius-0.rradius-cluster:8100` 這種形式；`listen = "0.0.0.0"`，因為其他 pod 透過 pod 位址連進來。
 - **探針：** 指標埠在節點追上進度後才開，所以先只跑 `startupProbe`（`/livez`，每 5 秒、最多 60 次）。之後 `livenessProbe` 看 `/livez`，`readinessProbe` 看 `/readyz`。
@@ -1163,9 +1165,9 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 **原因：** 節點 1 還沒建好叢集，或其他節點還沒啟動。
 **解法：** 等。出現 `has caught up with the cluster` 就沒事。一直沒出現的話，確認三個節點都啟動了、`raft` 與 `api` 位址互相連得到。
 
-**症狀：** 節點啟動後結束，印出 `not ready to apply migrations: node 2 did not join within 10s (the limit is migrations_wait_ms; raise it if a migration file takes longer)`，結束碼 1。
-**原因：** 在 `migrations_wait_ms` 內湊不到過半數：其他節點沒在跑，或連不到。
-**解法：** 先讓其他節點起來；一起重開時把 `migrations_wait_ms` 設長一點。
+**症狀：** 第一次啟動的節點結束，印出 `not ready to apply migrations: node 2 did not join within 10s (the limit is migrations_wait_ms; raise it if a migration file takes longer)`，結束碼 1。
+**原因：** 在 `migrations_wait_ms` 內加入不了叢集：其他節點沒在跑，或連不到。
+**解法：** 先讓其他節點起來；一起啟動時把 `migrations_wait_ms` 設長一點。
 
 **症狀：** 啟動時印出 `cannot start cluster node 2: node id 2 is in use: …`，結束碼 2。
 **原因：** 叢集裡另一個位址的節點已經用了這個 id，而且還在運作。
