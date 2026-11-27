@@ -485,7 +485,7 @@ SIGHUP 之後的計費寫進新的 `acct.jsonl`，舊檔不再增加。
 所以：
 
 - `data_dir`、計費 spool 要放在 `/var/lib/rradius` 底下，計費記錄檔放在 `/var/log/rradius` 底下，否則寫不進去。
-- `Restart=on-failure` 會接住伺服器主動以結束碼 1 結束的情況，例如叢集節點的 Raft 核心停止（[第 16 章](16-cluster.md)）。設定錯誤的結束碼 2 也會觸發重啟，但重啟也一樣會失敗；改設定後先 `check`。
+- `Restart=on-failure` 會接住伺服器主動以結束碼 1 結束的情況，例如叢集節點的 Raft 核心停止（[第 16 章](16-cluster.md)）。已從叢集移除的節點也以結束碼 1 結束，但重啟不會恢復，要停用服務（[第 16 章](16-cluster.md#被移除的節點又啟動時)）。設定錯誤的結束碼 2 也會觸發重啟，但重啟也一樣會失敗；改設定後先 `check`。
 - 常用的指令：`systemctl start|stop|restart|reload rradius`、`systemctl status rradius`、`journalctl -u rradius -f`。
 
 > **未實機驗證：** 本書沒有在 systemd 下實際跑過這個 unit。表中的值照檔案抄錄，行為依 systemd 的一般規則與本章的實測推論。
@@ -538,8 +538,8 @@ Synology 上的日常工作：
 - **升級：** 換 image 版本後再 `kubectl apply -k deploy/kubernetes`，一樣一次換一個 pod。StatefulSet 從 `rradius-2` 換到 `rradius-0`，不會替你挑 leader 最後換；換到 leader 時有一段選舉的寫入空檔（秒數見[第 16 章](16-cluster.md#跨機房)），計費進 spool。
 - **節點維護：** PodDisruptionBudget 讓 `kubectl drain` 這類自願中斷一次只停一個 pod。**不要 `kubectl delete pod --all`：** 三個同時重啟，叢集會暫時失去過半數。
 - **不能自動擴充，`replicas` 也不能當成節點數的旋鈕。** 叢集成員寫在每個 pod 的設定檔裡，pod 數量要等於 `[[cluster.nodes]]` 的數量，也等於 `kustomization.yaml` 與 `items` 裡 `rradius-N.toml` 的份數（沒有那份檔案的 pod 讀不到設定）。所以不要設 HPA。
-  - `kubectl scale --replicas=1` 等於停掉兩個節點，剩下那台的行為就是[第 16 章](16-cluster.md)說的停兩台。再擴回 3 時，回來的 pod 可能各重啟一次才就緒：設了 `stop_without_leader_ms` 的節點，啟動時等不到 leader 會以結束碼 1 結束（訊息 `cluster was not ready to apply migrations`），由 Kubernetes 重啟，第二次就會歸隊。
-  - 要改節點數，每份設定、`kustomization.yaml` 與 `items` 都要跟著改；叢集本身增減節點的做法見[加入節點](16-cluster.md#加入節點)與[移除節點](16-cluster.md#移除節點)。這個組合本書沒有在 Kubernetes 上試過。
+  - `kubectl scale --replicas=1` 等於停掉兩個節點，剩下那台的行為就是[第 16 章](16-cluster.md)說的停兩台。再擴回 3 時，回來的 pod 可能各重啟一次才就緒：設了 `stop_without_leader_ms` 的節點，啟動時等不到 leader 會以結束碼 1 結束（訊息 `cluster was not ready: no usable leader within …, and stop_without_leader_ms is set`），由 Kubernetes 重啟，第二次就會歸隊。
+  - 要改節點數，每份設定、`kustomization.yaml` 與 `items` 都要跟著改；叢集本身增減節點的做法見[加入節點](16-cluster.md#加入節點)與[移除節點](16-cluster.md#移除節點)。這個組合本書沒有在 Kubernetes 上試過。已移除的節點如果它的 pod 還在，會一直重啟又結束（[第 16 章](16-cluster.md#被移除的節點又啟動時)）。
 - **限制誰能讀指標：** 指標埠沒有認證也沒有 TLS，綁 `0.0.0.0` 時叢集裡的人都讀得到。`networkpolicy.yaml` 只讓 RADIUS 埠對外、叢集埠只給其他 rradius pod、指標埠只給 `monitoring` namespace（改成 Prometheus 所在的 namespace）。要用時把它加進 `kustomization.yaml` 的 `resources`。kubelet 的探針從節點本身來，大部分網路外掛都會放行，**套用後確認 pod 還是就緒的。** 用 `hostNetwork` 的 pod 不受 NetworkPolicy 管（[第 16 章](16-cluster.md#沒有合適的負載平衡器時hostnetwork)）。
 
 > **未實機驗證：** 以上在 Kubernetes 上的操作都沒有實際跑過。本書只用 `kubectl kustomize` 確認範例能產生資源，並對三份設定跑過 `check`。

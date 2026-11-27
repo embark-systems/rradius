@@ -155,7 +155,7 @@ The convention of `rradiusd` is: 0 for success, 2 for a usage or configuration e
 
 | Command | 0 | 1 | 2 | 3 |
 | --- | --- | --- | --- | --- |
-| `serve` | Stopped normally after SIGTERM or SIGINT, including a stop requested during startup | Cannot serve after starting: the RADIUS port cannot be listened on, a cluster error aborted a migration, there is no leader and `stop_without_leader_ms` is set, the Raft core stopped | Error in the configuration, dictionary or script, a migration file breaks the rules or its SQL fails, the cluster node cannot start (`cannot start cluster node …`), wrong arguments | — |
+| `serve` | Stopped normally after SIGTERM or SIGINT, including a stop requested during startup | Cannot serve after starting: the RADIUS port cannot be listened on, a cluster error aborted a migration, there is no leader and `stop_without_leader_ms` is set, the Raft core stopped, the node has been removed from the cluster (`has been removed from the cluster`) | Error in the configuration, dictionary or script, a migration file breaks the rules or its SQL fails, the cluster node cannot start (`cannot start cluster node …`), wrong arguments | — |
 | `check` | `configuration ok` | — | Error in the configuration | — |
 | `help`, `--version`, no arguments | Prints the result | — | Unknown command | — |
 | `schema` | Prints the schema | Writing failed, for example the pipe was closed | Wrong arguments | — |
