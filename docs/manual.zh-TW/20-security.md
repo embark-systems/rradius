@@ -540,13 +540,13 @@ timeout_ms = 1500
 | `"verify"`（預設） | 加密，並驗證憑證鏈與主機名稱 |
 | `"off"` | 不加密 |
 
-設成 `"off"` 而 `host` 不是本機（`localhost` 或 loopback 位址）時，伺服器啟動時會記警告：
+設成 `"off"` 而 `host` 不是本機（`localhost` 或 loopback 位址）時，`check` 與伺服器啟動時都會記警告：
 
 ```text
 … WARN rradius_core::external_db: databases.remote: tls = "off" sends the password and the data to 192.0.2.10 unencrypted
 ```
 
-> **注意：** 這個警告只在伺服器啟動時出現，`check` 不會印。實測同一份設定 `check` 只印 `configuration ok`。
+> **注意：** reload 不會再印這個警告。
 
 資料庫用內部 CA 簽的憑證時，用 `ca_file` 指定 CA，不要改成 `"off"`。詳細見[第 9 章](09-external-databases.md)。
 
