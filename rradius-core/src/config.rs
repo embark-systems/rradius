@@ -3231,7 +3231,7 @@ mod tests {
         let loaded = |times: usize| -> Result<String, String> {
             let log = crate::test_support::radius::CapturedLog::default();
             let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
-            tracing::subscriber::with_default(subscriber, || (0..times).try_for_each(|_| load(&path).map(|_| ()).map_err(|e| e.to_string())))?;
+            crate::test_support::radius::with_log_subscriber(subscriber, || (0..times).try_for_each(|_| load(&path).map(|_| ()).map_err(|e| e.to_string())))?;
             let text = log.0.lock().map_err(|e| e.to_string())?.clone();
             String::from_utf8(text).map_err(|e| e.to_string())
         };
@@ -3602,9 +3602,36 @@ mod tests {
     fn warnings_of(body: &str) -> Result<(Vec<String>, bool), String> {
         let log = crate::test_support::radius::CapturedLog::default();
         let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
-        let (_dir, result) = tracing::subscriber::with_default(subscriber, || load_str(body));
+        let (_dir, result) = crate::test_support::radius::with_log_subscriber(subscriber, || load_str(body));
         let text = String::from_utf8(log.0.lock().map_err(|e| e.to_string())?.clone()).map_err(|e| e.to_string())?;
         Ok((text.lines().map(str::to_string).collect(), result.is_ok()))
+    }
+
+    /// Another test loading the same kind of configuration, on a thread with no subscriber, must not
+    /// keep the warning from the test that listens. The call site is settled once in a process, so
+    /// this shows the order surely only when it runs alone.
+    #[test]
+    fn test_captured_warning_survives_another_thread_reaching_it_first() -> Result<(), String> {
+        let body = cluster_config(&format!("data_dir = \"data\"\n{CLUSTER_SECRETS}[[cluster.nodes]]\nid = 1\nraft = \"10.0.0.1:8100\"\napi = \"10.0.0.1:8200\"\n"));
+        let log = crate::test_support::radius::CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
+        let listening = std::sync::Barrier::new(2);
+        let reached = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                listening.wait();
+                let _ = load_str(&body);
+                reached.wait();
+            });
+            crate::test_support::radius::with_log_subscriber(subscriber, || {
+                listening.wait();
+                reached.wait();
+                let _ = load_str(&body);
+            });
+        });
+        let text = String::from_utf8(log.0.lock().map_err(|e| e.to_string())?.clone()).map_err(|e| e.to_string())?;
+        assert_eq!(text.lines().filter(|line| line.contains("cluster.listen")).count(), 1, "{text:?}");
+        Ok(())
     }
 
     #[test]
@@ -4349,7 +4376,7 @@ mod tests {
             std::fs::set_permissions(&key, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
             let log = crate::test_support::radius::CapturedLog::default();
             let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
-            tracing::subscriber::with_default(subscriber, || (0..times).try_for_each(|_| load(&path).map(|_| ()).map_err(|e| e.to_string())))?;
+            crate::test_support::radius::with_log_subscriber(subscriber, || (0..times).try_for_each(|_| load(&path).map(|_| ()).map_err(|e| e.to_string())))?;
             let text = log.0.lock().map_err(|e| e.to_string())?.clone();
             String::from_utf8(text).map_err(|e| e.to_string())
         };
@@ -5339,7 +5366,7 @@ mod tests {
             fs::write(dir.path().join("rradius.toml"), including("")).map_err(|e| e.to_string())?;
             let log = crate::test_support::radius::CapturedLog::default();
             let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
-            let result = tracing::subscriber::with_default(subscriber, || load(&dir.path().join("rradius.toml")));
+            let result = crate::test_support::radius::with_log_subscriber(subscriber, || load(&dir.path().join("rradius.toml")));
             result.map_err(|e| e.to_string())?;
             let text = log.0.lock().map_err(|e| e.to_string())?.clone();
             String::from_utf8(text).map_err(|e| e.to_string())
@@ -5365,7 +5392,7 @@ mod tests {
             fs::set_permissions(dir.path(), fs::Permissions::from_mode(directory_mode)).map_err(|e| e.to_string())?;
             let log = crate::test_support::radius::CapturedLog::default();
             let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(log.clone()).finish();
-            let result = tracing::subscriber::with_default(subscriber, || load(&path));
+            let result = crate::test_support::radius::with_log_subscriber(subscriber, || load(&path));
             // The directory has to be readable for the check to be the only difference.
             fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
             result.map_err(|e| e.to_string())?;
