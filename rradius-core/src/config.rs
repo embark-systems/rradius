@@ -1485,6 +1485,39 @@ pub fn load(path: &Path) -> Result<ServerConfig, ConfigError> {
     load_with(path, crate::extension::installed())
 }
 
+/// `load` for `serve`, which hands `[log]` to `start_log` before anything is checked: what the
+/// checks warn about would be lost with no logging yet. A `[log]` that cannot be read or is not
+/// accepted gives the default settings, and the load says what is wrong with it. The file is read
+/// once, as `path` may be a pipe.
+pub fn load_and_start_logging(path: &Path, start_log: impl FnOnce(&LogSettings)) -> Result<ServerConfig, ConfigError> {
+    let text = read_file(path);
+    let log = text.as_ref().ok().and_then(|text| log_of(path, text.clone()));
+    start_log(&log.unwrap_or_default());
+    check_file(path, text?, crate::extension::installed()).map(|(config, _)| config)
+}
+
+/// `[log]` of `text`, the configuration file at `path`, and of the files it includes.
+fn log_of(path: &Path, text: String) -> Option<LogSettings> {
+    #[derive(Deserialize)]
+    struct OnlyLog {
+        log: Option<toml::Value>,
+    }
+    let (text, _) = with_includes(path, text).ok()?;
+    let log = toml::from_str::<OnlyLog>(&text).ok()?.log?;
+    log_settings(split_log(Some(RawLog::deserialize(log).ok()?)).0?).ok()
+}
+
+/// `[log]` without its `trace`, and `[log.trace]`.
+fn split_log(log: Option<RawLog>) -> (Option<RawLog>, Option<RawTrace>) {
+    match log {
+        Some(mut log) => {
+            let trace = log.trace.take();
+            (Some(log), trace)
+        }
+        None => (None, None),
+    }
+}
+
 /// Like `load`, with `extensions` reading their sections.
 pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Result<ServerConfig, ConfigError> {
     load_with_text(path, extensions).map(|(config, _)| config)
@@ -1493,7 +1526,16 @@ pub fn load_with(path: &Path, extensions: &crate::extension::Extensions) -> Resu
 /// Like `load_with`, with the text the configuration was read from: that of the file and of the files
 /// it includes after it, for what prints the settings as TOML.
 pub(crate) fn load_with_text(path: &Path, extensions: &crate::extension::Extensions) -> Result<(ServerConfig, String), ConfigError> {
-    let text = fs::read_to_string(path).map_err(|e| ConfigError(format!("{}: cannot read configuration: {}", path.display(), e)))?;
+    check_file(path, read_file(path)?, extensions)
+}
+
+/// What the configuration file at `path` says.
+fn read_file(path: &Path) -> Result<String, ConfigError> {
+    fs::read_to_string(path).map_err(|e| ConfigError(format!("{}: cannot read configuration: {}", path.display(), e)))
+}
+
+/// `load_with_text` once `text` has been read from `path`.
+fn check_file(path: &Path, text: String, extensions: &crate::extension::Extensions) -> Result<(ServerConfig, String), ConfigError> {
     warn_if_writable(path, "configuration file");
     let (text, parts) = with_includes(path, text)?;
     let config = load_text(path, &text, extensions).map_err(|error| name_sources(locate(error, path, &parts), path, &parts, &text))?;
@@ -1560,13 +1602,7 @@ fn load_text(path: &Path, text: &str, extensions: &crate::extension::Extensions)
         },
         None => return Err(fail("the [lua] section is required".to_string())),
     };
-    let (raw_log, raw_trace) = match raw.log {
-        Some(mut log) => {
-            let trace = log.trace.take();
-            (Some(log), trace)
-        }
-        None => (None, None),
-    };
+    let (raw_log, raw_trace) = split_log(raw.log);
     let log = raw_log.map(log_settings).transpose().map_err(fail)?.unwrap_or_default();
     let trace = raw_trace.map(trace_settings).transpose().map_err(fail)?;
     // Chains first, so client `auth` references can be checked against them.
