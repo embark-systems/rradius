@@ -322,7 +322,7 @@ With `cluster.stop_without_leader_ms` set, if no leader is found at startup (for
 cluster was not ready: no usable leader within 53.980820917s, and stop_without_leader_ms is set
 ```
 
-Fix: first bring up a majority of the nodes. Without `stop_without_leader_ms`, a node that has joined the cluster before starts after `migrations_wait_ms` and answers from its local copy, which may be old; with `migrations_dir`, every file has to be applied in that copy (see [Restart the whole cluster](16-cluster.md#restart-the-whole-cluster)). For a node that loses the leader while running, see [Cluster has no leader](#cluster-has-no-leader).
+Fix: first bring up a majority of the nodes. Without `stop_without_leader_ms`, a node that has joined the cluster before starts after `migrations_wait_ms` and answers from its local copy, which may be old; with `migrations_dir`, every file has to be applied in that copy (see [Restart the whole cluster](16-cluster.md#restart-the-whole-cluster)). A node that has been removed from the cluster and can ask the current leader is the exception: it exits with exit code 1 ([Chapter 16](16-cluster.md#when-a-removed-node-starts-again)). For a node that loses the leader while running, see [Cluster has no leader](#cluster-has-no-leader).
 
 ## Client matching fails
 
@@ -783,6 +783,7 @@ You see this message; here are the cause and the fix. All of them are real outpu
 | `metrics: cannot listen on …: Address already in use` (the server keeps running) | The metrics port is in use | Stop the program that holds it, then restart rradius |
 | `LockFile data/logs is locked and in use by another process` | The old process has not finished stopping | Wait for it to exit, then start |
 | `cluster was not ready: no usable leader within …, and stop_without_leader_ms is set` (exit code 1) | The cluster has no majority at startup | Bring up the other nodes first |
+| `cluster node N has been removed from the cluster: node M, its leader, does not list it …` (exit code 1) | This node has been removed from the cluster; the message lists the current members and the data directory | Disable the service of a retired host; to add it back, confirm the cluster with `cluster members` first, then empty `data_dir` and start it ([Chapter 16](16-cluster.md#when-a-removed-node-starts-again)) |
 | `cluster was not ready to apply migrations: …` (exit code 1) | At startup, no leader within `migrations_wait_ms`, so the migrations could not be applied, or the local replica could not catch up; the second half of the message sometimes says "the cluster node gives one migration file 30 s": one file ran for more than 30 seconds | Bring up a majority of the nodes first; when a file is slow by itself, increase `migrations_wait_ms`, then start again ([Chapter 18](18-operations.md#common-mistakes)) |
 
 ### While running
@@ -797,6 +798,8 @@ You see this message; here are the cause and the fix. All of them are real outpu
 | `databases.X: not reachable at startup: …; /readyz answers 503 until it is` | A database with `required_for_ready` cannot be reached | Same as above |
 | `Lua script error (radius/accounting): runtime error: no leader for 5 s` | The cluster has no leader, so it cannot write | Bring back a majority of the nodes |
 | `/readyz` answers `no leader` (503) | `stop_without_leader_ms` is set and there is no leader | Same as above |
+| `cluster node N has been removed from the cluster: …` (while running, exit code 1) | The node was removed while running | The same message in [the table above](#check-and-startup) |
+| `cannot ask whether this node is still a member: <address> refused the api secret: …` | Another node does not accept the API secret of this node, so it cannot confirm that it is still a member | Give every node the same `secret_api` |
 | `Lua script error (radius/accounting): runtime error: PrepareStatement: no such table: …` | The SQL of the accounting script is wrong; no response and not put in the spool | Fix the script |
 | `RADIUS authentication overloaded: discarded N packets` | Over `max_auth_inflight` | Check for abnormal traffic; adjust the limit ([Chapter 19](19-performance.md)) |
 | `asked for a receive buffer of N bytes and each socket got M; raise … to at least N` | The system limit for socket buffers is too low | Adjust it as `tuning` says |

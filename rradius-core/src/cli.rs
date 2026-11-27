@@ -3,6 +3,7 @@
 
 use crate::accounts;
 use crate::admin;
+use crate::cluster_commands::Standing;
 use crate::config;
 use crate::dictionary::Dictionary;
 use crate::logging;
@@ -112,6 +113,26 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(25);
 async fn stop_node_and_exit_with(db: &lua_engine::Db, message: impl std::fmt::Display) -> ! {
     let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
     exit_with(message)
+}
+
+/// Asks whether the cluster still has this node, while it starts. A node the cluster no longer
+/// has ends here with status 1; being asked to stop meanwhile ends it as during the rest of the
+/// start.
+async fn ask_membership(db: &lua_engine::Db, terminate: &mut Signal, interrupt: &mut Signal) -> Standing {
+    let standing = tokio::select! {
+        standing = db.check_membership() => standing,
+        _ = stop_asked(terminate, interrupt) => {
+            let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
+            stopped_during_startup()
+        }
+    };
+    if let Some(removal) = db.removal() {
+        tracing::error!("cluster {removal}");
+        let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
+        logging::flush();
+        std::process::exit(1);
+    }
+    standing
 }
 
 /// Stops the accounting spool replay: what was written stays on disk for the next start, and a
@@ -338,6 +359,10 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     let cluster_node_id = cluster.node_id;
     db.serve_for();
 
+    // Before anything goes through a leader: a node the cluster no longer has must neither write
+    // there nor serve what it still holds.
+    let standing = ask_membership(&db, &mut terminate, &mut interrupt).await;
+
     let migrations_dir_set = migrations.is_some();
     // A leader this node can write through, which has answered it. hiqlite's health is not
     // enough: a node restarted without a majority takes itself for the leader, or remembers one.
@@ -349,6 +374,10 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             stopped_during_startup()
         }
     };
+    // Asked again when no answer settled it: during an election, or with the others still down.
+    if standing == Standing::Unknown {
+        ask_membership(&db, &mut terminate, &mut interrupt).await;
+    }
     if !leader_found {
         // Without a majority: serve from this node's replica, unless told not to serve without a
         // leader, or the directory has files this replica has not applied.
@@ -616,6 +645,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Servers started. Press Ctrl+C to stop.");
     let shutdown = reload::Live::new(config.shutdown);
     let serving = Serving { config_path: config_path.into(), running: config, shared, radius: radius_running, tacacs: tacacs_running, extensions: extensions_serving, shutdown, accounting_log };
+    db.watch_membership();
     let mut checked = tokio::time::interval(Duration::from_secs(1));
     let mut failed = false;
     loop {
@@ -627,6 +657,12 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
             // A stopped Raft core does not start again, and the node would go on answering from a
             // replica that no longer follows the cluster: a clean exit, for a restart to recover it.
             _ = checked.tick() => {
+                // Not for a restart to recover: the message says what the operator can do.
+                if let Some(removal) = db.removal() {
+                    tracing::error!("cluster {removal}");
+                    failed = true;
+                    break;
+                }
                 if let Some(e) = db.cluster_failure() {
                     tracing::error!("cluster node {}: its Raft core stopped ({e}); exiting so that a restart recovers it", cluster_node_id);
                     failed = true;
@@ -636,7 +672,7 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     match failed {
-        // A node whose core stopped answers nothing well: no more waiting.
+        // A node whose core stopped, or that was removed, answers nothing well: no more waiting.
         true => {
             stopping.cancel();
             stop_replay(spool_replay);
@@ -651,8 +687,8 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(log) = &serving.accounting_log {
         log.stop();
     }
-    // A node whose core stopped is shut down within a limit: a shutdown that hangs would leave it
-    // neither serving nor ended, and so never restarted.
+    // A node whose core stopped, or that was removed, is shut down within a limit: a shutdown that
+    // hangs would leave it neither serving nor ended.
     let shut = match failed {
         true => tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await.unwrap_or_else(|_| Err("no clean shutdown within the limit".to_string())),
         false => db.shutdown().await,

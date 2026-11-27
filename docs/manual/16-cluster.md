@@ -83,7 +83,7 @@ Accounting can be replayed, and can also be recorded twice because of a retransm
 
 When a node starts, it does not answer requests at once. It does these things in order:
 
-1. Start the local cluster node. A node that starts for the first time has to join the cluster first.
+1. Start the local cluster node. A node that starts for the first time has to join the cluster first. Then ask the other nodes for the current member list (when this gives no answer either way, ask again after step 2); a node that has been removed ends here and does none of the later steps (see [When a removed node starts again](#when-a-removed-node-starts-again)).
 2. Wait for a leader that can accept writes and has answered a read, for at most `migrations_wait_ms` (60000 ms by default). What the node remembers from before it stopped is not enough. When no leader answers in time, the node does not go on to steps 3 and 4: it exits, or serves from its local copy, as [Restart the whole cluster](#restart-the-whole-cluster) describes.
 3. If there is a `migrations_dir`, apply the migrations that are not yet applied ([chapter 18](18-operations.md)).
 4. Write a marker of its own through the leader, and wait until the local copy reads this marker back. Only then has it caught up. A write the cluster cannot take at that moment, as during an election, is made again until `migrations_wait_ms`. The log says `cluster node N has caught up with the cluster`.
@@ -523,7 +523,7 @@ rradius_acct_spool_bytes 0
 
 Stop a node (SIGTERM) and start it again. It comes back with the data in its own `data_dir`, takes the writes made during its downtime from the leader, and serves only after it has caught up. This is the standard way for upgrades, for changing the `[cluster]` settings and for replacing host hardware.
 
-> **Note:** When you start a node in the few seconds right after the cluster got its majority back and is still electing, the node's read of "which migrations the cluster has applied" gets `has to forward request to: None`. Now it reads again every 200 ms until the leader answers, with `migrations_wait_ms` as the upper limit; after that it exits with exit code 1, and the last line is `not ready to apply migrations: cannot read applied migrations: …`, carrying the last error. Older versions did not read again, and in this situation exited after a few seconds, so you had to rely on `Restart=on-failure` of systemd or the restart policy of the container to start it once more. This retry is covered by a unit test; the gap during an election itself has not been reproduced on multiple real machines. The later step, writing the catch-up marker, is retried too (see [Restart the whole cluster](#restart-the-whole-cluster)).
+> **Note:** A starting node first waits for the leader to answer one read from it, and only then reads "which migrations the cluster has applied". When you start it in the few seconds right after the cluster got its majority back and is still electing, it waits at this step; when no leader has answered within `migrations_wait_ms`, it follows the table in [Restart the whole cluster](#restart-the-whole-cluster). When the leader changes again while the list is being read after the leader answered, the node reads again every 200 ms until `migrations_wait_ms`, counted from the start, is used up; only then does it exit with exit code 1, and the last line is `cluster was not ready to apply migrations: cannot read applied migrations: …`, carrying the last error. This retry is covered by a unit test; the gap during an election itself has not been reproduced on multiple real machines. The later step, writing the catch-up marker, is retried too.
 
 ### After a forced stop
 
@@ -600,6 +600,8 @@ The warning reads `cluster node 1: no usable leader within …; serving without 
 
 Tested on 2026-11-27 with three nodes on one machine and `migrations_wait_ms = 10000`, restarting a follower alone, once stopped while the leader was still running and once stopped after the leader: with and without `migrations_dir` it served from its local copy, and with `migrations_dir` and `stop_without_leader_ms = 10000` it exited with code 1. A former leader (node 1 in the test) restarted alone, stopped while the others were still running, served from its local copy in the same way, with and without `migrations_dir`. Stopping a node that serves without a leader (SIGTERM, default `[shutdown]` times) ended it with exit code 0, after about 20 seconds for a former follower and about 15 seconds for a former leader.
 
+A node that has been removed and can ask the current leader does not follow this table: it does not start serving, shuts its cluster node down and exits with exit code 1; see [When a removed node starts again](#when-a-removed-node-starts-again).
+
 A node restarted alone answers read-only logins from a copy that may be old, and writes fail until a majority is back (see [When there is no leader](#when-there-is-no-leader)).
 
 ## Add a node
@@ -638,7 +640,7 @@ node 4  voter            raft 127.0.0.1:27004  api 127.0.0.1:27014  (not in this
 A few details when a new node joins:
 
 - **A node that joins with empty data has to list the current leader.** It asks to join only the nodes listed in its own configuration, and the other nodes only tell it to go to the leader; if the leader is not in its list, it cannot join. When the configuration has `migrations_dir`, it waits until `migrations_wait_ms` and exits with exit code 1 with the message `node N did not join within …`, and after the process manager restarts it, it starts over. So listing all current members is the safest. Measured on 2026-11-13: after the leader had changed to node 4, a node 1 with empty data whose configuration listed only 1 to 3 could not join; after node 4 was added, it joined within 8 seconds.
-- **A node that restarts with its data is not affected.** It knows the members from its own data, and can return to the cluster even when the configuration does not list the leader (about 14 seconds in the same test).
+- **A member that restarts with its data is not affected.** It knows the members from its own data, and can return to the cluster even when the configuration does not list the leader (about 14 seconds in the same test).
 - **A node with a different secret cannot join,** and the log of the new node gives the reason: a different `secret_raft` gives `Invalid ChallengeResponse`, a different `secret_api` gives `Invalid API Secret`; the members of the cluster do not change (measured on 2026-11-18).
 - **When the new node's `migrations_dir` has one file more than the others,** on 2026-11-18 only joining and restarts of the other nodes were looked at; both worked as usual, and the logs did not mention the difference. The `migrations_dir` of every node has to stay the same; this combination was not examined in depth.
 
@@ -670,7 +672,7 @@ $ rradiusd cluster remove --config node1.toml 4
 node 4 still answers at 127.0.0.1:27014: stop it first, then remove it
 ```
 
-Exit code 2. A node that is removed but keeps running continues to answer with the old data it holds, so you must stop it first.
+Exit code 2. A node that is removed while running keeps answering with the old data it holds until it finds that out, so you must stop it first (see [Why you must stop the node first](#why-you-must-stop-the-node-first)).
 
 Stop node 4 (SIGTERM; it exits after 15 seconds on this machine), and then remove it:
 
@@ -698,7 +700,7 @@ node 3  not in the cluster (listed in this configuration)
 
 `not in the cluster (listed in this configuration)` means it is in the configuration and not in the cluster.
 
-To add a removed node back, follow the conditions of [Add a node](#add-a-node): empty its `data_dir` and start it. Node 3 above came back into the cluster as a voter within 2 seconds after `data3` was emptied and it was started.
+To add a removed node back, follow the conditions of [Add a node](#add-a-node): empty its `data_dir` and start it. Node 3 above came back into the cluster as a voter within 2 seconds after `data3` was emptied and it was started. Starting it with the data it had does not bring it back: the node ends by itself (see [When a removed node starts again](#when-a-removed-node-starts-again)).
 
 **When only one voter would remain** (two voters, one of them stopped), `remove --force` did not finish on the first try, apparently because the change needs a majority of the current voters and the node being removed is one of them. Tested on 2026-11-27 with two nodes on one machine:
 
@@ -708,16 +710,38 @@ To add a removed node back, follow the conditions of [Add a node](#add-a-node): 
 
 Starting that node with an empty `data_dir` instead did not complete the change in the same test (watched for about 20 seconds), so do not count on removing a node whose data is lost. Think twice before running a cluster with only two voters.
 
+The node started in step 3 is still in the member list at that time (as `learner`), so it starts as usual and serves. The three steps were run again the same day with a version in which a removed node ends, with the same result; starting that node again after the removal has finished ends it with exit code 1 (see [When a removed node starts again](#when-a-removed-node-starts-again)).
+
 Exit codes of `cluster remove`: 0 success; 1 there is no such member, or the cluster refused the removal; 2 a bad argument or configuration, or a check did not pass; 3 no answer within 30 seconds. With exit code 3 the removal may already have been done, and the message tells you to confirm with `cluster members` and not to simply run it again.
+
+### When a removed node starts again
+
+A removed node receives no later writes, so its data stays as it was when it was removed. A starting node asks the other nodes for the member list of the current leader, and ends with exit code 1 when it is not on that list: it does not start serving, and it writes nothing to the cluster. The log:
+
+```text
+… ERROR rradius_core::cli: cluster node 3 has been removed from the cluster: node 1, its leader, does not list it (its members: node 1 at 127.0.0.1:27011, node 2 at 127.0.0.1:27012). To retire this host, stop and disable the service. To add it back, first confirm that this is the cluster you expect, then empty data_dir '…/data3' and start it again
+```
+
+There are two ways out:
+
+- **The host is being retired:** stop and disable the service (for example `systemctl disable --now rradius`), and take it off the RADIUS server list of the NAS. If it stays enabled, `Restart=on-failure` of systemd or the restart policy of the container keeps restarting it, and it ends every time.
+- **Add it back to the cluster:** first run `cluster members` with a configuration that points at the cluster you expect, and check that those are the members the log lists; then empty the `data_dir` of this node and start it.
+
+What counts as removed:
+
+- A node is removed only when the member list of the current leader (a node that says it is the leader and was acknowledged by a majority within the last 5 seconds) omits it, and that list is newer than the one the local data remembers (or the local list itself already omits the node). It does not count as removed when any such leader lists it. A node still on the list starts as usual, including a `learner`, such as the stopped node halfway through [removing one of two voters](#remove-a-node).
+- The question goes over the API ports to the other nodes of `[[cluster.nodes]]` and those the local data remembers.
+- A running node that has had no leader for more than 5 seconds, or whose own member list does not have it as a voter (it is not there, or it is a `learner`), asks every 5 seconds; once it finds it has been removed, it stops answering and ends with exit code 1.
+
+> **Warning:** A removed node that cannot reach the cluster has no way to know that it was removed. When no current member answers while it starts (a network partition, or all other nodes stopped), it follows the table in [Restart the whole cluster](#restart-the-whole-cluster): without `stop_without_leader_ms` it answers logins from its old local data, and it ends only once it can find the leader. To keep it from answering in that case, set `stop_without_leader_ms`.
+
+Tested on 2026-11-27 with three nodes on one machine (debug build): a stopped follower was removed and then started three times with its old data, one round with and one without `migrations_dir`. Every start ended with exit code 1 (about 16 to 21 seconds after starting, most of it spent shutting the node down) without listening on the RADIUS ports. Started again with an empty `data_dir`, it was a voter again after about 2 seconds. The case with `stop_without_leader_ms = 10000`, and answering from local data while all other nodes are stopped, are covered by integration tests. It was not tested on several physical hosts.
 
 ### Why you must stop the node first
 
-Measured on 2026-11-13, in Docker on one host, with three to four nodes:
-
-- **A node that was removed but is still running answers with old data.** It no longer receives new writes, so an account added after the removal is rejected on it, and a disabled account can still log in. When the NAS still lists it as a RADIUS server, it gets wrong answers.
-- **Restarting with old data hangs,** and logins get no answer.
-- **Restarting with the data emptied and the configuration still listing itself joins the cluster again automatically.** So for a host you retire, turn the service off (for example `systemctl disable --now rradius`), and do not only delete the data.
-- **Management commands can hang.** If the first node in the configuration is "removed but still running", commands such as `user` wait for the 30 second timeout; stopping it first avoids this.
+- **A node that was removed but is still running answers with old data for a while.** It no longer receives new writes, so an account added after the removal is rejected on it, and an account disabled after the removal can still log in (measured on 2026-11-13 in Docker). When the NAS still lists it as a RADIUS server, it gets wrong answers. On 2026-11-27 a running follower was removed directly through the API of the leader, which passes the checks of `cluster remove` by: with three nodes on one machine, in one run it went on answering for about 12 seconds after the removal and gave no answers from 14 seconds on; in all three runs it ended with exit code 1 about 28 to 30 seconds after the removal. It does not end while it cannot reach the cluster.
+- **Restarting with the data emptied and the configuration still listing itself joins the cluster again automatically.** So for a host you retire, disable the service, and do not only delete the data.
+- **Management commands can be slow.** If the first node in the configuration is removed and in the middle of ending, commands such as `user` wait for it: on 2026-11-27 one `user add` run 8 seconds after the removal succeeded after 19 seconds; once the node had ended they were back to normal. Stopping the node first avoids this.
 
 ### Other notes
 
@@ -1188,6 +1212,10 @@ The `deploy/monitoring/` directory of the source has ready-made rules; see [chap
 **Symptom:** `cluster remove` prints `removing node 3 leaves two voters, and the cluster stops writing when either stops; give --force to remove it anyway`.
 **Cause:** Only two voters would remain after the removal.
 **Fix:** Add a new node first and then remove the old one; add `--force` only when you are sure you want to shrink to two nodes.
+
+**Symptom:** A node ends after starting, or suddenly while running, with exit code 1, and the log has `cluster node 3 has been removed from the cluster: …`.
+**Cause:** The member list of the current leader of the cluster does not include this node.
+**Fix:** See [When a removed node starts again](#when-a-removed-node-starts-again): disable the service of a retired host; to add it back, confirm the cluster first, then empty `data_dir` and start it.
 
 **Symptom:** `/readyz` of a node returns 503 `no leader`, logins get no answer, and `Discarded: no leader` increases.
 **Cause:** `stop_without_leader_ms` is set, and this node has had no leader for longer than that.

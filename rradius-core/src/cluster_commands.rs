@@ -5,9 +5,13 @@
 //! The leader is found by asking the nodes of `[[cluster.nodes]]` in order, trusting only a node
 //! that sees a leader: a node removed from the cluster but still running sees none, and answers
 //! from stale data.
+//!
+//! A serving node asks the same API whether the cluster still has it, so that a removed node ends
+//! instead of answering from that data: see `standing_in_cluster`.
 
 use crate::accounts::{CLUSTER_WAIT, STATUS_MISTAKE, STATUS_NO_MATCH, STATUS_UNREACHABLE};
 use crate::config::{self, ClusterNode};
+use crate::lua_engine::LEADER_QUORUM_ACK_WITHIN_MS;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -68,6 +72,136 @@ struct Metrics {
     id: u64,
     leader: Option<u64>,
     members: Members,
+    /// The log index of the membership in `members`.
+    membership_index: Option<u64>,
+    /// The last log index the node has applied.
+    applied_index: Option<u64>,
+    /// How long ago a quorum acknowledged the node, which only a leader says.
+    quorum_ack_millis: Option<u64>,
+}
+
+impl Metrics {
+    /// Whether this is a leader speaking for its cluster: it takes itself for the leader, a
+    /// quorum acknowledged it recently, and it has applied the membership it gives, so that one
+    /// is committed. An answer missing any of these confirms nothing.
+    fn is_confirmed_leader(&self) -> bool {
+        self.leader == Some(self.id)
+            && self.quorum_ack_millis.is_some_and(|millis| millis <= LEADER_QUORUM_ACK_WITHIN_MS)
+            && self.membership_index.zip(self.applied_index).is_some_and(|(membership, applied)| applied >= membership)
+    }
+}
+
+/// This node's own copy of the membership, as its replica has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnMembership {
+    /// Its log index, 0 for the one a cluster starts with.
+    pub(crate) index: u64,
+    /// Every member's id and api address.
+    pub(crate) nodes: BTreeMap<u64, String>,
+}
+
+/// Whether the cluster still has this node, as the other nodes' answers show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Standing {
+    Member,
+    Removed(Removal),
+    /// No answer settles it: the node goes on as if it had not asked.
+    Unknown,
+}
+
+/// The leader that no longer lists a node, and what it lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Removal {
+    node: u64,
+    leader: u64,
+    members: BTreeMap<u64, Member>,
+}
+
+impl Removal {
+    /// What the node logs as it ends. A process manager starts it again and again, and this line
+    /// is what the operator sees, so it says both ways out, and to look before emptying anything.
+    pub(crate) fn message(&self, data_dir: &Path) -> String {
+        let members: Vec<String> = self.members.iter().map(|(id, member)| format!("node {id} at {}", member.api)).collect();
+        format!(
+            "node {} has been removed from the cluster: node {}, its leader, does not list it (its members: {}). \
+             To retire this host, stop and disable the service. To add it back, first confirm that this is the cluster you expect, \
+             then empty data_dir '{}' and start it again",
+            self.node,
+            self.leader,
+            members.join(", "),
+            data_dir.display()
+        )
+    }
+}
+
+/// Decides from the other nodes' `answers` whether the cluster still has `node`. Only a confirmed
+/// leader other than the node counts. One that lists it, voter or not, settles that it is a
+/// member. Otherwise it is removed when such a leader's membership is later in the log than the
+/// node's own, or the node's own already omits it: a cluster that another node made from empty
+/// data starts its log again, so its membership is not later than that of a cluster that formed.
+fn standing(node: u64, own: &OwnMembership, answers: &[Metrics]) -> Standing {
+    let leaders = || answers.iter().filter(|answer| answer.id != node && answer.is_confirmed_leader());
+    if leaders().any(|leader| leader.members.nodes.contains_key(&node)) {
+        return Standing::Member;
+    }
+    let omitted_already = !own.nodes.contains_key(&node);
+    match leaders().find(|leader| omitted_already || leader.membership_index.is_some_and(|index| index > own.index)) {
+        Some(leader) => Standing::Removed(Removal { node, leader: leader.id, members: leader.members.nodes.clone() }),
+        None => Standing::Unknown,
+    }
+}
+
+/// Asks the other nodes whether the cluster still has `node`: those `configured` lists and those
+/// of the node's own membership, all at once, each for up to `PING_WAIT`, then any leader they
+/// name that has not been asked. It waits for every answer, so that one cluster that omits the
+/// node cannot outrun another that lists it. A node that does not answer, refuses the secret or
+/// answers something unreadable says nothing.
+pub(crate) async fn standing_in_cluster(secret_api: &str, node: u64, own: &OwnMembership, configured: &[ClusterNode]) -> Standing {
+    let api = match Api::new(secret_api.to_string()) {
+        Ok(api) => api,
+        Err(e) => {
+            tracing::debug!("cannot ask whether node {node} is still a member: {e}");
+            return Standing::Unknown;
+        }
+    };
+    let asked: BTreeSet<&str> = configured
+        .iter()
+        .filter(|other| other.id != node)
+        .map(|other| other.api.as_str())
+        .chain(own.nodes.iter().filter(|(id, _)| **id != node).map(|(_, api)| api.as_str()))
+        .collect();
+    let mut answers = ask_all(&api, asked.iter().copied()).await;
+    let named: BTreeSet<String> = answers
+        .iter()
+        .filter_map(|answer| {
+            let leader = answer.leader.filter(|leader| *leader != node && !answers.iter().any(|other| other.id == *leader))?;
+            answer.members.nodes.get(&leader).map(|member| member.api.clone())
+        })
+        .filter(|address| !asked.contains(address.as_str()))
+        .collect();
+    answers.extend(ask_all(&api, named.iter().map(String::as_str)).await);
+    standing(node, own, &answers)
+}
+
+/// The answers of the nodes at `addresses` that gave a readable one within `PING_WAIT`.
+async fn ask_all<'a>(api: &Api, addresses: impl Iterator<Item = &'a str>) -> Vec<Metrics> {
+    // Once: a node without a leader asks every few seconds.
+    static REFUSED: std::sync::Once = std::sync::Once::new();
+    let answers = futures::future::join_all(addresses.map(|address| api.metrics_within(address, PING_WAIT))).await;
+    answers
+        .into_iter()
+        .filter_map(|answer| match answer {
+            Ok(metrics) => Some(metrics),
+            Err(Failure::Secret(e)) => {
+                REFUSED.call_once(|| tracing::warn!("cannot ask whether this node is still a member: {e}"));
+                None
+            }
+            Err(Failure::Unusable(e) | Failure::Silent(e)) => {
+                tracing::debug!("{e}");
+                None
+            }
+        })
+        .collect()
 }
 
 /// What the command prints, and its exit status.
@@ -426,7 +560,15 @@ fn parse_metrics(body: &[u8]) -> Result<Metrics, String> {
     let id = value.get("id").and_then(Value::as_u64).ok_or("metrics without the node's id")?;
     let leader = value.get("current_leader").and_then(Value::as_u64);
     let membership = value.get("membership_config").and_then(|config| config.get("membership")).ok_or("metrics without the membership")?;
-    Ok(Metrics { id, leader, members: parse_membership(membership)? })
+    let index = |log: Option<&Value>| log.and_then(|log| log.get("index")).and_then(Value::as_u64);
+    Ok(Metrics {
+        id,
+        leader,
+        members: parse_membership(membership)?,
+        membership_index: index(value.get("membership_config").and_then(|config| config.get("log_id"))),
+        applied_index: index(value.get("last_applied")),
+        quorum_ack_millis: value.get("millis_since_quorum_ack").and_then(Value::as_u64),
+    })
 }
 
 fn parse_membership(membership: &Value) -> Result<Members, String> {
@@ -859,6 +1001,167 @@ mod tests {
         // No node answers: a first start.
         let silent = vec![ClusterNode { id: 1, raft: "node1:8100".to_string(), api: gone }, nodes[1].clone()];
         check_node_id_free(&silent[1], &silent, "secret").await?;
+        Ok(())
+    }
+
+    /// A leader's answer: members `ids` as of log index `index`, applied up to `applied`, last
+    /// acknowledged by a quorum `ack` ms ago.
+    fn answer(id: u64, leader: u64, ids: &[u64], index: u64, applied: u64, ack: Option<u64>) -> Metrics {
+        Metrics { id, leader: Some(leader), members: members(ids, &[]), membership_index: Some(index), applied_index: Some(applied), quorum_ack_millis: ack }
+    }
+
+    /// Node 3's own membership: nodes `ids` as of log index `index`.
+    fn own(ids: &[u64], index: u64) -> OwnMembership {
+        OwnMembership { index, nodes: members(ids, &[]).nodes.into_iter().map(|(id, member)| (id, member.api)).collect() }
+    }
+
+    fn removed_by(answer: &Metrics) -> Standing {
+        Standing::Removed(Removal { node: 3, leader: answer.id, members: answer.members.nodes.clone() })
+    }
+
+    /// Scenario: Which answers count; Example: decisions.
+    #[test]
+    fn test_standing() {
+        // The spec's table: node 3, whose own membership lists nodes 1 to 3 at index 7.
+        let formed = own(&[1, 2, 3], 7);
+        let omitting = answer(1, 1, &[1, 2], 16, 16, Some(100));
+        assert_eq!(standing(3, &formed, std::slice::from_ref(&omitting)), removed_by(&omitting));
+        for (answers, expected) in [
+            // A cluster another node made from empty data.
+            (vec![answer(1, 1, &[1], 0, 3, Some(100))], Standing::Unknown),
+            (vec![answer(1, 1, &[1, 2, 3], 16, 16, Some(100))], Standing::Member),
+            // No recent quorum acknowledgement.
+            (vec![answer(1, 1, &[1, 2], 16, 16, Some(LEADER_QUORUM_ACK_WITHIN_MS + 1))], Standing::Unknown),
+            (vec![answer(1, 1, &[1, 2], 16, 16, None)], Standing::Unknown),
+            // The membership is not applied yet.
+            (vec![answer(1, 1, &[1, 2], 16, 15, Some(100))], Standing::Unknown),
+            // A follower's word for its leader.
+            (vec![answer(2, 1, &[1, 2], 16, 16, None)], Standing::Unknown),
+            // Not the leader, whatever else it says.
+            (vec![answer(2, 1, &[1, 2], 16, 16, Some(100))], Standing::Unknown),
+            // One leader omits it and another lists it.
+            (vec![omitting.clone(), answer(2, 2, &[2, 3], 9, 9, Some(100))], Standing::Member),
+            (vec![answer(2, 2, &[2, 3], 9, 9, Some(100)), omitting.clone()], Standing::Member),
+            (vec![], Standing::Unknown),
+            // The node's own answer, which a node alone gives about itself.
+            (vec![answer(3, 3, &[1, 2], 16, 16, Some(0))], Standing::Unknown),
+            // The same index and the node's own membership lists it: not the same log.
+            (vec![answer(1, 1, &[1, 2], 7, 16, Some(100))], Standing::Unknown),
+        ] {
+            assert_eq!(standing(3, &formed, &answers), expected, "{answers:?}");
+        }
+        // Fields a node did not give confirm nothing.
+        for missing in [Metrics { membership_index: None, ..omitting.clone() }, Metrics { applied_index: None, ..omitting.clone() }] {
+            assert_eq!(standing(3, &formed, &[missing]), Standing::Unknown);
+        }
+        // A learner is a member.
+        let learner = Metrics { members: members(&[1, 2], &[3]), ..omitting.clone() };
+        assert_eq!(standing(3, &formed, &[learner]), Standing::Member);
+        // Its own membership omits it already, at the leader's index.
+        let told = answer(1, 1, &[1, 2], 16, 16, Some(100));
+        assert_eq!(standing(3, &own(&[1, 2], 16), std::slice::from_ref(&told)), removed_by(&told));
+    }
+
+    #[test]
+    fn test_removal_message() {
+        let removal = Removal { node: 3, leader: 1, members: members(&[1, 2], &[]).nodes };
+        let message = removal.message(Path::new("/var/lib/rradius/cluster"));
+        for part in [
+            "node 3 has been removed from the cluster",
+            "node 1, its leader",
+            "node 1 at node1:8200, node 2 at node2:8200",
+            "stop and disable the service",
+            "confirm that this is the cluster you expect, then empty data_dir '/var/lib/rradius/cluster'",
+        ] {
+            assert!(message.contains(part), "{message}");
+        }
+    }
+
+    /// Metrics as the management API gives them: node `id` saying `leader` leads nodes at
+    /// `addresses`, as of index 16.
+    fn metrics_json(id: u64, leader: u64, addresses: &[(u64, &str)]) -> String {
+        let nodes: serde_json::Map<String, Value> = addresses.iter().map(|(id, api)| (id.to_string(), serde_json::json!({"id": id, "addr_raft": format!("node{id}:8100"), "addr_api": api}))).collect();
+        let voters: Vec<u64> = addresses.iter().map(|(id, _)| *id).collect();
+        let log = serde_json::json!({"leader_id": {"term": 1, "node_id": leader}, "index": 16});
+        serde_json::json!({
+            "id": id, "current_leader": leader, "last_applied": log,
+            "millis_since_quorum_ack": (id == leader).then_some(100),
+            "membership_config": {"log_id": log, "membership": {"configs": [voters], "nodes": nodes}},
+        })
+        .to_string()
+    }
+
+    /// The node itself is not asked, and a leader that neither list has is followed to.
+    #[tokio::test]
+    async fn test_standing_in_cluster_follows_the_leader_and_skips_itself() -> Result<(), String> {
+        let asked = Arc::new(AtomicU8::new(0));
+        let itself = {
+            use tokio::io::AsyncWriteExt;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+            let address = listener.local_addr().map_err(|e| e.to_string())?.to_string();
+            let asked = asked.clone();
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    asked.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.shutdown().await;
+                }
+            });
+            address
+        };
+        // The leader's address is known only from what node 1 says; bound before its answer, which
+        // names it, is made.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let leader = listener.local_addr().map_err(|e| e.to_string())?.to_string();
+        let leading = metrics_json(4, 4, &[(1, "node1:8200"), (4, &leader)]);
+        {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buffer = [0u8; 2048];
+                    let _ = stream.read(&mut buffer).await;
+                    let reply = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{leading}", leading.len());
+                    let _ = stream.write_all(reply.as_bytes()).await;
+                }
+            });
+        }
+        let voice = serve_metrics(metrics_json(1, 4, &[(1, "node1:8200"), (4, &leader)])).await?;
+        let configured = vec![node_at(1, voice), node_at(3, itself.clone())];
+        let own = OwnMembership { index: 7, nodes: [(3, itself)].into_iter().collect() };
+        let standing = standing_in_cluster("secret", 3, &own, &configured).await;
+        assert!(matches!(&standing, Standing::Removed(removal) if removal.leader == 4), "{standing:?}");
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "the node asked itself");
+        Ok(())
+    }
+
+    /// A refused secret and an unreadable answer are no answer.
+    #[tokio::test]
+    async fn test_standing_in_cluster_with_unusable_answers() -> Result<(), String> {
+        let refusing = serve(unauthorized()).await.map_err(|e| e.to_string())?;
+        let garbled = serve("HTTP/1.1 200 OK\r\ncontent-length: 8\r\nconnection: close\r\n\r\nnot json".to_string()).await.map_err(|e| e.to_string())?;
+        let configured = vec![node_at(1, refusing), node_at(2, garbled)];
+        let own = OwnMembership { index: 7, nodes: BTreeMap::from([(3, "node3:8200".to_string())]) };
+        assert_eq!(standing_in_cluster("secret", 3, &own, &configured).await, Standing::Unknown);
+        Ok(())
+    }
+
+    /// A node that never answers costs its `PING_WAIT`, not more, and the leader still counts.
+    #[tokio::test]
+    async fn test_standing_in_cluster_with_a_silent_node() -> Result<(), String> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let silent = listener.local_addr().map_err(|e| e.to_string())?.to_string();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let leader = serve_metrics(metrics_json(1, 1, &[(1, "node1:8200"), (2, &silent)])).await?;
+        let configured = vec![node_at(1, leader), node_at(2, silent)];
+        let own = OwnMembership { index: 7, nodes: BTreeMap::from([(3, "node3:8200".to_string())]) };
+        let started = std::time::Instant::now();
+        let standing = standing_in_cluster("secret", 3, &own, &configured).await;
+        assert!(matches!(standing, Standing::Removed(_)), "{standing:?}");
+        assert!(started.elapsed() < 2 * PING_WAIT + Duration::from_secs(1), "{:?}", started.elapsed());
         Ok(())
     }
 }

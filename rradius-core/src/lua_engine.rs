@@ -1,4 +1,5 @@
 use mlua::{AnyUserData, FromLuaMulti, Function, IntoLuaMulti, Lua, MultiValue, Result as LuaResult, Table, Value};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -8,6 +9,7 @@ use std::time::Instant;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::dynamic_authorization::{DynamicAuthorization, Outcome as DynamicAuthOutcome, RequestType};
 use crate::script_http::{url_encode, HttpOptions, Purpose, ScriptHttp};
+use crate::cluster_commands::{self, OwnMembership, Standing};
 use crate::config::ClusterSettings;
 use hiqlite::rusqlite::types::ValueRef;
 use rust_embed::{EmbeddedFile, RustEmbed};
@@ -142,6 +144,8 @@ pub struct Db {
     writes: tokio::sync::mpsc::Sender<PendingWrite>,
     /// What `track_cluster` last read of this node's Raft state.
     cluster: Arc<ClusterState>,
+    /// What the node was started with: what `check_membership` asks with.
+    settings: Arc<ClusterSettings>,
     /// The node's data directory, under which hiqlite keeps its backups.
     #[cfg(feature = "backup")]
     data_dir: std::path::PathBuf,
@@ -159,7 +163,7 @@ const BATCH_DEADLINE: Duration = Duration::from_secs(30);
 const LEADERLESS_WRITES_FAIL_AFTER: Duration = Duration::from_secs(5);
 
 /// A leader that no quorum has acknowledged for longer than this is taken as no leader.
-const LEADER_QUORUM_ACK_WITHIN_MS: u64 = 5000;
+pub(crate) const LEADER_QUORUM_ACK_WITHIN_MS: u64 = 5000;
 
 /// The node's view of the cluster, from its own Raft state: see `track_cluster`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -188,6 +192,8 @@ struct ClusterState {
     caught_up: AtomicBool,
     /// Why this node's Raft core stopped, once it has: it does not start again by itself.
     failed: parking_lot::Mutex<Option<String>>,
+    /// What the node logs as it ends, once it has found that the cluster no longer has it.
+    removed: parking_lot::Mutex<Option<String>>,
 }
 
 impl ClusterState {
@@ -215,6 +221,12 @@ fn cluster_epoch() -> Instant {
     static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *EPOCH.get_or_init(Instant::now)
 }
+
+/// How long a serving node goes without a usable leader before it asks whether the cluster
+/// still has it: longer than an election takes.
+const LEADERLESS_BEFORE_ASKING: Duration = Duration::from_secs(5);
+/// How often it asks while that lasts.
+const MEMBERSHIP_ASK_EVERY: Duration = Duration::from_secs(5);
 
 /// The state of the node this process serves for, for `/metrics` and `stopped_without_leader`:
 /// see `Db::serve_for`. Tests start nodes of their own, which stay out of it.
@@ -548,6 +560,7 @@ impl Db {
             client,
             writes,
             cluster,
+            settings: Arc::new(settings.clone()),
             #[cfg(feature = "backup")]
             data_dir: settings.data_dir.clone(),
         })
@@ -564,6 +577,61 @@ impl Db {
     #[cfg(feature = "backup")]
     pub fn backup_dir(&self) -> std::path::PathBuf {
         self.data_dir.join("state_machine").join("backups")
+    }
+
+    /// This node's own copy of the membership; `None` while its Raft state cannot be read or
+    /// holds none.
+    async fn own_membership(&self) -> Option<OwnMembership> {
+        let metrics = self.client.metrics_db().await.ok()?;
+        let membership = &metrics.membership_config;
+        let nodes: BTreeMap<u64, String> = membership.nodes().map(|(id, node)| (*id, node.addr_api.clone())).collect();
+        (!nodes.is_empty()).then(|| OwnMembership { index: membership.log_id().as_ref().map_or(0, |log| log.index), nodes })
+    }
+
+    /// Whether this node's own membership holds nodes but does not list it as a voter: it is left
+    /// out, or a learner. A learner removed from there is sent nothing more, and goes on taking the
+    /// leader it knows for usable.
+    async fn not_a_voter(&self) -> bool {
+        let Ok(metrics) = self.client.metrics_db().await else { return false };
+        let membership = &metrics.membership_config;
+        membership.nodes().next().is_some() && !membership.voter_ids().any(|id| id == self.settings.node_id)
+    }
+
+    /// Asks the other nodes whether the cluster still has this one, and when it does not, keeps
+    /// what `removal` says about it.
+    pub(crate) async fn check_membership(&self) -> Standing {
+        let Some(own) = self.own_membership().await else { return Standing::Unknown };
+        let standing = cluster_commands::standing_in_cluster(&self.settings.secret_api, self.settings.node_id, &own, &self.settings.nodes).await;
+        if let Standing::Removed(removal) = &standing {
+            self.cluster.removed.lock().get_or_insert_with(|| removal.message(&self.settings.data_dir));
+        }
+        standing
+    }
+
+    /// For a node that serves: every `MEMBERSHIP_ASK_EVERY`, when it has had no usable leader for
+    /// longer than `LEADERLESS_BEFORE_ASKING` or its own membership does not list it as a voter,
+    /// asks whether the cluster still has it: a removed node is sent nothing more and cannot learn
+    /// it from its own data. Ends once the answer is that it does not, which `removal` then says.
+    /// A voter with a leader asks nothing.
+    pub fn watch_membership(&self) {
+        let db = self.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(MEMBERSHIP_ASK_EVERY);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                every.tick().await;
+                let leaderless = db.cluster_status().without_leader.is_some_and(|lasted| lasted > LEADERLESS_BEFORE_ASKING);
+                if (leaderless || db.not_a_voter().await) && matches!(db.check_membership().await, Standing::Removed(_)) {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// What to log as this node ends because the cluster no longer has it, once a check has found
+    /// that. Starting it again with the same data does not bring it back.
+    pub fn removal(&self) -> Option<String> {
+        self.cluster.removed.lock().clone()
     }
 
     /// Makes this node the one `cluster_status` and `stopped_without_leader` speak of.
@@ -632,6 +700,10 @@ impl Db {
                 if !db.wait_usable_leader(limit).await {
                     tracing::debug!("cluster node {node_id} has no usable leader yet to catch up with");
                     continue;
+                }
+                // Before the write: a node the cluster no longer has must leave nothing in it.
+                if matches!(db.check_membership().await, Standing::Removed(_)) {
+                    return;
                 }
                 match db.catch_up(node_id, limit).await {
                     Ok(()) => {

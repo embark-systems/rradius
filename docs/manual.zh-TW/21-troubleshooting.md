@@ -322,7 +322,7 @@ LockFile data/logs is locked and in use by another process
 cluster was not ready: no usable leader within 53.980820917s, and stop_without_leader_ms is set
 ```
 
-處置：先讓過半數的節點起來。沒設 `stop_without_leader_ms` 時，加入過叢集的節點會在 `migrations_wait_ms` 之後啟動，用本機副本回答（資料可能是舊的）；有 `migrations_dir` 時，那份副本要已套用全部檔案（見[整個叢集一起重開](16-cluster.md#整個叢集一起重開)）。執行中失去 leader 的節點見[叢集沒有 leader](#叢集沒有-leader)。
+處置：先讓過半數的節點起來。沒設 `stop_without_leader_ms` 時，加入過叢集的節點會在 `migrations_wait_ms` 之後啟動，用本機副本回答（資料可能是舊的）；有 `migrations_dir` 時，那份副本要已套用全部檔案（見[整個叢集一起重開](16-cluster.md#整個叢集一起重開)）。已從叢集移除、而且問得到目前 leader 的節點不在此列，它以結束碼 1 結束（[第 16 章](16-cluster.md#被移除的節點又啟動時)）。執行中失去 leader 的節點見[叢集沒有 leader](#叢集沒有-leader)。
 
 ## 用戶端比對失敗
 
@@ -783,6 +783,7 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `metrics: cannot listen on …: Address already in use`（伺服器繼續跑） | 指標埠被佔用 | 停掉佔用的程式後重啟 rradius |
 | `LockFile data/logs is locked and in use by another process` | 舊的行程還沒停完 | 等它結束再啟動 |
 | `cluster was not ready: no usable leader within …, and stop_without_leader_ms is set`（結束碼 1） | 啟動時叢集沒有過半數 | 先讓其他節點起來 |
+| `cluster node N has been removed from the cluster: node M, its leader, does not list it …`（結束碼 1） | 這個節點已從叢集移除；訊息列出目前的成員與資料目錄 | 淘汰的主機停用服務；要加回就先用 `cluster members` 確認叢集，再清空 `data_dir` 啟動（[第 16 章](16-cluster.md#被移除的節點又啟動時)） |
 | `cluster was not ready to apply migrations: …`（結束碼 1） | 啟動時在 `migrations_wait_ms` 內等不到 leader、套用不完 migration，或本機副本追不上；訊息後半有時寫「the cluster node gives one migration file 30 s」：單一個檔案跑超過 30 秒 | 先讓過半數的節點起來；檔案本身很慢時加長 `migrations_wait_ms`，再啟動一次（[第 18 章](18-operations.md#常見錯誤)） |
 
 ### 執行中
@@ -797,6 +798,8 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `databases.X: not reachable at startup: …; /readyz answers 503 until it is` | `required_for_ready` 的資料庫連不上 | 同上 |
 | `Lua script error (radius/accounting): runtime error: no leader for 5 s` | 叢集沒有 leader，寫不了 | 讓過半數的節點恢復 |
 | `/readyz` 回 `no leader`（503） | 設了 `stop_without_leader_ms` 而沒有 leader | 同上 |
+| `cluster node N has been removed from the cluster: …`（執行中，結束碼 1） | 節點在執行中被移除 | 見[上表](#check-與啟動)同一個訊息 |
+| `cannot ask whether this node is still a member: <位址> refused the api secret: …` | 另一個節點不接受這個節點的 API 密碼，無法確認自己是否仍是成員 | 讓各節點的 `secret_api` 相同 |
 | `Lua script error (radius/accounting): runtime error: PrepareStatement: no such table: …` | 計費腳本的 SQL 寫錯，不回應也不進 spool | 修正腳本 |
 | `RADIUS authentication overloaded: discarded N packets` | 超過 `max_auth_inflight` | 查是否異常流量；調整上限（[第 19 章](19-performance.md)） |
 | `asked for a receive buffer of N bytes and each socket got M; raise … to at least N` | 系統的 socket 緩衝區上限太低 | 照 `tuning` 調整 |

@@ -83,7 +83,7 @@ leader 停掉時，剩下的節點會自己選出新的 leader，不需要人介
 
 一個節點啟動時，不會馬上開始回應請求。它依序做這些事：
 
-1. 啟動本機的叢集節點。第一次啟動的節點要先加入叢集。
+1. 啟動本機的叢集節點。第一次啟動的節點要先加入叢集。接著向其他節點查目前的成員清單（這次查不出結果時，第 2 步之後再查一次）；已被移除的節點在這裡結束，不做之後的步驟（見[被移除的節點又啟動時](#被移除的節點又啟動時)）。
 2. 等到有可以寫入、而且回應過一次讀取的 leader，最多等 `migrations_wait_ms`（預設 60000 毫秒）。節點停下前記得的狀態不算數。時間內沒有 leader 回應時，節點不做第 3、4 步，而是照[整個叢集一起重開](#整個叢集一起重開)的說明結束，或用本機副本服務。
 3. 有 `migrations_dir` 的話，套用還沒套用的 migration（[第 18 章](18-operations.md)）。
 4. 透過 leader 寫一筆自己的記號，等本機副本讀回這筆記號，才算追上進度。叢集當下不能接受這筆寫入時（例如正在選舉），會重試到 `migrations_wait_ms`。日誌寫 `cluster node N has caught up with the cluster`。
@@ -523,7 +523,7 @@ rradius_acct_spool_bytes 0
 
 停掉一個節點（SIGTERM）再啟動，它用自己 `data_dir` 裡的資料回來，從 leader 補上停機期間的寫入，追上之後才服務。這是升級、改 `[cluster]` 設定、換主機硬體時的標準做法。
 
-> **注意：** 叢集剛恢復過半數、還在選舉的那幾秒裡啟動節點，節點讀「叢集已套用哪些 migration」會得到 `has to forward request to: None`。現在它每 200 ms 重讀一次，等到 leader 回答，上限是 `migrations_wait_ms`；超過才以結束碼 1 結束，最後一行是 `not ready to apply migrations: cannot read applied migrations: …`，帶最後一次的錯誤。舊版沒有重讀，這個情況會在幾秒後直接結束，要靠 systemd 的 `Restart=on-failure` 或容器的重啟政策再啟動一次。這段重試由單元測試涵蓋，選舉空窗本身沒有在多台實機上重現過。之後寫「追上進度」標記的那一步也會重試（見[整個叢集一起重開](#整個叢集一起重開)）。
+> **注意：** 啟動中的節點先等 leader 回答它一次讀取，之後才讀「叢集已套用哪些 migration」。叢集剛恢復過半數、還在選舉的那幾秒裡啟動，它就停在這一步等；到 `migrations_wait_ms` 還沒有 leader 回應時，照[整個叢集一起重開](#整個叢集一起重開)的表處理。leader 回應之後讀清單時又遇到換 leader 的話，每 200 ms 重讀一次，直到從啟動起算的 `migrations_wait_ms` 用完；用完才以結束碼 1 結束，最後一行是 `cluster was not ready to apply migrations: cannot read applied migrations: …`，帶最後一次的錯誤。這段重試由單元測試涵蓋，選舉空窗本身沒有在多台實機上重現過。之後寫「追上進度」標記的那一步也會重試。
 
 ### 強制結束之後
 
@@ -600,6 +600,8 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 
 2026-11-27 在一台機器上跑三個節點、`migrations_wait_ms = 10000`，單獨重開一個 follower 實測，停下時 leader 還在跑、以及在 leader 之後停下各一種：有、沒有 `migrations_dir` 都用本機副本服務；有 `migrations_dir` 並設 `stop_without_leader_ms = 10000` 時以結束碼 1 結束。在其他節點還在跑時停下的原 leader（測試中是節點 1），單獨重開後，有、沒有 `migrations_dir` 同樣用本機副本服務。停掉一個沒有 leader 而在服務的節點（SIGTERM，`[shutdown]` 用預設時間）會以結束碼 0 結束：原 follower 約 20 秒，原 leader 約 15 秒。
 
+已經被移除、而且問得到目前 leader 的節點不照這張表：它不開始服務，關閉本機的叢集節點後以結束碼 1 結束，見[被移除的節點又啟動時](#被移除的節點又啟動時)。
+
 單獨重開的節點用可能是舊的副本回答只讀資料的登入，寫入要等過半數回來（見[沒有 leader 時](#沒有-leader-時)）。
 
 ## 加入節點
@@ -638,7 +640,7 @@ node 4  voter            raft 127.0.0.1:27004  api 127.0.0.1:27014  (not in this
 新節點加入時的幾個細節：
 
 - **空資料加入的節點，要列出現在的 leader。** 它只向自己設定裡列的節點申請加入，其他節點只會叫它去找 leader；leader 不在它的清單裡就加不進去。設定有 `migrations_dir` 時，它等到 `migrations_wait_ms` 後以結束碼 1 結束，訊息是 `node N did not join within …`，被行程管理程式重啟後又重來。所以列出全部現有成員最保險。2026-11-13 實測：leader 換成節點 4 之後，設定只列 1 到 3 的空資料節點 1 加不進去；補上節點 4 後 8 秒就加入。
-- **帶著資料重新啟動的節點不受影響。** 它從自己的資料知道成員，設定沒列 leader 也能回到叢集（同一次實測約 14 秒）。
+- **仍是成員、帶著資料重新啟動的節點不受影響。** 它從自己的資料知道成員，設定沒列 leader 也能回到叢集（同一次實測約 14 秒）。
 - **密碼不同的節點加不進去，** 新節點的日誌寫出原因：`secret_raft` 不同是 `Invalid ChallengeResponse`，`secret_api` 不同是 `Invalid API Secret`；叢集的成員不變（2026-11-18 實測）。
 - **新節點的 `migrations_dir` 比別台多一個檔案時，** 2026-11-18 只看了加入與其他節點重啟，兩者都照常，日誌沒有提到差異；各節點的 `migrations_dir` 要保持相同，這個組合沒有深入驗證。
 
@@ -670,7 +672,7 @@ $ rradiusd cluster remove --config node1.toml 4
 node 4 still answers at 127.0.0.1:27014: stop it first, then remove it
 ```
 
-結束碼 2。還在運作的節點被移除後會繼續用它手上的舊資料回答，所以一定要先停。
+結束碼 2。還在運作的節點被移除後，在它自己發現之前仍用手上的舊資料回答，所以一定要先停（見[為什麼一定要先停機](#為什麼一定要先停機)）。
 
 停掉節點 4（SIGTERM，這台機器上 15 秒後結束），再移除：
 
@@ -698,7 +700,7 @@ node 3  not in the cluster (listed in this configuration)
 
 `not in the cluster (listed in this configuration)` 表示設定裡有、叢集裡沒有。
 
-被移除的節點要再加回來，就照[加入節點](#加入節點)的條件：清空它的 `data_dir` 再啟動。上面的節點 3 清空 `data3` 後啟動，2 秒內就以 voter 身分回到叢集。
+被移除的節點要再加回來，就照[加入節點](#加入節點)的條件：清空它的 `data_dir` 再啟動。上面的節點 3 清空 `data3` 後啟動，2 秒內就以 voter 身分回到叢集。帶著原本的資料啟動它不會回到叢集，節點會自己結束（見[被移除的節點又啟動時](#被移除的節點又啟動時)）。
 
 **移除後只剩一個 voter 時**（原本兩個 voter、停掉其中一個），`remove --force` 第一次沒有完成，看來是因為這個變更需要目前 voter 的過半數同意，而被移除的節點正是其中之一。2026-11-27 在一台機器上用兩個節點實測：
 
@@ -708,16 +710,38 @@ node 3  not in the cluster (listed in this configuration)
 
 同一次測試裡，改用空的 `data_dir` 啟動該節點，變更沒有完成（觀察約 20 秒）；所以資料沒了的節點，不要指望能移除。只有兩個 voter 的叢集要三思。
 
+步驟 3 啟動的節點這時還在成員清單裡（`learner`），會照常啟動、開始服務。同一天用會讓被移除節點結束的版本重跑這三步，結果相同；移除完成後再啟動該節點，它以結束碼 1 結束（見[被移除的節點又啟動時](#被移除的節點又啟動時)）。
+
 `cluster remove` 的結束碼：0 成功；1 是沒有這個成員，或叢集拒絕移除；2 是參數、設定錯誤，或檢查沒通過；3 是 30 秒內沒有回應。結束碼 3 時，移除可能已經做了，訊息會叫你用 `cluster members` 確認，不要直接重跑。
+
+### 被移除的節點又啟動時
+
+被移除的節點收不到之後的寫入，它手上的資料停在被移除的時候。節點啟動時會向其他節點查目前 leader 的成員清單，清單裡沒有自己就以結束碼 1 結束：不開始服務，也不寫入叢集。日誌：
+
+```text
+… ERROR rradius_core::cli: cluster node 3 has been removed from the cluster: node 1, its leader, does not list it (its members: node 1 at 127.0.0.1:27011, node 2 at 127.0.0.1:27012). To retire this host, stop and disable the service. To add it back, first confirm that this is the cluster you expect, then empty data_dir '…/data3' and start it again
+```
+
+處理方式有兩種：
+
+- **主機要淘汰：** 把服務停掉並停用（例如 `systemctl disable --now rradius`），並從 NAS 的 RADIUS 伺服器清單拿掉。不停用的話，systemd 的 `Restart=on-failure` 或容器的重啟政策會一直重啟它，每次都結束。
+- **要加回叢集：** 先用一份指向你預期的那個叢集的設定執行 `cluster members`，確認它就是日誌列出的成員，再清空這個節點的 `data_dir` 啟動。
+
+判定的範圍：
+
+- 只有目前的 leader（回報自己是 leader，而且 5 秒內得到過半數確認）的清單裡沒有這個節點，而且那份清單比本機資料記得的新（或本機的清單本身已經沒有自己），才算被移除。任何一個這樣的 leader 列出它，就不算。仍在清單裡的節點照常啟動，包括 `learner`，例如[兩個 voter 移除一個](#移除節點)做到一半時停掉的那個節點。
+- 查詢走各節點的 API 埠，對象是 `[[cluster.nodes]]` 與本機資料記得的其他節點。
+- 執行中的節點，在超過 5 秒沒有 leader、或本機的成員清單沒有把自己列為 voter（沒有自己，或自己是 `learner`）時，每 5 秒查一次，查到被移除就停止回應並以結束碼 1 結束。
+
+> **警告：** 連不到叢集的被移除節點沒有辦法知道自己被移除了。啟動時沒有任何目前的成員回應（網路隔離、其他節點全停），它照[整個叢集一起重開](#整個叢集一起重開)的表處理：沒設 `stop_without_leader_ms` 時用本機的舊資料回答登入，之後查得到 leader 才結束。要它在這種情況下不回應，設 `stop_without_leader_ms`。
+
+2026-11-27 在一台機器上跑三個節點（debug build）實測：移除一個停掉的 follower，再帶原本的資料啟動它三次，有、沒有 `migrations_dir` 各做一輪，每次都以結束碼 1 結束（啟動後約 16 到 21 秒，大部分時間花在關閉節點），沒有開始監聽 RADIUS 埠。清空 `data_dir` 再啟動，約 2 秒以 voter 身分回到叢集。設 `stop_without_leader_ms = 10000` 的情況，以及「其他節點全停時用本機資料回答」，由整合測試涵蓋。沒有在多台實體主機上測過。
 
 ### 為什麼一定要先停機
 
-2026-11-13 的實測，在一台主機的 Docker 上，三到四個節點：
-
-- **被移除但還在執行的節點會用舊資料回答。** 它不再收到新的寫入，移除後新增的帳號在它上面登入會被拒絕，停用的帳號還能登入。NAS 還把它列為 RADIUS 伺服器時，就會得到錯的答案。
-- **帶著舊資料重新啟動會卡住，** 登入沒有回應。
-- **清空資料、設定還列著自己時重新啟動，會自動加回叢集。** 所以淘汰的主機要把服務關掉（例如 `systemctl disable --now rradius`），不只是刪資料。
-- **管理指令可能卡住。** 設定裡排第一的節點如果「已移除但還在執行」，`user` 這類指令會等到 30 秒逾時；先停機就不會發生。
+- **被移除但還在執行的節點，會有一段時間用舊資料回答。** 它不再收到新的寫入，移除後新增的帳號在它上面登入被拒絕，移除後停用的帳號仍能登入（2026-11-13 在 Docker 上實測）。NAS 還把它列為 RADIUS 伺服器時，就會得到錯的答案。2026-11-27 繞過 `cluster remove` 的檢查、直接對 leader 的 API 移除一個執行中的 follower（單機三節點）：一次量到移除後約 12 秒內它照舊回答，14 秒起不再回應；三次都在移除後約 28 到 30 秒以結束碼 1 結束。連不到叢集時它不會結束。
+- **清空資料、設定還列著自己時重新啟動，會自動加回叢集。** 所以淘汰的主機要把服務停用，不只是刪資料。
+- **管理指令可能變慢。** 設定裡排第一的節點「已移除、正在結束」時，`user` 這類指令要等它：2026-11-27 一次在移除後 8 秒執行 `user add`，19 秒後成功；節點結束後恢復正常。先停機就不會發生。
 
 ### 其他注意事項
 
@@ -1188,6 +1212,10 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 **症狀：** `cluster remove` 印出 `removing node 3 leaves two voters, and the cluster stops writing when either stops; give --force to remove it anyway`。
 **原因：** 移除後只剩兩個 voter。
 **解法：** 先加入新節點再移除舊的；確定要縮成兩個節點才加 `--force`。
+
+**症狀：** 節點啟動後結束，或執行中突然結束，結束碼 1，日誌有 `cluster node 3 has been removed from the cluster: …`。
+**原因：** 叢集目前的 leader 的成員清單裡沒有這個節點。
+**解法：** 見[被移除的節點又啟動時](#被移除的節點又啟動時)：淘汰的主機停用服務；要加回就先確認叢集，再清空 `data_dir` 啟動。
 
 **症狀：** 節點的 `/readyz` 回 503 `no leader`，登入沒有回應，`Discarded: no leader` 增加。
 **原因：** 設了 `stop_without_leader_ms`，而這個節點沒有 leader 超過這段時間。

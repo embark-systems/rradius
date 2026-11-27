@@ -303,6 +303,7 @@ struct MigratingCluster {
     configs: Vec<PathBuf>,
     auth: Vec<u16>,
     metrics: Vec<u16>,
+    api: Vec<u16>,
     env: Vec<(&'static str, PathBuf)>,
 }
 
@@ -347,7 +348,7 @@ impl MigratingCluster {
             })
             .collect();
         let env = env(dir.path());
-        let mut cluster = Self { dir, nodes: Nodes(vec![None, None, None], Vec::new()), configs, auth, metrics, env };
+        let mut cluster = Self { dir, nodes: Nodes(vec![None, None, None], Vec::new()), configs, auth, metrics, api, env };
         cluster.write_migrations(files);
         for i in 0..3 {
             cluster.spawn(i);
@@ -974,8 +975,13 @@ const API_SECRET: &str = "cluster-api-secret-012";
 /// Removes node `node` through the management API of the node at `api`, the way an operator
 /// could by hand, without the command's checks: the HTTP status line.
 fn remove_by_hand(api: u16, node: u64) -> Result<String, String> {
+    change_membership_by_hand(api, node, false)
+}
+
+/// As `remove_by_hand`; with `stay_as_learner`, a voter stays in the cluster as a learner.
+fn change_membership_by_hand(api: u16, node: u64, stay_as_learner: bool) -> Result<String, String> {
     use std::io::{Read, Write};
-    let body = format!("{{\"node_id\":{node},\"stay_as_learner\":false}}");
+    let body = format!("{{\"node_id\":{node},\"stay_as_learner\":{stay_as_learner}}}");
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", api)).map_err(|e| e.to_string())?;
     stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
     let request = format!(
@@ -986,6 +992,190 @@ fn remove_by_hand(api: u16, node: u64) -> Result<String, String> {
     let mut response = String::new();
     stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
     Ok(response.lines().next().unwrap_or_default().to_string())
+}
+
+/// Logs the catch-up marker the cluster holds for node `n` when `marker-<n>` logs in.
+const SHOWS_MARKERS: &str = "local node = tostring(get_attr('User-Name')):match('^marker%-(%d)$')
+     if node then log('marker ' .. sql_query('SELECT token FROM rradius_nodes WHERE node = ' .. node)[1].token) end
+     return 'accept'";
+
+/// A running three-node cluster with one follower stopped as `docker stop` does and then removed
+/// with `cluster remove --force`: the cluster, the removed node's index and a member's.
+fn removed_follower() -> Result<(MigratingCluster, usize, usize), String> {
+    let mut cluster = MigratingCluster::start(&[("1_users.sql", USERS_WITH_ALICE)], SHOWS_MARKERS);
+    for i in 0..3 {
+        assert_eq!(cluster.first_answer(i), radius::ACCESS_ACCEPT, "node {} at the first start", i + 1);
+    }
+    let mut leader = None;
+    eventually(Duration::from_secs(30), || {
+        leader = (0..3).find(|&i| metric(cluster.metrics[i], "rradius_cluster_is_leader") == Some(1.0));
+        leader.is_some()
+    });
+    let leader = leader.ok_or("no node says it is the leader")?;
+    let node = (leader + 1) % 3;
+    cluster.terminate(node);
+    let config = cluster.configs[leader].display().to_string();
+    let removed = cluster_command(&["remove", "--force", "--config", &config, &(node + 1).to_string()])?;
+    assert_eq!(removed.0, Some(0), "{removed:?}");
+    cluster.add_cluster_option(node, "migrations_wait_ms = 10000");
+    Ok((cluster, node, leader))
+}
+
+/// The marker the cluster holds for node `of`, as node `at` logs it.
+fn marker(cluster: &MigratingCluster, at: usize, of: usize) -> Result<String, String> {
+    let before = cluster.last_log(at).matches("marker ").count();
+    let user = format!("marker-{}", of + 1);
+    send(cluster.auth[at], &access_request(7, &user), Duration::from_secs(5)).ok_or("no answer to the marker request")?;
+    let mut found = None;
+    eventually(Duration::from_secs(10), || {
+        let log = cluster.last_log(at);
+        found = log.matches("marker ").count().gt(&before).then(|| log.rsplit("marker ").next().and_then(|rest| rest.split_whitespace().next()).map(str::to_string)).flatten();
+        found.is_some()
+    });
+    found.ok_or_else(|| format!("no marker in the log of node {}: {}", at + 1, cluster.last_log(at)))
+}
+
+/// What node `index + 1` logs when it ends because the cluster no longer has it.
+fn removal_error(index: usize) -> String {
+    format!("node {} has been removed from the cluster", index + 1)
+}
+
+/// A removed node started twice with its old data ends each time without having served, and
+/// leaves nothing in the cluster. `configure` changes its configuration first.
+fn removed_node_does_not_serve(configure: impl FnOnce(&MigratingCluster, usize)) -> Result<(), String> {
+    let (mut cluster, node, member) = removed_follower()?;
+    configure(&cluster, node);
+    let before = marker(&cluster, member, node)?;
+    for start in 1..=2 {
+        let started = Instant::now();
+        cluster.spawn(node);
+        let status = cluster.exit_code(node, Duration::from_secs(60));
+        let log = cluster.last_log(node);
+        assert_eq!(status, Some(1), "start {start}: {log}");
+        assert!(log.contains(&removal_error(node)), "start {start}: {log}");
+        assert!(!log.contains("Server listening"), "start {start}: {log}");
+        eprintln!("removed node, start {start}: ended after {:?}", started.elapsed());
+        // Time enough for a write through the leader to reach this member.
+        std::thread::sleep(Duration::from_secs(2));
+        assert_eq!(marker(&cluster, member, node)?, before, "start {start} wrote to the cluster");
+    }
+    Ok(())
+}
+
+/// Scenario: Removed node started with its old data.
+#[test]
+fn test_removed_node_ends_with_migrations() -> Result<(), String> {
+    removed_node_does_not_serve(|_, _| {})
+}
+
+/// Scenario: Removed node started with its old data, without a migrations directory.
+#[test]
+fn test_removed_node_ends_without_migrations() -> Result<(), String> {
+    removed_node_does_not_serve(|cluster, node| cluster.edit_config(node, |text| text.replacen("migrations_dir = \"migrations\"\n", "", 1)))
+}
+
+/// Scenario: Removed node started with its old data, when stopping without a leader.
+#[test]
+fn test_removed_node_ends_when_stopping_without_a_leader() -> Result<(), String> {
+    removed_node_does_not_serve(|cluster, node| cluster.add_cluster_option(node, "stop_without_leader_ms = 10000"))
+}
+
+/// Scenario: Node removed while running. It ends by itself once it has been without a leader for
+/// a while.
+#[test]
+fn test_node_removed_while_running_ends() -> Result<(), String> {
+    let mut cluster = MigratingCluster::start(&[("1_users.sql", USERS_WITH_ALICE)], "return 'accept'");
+    for i in 0..3 {
+        assert_eq!(cluster.first_answer(i), radius::ACCESS_ACCEPT, "node {} at the first start", i + 1);
+    }
+    let mut leader = None;
+    eventually(Duration::from_secs(30), || {
+        leader = (0..3).find(|&i| metric(cluster.metrics[i], "rradius_cluster_is_leader") == Some(1.0));
+        leader.is_some()
+    });
+    let leader = leader.ok_or("no node says it is the leader")?;
+    let node = (leader + 1) % 3;
+    let status = remove_by_hand(cluster.api[leader], node as u64 + 1)?;
+    assert!(status.contains(" 200 "), "{status}");
+    let started = Instant::now();
+    let status = cluster.exit_code(node, Duration::from_secs(60));
+    assert_eq!(status, Some(1), "{}", cluster.last_log(node));
+    eprintln!("node removed while running: ended after {:?}", started.elapsed());
+    assert!(cluster.last_log(node).contains(&removal_error(node)), "{}", cluster.last_log(node));
+    Ok(())
+}
+
+/// Scenario: Learner removed while running. A learner keeps taking the leader it knows for usable,
+/// and is sent nothing once it is removed: it ends all the same.
+#[test]
+fn test_learner_removed_while_running_ends() -> Result<(), String> {
+    let mut cluster = MigratingCluster::start(&[("1_users.sql", USERS_WITH_ALICE)], "return 'accept'");
+    for i in 0..3 {
+        assert_eq!(cluster.first_answer(i), radius::ACCESS_ACCEPT, "node {} at the first start", i + 1);
+    }
+    let mut leader = None;
+    eventually(Duration::from_secs(30), || {
+        leader = (0..3).find(|&i| metric(cluster.metrics[i], "rradius_cluster_is_leader") == Some(1.0));
+        leader.is_some()
+    });
+    let leader = leader.ok_or("no node says it is the leader")?;
+    let node = (leader + 1) % 3;
+    let config = cluster.configs[leader].display().to_string();
+    let status = change_membership_by_hand(cluster.api[leader], node as u64 + 1, true)?;
+    assert!(status.contains(" 200 "), "{status}");
+    let members = cluster_command(&["members", "--config", &config])?;
+    let learner = format!("node {}  learner", node + 1);
+    assert!(members.1.contains(&learner), "{members:?}");
+    // Still a member: it goes on serving.
+    assert_eq!(cluster.exit_code(node, Duration::from_secs(15)), None, "{}", cluster.last_log(node));
+    assert_eq!(cluster.first_answer(node), radius::ACCESS_ACCEPT, "the learner");
+    let status = remove_by_hand(cluster.api[leader], node as u64 + 1)?;
+    assert!(status.contains(" 200 "), "{status}");
+    let started = Instant::now();
+    let status = cluster.exit_code(node, Duration::from_secs(60));
+    assert_eq!(status, Some(1), "{}", cluster.last_log(node));
+    eprintln!("learner removed while running: ended after {:?}", started.elapsed());
+    assert!(cluster.last_log(node).contains(&removal_error(node)), "{}", cluster.last_log(node));
+    Ok(())
+}
+
+/// Scenario: Removed node that reaches no member. It cannot know: it serves from its replica as
+/// any node without a leader does.
+#[test]
+fn test_removed_node_that_reaches_no_member_serves() -> Result<(), String> {
+    let (mut cluster, node, _) = removed_follower()?;
+    for other in (0..3).filter(|&other| other != node) {
+        cluster.nodes.kill(other);
+    }
+    cluster.spawn(node);
+    assert_eq!(cluster.first_answer(node), radius::ACCESS_ACCEPT, "the removed node alone");
+    assert!(cluster.last_log(node).contains("serving without a leader"), "{}", cluster.last_log(node));
+    assert!(!cluster.last_log(node).contains(&removal_error(node)), "{}", cluster.last_log(node));
+    Ok(())
+}
+
+/// Scenario: Another cluster created by a node with empty data. Node 1, alone, makes a cluster
+/// that lists no other node; node 2, which has its data, must not take that for its removal.
+#[test]
+fn test_another_cluster_does_not_remove_a_node() -> Result<(), String> {
+    let mut cluster = MigratingCluster::start(&[("1_users.sql", USERS_WITH_ALICE)], "return 'accept'");
+    for i in 0..3 {
+        assert_eq!(cluster.first_answer(i), radius::ACCESS_ACCEPT, "node {} at the first start", i + 1);
+    }
+    for i in 0..3 {
+        cluster.terminate(i);
+    }
+    std::fs::remove_dir_all(cluster.dir.path().join("data1")).map_err(|e| e.to_string())?;
+    cluster.spawn(0);
+    assert_eq!(cluster.first_answer(0), radius::ACCESS_ACCEPT, "node 1 with a cluster of its own");
+    let led = eventually(Duration::from_secs(30), || metric(cluster.metrics[0], "rradius_cluster_is_leader") == Some(1.0));
+    assert!(led, "node 1 does not lead its own cluster: {}", cluster.last_log(0));
+    cluster.add_cluster_option(1, "migrations_wait_ms = 10000");
+    cluster.spawn(1);
+    let status = cluster.exit_code(1, Duration::from_secs(30));
+    assert_eq!(status, None, "{}", cluster.last_log(1));
+    assert!(!cluster.last_log(1).contains(&removal_error(1)), "{}", cluster.last_log(1));
+    Ok(())
 }
 
 /// Grows a running three-node cluster to four and shrinks it to two with `cluster members` and
@@ -1086,6 +1276,7 @@ fn test_growing_and_shrinking_a_running_cluster() -> Result<(), String> {
 
 /// A node removed by hand that still runs sees no leader. Listed first in a configuration, it
 /// is passed over: `cluster members` lists what the leader has, long before its time limit.
+/// Later the node ends by itself.
 #[test]
 fn test_members_passes_over_a_removed_node_still_running() -> Result<(), String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -1125,5 +1316,15 @@ fn test_members_passes_over_a_removed_node_still_running() -> Result<(), String>
     assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
     let still_running = nodes.0[(removed - 1) as usize].as_mut().map(|child| matches!(child.try_wait(), Ok(None)));
     assert_eq!(still_running, Some(true), "the removed node stopped");
+    // Then it finds that the cluster no longer has it, and ends.
+    let mut status = None;
+    let ended = eventually(Duration::from_secs(60), || {
+        status = nodes.0[(removed - 1) as usize].as_mut().and_then(|child| child.try_wait().ok().flatten());
+        status.is_some()
+    });
+    assert!(ended, "the removed node still runs");
+    assert_eq!(status.and_then(|status| status.code()), Some(1));
+    let log = std::fs::read_to_string(&nodes.1[(removed - 1) as usize]).map_err(|e| e.to_string())?;
+    assert!(log.contains(&removal_error(removed as usize - 1)), "{log}");
     Ok(())
 }

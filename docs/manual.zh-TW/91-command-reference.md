@@ -155,7 +155,7 @@ interval_ms = 60000
 
 | 指令 | 0 | 1 | 2 | 3 |
 | --- | --- | --- | --- | --- |
-| `serve` | 收到 SIGTERM 或 SIGINT 後正常停止，包括啟動途中被要求停止 | 啟動後無法服務：RADIUS 埠無法監聽、叢集錯誤中斷 migration、沒有 leader 而設了 `stop_without_leader_ms`、Raft 核心停止 | 設定、字典、腳本有錯，migration 檔不合規則或 SQL 失敗，叢集節點無法啟動（`cannot start cluster node …`），參數不對 | — |
+| `serve` | 收到 SIGTERM 或 SIGINT 後正常停止，包括啟動途中被要求停止 | 啟動後無法服務：RADIUS 埠無法監聽、叢集錯誤中斷 migration、沒有 leader 而設了 `stop_without_leader_ms`、Raft 核心停止、節點已從叢集移除（`has been removed from the cluster`） | 設定、字典、腳本有錯，migration 檔不合規則或 SQL 失敗，叢集節點無法啟動（`cannot start cluster node …`），參數不對 | — |
 | `check` | `configuration ok` | — | 設定有錯 | — |
 | `help`、`--version`、不帶參數 | 印出結果 | — | 不認得的指令 | — |
 | `schema` | 印出 schema | 寫出失敗，例如管線被關掉 | 參數不對 | — |
