@@ -430,6 +430,160 @@ fn test_invalid_migrations_stop_startup_before_joining() {
     assert!(stderr.contains(&dir.path().join("migrations").display().to_string()), "unexpected stderr: {stderr}");
 }
 
+/// The only line of `stderr` holding `text`, which has to be a warning.
+#[cfg(unix)]
+fn one_warning<'a>(stderr: &'a str, text: &str) -> Result<&'a str, String> {
+    let lines: Vec<&str> = stderr.lines().filter(|line| line.contains(text)).collect();
+    match lines.as_slice() {
+        [line] if line.contains("WARN") => Ok(line),
+        _ => Err(format!("{} lines with {text:?}, expected one warning: {stderr}", lines.len())),
+    }
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// What is wrong with the files of a configuration is said when the server starts, once.
+#[cfg(unix)]
+#[test]
+fn test_load_warnings_when_the_server_starts() -> Result<(), String> {
+    const SECRET: &str = "hunter2-secret-0123456789";
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (config, auth_port) = write_config(dir.path(), "return 'accept'", None);
+    let secret_file = dir.path().join("nas.secret");
+    std::fs::write(&secret_file, SECRET).map_err(|e| e.to_string())?;
+    set_mode(&secret_file, 0o644)?;
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&config, text.replace("secret = \"s\"\n", "secret_file = \"nas.secret\"\n")).map_err(|e| e.to_string())?;
+    set_mode(&config, 0o664)?;
+    let child = Server::spawn(PROGRAM, dir.path(), &config);
+    let server = Server { child, dir, config, auth_port };
+    let stderr = server.wait_for_log("Servers started");
+    let line = one_warning(&stderr, "secret_file: '")?;
+    assert!(line.contains(&secret_file.display().to_string()) && line.contains("has mode 644"), "{line}");
+    let line = one_warning(&stderr, "can be written by its group or by others")?;
+    assert!(line.contains(&server.config.display().to_string()), "{line}");
+    assert!(!stderr.contains(SECRET), "{stderr}");
+    Ok(())
+}
+
+/// The cluster's warnings too. The migrations directory is missing, so the node stops right after
+/// the configuration is loaded, without opening a port on every interface.
+#[cfg(unix)]
+#[test]
+fn test_load_warnings_of_the_cluster() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let config = lone_node_config(dir.path());
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    let text = text.replace("test-raft-secret-0123", "raft-secret-change-me").replace("test-api-secret-01234", "api-secret-change-me");
+    std::fs::write(&config, text).map_err(|e| e.to_string())?;
+    let (code, stderr) = run_within(Duration::from_secs(10), &config);
+    assert_eq!(code, Some(2), "{stderr}");
+    one_warning(&stderr, "cluster.listen is not set")?;
+    one_warning(&stderr, "cluster.secret_raft is the public value shipped with the examples")?;
+    one_warning(&stderr, "cluster.secret_api is the public value shipped with the examples")?;
+    assert!(!stderr.contains("secret-change-me"), "{stderr}");
+    Ok(())
+}
+
+/// A configuration whose loading warns about the listen address and then stops on the missing
+/// migrations directory, with `include = ["log.toml"]` holding `log`.
+#[cfg(unix)]
+fn warning_config_with_log(dir: &Path, log: &str) -> Result<PathBuf, String> {
+    let config = lone_node_config(dir);
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&config, format!("include = [\"log.toml\"]\n{text}")).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("log.toml"), log).map_err(|e| e.to_string())?;
+    Ok(config)
+}
+
+/// `[log]` holds for the warnings of the load, also when an included file has it.
+#[cfg(unix)]
+#[test]
+fn test_load_warnings_follow_the_log_settings() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let config = warning_config_with_log(dir.path(), "[log]\nformat = \"json\"\n")?;
+    set_mode(&dir.path().join("log.toml"), 0o664)?;
+    let (code, stderr) = run_within(Duration::from_secs(10), &config);
+    assert_eq!(code, Some(2), "{stderr}");
+    one_warning(&stderr, "included configuration file")?;
+    let line = one_warning(&stderr, "cluster.listen is not set")?;
+    let record: serde_json::Value = serde_json::from_str(line).map_err(|e| format!("{e}: {line}"))?;
+    for field in ["timestamp", "level", "target", "message"] {
+        assert!(record.get(field).is_some(), "no {field}: {line}");
+    }
+    assert_eq!(record["level"], "WARN", "{line}");
+
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let config = warning_config_with_log(dir.path(), "[log]\nlevel = \"error\"\n")?;
+    let (code, stderr) = run_within(Duration::from_secs(10), &config);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("migrations"), "{stderr}");
+    assert!(!stderr.contains("WARN") && !stderr.contains("cluster.listen is not set"), "{stderr}");
+    Ok(())
+}
+
+/// A configuration from a pipe can be read only once, and its `[log]` holds all the same. Its
+/// paths are absolute, as relative ones would be looked for next to the pipe.
+#[cfg(unix)]
+#[test]
+fn test_serve_configuration_from_a_pipe() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let config = lone_node_config(dir.path());
+    let mut text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    for (key, name) in [("script", "top.lua"), ("data_dir", "data"), ("migrations_dir", "migrations")] {
+        text = text.replace(&format!("{key} = \"{name}\""), &format!("{key} = \"{}\"", dir.path().join(name).display()));
+    }
+    text.push_str("[log]\nformat = \"json\"\n");
+    let stderr_path = dir.path().join("stderr");
+    let stderr = std::fs::File::create(&stderr_path).map_err(|e| e.to_string())?;
+    let mut child = Command::new(PROGRAM).args(["serve", "--config", "/dev/stdin"]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(stderr).spawn().map_err(|e| e.to_string())?;
+    child.stdin.take().ok_or("no stdin")?.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if Instant::now() > deadline {
+            child.kill().and_then(|()| child.wait()).map_err(|e| e.to_string())?;
+            return Err(format!("still running: {}", std::fs::read_to_string(&stderr_path).map_err(|e| e.to_string())?));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stderr = std::fs::read_to_string(&stderr_path).map_err(|e| e.to_string())?;
+    assert_eq!(status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("cannot read migrations directory"), "{stderr}");
+    let line = one_warning(&stderr, "cluster.listen is not set")?;
+    assert!(line.starts_with('{'), "{line}");
+    Ok(())
+}
+
+/// A load that fails still says what it warned about, ahead of the mistake; with a mistake in
+/// `[log]` itself, in the default format.
+#[cfg(unix)]
+#[test]
+fn test_load_warnings_before_the_error() -> Result<(), String> {
+    const WARNING: &str = "can be written by its group or by others";
+    for (from, to, expected) in [("auth_port = ", "auth_port = \"x\" #", "auth_port"), ("[radius]\n", "[log]\nformat = \"xml\"\n[radius]\n", "log.format")] {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let (config, _) = write_config(dir.path(), "return 'accept'", None);
+        let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+        std::fs::write(&config, text.replace(from, to)).map_err(|e| e.to_string())?;
+        set_mode(&config, 0o664)?;
+        let path = config.to_str().ok_or("path not UTF-8")?;
+        let (code, stderr) = run(&["serve", "--config", path]);
+        assert_eq!(code, Some(2), "{stderr}");
+        let line = one_warning(&stderr, WARNING)?;
+        assert!(!line.starts_with('{'), "{line}");
+        let (warning, error) = (stderr.find(WARNING), stderr.rfind(expected));
+        assert!(warning.is_some() && error.is_some() && warning < error, "{expected}: {stderr}");
+    }
+    Ok(())
+}
+
 #[test]
 fn test_script_syntax_error() {
     let (code, stderr) = run_with_scripts("return 'accept", None);

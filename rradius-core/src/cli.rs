@@ -278,11 +278,10 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
 
-    let config = config::load(Path::new(config_path)).unwrap_or_else(|e| match args.iter().any(|arg| arg == "--config") {
+    let config = config::load_and_start_logging(Path::new(config_path), logging::init).unwrap_or_else(|e| match args.iter().any(|arg| arg == "--config") {
         false => exit_with(format!("{e}\n(the default configuration; give --config <path> for another)")),
         true => exit_with(e),
     });
-    logging::init(&config.log);
     let mut dictionary = Dictionary::new();
     if let Err(e) = dictionary.load_from_file(&config.dictionary) {
         exit_with(e);
