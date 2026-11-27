@@ -757,6 +757,162 @@ fn test_restart_without_majority_and_migrations() {
     assert!(log.contains("stop_without_leader_ms") && !log.contains("apply migrations"), "{log}");
 }
 
+/// When a follower stops, next to the leader it knows: this decides what it remembers of the
+/// vote when it starts again.
+#[derive(Clone, Copy)]
+enum FollowerStops {
+    WhileTheLeaderRuns,
+    AfterTheLeader,
+}
+
+/// What is left of a cluster that applied a file with one account and then stopped, with one of
+/// the followers stopped as `docker stop` does, `when` it says: that follower's index, set to
+/// wait 10 s for a leader when it starts again.
+fn lone_former_follower(when: FollowerStops) -> Result<(MigratingCluster, usize), String> {
+    let mut cluster = MigratingCluster::start(
+        &[("1_users.sql", USERS_WITH_ALICE)],
+        "if #sql_query(\"SELECT name FROM users WHERE name = 'alice'\") == 1 then return 'accept' end return 'reject'",
+    );
+    for i in 0..3 {
+        assert_eq!(cluster.first_answer(i), radius::ACCESS_ACCEPT, "node {} at the first start", i + 1);
+    }
+    let mut leader = None;
+    eventually(Duration::from_secs(30), || {
+        leader = (0..3).find(|&i| metric(cluster.metrics[i], "rradius_cluster_is_leader") == Some(1.0));
+        leader.is_some()
+    });
+    let leader = leader.ok_or("no node says it is the leader")?;
+    let (follower, other) = ((leader + 1) % 3, (leader + 2) % 3);
+    // A node asked to stop runs on for some seconds first: long enough to stay a follower of a
+    // running leader, or to stand for election when the others are gone.
+    match when {
+        FollowerStops::WhileTheLeaderRuns => {
+            cluster.terminate(follower);
+            cluster.nodes.kill(leader);
+            cluster.nodes.kill(other);
+        }
+        FollowerStops::AfterTheLeader => {
+            cluster.nodes.kill(leader);
+            cluster.nodes.kill(other);
+            cluster.terminate(follower);
+        }
+    }
+    cluster.add_cluster_option(follower, "migrations_wait_ms = 10000");
+    Ok((cluster, follower))
+}
+
+/// Starts the others again and waits for `node` to catch up, which takes a write through it.
+fn catches_up_when_the_others_return(cluster: &mut MigratingCluster, node: usize) {
+    for other in (0..3).filter(|&other| other != node) {
+        cluster.spawn(other);
+    }
+    let caught_up = eventually(Duration::from_secs(60), || metric(cluster.metrics[node], "rradius_cluster_caught_up") == Some(1.0));
+    assert!(caught_up, "node {} did not catch up: {}", node + 1, cluster.last_log(node));
+    assert!(cluster.last_log(node).contains("has caught up with the cluster"), "{}", cluster.last_log(node));
+}
+
+fn answers_status_server(cluster: &MigratingCluster, node: usize) {
+    let answered = eventually(Duration::from_secs(60), || send(cluster.auth[node], &status_server(3), Duration::from_millis(500)).is_some());
+    assert!(answered, "no answer to Status-Server: {}", cluster.last_log(node));
+}
+
+/// With `migrations_dir` and every file applied, a former follower serves from its replica.
+fn serves_alone_with_migrations(when: FollowerStops) -> Result<(), String> {
+    let (mut cluster, node) = lone_former_follower(when)?;
+    cluster.spawn(node);
+    assert_eq!(cluster.first_answer(node), radius::ACCESS_ACCEPT, "the former follower without a majority");
+    assert!(cluster.last_log(node).contains("serving without a leader"), "{}", cluster.last_log(node));
+    assert_eq!(metric(cluster.metrics[node], "rradius_cluster_caught_up"), Some(0.0));
+    catches_up_when_the_others_return(&mut cluster, node);
+    Ok(())
+}
+
+/// Without `migrations_dir`, a former follower serves before catching up. Stopped while it has no
+/// leader, it still exits cleanly.
+fn serves_alone_without_migrations(when: FollowerStops) -> Result<(), String> {
+    let (mut cluster, node) = lone_former_follower(when)?;
+    cluster.edit_config(node, |text| text.replace("migrations_dir = \"migrations\"\n", ""));
+    cluster.spawn(node);
+    answers_status_server(&cluster, node);
+    assert!(cluster.last_log(node).contains("before catching up"), "{}", cluster.last_log(node));
+    // 5 s of draining, then hiqlite, which gives its shutdown 20 s before it gives up.
+    let child = cluster.nodes.0[node].as_ref().ok_or("the node is not running")?;
+    Command::new("kill").args(["-TERM", &child.id().to_string()]).status().map_err(|e| e.to_string())?;
+    assert_eq!(cluster.exit_code(node, Duration::from_secs(40)), Some(0), "{}", cluster.last_log(node));
+    assert!(!cluster.last_log(node).contains("cluster node shutdown error"), "{}", cluster.last_log(node));
+    cluster.spawn(node);
+    // Serving first, so that it is the background that catches up.
+    answers_status_server(&cluster, node);
+    catches_up_when_the_others_return(&mut cluster, node);
+    Ok(())
+}
+
+/// Told not to serve without a leader, a former follower exits without answering, and says that
+/// this setting is why.
+fn refused_without_a_leader(when: FollowerStops, migrations: bool) -> Result<(), String> {
+    let (mut cluster, node) = lone_former_follower(when)?;
+    if !migrations {
+        cluster.edit_config(node, |text| text.replace("migrations_dir = \"migrations\"\n", ""));
+    }
+    cluster.add_cluster_option(node, "stop_without_leader_ms = 10000");
+    cluster.spawn(node);
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        assert!(send(cluster.auth[node], &status_server(4), Duration::from_millis(300)).is_none(), "answered before exiting: {}", cluster.last_log(node));
+        if let Some(code) = cluster.exit_code(node, Duration::from_millis(200)) {
+            let log = cluster.last_log(node);
+            assert_eq!(code, 1, "{log}");
+            assert!(log.contains("stop_without_leader_ms") && !log.contains("apply migrations"), "{log}");
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            return Err(format!("still running: {}", cluster.last_log(node)));
+        }
+    }
+}
+
+/// Scenario: Former follower restarted alone after stopping while the leader ran.
+#[test]
+fn test_follower_stopped_under_a_leader_serves_alone() -> Result<(), String> {
+    serves_alone_with_migrations(FollowerStops::WhileTheLeaderRuns)
+}
+
+/// Scenario: Former follower restarted alone after stopping last.
+#[test]
+fn test_follower_stopped_after_the_leader_serves_alone() -> Result<(), String> {
+    serves_alone_with_migrations(FollowerStops::AfterTheLeader)
+}
+
+/// Scenario: Former follower restarted alone without a migrations directory; Node stopped while it has no leader.
+#[test]
+fn test_follower_stopped_under_a_leader_serves_alone_without_migrations() -> Result<(), String> {
+    serves_alone_without_migrations(FollowerStops::WhileTheLeaderRuns)
+}
+
+/// Scenario: Former follower restarted alone without a migrations directory; Node stopped while it has no leader.
+#[test]
+fn test_follower_stopped_after_the_leader_serves_alone_without_migrations() -> Result<(), String> {
+    serves_alone_without_migrations(FollowerStops::AfterTheLeader)
+}
+
+/// Scenario: Former follower restarted alone when stopping without a leader.
+#[test]
+fn test_follower_stopped_under_a_leader_refused_without_one() -> Result<(), String> {
+    refused_without_a_leader(FollowerStops::WhileTheLeaderRuns, true)
+}
+
+/// Scenario: Former follower restarted alone when stopping without a leader.
+#[test]
+fn test_follower_stopped_after_the_leader_refused_without_one() -> Result<(), String> {
+    refused_without_a_leader(FollowerStops::AfterTheLeader, true)
+}
+
+/// Scenario: Former follower restarted alone when stopping without a leader.
+#[test]
+fn test_follower_stopped_after_the_leader_refused_without_one_or_migrations() -> Result<(), String> {
+    refused_without_a_leader(FollowerStops::AfterTheLeader, false)
+}
+
 /// Runs `rradiusd cluster` with `args`: its exit status, standard output and standard error.
 fn cluster_command(args: &[&str]) -> Result<(Option<i32>, String, String), String> {
     let output = Command::new(env!("CARGO_BIN_EXE_rradiusd")).arg("cluster").args(args).output().map_err(|e| format!("cluster {args:?}: {e}"))?;

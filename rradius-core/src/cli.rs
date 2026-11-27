@@ -339,11 +339,11 @@ async fn run(program: Program) -> Result<(), Box<dyn std::error::Error>> {
     db.serve_for();
 
     let migrations_dir_set = migrations.is_some();
-    // A leader this node can write through. hiqlite's health is not enough: a node restarted
-    // without a majority takes itself for the leader.
+    // A leader this node can write through, which has answered it. hiqlite's health is not
+    // enough: a node restarted without a majority takes itself for the leader, or remembers one.
     let leader_wait = if migrations_dir_set { deadline.saturating_duration_since(Instant::now()) } else { cluster.migrations_wait };
     let leader_found = tokio::select! {
-        found = db.wait_usable_leader(leader_wait) => found,
+        found = db.wait_answering_leader(leader_wait) => found,
         _ = stop_asked(&mut terminate, &mut interrupt) => {
             let _ = tokio::time::timeout(SHUTDOWN_WAIT, db.shutdown()).await;
             stopped_during_startup()
