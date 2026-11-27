@@ -91,9 +91,9 @@ $ rradiusd check --config rradius.toml
 configuration ok
 $ rradiusd serve --config rradius.toml
 …
+… INFO rradius_core::metrics: Metrics listening on 127.0.0.1:9812
 … INFO rradius_core::tacacs: TACACS+ Server listening on 127.0.0.1:4949
 … INFO rradius_core::radius: RADIUS Server listening on 127.0.0.1:1812 and 127.0.0.1:1813
-… INFO rradius_core::metrics: Metrics listening on 127.0.0.1:9812
 ```
 
 In another terminal, send some traffic: one successful login, four wrong passwords (`bob` is locked after the third), one accounting request, one TACACS+ login, one request with a wrong shared secret, and one Status-Server.
@@ -311,7 +311,7 @@ histogram_quantile(0.99, sum by (le, instance) (rate(rradius_radius_response_sec
 increase(rradius_radius_discarded_total{reason="overload"}[5m])
 ```
 
-> **Not verified on real hardware:** This chapter was not connected to a real Prometheus and Grafana. The scrape configuration and queries above were only checked against the files in `deploy/monitoring/` and the real output of `/metrics`.
+> **Not verified on real hardware:** Grafana and a production monitoring environment were not connected. The scrape configuration and queries above were run on 2026-11-27 against a Prometheus 3.16.0 container.
 
 ## Alert rules and Alertmanager
 
@@ -322,18 +322,18 @@ increase(rradius_radius_discarded_total{reason="overload"}[5m])
 | availability | `RradiusDown` | `up{job="rradius"} == 0` for 2 minutes | critical |
 | | `RradiusNoLeader` | `rradius_cluster_leader == 0` for 1 minute | critical |
 | | `RradiusNotCaughtUp` | `rradius_cluster_caught_up == 0` for 5 minutes | warning |
-| traffic | `RradiusOverload` | `overload` drops within 5 minutes | critical |
-| | `RradiusDiscardingForTheDatabase` | `database` or `no_leader` drops within 5 minutes | warning |
-| | `RradiusManyRejects` | More than half Rejects within 10 minutes, and more than 0.2 per second | warning |
-| | `RradiusInvalidPackets` | `invalid` drops continuing within 10 minutes | warning |
+| traffic | `RradiusOverload` | `overload` drops within 5 minutes, for 1 minute | critical |
+| | `RradiusDiscardingForTheDatabase` | `database` or `no_leader` drops within 5 minutes, for 1 minute | warning |
+| | `RradiusManyRejects` | More than half Rejects over 10 minutes, with more than 0.2 logins (Accept and Reject) per second, for 10 minutes | warning |
+| | `RradiusInvalidPackets` | `invalid` drops within 10 minutes, for 10 minutes | warning |
 | | `RradiusSlowLogins` | Login p99 over 1 second, for 10 minutes | warning |
 | accounting | `RradiusAccountingSpoolBacklog` | The accounting spool holds data, for 15 minutes | warning |
 | | `RradiusAccountingSpoolLoss` | Records rejected or corrupted in the spool within 1 hour | critical |
 | | `RradiusAccountingLogDropping` | The accounting log file drops or fails to write within 10 minutes | warning |
 | dependencies | `RradiusExternalDatabaseUnreachable` | `rradius_external_db_reachable == 0` for 2 minutes | critical |
-| | `RradiusExternalDatabaseFailing` | Failures of the `unavailable` kind within 5 minutes | warning |
+| | `RradiusExternalDatabaseFailing` | Failures of the `unavailable` kind within 5 minutes, for 2 minutes | warning |
 | | `RradiusExternalDatabasePoolFull` | Connections in use equal the limit, for 5 minutes | warning |
-| | `RradiusNamedQueryStale` | A named query has not succeeded for more than 120 seconds | warning |
+| | `RradiusNamedQueryStale` | A named query has not succeeded for more than 120 seconds, for 2 minutes | warning |
 | | `RradiusNamedQueryFailing` | A named query fails within 10 minutes | warning |
 | operations | `RradiusReloadFailed` | A reload fails within 10 minutes | warning |
 | | `RradiusLogLinesDropped` | Log lines dropped within 10 minutes | warning |
@@ -350,22 +350,20 @@ $ promtool test rules rradius.rules.test.yml
 
 `alertmanager.yml` groups alerts by `alertname` and `instance`, sends them by webhook to `http://snmp-notifier:9464/alerts`, and also sends them when an alert resolves (`send_resolved: true`). `snmp_notifier` is a separate project that turns alerts into SNMP traps, for management systems that only receive traps. If you already have your own Alertmanager configuration, merge its `route` and `receivers` into yours.
 
-> **Not verified on real hardware:** The machine used to write this chapter has no `promtool`, so the two commands above were not run; forwarding through Alertmanager and SNMP traps was not run either.
-
 ### Three ways to connect
 
 rradius outputs Prometheus metrics and has **no built-in SNMP**. Choose one by your monitoring system:
 
 | Your monitoring system | What to do | Verified? |
 | --- | --- | --- |
-| Prometheus and Alertmanager (or a system that can receive Alertmanager webhooks) | Load `rradius.rules.yml`; Alertmanager sends the alerts | The syntax and logic of the rules were checked with `promtool` (checked earlier, not rerun this time); no real notification channel was connected |
-| Only receives SNMP traps | The Alertmanager webhook goes to `snmp_notifier`, which sends SNMP traps (v2c or v3) | Tested earlier and not rerun this time: tested locally with three containers, Alertmanager, `snmp_notifier` and `snmptrapd`; `snmptrapd` received a v2c trap carrying the alert name, node, severity and summary. v3 and a real monitoring system were not tested. It was not rerun this time, **not verified on real hardware** |
+| Prometheus and Alertmanager (or a system that can receive Alertmanager webhooks) | Load `rradius.rules.yml`; Alertmanager sends the alerts | On 2026-11-27 `promtool` 3.16.0 passed the rules and their tests, and seven of the alerts were triggered for real; no real notification channel was connected |
+| Only receives SNMP traps | The Alertmanager webhook goes to `snmp_notifier`, which sends SNMP traps (v2c or v3) | Tested on 2026-11-27 with containers: alerts went through Alertmanager and `snmp_notifier` to `snmptrapd` as v2c traps. v3 was tried only by posting to `snmp_notifier` directly; no real monitoring system |
 | A monitoring system that can read HTTP (for example the HTTP agent item of Zabbix) | Read `GET /metrics` directly, pick the metrics to watch, and set your own thresholds; the thresholds in the rules file can serve as a reference | **Not verified on real hardware** |
 | Only knows SNMP polling (`snmpwalk` must see rradius numbers) | **Not supported** | See [Why there is no SNMP polling](#why-there-is-no-snmp-polling) |
 
 ### What to do for each alert
 
-The table below is arranged from the description text and the `for` setting of `rradius.rules.yml`. "For" is the `for` of the rule; when it is not written, the alert fires as soon as the condition holds.
+The table below is arranged from the description text of `rradius.rules.yml`.
 
 | Alert | Suggested handling |
 | --- | --- |
@@ -393,33 +391,36 @@ The table below is arranged from the description text and the `for` setting of `
 
 ### Turning alerts into SNMP traps
 
-`snmp_notifier` (a separate open-source project, <https://github.com/maxwo/snmp_notifier>, not part of rradius) receives the Alertmanager webhook and sends one SNMP trap for each group of alerts. The steps below come from `deploy/monitoring/README.md`. The flags and behavior of `snmp_notifier` are **not verified on real hardware**; go by its own `--help`.
+`snmp_notifier` (a separate open-source project, <https://github.com/maxwo/snmp_notifier>, not part of rradius) receives the Alertmanager webhook and sends one SNMP trap for each group of alerts. The steps below come from `deploy/monitoring/README.md`. The flags below were tried on 2026-11-27 with `snmp_notifier` 2.1.1; go by the `--help` of your version.
 
 1. Put the `route` and `receivers` of `alertmanager.yml` into your Alertmanager configuration. The receiver sends alerts to `http://snmp-notifier:9464/alerts`, and also sends them when resolved (`send_resolved: true`).
 2. Start `snmp_notifier`, pointing at the monitoring system that receives traps:
 
    ```bash
    snmp_notifier --snmp.destination=nms.example.net:162 --snmp.community=<community string> \
-     --trap.default-oid=<your enterprise number>.1 \
+     --trap.default-oid=1.3.6.1.4.1.<your enterprise number>.1 \
+     --trap.default-objects-base-oid=1.3.6.1.4.1.<your enterprise number>.2 \
      --trap.description-template=/etc/snmp_notifier/description-template.tpl
    ```
 
-3. Its default trap OID (`1.3.6.1.4.1.98789.1`) is not yours; replace it with a subtree under your own enterprise number. When an alert has an `oid` label (or you name the label with `--trap.oid-label`), that alert uses this value as the trap OID. `rradius.rules.yml` currently sets no `oid` label; to give important alerts different OIDs, add it to the `labels` of the rule yourself.
-4. **The v2c community string is plain text.** For authentication and encryption use v3: `--snmp.version=V3` with the `--snmp.authentication-*` and `--snmp.private-*` options.
+3. Its default trap OID (`1.3.6.1.4.1.98789.1`) and the OID prefix of the three fields of the trap (`…98789.2`) are not yours; replace both with subtrees under your own enterprise number, with the two flags above. When an alert has an `oid` label (or you name the label with `--trap.oid-label`), that alert uses this value as the trap OID. `rradius.rules.yml` currently sets no `oid` label; to give important alerts different OIDs, add it to the `labels` of the rule yourself.
+4. **The v2c community string is plain text.** For authentication and encryption use v3: `--snmp.version=V3`, switch on `--snmp.authentication-enabled` and `--snmp.private-enabled` (the protocols default to MD5 and DES; choose others with the `--snmp.authentication-*` and `--snmp.private-*` options), and give a fixed `--snmp.security-engine-id`, creating the receiver's user for the same engine ID (net-snmp: `createUser -e`). Without the engine ID the webhook still answers 200 and nothing is logged, but no trap arrives (tried with net-snmp 5.9.4).
 
-A received trap looks like this (output of `snmptrapd`, tidied up, recorded earlier and not rerun):
+A received trap looks like this (output of `snmptrapd -m ""` on 2026-11-27, with the line for the uptime left out):
 
 ```
 iso.3.6.1.6.3.1.1.4.1.0 = OID: iso.3.6.1.4.1.98789.1
 iso.3.6.1.4.1.98789.2.1 = STRING: "1.3.6.1.4.1.98789.1[alertname=RradiusDown,instance=a:9812]"
 iso.3.6.1.4.1.98789.2.2 = STRING: "critical"
 iso.3.6.1.4.1.98789.2.3 = STRING: "1/1 alerts are firing:
-  Status: critical
-  - Alert: RradiusDown
-    Summary: rradius on a:9812 cannot be scraped"
+
+Status: critical
+- Alert: RradiusDown
+  Summary: rradius on a:9812 cannot be scraped
+  Description: Prometheus has not reached /metrics of a:9812 for 2 minutes: the process is down, or [metrics] is not reachable from the monitoring host."
 ```
 
-To make the monitoring system understand it, set the trap OID and the three fields (name, severity, description) as its trap rule.
+To make the monitoring system understand it, set the trap OID and the three fields as its trap rule: the identifier (`.2.1`, the trap OID with the alert name and the instance), the severity (`.2.2`) and the description (`.2.3`). When the alerts resolve, a trap with the same OID and identifier follows, with severity `info` and description `Status: OK`, up to one `group_interval` later; pair them by `.2.1`. When a node goes down, its other alerts resolve too because their metrics disappear, which does not mean the problem is fixed.
 
 ### Why there is no SNMP polling
 
@@ -427,11 +428,11 @@ A built-in SNMP agent would have to handle SNMP encoding and (for v3) authentica
 
 ### What was verified
 
-Except where a date is given, the following was recorded earlier and was not rerun this time:
+Except where another date is given, the following was run on 2026-11-27 with containers of Prometheus 3.16.0, Alertmanager 0.35.1, `snmp_notifier` 2.1.1 and net-snmp 5.9.4:
 
-- **Rules:** run again on 2026-11-26 in the `prom/prometheus` container: `promtool check rules` passed (19 rules), and so did `promtool test rules`, whose test file has 9 test cases with 22 synthetic time series and covers 10 of the 19 rules. Recorded earlier: every `rradius_*` metric name used by the 19 rules was checked against `/metrics` of a running server or the source code.
-- **Notification:** `amtool check-config` passed; the path of Alertmanager sending a webhook to `snmp_notifier` and then a v2c trap to `snmptrapd` was tested locally in containers.
-- **Not verified:** the thresholds of the rules under real traffic, SNMP v3 traps, a real monitoring system (Zabbix, a traditional NMS) as the receiver, and reading rradius with `snmpwalk` (not supported).
+- **Rules:** `promtool check rules` passed (19 rules), and so did `promtool test rules`, whose test file has 9 test cases with 22 synthetic time series and covers 10 of the 19 rules. Recorded on 2026-11-26: every `rradius_*` metric name used by the 19 rules was checked against `/metrics` of a running server or the source code.
+- **Notification:** `amtool check-config` passed; `RradiusDown`, `RradiusExternalDatabaseUnreachable`, `RradiusNamedQueryStale`, `RradiusNamedQueryFailing`, `RradiusReloadFailed`, `RradiusInvalidPackets` and `RradiusManyRejects` were triggered for real and reached `snmptrapd` as v2c traps through Alertmanager and `snmp_notifier`.
+- **Not verified:** the other rules end to end, the thresholds under real traffic, SNMP v3 through Alertmanager, a real monitoring system (Zabbix, a traditional NMS) as the receiver, Grafana, and reading rradius with `snmpwalk` (not supported).
 
 ## Live state with status
 

@@ -114,7 +114,7 @@ $ chmod 600 ldap.secret
 - The value substituted is the account name after the auth chain has normalized it. The `[auth.username]` above makes both `CORP\Alice` and `alice@example.com` search for `alice` ([chapter 07](07-users-and-chains.md)).
 - When a `reply_attributes` value has several values, each value adds one attribute, in the order the directory returned them.
 - The service account password cannot be empty: a bind with an empty password is an anonymous bind, and `check` rejects it.
-- **Exclude disabled accounts with `filter`.** A user the search cannot find is treated as not existing, so you can exclude disabled accounts directly in the filter. For AD the form is `(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))` (bit 2 of `userAccountControl` means disabled). If OpenLDAP has the password policy (ppolicy) enabled, you can use `(&(uid={user})(!(pwdAccountLockedTime=*)))` to exclude locked accounts. `check` only counts the `{user}` placeholders. Whether the filter itself works, you have to try on your own directory first.
+- **Exclude disabled accounts with `filter`.** A user the search cannot find is treated as not existing, so you can exclude disabled accounts directly in the filter. For AD the form is `(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))` (bit 2 of `userAccountControl` means disabled). If OpenLDAP has the password policy (ppolicy) enabled, you can use `(&(uid={user})(!(pwdAccountLockedTime=*)))` to exclude locked accounts. `check` only counts the `{user}` placeholders. Whether the filter itself works, you have to try on your own directory first, for example with `ldapsearch`: on an OpenLDAP without ppolicy, the ppolicy form found nobody, because the schema does not define the attribute.
 
 > **Not verified on real hardware:** The directory-side behavior of the two exclusion forms (the `userAccountControl` bit, ppolicy's `pwdAccountLockedTime`) has not been tested on a real AD or on OpenLDAP with ppolicy enabled. The code only sends the filter as written, and `check` confirmed that the OpenLDAP one passes.
 
@@ -152,7 +152,7 @@ Use `[log.trace]` to see the Access-Accept for `alice` ([chapter 17](17-monitori
 
 (`Class` and `Session-Timeout` come from [Giving reply attributes by group](#giving-reply-attributes-by-group).)
 
-Bind mode cannot verify CHAP or MS-CHAPv2: these logins have no clear-text password to bind with, and the handler rejects them outright (it does not ignore them). In the test, `alice` with CHAP and with MS-CHAPv2 both gave `reject 1`, and the MS-CHAPv2 Access-Reject carried `MS-CHAP-Error`.
+Bind mode cannot verify CHAP or MS-CHAPv2: these logins have no clear-text password to bind with, and the handler rejects them outright for a user its search finds (it does not ignore them). In the test, `alice` with CHAP and with MS-CHAPv2 both gave `reject 1`, and the MS-CHAPv2 Access-Reject carried `MS-CHAP-Error`.
 
 **Verified**: the four logins `alice`, wrong password, `nobody` and `EXAMPLE\Alice`, the response in the trace, and the rejection of CHAP and MS-CHAPv2.
 
@@ -186,6 +186,7 @@ Both kinds of TLS verify the server certificate and host name. The trusted CAs a
   ```text
   … WARN rradius_core::ldap_handler: auth ldap handler: ldaps://localhost:636: I/O error: invalid peer certificate: UnknownIssuer
   … ERROR rradius_core::ldap_handler: auth ldap handler: no server reachable; rejecting
+  … WARN rradius_core::lua_engine: RADIUS Access-Request from client localhost not answered: the authentication backend could not be used
   ```
 
   This login gets no response (see [When the directory cannot be reached](#when-the-directory-cannot-be-reached)).
@@ -325,7 +326,7 @@ The first URL deliberately points to port 1389 where nothing is listening, and t
 urls = ["ldap://localhost:1389", "ldap://localhost:389"]
 ```
 
-Logins succeed. Every one tries the first URL first, and the log has one line for each:
+Logins succeed. The first one tries the first URL and the log has one line; for the next 30 seconds logins go straight to the second URL, and then the first is tried once more:
 
 ```text
 … WARN rradius_core::ldap_handler: auth ldap handler: ldap://localhost:1389: I/O error: Connection refused (os error 61)
@@ -334,11 +335,13 @@ Logins succeed. Every one tries the first URL first, and the log has one line fo
 Stop the directory container and log in again: the `rradius-bench` result is `timeouts 1` (the server did not respond), and the log says:
 
 ```text
-… WARN rradius_core::ldap_handler: auth ldap handler: ldaps://localhost:636: timeout: deadline has elapsed
+… WARN rradius_core::ldap_handler: auth ldap handler: ldap://localhost:389: I/O error: Connection refused (os error 61)
+… WARN rradius_core::ldap_handler: auth ldap handler: ldap://localhost:1389: I/O error: Connection refused (os error 61)
 … ERROR rradius_core::ldap_handler: auth ldap handler: no server reachable; rejecting
+… WARN rradius_core::lua_engine: RADIUS Access-Request from client localhost not answered: the authentication backend could not be used
 ```
 
-`rradius_radius_discarded_total{reason="database"}` in `/metrics` goes up with it. **Verified**.
+The URL that failed in the last 30 seconds is tried last. A host that does not answer, instead of refusing the connection, is logged after `timeout_ms` as `timeout: deadline has elapsed` on a new connection, or as `timed out` on a pooled one. `rradius_radius_discarded_total{reason="database"}` in `/metrics` goes up with it. **Verified**.
 
 > **Note:** Requests try the URLs in the order of `urls`. For 30 seconds after a URL fails to connect (connection refused, TLS failure, drop, timeout), requests try the other URLs first and come back to it last. After 30 seconds it gets another chance, and if it has recovered, requests go back to it. So when the first server is down for a long time, only the one request every 30 seconds has to wait for it to fail (a refused connection is fast; a host that does not answer is waited for up to `timeout_ms`), and the others are answered directly by the later URLs. When all URLs have failed within those 30 seconds, they are tried in the listed order, and when several do not answer, one request waits "number of URLs × `timeout_ms`". An error reply from the server (for example a refused service account bind) does not count as unreachable and is not moved to the back. This memory lives only inside the handler and starts over after a reload. Put the most reliable server first. If a server will be down for a long time, you should still remove it from `urls` and reload first.
 
@@ -533,7 +536,7 @@ Server log (excerpt):
 
 ### Connections, fault tolerance and metrics
 
-- Each domain controller keeps at most `connections` connections, which are reused. When the domain controller invalidates the secure channel or the connection drops, the handler sets it up again and retries; if that still fails, it moves to the next domain controller.
+- Each domain controller keeps at most `connections` connections, which are reused. When the domain controller invalidates the secure channel or the connection drops, the handler sets it up again and retries; if that still fails, it moves to the next domain controller. In a test against a Samba domain controller (2026-11-27), the first request after the controller restarted got no answer (log: `RPC bind refused: bind_nak, reason 0`); the next one, or the NAS's retransmission, set the channel up again.
 - An idle connection in the pool that does not answer within `timeout_ms` (for example because a firewall dropped it silently) is closed, together with the other idle connections of that domain controller, and the handler retries with a new connection.
 - The computer account password, the session key, the NT-Response and the MPPE keys do not appear in the log at any level.
 
@@ -578,6 +581,7 @@ Replace `machine_password_file` with a wrong password and start the server. On t
 … ERROR rradius_core::lua_engine: auth netlogon handler: localhost: cannot set up the secure channel as RRADIUS1$: the domain controller refused the computer account's password (STATUS_ACCESS_DENIED)
 … WARN rradius_core::netlogon::handler: auth netlogon handler: localhost: cannot set up the secure channel as RRADIUS1$: the domain controller refused the computer account's password (STATUS_ACCESS_DENIED)
 … ERROR rradius_core::lua_engine: auth netlogon handler: no domain controller of CORP could answer; rejecting
+… WARN rradius_core::lua_engine: RADIUS Access-Request from client localhost not answered: the authentication backend could not be used
 ```
 
 This login gets no response (`rradius-bench` shows `timeouts 1`), and `rradius_netlogon_channel_setups_total{result="failed"}` and `rradius_netlogon_logons_total{result="unavailable"}` each go up by one. **Verified**.
@@ -612,8 +616,8 @@ filter = "(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:
 The reasons for the order:
 
 - A PAP login: the netlogon handler ignores it and passes it to the ldap handler to bind.
-- An MS-CHAPv2 login: the netlogon handler decides. If you put ldap first instead, the ldap handler in bind mode **rejects** MS-CHAPv2 (it cannot verify it, but it does not ignore it), and netlogon never gets its turn.
-- When the domain controller says there is no such user (`STATUS_NO_SUCH_USER`), netlogon ignores it. Then the ldap handler cannot find the person in the directory and also rejects MS-CHAPv2, so the result is a reject.
+- An MS-CHAPv2 login: the netlogon handler decides. If you put ldap first instead, the ldap handler in bind mode **rejects** MS-CHAPv2 (it cannot verify it, but it does not ignore it), and netlogon never gets its turn for a user the ldap search finds.
+- When the domain controller says there is no such user (`STATUS_NO_SUCH_USER`), netlogon ignores it. The ldap handler cannot find the person in the directory either and ignores the login too; with no further handler the result is a reject (`handler="none"` in the authentication record).
 
 You can also split this into two named chains, one for the VPN gateway and one for the Wi-Fi controller ([chapter 07](07-users-and-chains.md)), each with only one kind of handler. That is easier to understand.
 

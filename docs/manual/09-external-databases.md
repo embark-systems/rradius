@@ -109,9 +109,9 @@ CREATE ROLE rradius_ro LOGIN PASSWORD '<database password>';
 GRANT SELECT ON radcheck, radreply TO rradius_ro;
 ```
 
-When a script needs to write an accounting copy, create a separate account that has only `INSERT` and `UPDATE` on that table, and set it up as another `[databases.<name>]`. One account for one purpose means that less can be done if the account leaks.
+When a script needs to write an accounting copy, create a separate account that has only `SELECT`, `INSERT` and `UPDATE` on that table (PostgreSQL asks for `SELECT` on the columns that `ON CONFLICT … DO UPDATE` reads), and set it up as another `[databases.<name>]`. One account for one purpose means that less can be done if the account leaks.
 
-Tested (PostgreSQL 17): with this account, the sql handler logs users in as usual; a script that runs `DELETE` on `radcheck` gets `permission denied for table radcheck`, and reading a table it was not granted gets `permission denied for table acct_copy`.
+Tested (PostgreSQL 17): with `rradius_ro`, the sql handler logs users in as usual; a script that runs `DELETE` on `radcheck` gets `permission denied for table radcheck`, and reading a table it was not granted gets `permission denied for table acct_copy`.
 
 ### TLS
 
@@ -155,6 +155,8 @@ With MySQL and `tls = "off"`, the database account must use `mysql_native_passwo
 
 To create an account with `mysql_native_password`: `CREATE USER 'rradius'@'%' IDENTIFIED WITH mysql_native_password BY '<database password>';`. MySQL 8.4 disables this authentication method by default, so the server must be started with `--mysql-native-password=ON` (the tests for this book were started that way). When you can use TLS, `verify` is better than changing the authentication method of the account.
 
+The failure with `caching_sha2_password` and `off` happens only while the server has no cached login for the account. After one successful login over TLS, `off` connects too, until the cache is cleared (for example by `FLUSH PRIVILEGES`), so do not take one successful connection as proof that it will keep working.
+
 ## Let the sql handler use an external database
 
 Add `database` to the sql handler, and its queries go to that external database instead of the cluster database. The example uses the `radcheck` and `radreply` tables of an old system (`rradius-server/examples/scenarios/migrate-users/external-db.toml`):
@@ -183,8 +185,8 @@ reply_query = "SELECT attribute, value FROM radreply WHERE username = ?"
 - Always write `?` for values in SQL. When sending to PostgreSQL, rradius rewrites them in order to `$1`, `$2` …; when sending to MySQL, they are sent unchanged. Forms such as `?1` and `:name` are not accepted.
 - The format of the password column is the same as in the account table of the cluster database (prefixes such as `{crypt}` and `{clear}`; see Chapter 07).
 - You only read, so give rradius a read-only account that can read these two tables.
-- If the plaintext passwords of the old system need the `{clear}` prefix added, concatenate it in SQL: in PostgreSQL use `SELECT '{clear}' || value FROM radcheck WHERE username = ?`, in MySQL use `SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?` (in MySQL `||` is a logical OR by default). For when you need this, see [Chapter 07](07-users-and-chains.md#plaintext-without-a-prefix-mysql-and-concat). These two statements were not run again on a real database.
-- Limits on placeholders: rradius scans the SQL of the sql handler for `?`, so PostgreSQL `$$ … $$` strings and the `$1` form are rejected (`only plain ? placeholders are supported, found $$…`, `sql_placeholders` in `rradius-core/src/lua_engine.rs`), and the jsonb `?` operator is treated as a placeholder. To use them, rewrite the SQL (for example with the `jsonb_exists(…)` function).
+- If the plaintext passwords of the old system need the `{clear}` prefix added, concatenate it in SQL: in PostgreSQL use `SELECT '{clear}' || value FROM radcheck WHERE username = ?`, in MySQL use `SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?` (through rradius `||` also concatenates in MySQL, but not in the `mysql` client by default). Here `value` is the password column of the old table. For when you need this, see [Chapter 07](07-users-and-chains.md#plaintext-without-a-prefix-mysql-and-concat).
+- Limits on placeholders: rradius scans the SQL of the sql handler for `?`, so PostgreSQL `$$ … $$` strings and the `$1` form are rejected (`only plain ? placeholders are supported, found $$…`, `sql_placeholders` in `rradius-core/src/lua_engine.rs`; a statement with no `?` at all fails with `must contain exactly one ? placeholder, found 0` instead), and the jsonb `?` operator is treated as a placeholder. To use them, rewrite the SQL (for example with the `jsonb_exists(…)` function).
 - If the account table of the old system is still maintained by the old system, you only read it here; to write accounting back to the old system, use `db_execute` in a script (see the next section).
 - If `database` names something that is not in `[databases]`, `check` fails: `auth.handlers[0].database: there is no [databases.nosuch]`.
 
@@ -231,6 +233,9 @@ CREATE TABLE acct_copy (
   session_time BIGINT NOT NULL,
   PRIMARY KEY (nas, session_id)
 );
+-- The account rradius connects with for this table
+CREATE ROLE rradius_copy LOGIN PASSWORD '<database password>';
+GRANT SELECT, INSERT, UPDATE ON acct_copy TO rradius_copy;
 ```
 
 ### Value types
@@ -244,7 +249,7 @@ CREATE TABLE acct_copy (
 | PostgreSQL `NUMERIC`, MySQL `DECIMAL` | A decimal string, not rounded (the result of `SUM` and `AVG` is often of this kind) |
 | NULL | `nil` |
 
-A type that cannot be read gives an error and a hint to convert it to text in the SQL. Tested: `DATE` columns in both PostgreSQL and MySQL cannot be read: `db_query: database billing: column created has a type that cannot be read; CAST it to text in the SQL`; after changing it to `CAST(created AS TEXT) AS created`, you get `'2026-11-23'`. A MySQL `BIGINT UNSIGNED` that holds a value larger than a signed 64-bit integer also gives an error: `column u_big holds 18446744073709551615, more than a script number can hold; CAST it to text in the SQL`.
+A type that cannot be read gives an error and a hint to convert it to text in the SQL. Tested: `DATE` columns in both PostgreSQL and MySQL cannot be read: `db_query: database billing: column created has a type that cannot be read; CAST it to text in the SQL`; after changing it to `CAST(created AS TEXT) AS created` in PostgreSQL, or `CAST(created AS CHAR) AS created` in MySQL (which does not accept `AS TEXT`), you get `'2026-11-23'`. A MySQL `BIGINT UNSIGNED` that holds a value larger than a signed 64-bit integer also gives an error: `column u_big holds 18446744073709551615, more than a script number can hold; CAST it to text in the SQL`.
 
 Other tested mappings: a PostgreSQL `NUMERIC(8,2)` column with `12.50` gives the string `'12.50'`, and `SUM` also gives `'12.50'`; a `BOOLEAN` `true` gives `1`; `BYTEA` gives a byte string; a MySQL `DECIMAL(8,2)` gives `'12.50'`, and `TINYINT(1)` gives `1`.
 
@@ -287,7 +292,7 @@ tls = "off"
 required_for_ready = true
 ```
 
-Any value will do in `billing.secret` (`printf 'unused\n' > billing.secret`). Start the server. The log has:
+Any value will do in `billing.secret` (`printf 'unused\n' > billing.secret`, then `chmod 600 billing.secret`, or `check` warns about its mode). Start the server. The log has:
 
 ```text
 … WARN rradius_core::external_db: databases.billing: not reachable at startup: error communicating with database: Connection refused (os error 61); /readyz answers 503 until it is
@@ -364,7 +369,7 @@ Tested (PostgreSQL 17, the database was stopped and started again while running)
 … WARN rradius_core::external_db: databases.legacy: unreachable after 2 failed checks, the last: error communicating with database: Connection refused (os error 61); /readyz answers 503
 ```
 
-About 5 seconds after the database started again, it recovered to 200, and the log says `databases.legacy: reachable`.
+Within about 5 seconds after the database started again, it recovered to 200, and the log says `databases.legacy: reachable`.
 
 > **Note:** Set `required_for_ready` only for a database that every node needs in order to work. For a database used only for a secondary purpose such as an accounting copy, setting it makes the whole cluster stop receiving traffic because of it.
 
@@ -392,7 +397,7 @@ If `in_use` stays equal to `max`, there are not enough connections and requests 
 `rradiusd status` has an `External databases` section:
 
 ```console
-$ rradiusd status
+$ rradiusd status --config rradius.toml
 …
 External databases
   billing connections in use      0
@@ -479,12 +484,12 @@ Use a label only when its values are a limited set, for example the NAS, the add
 
 ### Query with the command
 
-The `query` command runs through the API port of the cluster, so the server must be running.
+`query <name>` runs through the API port of the cluster, so the server must be running; `query list` only reads the configuration.
 
 List all named queries:
 
 ```console
-$ rradiusd query list
+$ rradiusd query list --config rradius.toml
 name=open_sessions
 help=Sessions without a Stop
 interval_ms=30000
@@ -499,7 +504,7 @@ sql=SELECT CASE enabled WHEN 1 THEN 'enabled' ELSE 'disabled' END AS state, coun
 Run one:
 
 ```console
-$ rradiusd query users_by_state
+$ rradiusd query users_by_state --config rradius.toml
 state     n
 disabled  1
 enabled   2
@@ -510,14 +515,14 @@ The command runs the SQL again right now. It does not read the result in `/metri
 Add `--json` for programs to read:
 
 ```console
-$ rradiusd query open_sessions --json
+$ rradiusd query open_sessions --json --config rradius.toml
 [{"value":1}]
 ```
 
 A name that is not in the configuration gives exit code 2:
 
 ```console
-$ rradiusd query nosuch
+$ rradiusd query nosuch --config rradius.toml
 queries.nosuch is not set in rradius.toml
 ```
 
@@ -557,12 +562,12 @@ rradius_query_failures_total{query="users_count",reason="shape"} 1
 rradius_query_last_success_timestamp_seconds{query="users_count"} 0
 ```
 
-`status` says `users_count last success (seconds ago)     never`. But `rradiusd query users_count` still prints `n` and `3`, because the command only runs the SQL and does not check the columns. So when the command finds data but the metric does not, look at the log for `shape` first. To fix it, add `value = "n"`, or change the SQL to `count(*) AS value`, and then restart.
+`status` says `users_count last success (seconds ago)     never`. But `rradiusd query users_count --config rradius.toml` still prints `n` and `3`, because the command only runs the SQL and does not check the columns. So when the command finds data but the metric does not, look at the log for `shape` first. To fix it, add `value = "n"`, or change the SQL to `count(*) AS value`, and then restart.
 
 The `Queries` section of `rradiusd status` (tested):
 
 ```console
-$ rradiusd status
+$ rradiusd status --config rradius.toml
 …
 Queries
   open_sessions last success (seconds ago)   1
@@ -583,7 +588,7 @@ Any change to `[databases]` and `[queries]` needs a restart. When you send `SIGH
 … WARN rradius_core::reload: configuration reloaded from rradius.toml; these need a restart to apply: [databases]
 ```
 
-A change to `[queries]` gives `these need a restart to apply: [queries]`. Check with `rradiusd check` first; most errors in `[databases]` and `[queries]` show up there.
+A change to `[queries]` gives `these need a restart to apply: [queries]`. Check with `rradiusd check --config rradius.toml` first; most errors in `[databases]` and `[queries]` show up there.
 
 ## Common mistakes
 
@@ -637,7 +642,7 @@ A change to `[queries]` gives `these need a restart to apply: [queries]`. Check 
 
 **Symptom:** A script gives `column x has a type that cannot be read; CAST it to text in the SQL`.
 **Cause:** The script has no value for the type of the column; dates and times are the common case.
-**Fix:** Convert it to text in the SQL, for example `CAST(created AS TEXT) AS created`.
+**Fix:** Convert it to text in the SQL, for example `CAST(created AS TEXT) AS created` in PostgreSQL and `CAST(created AS CHAR) AS created` in MySQL.
 
 **Symptom:** `check` says `queries.ok.sql: must begin with SELECT or WITH: it only reads`.
 **Cause:** Named queries can only read.

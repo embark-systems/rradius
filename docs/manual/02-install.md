@@ -311,10 +311,10 @@ $ docker compose logs
 …
 rradius-1  | … INFO rradius_core::cli: cluster node 1 started
 rradius-1  | … INFO rradius_core::cli: cluster node 1 has caught up with the cluster
+rradius-1  | … INFO rradius_core::metrics: Metrics listening on 127.0.0.1:9812
 rradius-1  | … INFO rradius_core::cli: Servers started. Press Ctrl+C to stop.
 rradius-1  | … INFO rradius_core::radius: RADIUS Server listening on 0.0.0.0:1812 and 0.0.0.0:1813
 …
-rradius-1  | … INFO rradius_core::metrics: Metrics listening on 127.0.0.1:9812
 ```
 
 Check the status inside the container:
@@ -356,7 +356,7 @@ Settings in `compose.yaml`:
 
 | File | Contents |
 | --- | --- |
-| `rradius.toml` | The dictionary points to `/usr/share/rradius/dictionary`; the data directory is `/var/lib/rradius`; the sql handler queries the `users` table; one client for each of the three private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`); the metrics port is `127.0.0.1:9812` |
+| `rradius.toml` | There is no `dictionary` line, so the default `/usr/share/rradius/dictionary` is used; the data directory is `/var/lib/rradius`; the sql handler queries the `users` table; one client for each of the three private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`); `[metrics]` is empty, so the metrics port is the default `127.0.0.1:9812` |
 | `auth.lua` | Handles accounting only: writes each accounting request to the `accounting` table |
 | `migrations/1_schema.sql` | Creates the two tables `users` and `accounting` |
 | `cluster/` | Configuration for a three-node cluster, see chapter 16 |
@@ -365,9 +365,11 @@ Settings in `compose.yaml`:
 
 ### Adding accounts
 
-This configuration has no `[accounts]`, so `user add` cannot be used. The approach suggested in the comments of `1_schema.sql` is to add a migration file with a higher number, for example `docker/config/migrations/2_users.sql`, containing `INSERT INTO users …`. For the format of the password column, see [chapter 07](07-users-and-chains.md).
+This configuration has no `[accounts]`, so `user add` cannot be used. The approach suggested in the comments of `1_schema.sql` is to add a migration file with a higher number, for example `docker/config/migrations/2_users.sql`, containing `INSERT INTO users …`. Then run `docker compose restart rradius`: migrations are applied only at startup, not on reload. For the format of the password column, see [chapter 07](07-users-and-chains.md).
 
 You can also add `[accounts]` to `rradius.toml` as described in chapter 07, then manage accounts with `docker compose exec rradius rradiusd user add …`.
+
+The `users` table here has no `enabled` column, which the chapter 07 statements for `enable`, `disable` and `show` use. To use them, add a migration with `ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;`, add `AND enabled = 1` to `user_query`, and restart.
 
 > **Note:** A migration file that has already been applied must not be changed. To change a table structure or add data, always add a file with the next number.
 

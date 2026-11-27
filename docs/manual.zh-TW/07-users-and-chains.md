@@ -420,7 +420,7 @@ SELECT '{clear}' || value FROM radcheck WHERE username = ?
 SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?
 ```
 
-（MySQL 的 `||` 預設是邏輯 OR，不是串接，所以要寫 `CONCAT`。上面兩行未在真實資料庫上執行。）
+（MySQL 預設把 `||` 當邏輯 OR，例如在 `mysql` 用戶端裡。rradius 開的連線會打開 `PIPES_AS_CONCAT`，所以經由 rradius 時 `||` 也是串接；`CONCAT` 兩邊都適用。）
 
 ### 上線前
 

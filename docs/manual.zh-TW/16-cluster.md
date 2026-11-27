@@ -523,7 +523,7 @@ rradius_acct_spool_bytes 0
 
 停掉一個節點（SIGTERM）再啟動，它用自己 `data_dir` 裡的資料回來，從 leader 補上停機期間的寫入，追上之後才服務。這是升級、改 `[cluster]` 設定、換主機硬體時的標準做法。
 
-> **注意：** 叢集剛恢復過半數、還在選舉的那幾秒裡啟動節點，節點讀「叢集已套用哪些 migration」會得到 `has to forward request to: None`。現在它每 200 ms 重讀一次，等到 leader 回答，上限是 `migrations_wait_ms`；超過才以結束碼 1 結束，最後一行是 `not ready to apply migrations: cannot read applied migrations: …`，帶最後一次的錯誤。舊版沒有重讀，這個情況會在幾秒後直接結束，要靠 systemd 的 `Restart=on-failure` 或容器的重啟政策再啟動一次。這段重試由單元測試涵蓋，選舉空窗本身沒有在實機上重現過。
+> **注意：** 叢集剛恢復過半數、還在選舉的那幾秒裡啟動節點，節點讀「叢集已套用哪些 migration」會得到 `has to forward request to: None`。現在它每 200 ms 重讀一次，等到 leader 回答，上限是 `migrations_wait_ms`；超過才以結束碼 1 結束，最後一行是 `not ready to apply migrations: cannot read applied migrations: …`，帶最後一次的錯誤。舊版沒有重讀，這個情況會在幾秒後直接結束，要靠 systemd 的 `Restart=on-failure` 或容器的重啟政策再啟動一次。這段重試由單元測試涵蓋，選舉空窗本身沒有在多台實機上重現過。之後寫「追上進度」標記的那一步不會重試：有 `migrations_dir` 時，節點在那裡遇到選舉會以結束碼 1 結束（見[整個叢集一起重開](#整個叢集一起重開)）。
 
 ### 強制結束之後
 
@@ -584,12 +584,19 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 
 三個節點一起停、一起啟動，跟第一次啟動一樣：每個節點等到湊滿過半數、追上進度才服務，最多等 `migrations_wait_ms`。所以 `migrations_wait_ms` 要比你預期「最後一個節點起來」所需的時間長。
 
-只重開一個節點、另外兩個還沒回來時（沒有設 `stop_without_leader_ms`、所有 migration 本機都已套用），程式的設計是：等不到 leader 就比對本機副本已套用的 migration，相符時印出警告，用本機副本服務。實測了三次，結果不一致：
+有 `migrations_dir` 時，這樣啟動也可能有節點結束。2026-11-27 在一台機器上跑三個節點，9 次同時啟動中有 3 次有一個節點以結束碼 1 結束：`cannot write the marker: ClientWriteError: has to forward request to: None, None`。原因是它在選舉中寫「追上進度」的標記，而這個寫入不會重試。節點要放在會把它再啟動起來的東西底下（systemd 的 `Restart=on-failure`、容器的重啟政策）；再啟動一次就起來了。
 
-- 一次照設計：大約 4 秒後印出 `cluster node 1: no usable leader within 3.981301833s; serving without a leader before catching up, so answers come from this node's replica, which may be behind`，然後用本機副本服務，`rradius_cluster_caught_up` 是 0。另外兩個節點回來後，日誌寫 `cluster node 1 has caught up with the cluster`，`rradius_cluster_caught_up` 變成 1。
-- 兩次（`migrations_wait_ms = 10000`）沒有服務，結束碼 1：一次印出 `node 2 did not join within 10s`，另一次印出 `cannot read applied migrations: no answer within 8.990975917s`。
+只重開一個節點、另外兩個還沒回來時（沒有設 `stop_without_leader_ms`、所有 migration 本機都已套用），程式的設計是：等不到 leader 就比對本機副本已套用的 migration，相符時印出警告，用本機副本服務。實際上，結果取決於節點停下時的角色與各節點停下的順序。2026-11-27 在一台機器上跑三個節點、`migrations_wait_ms = 15000` 實測：
 
-設了 `stop_without_leader_ms` 的節點，湊不到 leader 時一律結束，結束碼 1，不會用舊資料服務。
+| 單獨重開的節點 | 有 `migrations_dir` | 沒有 `migrations_dir` |
+| --- | --- | --- |
+| 停下時是 leader | 照設計用本機副本服務（4 次中 4 次） | 沒有測 |
+| 是 follower，停下時 leader 還在跑 | 結束碼 1，`cannot read applied migrations: no answer within …`（1 次中 1 次） | 服務，警告 `serving before catching up`（2 次中 2 次） |
+| 是 follower，在 leader 之後停下 | 結束碼 1，`node N did not join within 15s`（4 次中 4 次） | 觀察 60 秒，不服務也不結束（2 次中 2 次）；這段等待沒有時間上限 |
+
+照設計服務的節點，警告是 `cluster node 1: no usable leader within 3.981301833s; serving without a leader before catching up, so answers come from this node's replica, which may be behind`，`rradius_cluster_caught_up` 是 0。另外兩個節點回來後，日誌寫 `cluster node 1 has caught up with the cluster`，`rradius_cluster_caught_up` 變成 1。
+
+設了 `stop_without_leader_ms` 的節點不會用舊資料服務：啟動走到找 leader 這一步而找不到時，以結束碼 1 結束。依程式碼，這個設定管不到一種情況：沒有 `migrations_dir` 而在 leader 之後停下的 follower，會像表格那樣停在更早的啟動步驟，沒有時間上限（沒有用這個設定實測）。
 
 結論：失去多數節點時，不要指望重開某個節點就能讓它服務；先把其他節點救回來。
 
@@ -838,7 +845,7 @@ configuration ok
 - `migrations_dir = "../migrations"`，也就是 `docker/config/migrations/`。
 - `[metrics]` 聽容器內的 `127.0.0.1:9812`，給容器內的 `status` 用。
 
-啟動的步驟（`compose.cluster.yaml` 開頭的註解）：
+啟動的步驟（`compose.cluster.yaml` 開頭的註解）。同一個目錄裡[第 2 章](02-install.md)的單機若還在跑，先 `docker compose down`：兩者的專案名稱與主機埠相同。`up` 在前景執行，後面的指令要另開終端機，或加上 `-d`。
 
 ```console
 $ sh docker/init-secrets.sh
@@ -852,11 +859,11 @@ $ docker compose -f compose.cluster.yaml exec node1 rradiusd status --config /et
 $ docker compose -f compose.cluster.yaml exec node1 rradiusd cluster members --config /etc/rradius/cluster/node1.toml
 ```
 
-停掉 leader 的練習，用 `docker compose -f compose.cluster.yaml stop node1`（送 SIGTERM，最多等 30 秒）。
+停 leader 的練習：先用 `cluster members` 找出 leader，再 `docker compose -f compose.cluster.yaml stop <該節點>`（送 SIGTERM，最多等 30 秒），之後換另一個節點的服務名稱與設定檔查看。
 
-本書驗證過的部分：在工作目錄複製一份，`init-secrets.sh` 產生密碼後，`docker compose -f compose.cluster.yaml config` 通過；三份節點設定把字典與密碼路徑換成本機路徑後，`check` 都通過。
+本書驗證過的部分，2026-11-27 在一台 Docker 主機上（OrbStack、arm64，埠改成只聽 `127.0.0.1`）：image 可以建置，三個容器啟動，兩個 `exec` 指令可用，停 leader 約 15 秒；另一個節點接手，送往節點 2 的計費約有 6 秒沒有回應。
 
-> **未實機驗證：** 用 `compose.cluster.yaml` 實際建置 image、起三個容器、停掉 leader 的過程。上面的 `exec` 指令沒有實際跑過。單機的行為與本章前面的練習相同，因為容器用的是同一個程式。
+> **未實機驗證：** 節點分散在多台主機上的叢集。這次沒有建置 x86-64 的 image。
 
 > **注意：** 三個容器在同一台 Docker 主機上，這台主機停了，整個叢集就停了。它適合測試與小型環境；要扛主機故障，節點要分散在不同主機上，像 ha-cluster 情境那樣。`[metrics]` 只聽容器內的位址，所以容器內的 `status --cluster` 讀不到其他節點。
 
