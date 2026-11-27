@@ -100,6 +100,7 @@ $ cargo build --locked --release -p rradius-server -p rradius-bench
 - **一律加 `--locked`。** 它讓 cargo 照 repo 裡 `Cargo.lock` 記錄的版本建置，不自己升級相依套件。
 - repo 裡的 `.cargo/config.toml` 會設好 `LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG`，這是內建 SQLite 需要的編譯選項。在 repo 裡建置不必自己設。
 - 在 arm64 的 Linux 上，`Dockerfile`、deb、rpm 與 FreeBSD port 都另外設了 `JEMALLOC_SYS_WITH_LG_PAGE=16`，讓程式在 4、16、64 KiB 分頁的核心上都能跑。你自己在 arm64 Linux 建置、又要把程式搬到別台機器時，也照樣設。
+- 在 FreeBSD 上，jemalloc 要帶 `ac_cv_func__malloc_thread_cleanup=no` 和 `ac_cv_func__pthread_mutex_init_calloc_cb=no` 建置，否則它會蓋掉 C 函式庫的執行緒清理與 fork 掛勾，伺服器在執行緒結束後會崩潰。repo 的 `.cargo/config.toml` 與 FreeBSD port 都設好了；沒帶這兩個設定建出的 `rradiusd` 會拒絕啟動，並說明怎麼重建。之前建過的 `target` 目錄會沿用舊的 jemalloc：先執行 `cargo clean -p tikv-jemalloc-sys`（release 建置是 `cargo clean --release -p tikv-jemalloc-sys`）再建置。這件事在 FreeBSD 15.1 arm64 虛擬機上檢查過，amd64 與實體機器沒有。
 
 建好之後先確認程式能跑：
 

@@ -6,8 +6,12 @@
 //! The memory comes from jemalloc. On macOS the system allocator kept the regions that
 //! aligned allocations had used and did not use them again, so a server under steady
 //! load grew without end (gigabytes within a minute); on Linux it was slower.
+//!
+//! On FreeBSD jemalloc must be built to leave the C library's thread hooks alone, which
+//! `.cargo/config.toml` sets and [`check_c_library_hooks`] verifies.
 
 use std::alloc::{GlobalAlloc, Layout};
+use std::ffi::CStr;
 use tikv_jemallocator::Jemalloc as Backing;
 
 pub const CACHE_LINE: usize = if cfg!(all(target_os = "macos", target_arch = "aarch64")) { 128 } else { 64 };
@@ -48,6 +52,67 @@ unsafe impl GlobalAlloc for CacheLineAligned {
             _ => std::ptr::null_mut(),
         }
     }
+}
+
+/// What FreeBSD's C library calls when a thread ends and around a fork. jemalloc built with its
+/// defaults defines them itself, so the C library's own jemalloc is never told that a thread
+/// ended, and a later thread crashes in it.
+const C_LIBRARY_HOOKS: [&CStr; 3] = [c"_malloc_thread_cleanup", c"_malloc_prefork", c"_malloc_postfork"];
+
+/// Fails on FreeBSD when this executable provides any of the C library's thread hooks, as it does
+/// when jemalloc was built without the settings of `.cargo/config.toml`. Elsewhere, and where
+/// it cannot tell which object provides a hook, it succeeds.
+pub fn check_c_library_hooks() -> Result<(), String> {
+    judge_hooks(own_object(), &C_LIBRARY_HOOKS.map(|name| (name, object_providing(name))))
+}
+
+/// `own` is the loaded object holding this program's code; each hook comes with the object that
+/// provides it. Objects are told apart by the address they are loaded at.
+fn judge_hooks(own: Option<usize>, hooks: &[(&CStr, Option<usize>)]) -> Result<(), String> {
+    let replaced: Vec<_> = hooks.iter().filter(|(_, object)| own.is_some() && *object == own).map(|(name, _)| name.to_string_lossy()).collect();
+    if replaced.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "this program replaces the C library's {} and would crash after threads end: it was built without \
+         ac_cv_func__malloc_thread_cleanup=no and ac_cv_func__pthread_mutex_init_calloc_cb=no; set both \
+         (the repository's .cargo/config.toml does), run `cargo clean -p tikv-jemalloc-sys` \
+         (release build: `cargo clean --release -p tikv-jemalloc-sys`) and build again",
+        replaced.join(", ")
+    ))
+}
+
+#[cfg(target_os = "freebsd")]
+fn object_at(address: *const libc::c_void) -> Option<usize> {
+    // SAFETY: `Dl_info` holds only pointers, for which all zeroes is a value.
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    // SAFETY: `dladdr` compares the address with the loaded objects and writes `info`.
+    (unsafe { libc::dladdr(address, &mut info) } != 0).then_some(info.dli_fbase as usize)
+}
+
+#[cfg(target_os = "freebsd")]
+fn own_object() -> Option<usize> {
+    object_at(own_object as *const libc::c_void)
+}
+
+#[cfg(target_os = "freebsd")]
+fn object_providing(name: &CStr) -> Option<usize> {
+    // SAFETY: `name` ends in NUL.
+    let address = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+    if address.is_null() {
+        return None;
+    }
+    object_at(address)
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn own_object() -> Option<usize> {
+    None
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn object_providing(_name: &CStr) -> Option<usize> {
+    None
 }
 
 #[cfg(test)]
@@ -128,6 +193,55 @@ mod tests {
     fn test_cache_line_by_target() {
         let expected = if cfg!(all(target_os = "macos", target_arch = "aarch64")) { 128 } else { 64 };
         assert_eq!(CACHE_LINE, expected);
+    }
+
+    const OWN: usize = 0x1000;
+    const C_LIBRARY: usize = 0x2000;
+
+    /// The three hooks, those named in `own` provided by the executable.
+    fn hooks_with(own: &[&CStr]) -> [(&'static CStr, Option<usize>); 3] {
+        C_LIBRARY_HOOKS.map(|name| (name, Some(if own.contains(&name) { OWN } else { C_LIBRARY })))
+    }
+
+    // spectra-scenario: lua-auth-engine / Build without the settings / which provider stops the program
+    #[test]
+    fn test_hooks_left_to_the_c_library() {
+        assert_eq!(judge_hooks(Some(OWN), &hooks_with(&[])), Ok(()));
+    }
+
+    // spectra-scenario: lua-auth-engine / Build without the settings / which provider stops the program
+    #[test]
+    fn test_replaced_hooks_are_named() -> Result<(), String> {
+        let cases: [(&[&CStr], &str); 2] = [
+            (&[c"_malloc_thread_cleanup"], "the C library's _malloc_thread_cleanup and would crash"),
+            (&[c"_malloc_prefork", c"_malloc_postfork"], "the C library's _malloc_prefork, _malloc_postfork and would crash"),
+        ];
+        for (own, named) in cases {
+            let Err(message) = judge_hooks(Some(OWN), &hooks_with(own)) else {
+                return Err(format!("accepted {own:?}"));
+            };
+            for part in [named, "ac_cv_func__malloc_thread_cleanup=no", "ac_cv_func__pthread_mutex_init_calloc_cb=no", "`cargo clean -p tikv-jemalloc-sys`", "`cargo clean --release -p tikv-jemalloc-sys`"] {
+                assert!(message.contains(part), "{part:?} is not in {message:?}");
+            }
+            assert!(!message.contains('\n'), "{message:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_unknown_providers_do_not_stop_the_program() {
+        // A hook that is not found, and a program whose own object is not known.
+        let missing = C_LIBRARY_HOOKS.map(|name| (name, None));
+        assert_eq!(judge_hooks(Some(OWN), &missing), Ok(()));
+        assert_eq!(judge_hooks(None, &missing), Ok(()));
+        assert_eq!(judge_hooks(None, &hooks_with(&[c"_malloc_prefork"])), Ok(()));
+    }
+
+    // On FreeBSD this looks at the test program itself, built with the repository's settings.
+    // spectra-scenario: lua-auth-engine / Build with the repository settings
+    #[test]
+    fn test_this_build_leaves_the_c_library_hooks() {
+        assert_eq!(check_c_library_hooks(), Ok(()));
     }
 
     #[test]

@@ -25,9 +25,13 @@ GROUPS=		rradius
 
 CARGO_INSTALL_PATH=	rradius-server
 # The default configuration path is fixed at build time: ${PREFIX}/etc/rradius/rradius.toml.
-# LIBSQLITE3_FLAGS is what the repository's .cargo/config.toml sets for the bundled SQLite.
+# The others are what the repository's .cargo/config.toml sets: LIBSQLITE3_FLAGS for the bundled
+# SQLite, and the ac_cv_func_* pair so that jemalloc leaves the C library's thread cleanup and
+# fork hooks alone (the server would crash, and refuses to start).
 CARGO_ENV+=	RRADIUS_PREFIX=${PREFIX} \
-		LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG
+		LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG \
+		ac_cv_func__malloc_thread_cleanup=no \
+		ac_cv_func__pthread_mutex_init_calloc_cb=no
 .include <bsd.port.options.mk>
 
 .if ${ARCH} == aarch64

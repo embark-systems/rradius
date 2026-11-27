@@ -34,7 +34,7 @@
 
 套件依賴的 glibc 版本跟著建置主機走。deb 用 `deb/docker-build.sh` 在 Debian 12 容器建（amd64 或 arm64，另一種架構用模擬執行，慢但結果相同），依賴 glibc 2.34 以上，Debian 12、13 和 Ubuntu 22.04 以後都能裝。rpm 也一樣：要裝到較舊的發行版，就在那個發行版上建。
 
-所有套件都需要 Rust 1.99 以上（和 `Dockerfile` 一樣）、cmake、g++ 和 make。Rust 比各發行版附的新，所以套件沒有把 cargo 列為建置相依；用 rustup 或 `rust` 映像提供。建置用的環境變數和 `Dockerfile` 相同：`LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG`，arm64 加 `JEMALLOC_SYS_WITH_LG_PAGE=16`，`debian/rules`、`rradius.spec` 和 port 都已設好。
+所有套件都需要 Rust 1.99 以上（和 `Dockerfile` 一樣）、cmake、g++ 和 make。Rust 比各發行版附的新，所以套件沒有把 cargo 列為建置相依；用 rustup 或 `rust` 映像提供。建置用的環境變數和 `Dockerfile` 相同：`LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG`，arm64 加 `JEMALLOC_SYS_WITH_LG_PAGE=16`，`debian/rules`、`rradius.spec` 和 port 都已設好。FreeBSD 另外需要 `ac_cv_func__malloc_thread_cleanup=no` 與 `ac_cv_func__pthread_mutex_init_calloc_cb=no`，port 和 repo 的 `.cargo/config.toml` 都設好了：沒帶它們建出的 `rradiusd` 拒絕啟動，之前建過的 `target` 目錄要先 `cargo clean -p tikv-jemalloc-sys`（release 建置是 `cargo clean --release -p tikv-jemalloc-sys`）。
 
 ```bash
 # deb：另需 debhelper、dpkg-dev

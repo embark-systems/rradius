@@ -100,6 +100,7 @@ Notes:
 - **Always add `--locked`.** It makes cargo build with the versions recorded in the repository's `Cargo.lock` and not upgrade dependencies on its own.
 - The `.cargo/config.toml` in the repository sets `LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_QPSG`, a compile option the built-in SQLite needs. You do not need to set it when you build inside the repository.
 - On arm64 Linux, the `Dockerfile`, deb, rpm and the FreeBSD port also set `JEMALLOC_SYS_WITH_LG_PAGE=16`, so the program runs on kernels with 4, 16 and 64 KiB pages. If you build on arm64 Linux yourself and move the program to another machine, set it too.
+- On FreeBSD, jemalloc has to be built with `ac_cv_func__malloc_thread_cleanup=no` and `ac_cv_func__pthread_mutex_init_calloc_cb=no`. Otherwise it replaces the C library's thread cleanup and fork hooks, and the server crashes after threads end. The repository's `.cargo/config.toml` and the FreeBSD port set both, and an `rradiusd` built without them refuses to start and says how to rebuild. A `target` directory built before keeps the old jemalloc: run `cargo clean -p tikv-jemalloc-sys` (for a release build, `cargo clean --release -p tikv-jemalloc-sys`) and build again. This has been checked on a FreeBSD 15.1 arm64 virtual machine, not on amd64 or on physical hardware.
 
 After the build, check that the program runs:
 

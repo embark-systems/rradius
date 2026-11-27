@@ -199,6 +199,11 @@ fn stopped_during_startup() -> ! {
 
 /// Runs the program: one of its commands, or the servers until they are asked to stop.
 pub fn main(program: Program) -> Result<(), Box<dyn std::error::Error>> {
+    // Before any command starts a thread: a build that fails this crashes at a moment nobody can
+    // predict.
+    if let Err(message) = crate::aligned_alloc::check_c_library_hooks() {
+        exit_with(message);
+    }
     exit_when_the_cluster_node_panics();
     crate::runtime::build()?.block_on(run(program))
 }

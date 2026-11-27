@@ -5,3 +5,12 @@
 # from about 47,000 to 17,000 a second. With this, plans do not depend on bound values, which
 # only matters with ANALYZE statistics, and hiqlite makes none. See docs/usage.md section 1.
 LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_QPSG"
+# Keep jemalloc from replacing the C library's thread cleanup and fork hooks on FreeBSD:
+# otherwise the C library's own allocator is never told that a thread ended, and a later thread
+# crashes in it. These answer two checks of jemalloc's configure script (the functions only
+# exist there) with "no".
+# The program refuses to start if it was built without them; a target directory built before
+# keeps the old jemalloc until `cargo clean -p tikv-jemalloc-sys` (release build:
+# `cargo clean --release -p tikv-jemalloc-sys`).
+ac_cv_func__malloc_thread_cleanup = "no"
+ac_cv_func__pthread_mutex_init_calloc_cb = "no"
