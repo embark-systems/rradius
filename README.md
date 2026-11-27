@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/rradius-stacked-dark.svg">
+    <img src="docs/logo/rradius-stacked-light.svg" alt="rradius logo" width="360">
+  </picture>
+</p>
+
 # rradius
 
 English | [繁體中文](README.zh_TW.md)
@@ -47,4 +54,4 @@ RadSec, realm-based proxying and roaming, Disconnect / CoA, NAS clients managed 
 
 ## License
 
-BSD 2-Clause; see [`LICENSE`](LICENSE). The RADIUS dictionaries in `share/` are under their own license; see [`share/LICENSE`](share/LICENSE) and [`share/NOTICE`](share/NOTICE).
+BSD 2-Clause; see [`LICENSE`](LICENSE). The RADIUS dictionaries in `share/` are under their own license; see [`share/LICENSE`](share/LICENSE) and [`share/NOTICE`](share/NOTICE). The logo in `docs/logo/` is not covered by this license.
