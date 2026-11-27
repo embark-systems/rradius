@@ -540,13 +540,13 @@ When you build a URL, always encode values that come from users with `url_encode
 | `"verify"` (default) | Encrypted, and the certificate chain and host name are verified |
 | `"off"` | Not encrypted |
 
-When it is set to `"off"` and `host` is not local (`localhost` or a loopback address), the server logs a warning at start-up:
+When it is set to `"off"` and `host` is not local (`localhost` or a loopback address), both `check` and server start-up log a warning:
 
 ```text
 … WARN rradius_core::external_db: databases.remote: tls = "off" sends the password and the data to 192.0.2.10 unencrypted
 ```
 
-> **Note:** This warning appears only when the server starts; `check` does not print it. Tested: with the same configuration, `check` printed only `configuration ok`.
+> **Note:** A reload does not print this warning again.
 
 When the database uses a certificate signed by an internal CA, name the CA with `ca_file`; do not change to `"off"`. For details see [Chapter 09](09-external-databases.md).
 
