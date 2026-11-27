@@ -2390,6 +2390,11 @@ fn test_pinned_worker_threads() {
     let slow = "sql_query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 300000) SELECT count(*) FROM c')";
     let (config, _) = write_config(dir.path(), &format!("{slow} return 'accept'"), None);
     let mut text = std::fs::read_to_string(&config).unwrap();
+    // On a slow machine the last queries wait for a read connection longer than the 5 s the
+    // database calls of a request have by default, and the server then does not answer. 25 s
+    // stays within the 30 s the answers are waited for below.
+    text = text.replace("[lua]\n", "[lua]\nquery_timeout_ms = 25000\n");
+    assert!(text.contains("query_timeout_ms = 25000"), "no [lua] section to set the time limit in: {text}");
     text.push_str("[runtime]\npin_threads = true\n");
     std::fs::write(&config, text).unwrap();
     let child = Server::spawn(PROGRAM, dir.path(), &config);
