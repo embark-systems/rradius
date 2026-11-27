@@ -598,7 +598,7 @@ $ rradiusd cluster members --config rradius.toml
 node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 ```
 
-`members` prints one line per member: node number, `voter` or `learner`, whether it is the `leader`, and the Raft and API addresses. A member that is in the cluster but not listed in the configuration file gets `(not in this configuration)` at the end of the line; a node listed in the configuration file but not in the cluster prints `node <id>  not in the cluster (listed in this configuration)`.
+`members` prints one line per member: node number, `voter`, `learner` or `leaving`, whether it is the `leader`, and the Raft and API addresses. A member that is in the cluster but not listed in the configuration file gets `(not in this configuration)` at the end of the line; a node listed in the configuration file but not in the cluster prints `node <id>  not in the cluster (listed in this configuration)`. While a change of the members is in progress, a node that is about to stop voting is shown as `leaving`, and the last line is `a change of the members is in progress`.
 
 `remove` takes a node that has **already stopped** out of the cluster:
 
@@ -613,12 +613,15 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 | Only two voters would remain | `… leaves two voters, and the cluster stops writing when either stops; give --force to remove it anyway` | 2 |
 | The last voter | `node <id> is the last voter; the cluster cannot remove it` | 2 |
 | No response within 30 seconds after sending | `the removal of node <id> may have been made, …; check with cluster members` | 3 |
+| One of two voters, and the leader has not answered that it accepted the removal | The message above, then a line `the change needs node <id> to commit: start it again with its data, wait about 20 s, stop it, and run this command again` | 3 |
+| An earlier change is not committed (`InProgress`); it takes only this node out of the voters and leaves one | The cluster's answer, then a line `the change needs node <id> to commit: …` | 1 |
+| Any other `InProgress` refusal | The cluster's answer, then a line `run this command again once cluster members shows no change in progress` | 1 |
 
 - `--force` is used only with `remove`, so that the "only one or two voters remain" cases above are removed anyway. `members --force` is a usage error.
-- With two voters and one of them stopped, the first `remove --force` of the stopped one ends with exit code 3 and leaves it a `learner`; see [Remove a node](16-cluster.md#remove-a-node) for how to finish it.
+- With two voters and one of them stopped, the first `remove --force` of the stopped one ends with exit code 3 and leaves it `leaving`; when the stopped one was the leader, the command only runs into its time limit. See [Remove a node](16-cluster.md#remove-a-node) for how to finish it.
 - Wrong API secret: `… refused the api secret: [cluster] secret_api differs from the cluster's`, exit code 2, and it appears immediately (the same for `user`, `session`, `query`, `client`, `dpsk`, `aka`, and for `cluster` and `status --cluster`). The cluster does not answer at all: `the cluster did not answer within 30 s`, exit code 3.
 
-> **Not verified on real hardware:** the rows "Success", "Only one or two voters would remain" and "No response within 30 seconds after sending" were run on 2026-11-27 with several processes on one machine, not on several hosts; the row "The last voter" was checked only against `cluster_commands.rs` and its tests; the other rows were tested on a single node.
+> **Not verified on real hardware:** the rows "Success", "Only one or two voters would remain", "No response within 30 seconds after sending", "One of two voters" and the first `InProgress` row were run on 2026-11-27 with several processes on one machine, not on several hosts; the row "Any other `InProgress` refusal" was checked only against the tests of `cluster_commands.rs`; the row "The last voter" was checked only against `cluster_commands.rs` and its tests; the other rows were tested on a single node.
 
 ## Old flag syntax
 

@@ -598,7 +598,7 @@ $ rradiusd cluster members --config rradius.toml
 node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 ```
 
-`members` 每個成員一行：節點編號、`voter` 或 `learner`、是不是 `leader`、Raft 與 API 位址。叢集裡有、設定檔沒列的成員，行尾加 `(not in this configuration)`；設定檔列了、叢集裡沒有的，印 `node <id>  not in the cluster (listed in this configuration)`。
+`members` 每個成員一行：節點編號、`voter`、`learner` 或 `leaving`、是不是 `leader`、Raft 與 API 位址。叢集裡有、設定檔沒列的成員，行尾加 `(not in this configuration)`；設定檔列了、叢集裡沒有的，印 `node <id>  not in the cluster (listed in this configuration)`。成員變更進行中時，正要離開 voter 的節點顯示 `leaving`，最後一行是 `a change of the members is in progress`。
 
 `remove` 把一個**已經停止**的節點移出叢集：
 
@@ -613,12 +613,15 @@ node 1  voter    leader  raft 127.0.0.1:8100  api 127.0.0.1:8200
 | 移除後只剩兩個 voter | `… leaves two voters, and the cluster stops writing when either stops; give --force to remove it anyway` | 2 |
 | 最後一個 voter | `node <id> is the last voter; the cluster cannot remove it` | 2 |
 | 送出後 30 秒內沒有回應 | `the removal of node <id> may have been made, …; check with cluster members` | 3 |
+| 兩個 voter 之一，送出後 leader 沒有回覆接受 | 上一列的訊息，再一行 `the change needs node <id> to commit: start it again with its data, wait about 20 s, stop it, and run this command again` | 3 |
+| 先前的變更還沒提交（`InProgress`），那個變更只讓目標離開、留下一個 voter | 叢集的回應，再一行 `the change needs node <id> to commit: …` | 1 |
+| 其他的 `InProgress` 拒絕 | 叢集的回應，再一行 `run this command again once cluster members shows no change in progress` | 1 |
 
 - `--force` 只用在 `remove`，讓上面「只剩一個或兩個 voter」的情況照樣移除。`members --force` 是用法錯誤。
-- 兩個 voter、停掉其中一個時，第一次對它執行 `remove --force` 以結束碼 3 結束，節點變成 `learner`；完成方法見[移除節點](16-cluster.md#移除節點)。
+- 兩個 voter、停掉其中一個時，第一次對它執行 `remove --force` 以結束碼 3 結束，節點顯示 `leaving`；停掉的是 leader 時指令只等到逾時。完成方法見[移除節點](16-cluster.md#移除節點)。
 - API 密碼不對：`… refused the api secret: [cluster] secret_api differs from the cluster's`，結束碼 2，立刻出現（`user`、`session`、`query`、`client`、`dpsk`、`aka` 與 `cluster`、`status --cluster` 都一樣）。叢集都沒有回應：`the cluster did not answer within 30 s`，結束碼 3。
 
-> **未實機驗證：** 表中「成功」「只剩一個或兩個 voter」「送出後沒有回應」這幾列在 2026-11-27 用一台機器上的多個程序跑過，沒有跨主機；「最後一個 voter」只對照了 `cluster_commands.rs` 與它的測試；其他各列在單節點上實測過。
+> **未實機驗證：** 表中「成功」「只剩一個或兩個 voter」「送出後沒有回應」「兩個 voter 之一」與第一個 `InProgress` 這幾列在 2026-11-27 用一台機器上的多個程序跑過，沒有跨主機；「其他的 `InProgress` 拒絕」只對照了 `cluster_commands.rs` 的測試；「最後一個 voter」只對照了 `cluster_commands.rs` 與它的測試；其他各列在單節點上實測過。
 
 ## 舊的旗標寫法
 

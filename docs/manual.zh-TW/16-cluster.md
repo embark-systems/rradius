@@ -351,6 +351,7 @@ node 3  voter            raft 127.0.0.1:27003  api 127.0.0.1:27013
 ```
 
 - `voter`：參與投票、算在過半數裡的節點。剛加入、還在追進度的節點會暫時是 `learner`。
+- `leaving`：進行中的成員變更之前投票、之後不投票的節點。有進行中的變更時，最後一行是 `a change of the members is in progress`。正常的變更也可能短暫看到這兩樣；一直都在的話，見[移除節點](#移除節點)。
 - `leader`：目前的 leader。哪個節點當 leader 不固定。
 - 用哪個節點的設定檔都可以，指令會自己找到 leader。
 - 結束碼：0 成功；2 是參數或設定錯誤，或 API 密碼不對；3 是 30 秒內沒有任何節點回報 leader。
@@ -702,15 +703,39 @@ node 3  not in the cluster (listed in this configuration)
 
 被移除的節點要再加回來，就照[加入節點](#加入節點)的條件：清空它的 `data_dir` 再啟動。上面的節點 3 清空 `data3` 後啟動，2 秒內就以 voter 身分回到叢集。帶著原本的資料啟動它不會回到叢集，節點會自己結束（見[被移除的節點又啟動時](#被移除的節點又啟動時)）。
 
-**移除後只剩一個 voter 時**（原本兩個 voter、停掉其中一個），`remove --force` 第一次沒有完成，看來是因為這個變更需要目前 voter 的過半數同意，而被移除的節點正是其中之一。2026-11-27 在一台機器上用兩個節點實測：
+**移除後只剩一個 voter 時**（原本兩個 voter、停掉其中一個），`remove --force` 第一次不會完成，看來是因為這個變更需要目前 voter 的過半數同意，而被移除的節點正是其中之一。指令會說接下來怎麼做。2026-11-27 在一台機器上用兩個節點實跑，停掉的節點 2 是 follower：
 
-1. `cluster remove --force <id>` 30 秒後以結束碼 3 結束（`… may have been made …`），`cluster members` 顯示停掉的節點是 `learner`。
-2. 馬上再執行一次，以結束碼 1 結束（`ChangeMembershipError`、`InProgress`）。
-3. 帶著原本的資料把停掉的節點再啟動，等約 20 秒，停掉它，再執行一次 `cluster remove --force <id>`，印出 `removed node <id>`。
+```console
+$ rradiusd cluster remove --force --config node1.toml 2
+the removal of node 2 may have been made, but the cluster did not answer within 30 s; check with cluster members
+the change needs node 2 to commit: start it again with its data, wait about 20 s, stop it, and run this command again
+$ rradiusd cluster members --config node1.toml
+node 1  voter    leader  raft 127.0.0.1:27001  api 127.0.0.1:27011
+node 2  leaving          raft 127.0.0.1:27002  api 127.0.0.1:27012
+a change of the members is in progress
+$ rradiusd cluster remove --force --config node1.toml 2
+127.0.0.1:27011: HTTP 500 Internal Server Error: {"ClientWriteError":{"APIError":{"ChangeMembershipError":{"InProgress":{"committed":{"leader_id":{"term":1,"node_id":1},"index":4},"membership_log_id":{"leader_id":{"term":1,"node_id":1},"index":9}}}}}}
+the change needs node 2 to commit: start it again with its data, wait about 20 s, stop it, and run this command again
+```
 
-同一次測試裡，改用空的 `data_dir` 啟動該節點，變更沒有完成（觀察約 20 秒）；所以資料沒了的節點，不要指望能移除。只有兩個 voter 的叢集要三思。
+第一個指令 30 秒後以結束碼 3 結束，第二個馬上以結束碼 1 結束；兩者的第二行都寫著怎麼完成：
 
-步驟 3 啟動的節點這時還在成員清單裡（`learner`），會照常啟動、開始服務。同一天用會讓被移除節點結束的版本重跑這三步，結果相同；移除完成後再啟動該節點，它以結束碼 1 結束（見[被移除的節點又啟動時](#被移除的節點又啟動時)）。
+1. 帶著原本的資料把停掉的節點再啟動，等約 20 秒，停掉它。
+2. 再執行一次 `cluster remove --force <id>`，印出 `removed node <id>`：
+
+```console
+$ rradiusd cluster remove --force --config node1.toml 2
+removed node 2
+$ rradiusd cluster members --config node1.toml
+node 1  voter    leader  raft 127.0.0.1:27001  api 127.0.0.1:27011
+node 2  not in the cluster (listed in this configuration)
+```
+
+步驟 1 啟動的節點這時還在成員清單裡（顯示 `leaving`），會照常啟動、開始服務，不會自己結束；整合測試裡它啟動後約 4 秒叢集恢復接受寫入（量一次）。移除完成後再啟動該節點，它以結束碼 1 結束（見[被移除的節點又啟動時](#被移除的節點又啟動時)）。
+
+**停掉的是 leader 時**，剩下的節點沒辦法自己成為 leader，`cluster members` 和 `cluster remove` 只能等，30 秒後印出 `the cluster did not answer within 30 s`（結束碼 3）；移除請求沒有送出。把停掉的節點啟動回來，`cluster members` 顯示另一個節點是 `leader` 時才停掉它；它又當 leader 的話，停掉再啟動一次（2026-11-27 的一次實跑，第二次啟動後另一個節點當 leader）。然後照上面的方式移除。
+
+改用空的 `data_dir` 啟動該節點，2026-11-27 的一次測試裡變更沒有完成（觀察約 20 秒）；所以資料沒了的節點，不要指望能移除。只有兩個 voter 的叢集要三思。
 
 `cluster remove` 的結束碼：0 成功；1 是沒有這個成員，或叢集拒絕移除；2 是參數、設定錯誤，或檢查沒通過；3 是 30 秒內沒有回應。結束碼 3 時，移除可能已經做了，訊息會叫你用 `cluster members` 確認，不要直接重跑。
 
@@ -729,7 +754,7 @@ node 3  not in the cluster (listed in this configuration)
 
 判定的範圍：
 
-- 只有目前的 leader（回報自己是 leader，而且 5 秒內得到過半數確認）的清單裡沒有這個節點，而且那份清單比本機資料記得的新（或本機的清單本身已經沒有自己），才算被移除。任何一個這樣的 leader 列出它，就不算。仍在清單裡的節點照常啟動，包括 `learner`，例如[兩個 voter 移除一個](#移除節點)做到一半時停掉的那個節點。
+- 只有目前的 leader（回報自己是 leader，而且 5 秒內得到過半數確認）的清單裡沒有這個節點，而且那份清單比本機資料記得的新（或本機的清單本身已經沒有自己），才算被移除。任何一個這樣的 leader 列出它，就不算。仍在清單裡的節點照常啟動，包括 `learner`，以及[兩個 voter 移除一個](#移除節點)做到一半時停掉的那個節點（`leaving`）。
 - 查詢走各節點的 API 埠，對象是 `[[cluster.nodes]]` 與本機資料記得的其他節點。
 - 執行中的節點，在超過 5 秒沒有 leader、或本機的成員清單沒有把自己列為 voter（沒有自己，或自己是 `learner`）時，每 5 秒查一次，查到被移除就停止回應並以結束碼 1 結束。
 
@@ -1203,7 +1228,15 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 
 **症狀：** `cluster members` 停了 30 秒，印出 `the cluster did not answer within 30 s`，結束碼 3。
 **原因：** 設定裡的節點都沒有回應，或都沒有 leader。
-**解法：** 確認節點在跑、API 埠連得到；失去多數節點時，先把節點救回來。
+**解法：** 確認節點在跑、API 埠連得到；失去多數節點時，先把節點救回來。兩個 voter、停掉的是 leader 時，見[移除節點](#移除節點)。
+
+**症狀：** `cluster remove` 的最後一行是 `the change needs node 2 to commit: start it again with its data, wait about 20 s, stop it, and run this command again`，或只剩一個 `voter` 時，`cluster members` 一直顯示一個 `leaving` 節點與 `a change of the members is in progress`。
+**原因：** 移除後只剩一個 voter 時，這個變更在等被移除節點自己的同意。
+**解法：** 照[移除節點](#移除節點)的步驟做。
+
+**症狀：** `cluster remove` 被拒絕（`InProgress`），最後一行是 `run this command again once cluster members shows no change in progress`。
+**原因：** 先前的成員變更還沒提交。
+**解法：** 等 `cluster members` 不再印 `a change of the members is in progress` 再執行一次。那一行一直都在的話，先完成那個變更。
 
 **症狀：** `cluster remove` 印出 `node 4 still answers at 127.0.0.1:27014: stop it first, then remove it`。
 **原因：** 要移除的節點還在運作。
