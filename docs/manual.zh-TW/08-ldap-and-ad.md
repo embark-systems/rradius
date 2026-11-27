@@ -114,7 +114,7 @@ $ chmod 600 ldap.secret
 - 代入的是驗證鏈整理後的帳號名稱。上面的 `[auth.username]` 讓 `CORP\Alice`、`alice@example.com` 都用 `alice` 搜尋（[第 7 章](07-users-and-chains.md)）。
 - `reply_attributes` 的值有好幾個時，每個值各加一個屬性，順序照目錄傳回的順序。
 - 服務帳號的密碼不能是空的：空密碼的 bind 是匿名 bind，`check` 直接拒絕。
-- **用 `filter` 排除停用的帳號。** 搜尋不到的使用者視同不存在，所以停用的帳號可以直接在條件裡排除。AD 的寫法是 `(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))`（`userAccountControl` 的第 2 位元是停用）；OpenLDAP 若啟用了密碼政策（ppolicy），可以用 `(&(uid={user})(!(pwdAccountLockedTime=*)))` 排除被鎖定的帳號。`check` 只檢查 `{user}` 的個數，條件本身有沒有用要先在你的目錄上試過。
+- **用 `filter` 排除停用的帳號。** 搜尋不到的使用者視同不存在，所以停用的帳號可以直接在條件裡排除。AD 的寫法是 `(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:=2)))`（`userAccountControl` 的第 2 位元是停用）；OpenLDAP 若啟用了密碼政策（ppolicy），可以用 `(&(uid={user})(!(pwdAccountLockedTime=*)))` 排除被鎖定的帳號。`check` 只檢查 `{user}` 的個數，條件本身有沒有用要先在你的目錄上試過（例如用 `ldapsearch`）：在沒有 ppolicy 的 OpenLDAP 上，ppolicy 那一條找不到任何人，因為 schema 沒有定義那個屬性。
 
 > **未實機驗證：** 兩種排除寫法的目錄端行為（`userAccountControl` 位元、ppolicy 的 `pwdAccountLockedTime`）沒有在真正的 AD 或啟用 ppolicy 的 OpenLDAP 上測過；程式碼只負責把條件原樣送出，`check` 確認過 OpenLDAP 的那一條能通過。
 
@@ -152,7 +152,7 @@ $ rradius-bench run … --user 'EXAMPLE\Alice' --password alice-password --load 
 
 （`Class` 與 `Session-Timeout` 來自[依群組給回覆屬性](#依群組給回覆屬性)。）
 
-bind 模式不能驗證 CHAP 與 MS-CHAPv2：這兩種登入沒有明文密碼可以 bind，處理器直接拒絕（不是 ignore）。實測 `alice` 用 CHAP 與 MS-CHAPv2 都是 `reject 1`，MS-CHAPv2 的 Access-Reject 帶 `MS-CHAP-Error`。
+bind 模式不能驗證 CHAP 與 MS-CHAPv2：這兩種登入沒有明文密碼可以 bind，搜尋得到的使用者，處理器直接拒絕（不是 ignore）。實測 `alice` 用 CHAP 與 MS-CHAPv2 都是 `reject 1`，MS-CHAPv2 的 Access-Reject 帶 `MS-CHAP-Error`。
 
 **已驗證**：`alice`、錯誤密碼、`nobody`、`EXAMPLE\Alice` 四筆登入，trace 的回應，以及 CHAP 與 MS-CHAPv2 的拒絕。
 
@@ -186,6 +186,7 @@ bind 模式不能驗證 CHAP 與 MS-CHAPv2：這兩種登入沒有明文密碼�
   ```text
   … WARN rradius_core::ldap_handler: auth ldap handler: ldaps://localhost:636: I/O error: invalid peer certificate: UnknownIssuer
   … ERROR rradius_core::ldap_handler: auth ldap handler: no server reachable; rejecting
+  … WARN rradius_core::lua_engine: RADIUS Access-Request from client localhost not answered: the authentication backend could not be used
   ```
 
   這筆登入沒有回應（見[目錄連不上的時候](#目錄連不上的時候)）。
@@ -325,7 +326,7 @@ ldap 處理器依序嘗試 `urls`：
 urls = ["ldap://localhost:1389", "ldap://localhost:389"]
 ```
 
-登入成功，每一筆都先試第一個，日誌各寫一行：
+登入成功。第一筆先試第一個 URL，日誌寫一行；之後 30 秒內直接用第二個，30 秒後再試一次第一個：
 
 ```text
 … WARN rradius_core::ldap_handler: auth ldap handler: ldap://localhost:1389: I/O error: Connection refused (os error 61)
@@ -334,11 +335,13 @@ urls = ["ldap://localhost:1389", "ldap://localhost:389"]
 把目錄的容器停掉，再登入一次：`rradius-bench` 的結果是 `timeouts 1`（伺服器沒有回應），日誌：
 
 ```text
-… WARN rradius_core::ldap_handler: auth ldap handler: ldaps://localhost:636: timeout: deadline has elapsed
+… WARN rradius_core::ldap_handler: auth ldap handler: ldap://localhost:389: I/O error: Connection refused (os error 61)
+… WARN rradius_core::ldap_handler: auth ldap handler: ldap://localhost:1389: I/O error: Connection refused (os error 61)
 … ERROR rradius_core::ldap_handler: auth ldap handler: no server reachable; rejecting
+… WARN rradius_core::lua_engine: RADIUS Access-Request from client localhost not answered: the authentication backend could not be used
 ```
 
-`/metrics` 的 `rradius_radius_discarded_total{reason="database"}` 跟著增加。**已驗證**。
+30 秒內失敗過的 URL 排在最後試。主機沒有回應（而不是拒絕連線）時，過了 `timeout_ms` 之後，新連線記 `timeout: deadline has elapsed`，連線池裡的舊連線記 `timed out`。`/metrics` 的 `rradius_radius_discarded_total{reason="database"}` 跟著增加。**已驗證**。
 
 > **注意：** 請求依 `urls` 的順序試。某個 URL 連不上（連線被拒、TLS 失敗、中斷、逾時）之後的 30 秒內，請求先試其他 URL，最後才回頭試它；30 秒後再給它一次機會，恢復了就回到它。所以第一台長時間故障時，只有 30 秒一次的那一筆請求要等它失敗（連線被拒絕很快，沒有回應的主機要等到 `timeout_ms`），其餘直接由後面的 URL 回答。所有 URL 都在這 30 秒內失敗過時，照列出的順序試，多台都沒有回應時一筆請求要等「URL 數 × `timeout_ms`」。伺服器回了錯誤（例如服務帳號 bind 被拒）不算連不上，不會被排到後面。這份記憶只在處理器內，reload 之後重新開始。把最可靠的伺服器放第一個；有一台要長期停機時，仍建議先把它從 `urls` 拿掉再 reload。
 
@@ -533,7 +536,7 @@ $ rradius-bench run … --user alice --password Alice-Pass-1 --load pap,concurre
 
 ### 連線、容錯與指標
 
-- 每台網域控制站最多保持 `connections` 條連線，重複使用。secure channel 被網域控制站作廢或連線斷掉時，重新建立再試一次，還是不行就換下一台。
+- 每台網域控制站最多保持 `connections` 條連線，重複使用。secure channel 被網域控制站作廢或連線斷掉時，重新建立再試一次，還是不行就換下一台。對 Samba 網域控制站實測（2026-11-27）時，網域控制站重啟後的第一筆請求沒有回應（日誌 `RPC bind refused: bind_nak, reason 0`），下一筆或 NAS 的重傳才重新建好。
 - 池子裡閒置的連線在 `timeout_ms` 內沒有回應（例如被防火牆悄悄丟掉），關掉那台的閒置連線，用新的連線再試一次。
 - 電腦帳號的密碼、session key、NT-Response 與 MPPE 金鑰不會出現在任何層級的日誌。
 
@@ -578,6 +581,7 @@ Netlogon
 … ERROR rradius_core::lua_engine: auth netlogon handler: localhost: cannot set up the secure channel as RRADIUS1$: the domain controller refused the computer account's password (STATUS_ACCESS_DENIED)
 … WARN rradius_core::netlogon::handler: auth netlogon handler: localhost: cannot set up the secure channel as RRADIUS1$: the domain controller refused the computer account's password (STATUS_ACCESS_DENIED)
 … ERROR rradius_core::lua_engine: auth netlogon handler: no domain controller of CORP could answer; rejecting
+… WARN rradius_core::lua_engine: RADIUS Access-Request from client localhost not answered: the authentication backend could not be used
 ```
 
 這筆登入沒有回應（`rradius-bench` 是 `timeouts 1`），`rradius_netlogon_channel_setups_total{result="failed"}` 與 `rradius_netlogon_logons_total{result="unavailable"}` 各加一。**已驗證**。
@@ -612,8 +616,8 @@ filter = "(&(sAMAccountName={user})(!(userAccountControl:1.2.840.113556.1.4.803:
 順序的理由：
 
 - PAP 的登入：netlogon 處理器 ignore，交給 ldap 處理器 bind。
-- MS-CHAPv2 的登入：netlogon 處理器決定。反過來把 ldap 放前面的話，bind 模式的 ldap 處理器會**拒絕** MS-CHAPv2（它沒辦法驗證，但不是 ignore），netlogon 永遠輪不到。
-- 網域控制站說查無此人（`STATUS_NO_SUCH_USER`）時 netlogon ignore，接著 ldap 處理器在目錄找不到這個人，也拒絕 MS-CHAPv2，結果是拒絕。
+- MS-CHAPv2 的登入：netlogon 處理器決定。反過來把 ldap 放前面的話，bind 模式的 ldap 處理器會**拒絕** MS-CHAPv2（它沒辦法驗證，但不是 ignore），ldap 搜尋得到的使用者永遠輪不到 netlogon。
+- 網域控制站說查無此人（`STATUS_NO_SUCH_USER`）時 netlogon ignore，接著 ldap 處理器在目錄也找不到這個人而 ignore；後面沒有其他處理器，結果是拒絕（認證紀錄是 `handler="none"`）。
 
 也可以分成兩條具名的鏈，VPN 閘道用一條、Wi-Fi 控制器用另一條（[第 7 章](07-users-and-chains.md)），各自只放一種處理器，比較好懂。
 

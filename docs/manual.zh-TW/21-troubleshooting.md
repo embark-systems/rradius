@@ -322,7 +322,7 @@ LockFile data/logs is locked and in use by another process
 cluster was not ready: no usable leader within 53.980820917s, and stop_without_leader_ms is set
 ```
 
-處置：先讓過半數的節點起來。不要指望沒設 `stop_without_leader_ms` 的節點一定能啟動、用自己的資料回答：實測有時以結束碼 1 結束（見[整個叢集一起重開](16-cluster.md#整個叢集一起重開)）。執行中失去 leader 的節點見[叢集沒有 leader](#叢集沒有-leader)。
+處置：先讓過半數的節點起來。不要指望沒設 `stop_without_leader_ms` 的節點一定能啟動、用自己的資料回答：依停下時的角色，它也可能以結束碼 1 結束，或在沒有 `migrations_dir` 時停在啟動階段不服務（見[整個叢集一起重開](16-cluster.md#整個叢集一起重開)）。執行中失去 leader 的節點見[叢集沒有 leader](#叢集沒有-leader)。
 
 ## 用戶端比對失敗
 

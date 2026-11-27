@@ -523,7 +523,7 @@ rradius_acct_spool_bytes 0
 
 Stop a node (SIGTERM) and start it again. It comes back with the data in its own `data_dir`, takes the writes made during its downtime from the leader, and serves only after it has caught up. This is the standard way for upgrades, for changing the `[cluster]` settings and for replacing host hardware.
 
-> **Note:** When you start a node in the few seconds right after the cluster got its majority back and is still electing, the node's read of "which migrations the cluster has applied" gets `has to forward request to: None`. Now it reads again every 200 ms until the leader answers, with `migrations_wait_ms` as the upper limit; after that it exits with exit code 1, and the last line is `not ready to apply migrations: cannot read applied migrations: …`, carrying the last error. Older versions did not read again, and in this situation exited after a few seconds, so you had to rely on `Restart=on-failure` of systemd or the restart policy of the container to start it once more. This retry is covered by a unit test; the gap during an election itself has not been reproduced on real machines.
+> **Note:** When you start a node in the few seconds right after the cluster got its majority back and is still electing, the node's read of "which migrations the cluster has applied" gets `has to forward request to: None`. Now it reads again every 200 ms until the leader answers, with `migrations_wait_ms` as the upper limit; after that it exits with exit code 1, and the last line is `not ready to apply migrations: cannot read applied migrations: …`, carrying the last error. Older versions did not read again, and in this situation exited after a few seconds, so you had to rely on `Restart=on-failure` of systemd or the restart policy of the container to start it once more. This retry is covered by a unit test; the gap during an election itself has not been reproduced on multiple real machines. The later step, writing the catch-up marker, is not retried: with `migrations_dir`, a node that hits an election there exits with exit code 1 (see [Restart the whole cluster](#restart-the-whole-cluster)).
 
 ### After a forced stop
 
@@ -584,12 +584,19 @@ When a host is broken and its data cannot be recovered, replace it with a new ho
 
 Stopping all three nodes together and starting them together is the same as the first start: every node waits until a majority has gathered and it has caught up before it serves, for at most `migrations_wait_ms`. So `migrations_wait_ms` has to be longer than the time you expect "the last node comes up" to take.
 
-When only one node is restarted and the other two have not come back (without `stop_without_leader_ms`, and with all migrations already applied locally), the program is designed like this: if it cannot get a leader, it compares the migrations already applied in the local copy, and when they match it prints a warning and serves from the local copy. It was tested three times, and the results were not consistent:
+With `migrations_dir`, a node can also exit during such a start. On 2026-11-27, with three nodes on one machine, 3 of 9 simultaneous starts had one node exit with exit code 1, `cannot write the marker: ClientWriteError: has to forward request to: None, None`: it wrote its catch-up marker during an election, and that write is not retried. Run the nodes under something that starts them again (`Restart=on-failure` of systemd, the restart policy of a container); started once more, the node came up.
 
-- Once as designed: after about 4 seconds it printed `cluster node 1: no usable leader within 3.981301833s; serving without a leader before catching up, so answers come from this node's replica, which may be behind`, then served from the local copy, and `rradius_cluster_caught_up` was 0. After the other two nodes came back, the log said `cluster node 1 has caught up with the cluster` and `rradius_cluster_caught_up` became 1.
-- Twice (`migrations_wait_ms = 10000`) it did not serve and exited with exit code 1: once it printed `node 2 did not join within 10s`, the other time `cannot read applied migrations: no answer within 8.990975917s`.
+When only one node is restarted and the other two have not come back (without `stop_without_leader_ms`, and with all migrations already applied locally), the program is designed like this: if it cannot get a leader, it compares the migrations already applied in the local copy, and when they match it prints a warning and serves from the local copy. In fact the result depends on the role the node had and on the order in which the nodes stopped. Tested on 2026-11-27 with three nodes on one machine and `migrations_wait_ms = 15000`:
 
-A node with `stop_without_leader_ms` set always exits when it cannot get a leader, with exit code 1, and does not serve from old data.
+| The node restarted alone | With `migrations_dir` | Without `migrations_dir` |
+| --- | --- | --- |
+| Was the leader when it stopped | Serves from the local copy, as designed (4 of 4) | Not tested |
+| Was a follower, stopped while the leader was still running | Exit code 1, `cannot read applied migrations: no answer within …` (1 of 1) | Serves, warning `serving before catching up` (2 of 2) |
+| Was a follower, stopped after the leader | Exit code 1, `node N did not join within 15s` (4 of 4) | Neither serves nor exits, watched for 60 seconds (2 of 2); this wait has no time limit |
+
+The warning of a node that serves as designed reads `cluster node 1: no usable leader within 3.981301833s; serving without a leader before catching up, so answers come from this node's replica, which may be behind`, and `rradius_cluster_caught_up` is 0. After the other two nodes come back, the log says `cluster node 1 has caught up with the cluster` and `rradius_cluster_caught_up` becomes 1.
+
+A node with `stop_without_leader_ms` set does not serve from old data: once its startup has got as far as looking for a leader and there is none, it exits with exit code 1. According to the code, the setting does not reach one case: without `migrations_dir`, a follower stopped after the leader waits earlier in startup, without a limit, as in the table (not tested with this setting).
 
 Conclusion: when you have lost the majority, do not count on restarting one node to make it serve; bring the other nodes back first.
 
@@ -838,7 +845,7 @@ The main points of the node configuration:
 - `migrations_dir = "../migrations"`, that is `docker/config/migrations/`.
 - `[metrics]` listens on `127.0.0.1:9812` inside the container, for `status` inside the container.
 
-The steps to start (the comment at the top of `compose.cluster.yaml`):
+The steps to start (the comment at the top of `compose.cluster.yaml`). If the single node of [chapter 02](02-install.md) is running from the same directory, stop it first with `docker compose down`: the two use the same project name and host ports. `up` runs in the foreground, so run the later commands in another terminal, or add `-d`.
 
 ```console
 $ sh docker/init-secrets.sh
@@ -852,11 +859,11 @@ $ docker compose -f compose.cluster.yaml exec node1 rradiusd status --config /et
 $ docker compose -f compose.cluster.yaml exec node1 rradiusd cluster members --config /etc/rradius/cluster/node1.toml
 ```
 
-For the exercise of stopping the leader, use `docker compose -f compose.cluster.yaml stop node1` (it sends SIGTERM and waits at most 30 seconds).
+For the exercise of stopping the leader, find it with `cluster members`, then run `docker compose -f compose.cluster.yaml stop <that node>` (it sends SIGTERM and waits at most 30 seconds), and look from another node, with its service name and configuration file.
 
-What this book verified: after making a copy in a working directory and generating the secrets with `init-secrets.sh`, `docker compose -f compose.cluster.yaml config` passes; with the dictionary and secret paths of the three node configurations replaced by local paths, `check` passes for all.
+What this book verified, on 2026-11-27 on one Docker host (OrbStack, arm64, with the ports changed to listen on `127.0.0.1`): the image builds, the three containers start, both `exec` commands work, and stopping the leader took about 15 seconds; another node took over, and accounting sent to node 2 went unanswered for about 6 seconds.
 
-> **Not verified on real hardware:** actually building the image with `compose.cluster.yaml`, starting three containers and stopping the leader. The `exec` commands above were not actually run. The behavior of a single node is the same as in the earlier exercises of this chapter, because the container runs the same program.
+> **Not verified on real hardware:** a cluster whose nodes are on several hosts. An x86-64 image was not built in this run.
 
 > **Note:** The three containers are on the same Docker host, and when this host stops, the whole cluster stops. It suits tests and small setups; to survive a host failure, spread the nodes over different hosts, as the ha-cluster scenario does. `[metrics]` listens only on the address inside the container, so `status --cluster` inside a container cannot read the other nodes.
 

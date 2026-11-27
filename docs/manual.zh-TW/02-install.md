@@ -311,10 +311,10 @@ $ docker compose logs
 …
 rradius-1  | … INFO rradius_core::cli: cluster node 1 started
 rradius-1  | … INFO rradius_core::cli: cluster node 1 has caught up with the cluster
+rradius-1  | … INFO rradius_core::metrics: Metrics listening on 127.0.0.1:9812
 rradius-1  | … INFO rradius_core::cli: Servers started. Press Ctrl+C to stop.
 rradius-1  | … INFO rradius_core::radius: RADIUS Server listening on 0.0.0.0:1812 and 0.0.0.0:1813
 …
-rradius-1  | … INFO rradius_core::metrics: Metrics listening on 127.0.0.1:9812
 ```
 
 在容器裡看狀態：
@@ -356,7 +356,7 @@ $ docker compose down
 
 | 檔案 | 內容 |
 | --- | --- |
-| `rradius.toml` | 字典指向 `/usr/share/rradius/dictionary`；資料目錄 `/var/lib/rradius`；sql 處理器查 `users` 表；三個私有網段（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`）各一個用戶端；指標埠 `127.0.0.1:9812` |
+| `rradius.toml` | 沒有 `dictionary` 行，所以用預設的 `/usr/share/rradius/dictionary`；資料目錄 `/var/lib/rradius`；sql 處理器查 `users` 表；三個私有網段（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`）各一個用戶端；`[metrics]` 是空的，所以指標埠是預設的 `127.0.0.1:9812` |
 | `auth.lua` | 只處理計費：把每筆計費寫進 `accounting` 表 |
 | `migrations/1_schema.sql` | 建立 `users` 與 `accounting` 兩個表 |
 | `cluster/` | 三節點叢集用的設定，見第 16 章 |
@@ -365,9 +365,11 @@ $ docker compose down
 
 ### 加入帳號
 
-這份設定沒有 `[accounts]`，所以 `user add` 不能用。`1_schema.sql` 的註解建議的做法是新增一個編號更大的 migration 檔，例如 `docker/config/migrations/2_users.sql`，內容是 `INSERT INTO users …`。密碼欄位的格式見[第 7 章](07-users-and-chains.md)。
+這份設定沒有 `[accounts]`，所以 `user add` 不能用。`1_schema.sql` 的註解建議的做法是新增一個編號更大的 migration 檔，例如 `docker/config/migrations/2_users.sql`，內容是 `INSERT INTO users …`。接著執行 `docker compose restart rradius`：migration 只在啟動時套用，reload 不會套用。密碼欄位的格式見[第 7 章](07-users-and-chains.md)。
 
 也可以照第 7 章在 `rradius.toml` 加上 `[accounts]`，之後用 `docker compose exec rradius rradiusd user add …` 管理帳號。
+
+這裡的 `users` 表沒有第 7 章 `enable`、`disable`、`show` 用到的 `enabled` 欄位。要用這三個指令，新增一個 migration：`ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;`，`user_query` 加上 `AND enabled = 1`，然後重啟。
 
 > **注意：** 已經套用過的 migration 檔不能再改。要改資料表結構或加資料，一律新增下一個編號的檔案。
 

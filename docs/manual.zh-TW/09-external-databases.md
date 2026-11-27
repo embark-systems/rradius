@@ -109,9 +109,9 @@ CREATE ROLE rradius_ro LOGIN PASSWORD '<資料庫密碼>';
 GRANT SELECT ON radcheck, radreply TO rradius_ro;
 ```
 
-腳本要寫入計費副本時，另外建一個帳號，只對那個表有 `INSERT` 與 `UPDATE`，設成另一個 `[databases.<name>]`。一個帳號一種用途，帳號外流時能做的事就少。
+腳本要寫入計費副本時，另外建一個帳號，只對那個表有 `SELECT`、`INSERT` 與 `UPDATE`（`ON CONFLICT … DO UPDATE` 讀到的欄位，PostgreSQL 要有 `SELECT` 權限），設成另一個 `[databases.<name>]`。一個帳號一種用途，帳號外流時能做的事就少。
 
-實測（PostgreSQL 17）：用這個帳號，sql 處理器照常登入；腳本對 `radcheck` 下 `DELETE` 時得到 `permission denied for table radcheck`，讀沒有授權的表時得到 `permission denied for table acct_copy`。
+實測（PostgreSQL 17）：用 `rradius_ro`，sql 處理器照常登入；腳本對 `radcheck` 下 `DELETE` 時得到 `permission denied for table radcheck`，讀沒有授權的表時得到 `permission denied for table acct_copy`。
 
 ### TLS
 
@@ -155,6 +155,8 @@ MySQL 搭配 `tls = "off"` 時，資料庫帳號要用 `mysql_native_password`�
 
 建 `mysql_native_password` 的帳號：`CREATE USER 'rradius'@'%' IDENTIFIED WITH mysql_native_password BY '<資料庫密碼>';`。MySQL 8.4 預設停用這個驗證方式，伺服器要以 `--mysql-native-password=ON` 啟動（本書的測試就是這樣啟動）。能用 TLS 時，用 `verify` 比改帳號的驗證方式好。
 
+`caching_sha2_password` 配 `off` 的失敗，只在伺服器沒有這個帳號的驗證快取時發生。帳號經 TLS 成功登入一次之後，`off` 也會連上，直到快取被清掉（例如 `FLUSH PRIVILEGES`），所以一次連得上不代表之後還能用。
+
 ## 讓 sql 處理器用外部資料庫
 
 sql 處理器加上 `database`，它的查詢就送到那個外部資料庫，而不是叢集資料庫。以舊系統的 `radcheck`、`radreply` 表為例（`rradius-server/examples/scenarios/migrate-users/external-db.toml`）：
@@ -183,8 +185,8 @@ reply_query = "SELECT attribute, value FROM radreply WHERE username = ?"
 - SQL 裡的值一律寫 `?`。送到 PostgreSQL 時，rradius 依序改寫成 `$1`、`$2`……；送到 MySQL 時原樣送出。`?1`、`:name` 這類寫法不接受。
 - 密碼欄的格式和叢集資料庫的帳號表相同（`{crypt}`、`{clear}` 等前綴，見第 7 章）。
 - 只要讀，所以給 rradius 一個唯讀帳號，能讀這兩個表就好。
-- 舊系統的明文密碼若需要補 `{clear}` 前綴，在 SQL 裡串接：PostgreSQL 用 `SELECT '{clear}' || value FROM radcheck WHERE username = ?`，MySQL 用 `SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?`（MySQL 的 `||` 預設是邏輯 OR）。什麼情況需要它，見[第 7 章](07-users-and-chains.md#沒有前綴的明文mysql-與-concat)。這兩句未在真實資料庫上重新執行。
-- 佔位符的限制：sql 處理器的 SQL 由 rradius 掃描 `?`，所以 PostgreSQL 的 `$$ … $$` 字串與 `$1` 寫法會被拒絕（`only plain ? placeholders are supported, found $$…`，`rradius-core/src/lua_engine.rs` 的 `sql_placeholders`），而 jsonb 的 `?` 運算子會被當成佔位符。要用它們，改寫 SQL（例如用 `jsonb_exists(…)` 函式）。
+- 舊系統的明文密碼若需要補 `{clear}` 前綴，在 SQL 裡串接：PostgreSQL 用 `SELECT '{clear}' || value FROM radcheck WHERE username = ?`，MySQL 用 `SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?`（經由 rradius 時 MySQL 的 `||` 也是串接，但 `mysql` 用戶端預設不是）。這裡的 `value` 是舊資料表的密碼欄。什麼情況需要它，見[第 7 章](07-users-and-chains.md#沒有前綴的明文mysql-與-concat)。
+- 佔位符的限制：sql 處理器的 SQL 由 rradius 掃描 `?`，所以 PostgreSQL 的 `$$ … $$` 字串與 `$1` 寫法會被拒絕（`only plain ? placeholders are supported, found $$…`，`rradius-core/src/lua_engine.rs` 的 `sql_placeholders`；整句沒有任何 `?` 時，訊息改成 `must contain exactly one ? placeholder, found 0`），而 jsonb 的 `?` 運算子會被當成佔位符。要用它們，改寫 SQL（例如用 `jsonb_exists(…)` 函式）。
 - 舊系統的帳號表如果還要由舊系統維護，這裡唯讀；計費寫回舊系統用腳本的 `db_execute`（見下一節）。
 - `database` 寫了 `[databases]` 裡沒有的名稱，`check` 就會出錯：`auth.handlers[0].database: there is no [databases.nosuch]`。
 
@@ -231,6 +233,9 @@ CREATE TABLE acct_copy (
   session_time BIGINT NOT NULL,
   PRIMARY KEY (nas, session_id)
 );
+-- rradius 寫這個表用的帳號
+CREATE ROLE rradius_copy LOGIN PASSWORD '<資料庫密碼>';
+GRANT SELECT, INSERT, UPDATE ON acct_copy TO rradius_copy;
 ```
 
 ### 值的型別
@@ -244,7 +249,7 @@ CREATE TABLE acct_copy (
 | PostgreSQL 的 `NUMERIC`、MySQL 的 `DECIMAL` | 十進位的字串，不四捨五入（`SUM`、`AVG` 的結果常是這種） |
 | NULL | `nil` |
 
-讀不了的型別會出錯，並提示你在 SQL 裡轉成文字。實測 PostgreSQL 與 MySQL 的 `DATE` 欄都讀不了：`db_query: database billing: column created has a type that cannot be read; CAST it to text in the SQL`；改成 `CAST(created AS TEXT) AS created` 拿到 `'2026-11-23'`。MySQL 的 `BIGINT UNSIGNED` 存了超過有號 64 位元的值時也出錯：`column u_big holds 18446744073709551615, more than a script number can hold; CAST it to text in the SQL`。
+讀不了的型別會出錯，並提示你在 SQL 裡轉成文字。實測 PostgreSQL 與 MySQL 的 `DATE` 欄都讀不了：`db_query: database billing: column created has a type that cannot be read; CAST it to text in the SQL`；PostgreSQL 改成 `CAST(created AS TEXT) AS created`，MySQL 改成 `CAST(created AS CHAR) AS created`（MySQL 不接受 `AS TEXT`），就拿到 `'2026-11-23'`。MySQL 的 `BIGINT UNSIGNED` 存了超過有號 64 位元的值時也出錯：`column u_big holds 18446744073709551615, more than a script number can hold; CAST it to text in the SQL`。
 
 實測的其他對應：PostgreSQL 的 `NUMERIC(8,2)` 欄 `12.50` 拿到字串 `'12.50'`，`SUM` 也是 `'12.50'`；`BOOLEAN` 的 `true` 拿到 `1`；`BYTEA` 拿到位元組字串；MySQL 的 `DECIMAL(8,2)` 拿到 `'12.50'`，`TINYINT(1)` 拿到 `1`。
 
@@ -287,7 +292,7 @@ tls = "off"
 required_for_ready = true
 ```
 
-`billing.secret` 隨便放一個值就好（`printf 'unused\n' > billing.secret`）。啟動伺服器，日誌有：
+`billing.secret` 隨便放一個值就好（`printf 'unused\n' > billing.secret`，再 `chmod 600 billing.secret`，否則 `check` 會警告權限）。啟動伺服器，日誌有：
 
 ```text
 … WARN rradius_core::external_db: databases.billing: not reachable at startup: error communicating with database: Connection refused (os error 61); /readyz answers 503 until it is
@@ -364,7 +369,7 @@ ok 200
 … WARN rradius_core::external_db: databases.legacy: unreachable after 2 failed checks, the last: error communicating with database: Connection refused (os error 61); /readyz answers 503
 ```
 
-資料庫再啟動後約 5 秒恢復成 200，日誌寫 `databases.legacy: reachable`。
+資料庫再啟動後約 5 秒內恢復成 200，日誌寫 `databases.legacy: reachable`。
 
 > **注意：** 只有每一個節點都依賴它才能運作的資料庫才設 `required_for_ready`。只用在計費副本這類次要用途的資料庫，設了反而會讓整個叢集因為它而停止收流量。
 
@@ -392,7 +397,7 @@ rradius_external_db_reachable{database="billing"} 0
 `rradiusd status` 有一段 `External databases`：
 
 ```console
-$ rradiusd status
+$ rradiusd status --config rradius.toml
 …
 External databases
   billing connections in use      0
@@ -479,12 +484,12 @@ rradius_query_sessions_by_nas{nas="192.0.2.1"} 1
 
 ### 用指令查詢
 
-`query` 指令透過叢集的 API 埠執行，伺服器要在執行中。
+`query <名稱>` 透過叢集的 API 埠執行，伺服器要在執行中；`query list` 只讀設定檔。
 
 列出所有具名查詢：
 
 ```console
-$ rradiusd query list
+$ rradiusd query list --config rradius.toml
 name=open_sessions
 help=Sessions without a Stop
 interval_ms=30000
@@ -499,7 +504,7 @@ sql=SELECT CASE enabled WHEN 1 THEN 'enabled' ELSE 'disabled' END AS state, coun
 執行一個：
 
 ```console
-$ rradiusd query users_by_state
+$ rradiusd query users_by_state --config rradius.toml
 state     n
 disabled  1
 enabled   2
@@ -510,14 +515,14 @@ enabled   2
 加 `--json` 給程式讀：
 
 ```console
-$ rradiusd query open_sessions --json
+$ rradiusd query open_sessions --json --config rradius.toml
 [{"value":1}]
 ```
 
 不在設定裡的名稱，結束碼是 2：
 
 ```console
-$ rradiusd query nosuch
+$ rradiusd query nosuch --config rradius.toml
 queries.nosuch is not set in rradius.toml
 ```
 
@@ -557,12 +562,12 @@ rradius_query_failures_total{query="users_count",reason="shape"} 1
 rradius_query_last_success_timestamp_seconds{query="users_count"} 0
 ```
 
-`status` 寫 `users_count last success (seconds ago)     never`。但 `rradiusd query users_count` 照常印出 `n` 與 `3`，因為指令只執行 SQL，不檢查欄位。所以指令查得到、指標卻沒有時，先看日誌的 `shape`。改法：加上 `value = "n"`，或把 SQL 改成 `count(*) AS value`，然後重啟。
+`status` 寫 `users_count last success (seconds ago)     never`。但 `rradiusd query users_count --config rradius.toml` 照常印出 `n` 與 `3`，因為指令只執行 SQL，不檢查欄位。所以指令查得到、指標卻沒有時，先看日誌的 `shape`。改法：加上 `value = "n"`，或把 SQL 改成 `count(*) AS value`，然後重啟。
 
 `rradiusd status` 的 `Queries` 一段（實測）：
 
 ```console
-$ rradiusd status
+$ rradiusd status --config rradius.toml
 …
 Queries
   open_sessions last success (seconds ago)   1
@@ -583,7 +588,7 @@ Queries
 … WARN rradius_core::reload: configuration reloaded from rradius.toml; these need a restart to apply: [databases]
 ```
 
-`[queries]` 改了是 `these need a restart to apply: [queries]`。先用 `rradiusd check` 檢查，`[databases]` 與 `[queries]` 的大部分錯誤在這裡就看得到。
+`[queries]` 改了是 `these need a restart to apply: [queries]`。先用 `rradiusd check --config rradius.toml` 檢查，`[databases]` 與 `[queries]` 的大部分錯誤在這裡就看得到。
 
 ## 常見錯誤
 
@@ -637,7 +642,7 @@ Queries
 
 **症狀：** 腳本出現 `column x has a type that cannot be read; CAST it to text in the SQL`。
 **原因：** 欄位的型別腳本沒有對應的值，常見的是日期與時間。
-**解法：** 在 SQL 裡轉成文字，例如 `CAST(created AS TEXT) AS created`。
+**解法：** 在 SQL 裡轉成文字，例如 PostgreSQL 用 `CAST(created AS TEXT) AS created`，MySQL 用 `CAST(created AS CHAR) AS created`。
 
 **症狀：** `check` 出現 `queries.ok.sql: must begin with SELECT or WITH: it only reads`。
 **原因：** 具名查詢只能讀。

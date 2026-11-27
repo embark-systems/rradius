@@ -420,7 +420,7 @@ SELECT '{clear}' || value FROM radcheck WHERE username = ?
 SELECT CONCAT('{clear}', value) FROM radcheck WHERE username = ?
 ```
 
-(In MySQL, `||` is a logical OR by default, not concatenation, so write `CONCAT`. The two lines above were not run on a real database.)
+(MySQL by default reads `||` as a logical OR, for example in the `mysql` client. The connections rradius opens turn on `PIPES_AS_CONCAT`, so through rradius `||` also concatenates; `CONCAT` works in both.)
 
 ### Before going live
 

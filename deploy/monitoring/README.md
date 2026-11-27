@@ -43,14 +43,20 @@ webhook of Alertmanager and sends an SNMP trap for each group of alerts:
 ```bash
 snmp_notifier --snmp.destination=nms.example.net:162 --snmp.community=<community> \
   --trap.default-oid=<your enterprise OID>.1 \
+  --trap.default-objects-base-oid=<your enterprise OID>.2 \
   --trap.description-template=/etc/snmp_notifier/description-template.tpl
 ```
 
-`snmp.version=V3` with the `--snmp.authentication-*` and `--snmp.private-*` options sends v3
-traps. The OID `1.3.6.1.4.1.98789.1` it uses by default is not yours: set your own enterprise
-number. A label `oid` on an alert (or `--trap.oid-label`) chooses the trap OID per alert.
+For v3 traps give `--snmp.version=V3`, switch on `--snmp.authentication-enabled` and
+`--snmp.private-enabled` (MD5 and DES unless the `--snmp.authentication-*` and `--snmp.private-*`
+options say otherwise), and set a fixed `--snmp.security-engine-id`, with the receiver's user made
+for the same engine ID; without it no trap arrives and nothing is logged. The OIDs it uses by
+default (`1.3.6.1.4.1.98789.1` for the trap, `…98789.2` for its fields) are not yours: set both to
+your own enterprise number. A label `oid` on an alert (or `--trap.oid-label`) chooses the trap OID
+per alert.
 
 Checked: `amtool check-config` accepts `alertmanager.yml`, and with Alertmanager,
 `snmp_notifier` and `snmptrapd` in containers an alert added with `amtool alert add` reached
 `snmptrapd` as a v2c trap carrying the alert name, the instance, the severity and the summary.
-Not checked: v3 traps, and a real monitoring system as the receiver.
+v3 was tried only by posting the webhook to `snmp_notifier` directly. Not checked: v3 through
+Alertmanager, and a real monitoring system as the receiver.
