@@ -25,6 +25,18 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
     }
 }
 
+/// Runs `run` with `subscriber` as this thread's default, for a test that looks at what is logged.
+///
+/// With a single subscriber in the process, tracing settles a call site by asking whichever thread
+/// reaches it first, and in a parallel test run that thread may have none: the call site would then
+/// stay silent here too. A second subscriber makes it ask every one.
+pub fn with_log_subscriber<T>(subscriber: impl tracing::Subscriber + Send + Sync + 'static, run: impl FnOnce() -> T) -> T {
+    tracing::subscriber::with_default(subscriber, || {
+        let _second = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        run()
+    })
+}
+
 /// What is logged while `run` runs.
 pub async fn logged_during<F: std::future::Future>(run: F) -> String {
     let log = CapturedLog::default();

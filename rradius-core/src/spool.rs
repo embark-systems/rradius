@@ -802,7 +802,7 @@ mod tests {
         let log = Arc::new(Mutex::new(Vec::new()));
         let written = log.clone();
         let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::ERROR).with_writer(move || LogWriter(written.clone())).finish();
-        let reopened = tracing::subscriber::with_default(subscriber, || spool(dir.path()));
+        let reopened = crate::test_support::radius::with_log_subscriber(subscriber, || spool(dir.path()));
         assert_eq!(drain(&reopened).await, [1, 2], "again, which is better than losing them");
         let text = String::from_utf8(log.lock().clone()).unwrap();
         assert!(text.contains("cannot use") && text.contains("position"), "{text}");
