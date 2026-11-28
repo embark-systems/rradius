@@ -83,7 +83,7 @@ leader 停掉時，剩下的節點會自己選出新的 leader，不需要人介
 
 一個節點啟動時，不會馬上開始回應請求。它依序做這些事：
 
-1. 啟動本機的叢集節點。第一次啟動的節點要先加入叢集。接著向其他節點查目前的成員清單（這次查不出結果時，第 2 步之後再查一次）；已被移除的節點在這裡結束，不做之後的步驟（見[被移除的節點又啟動時](#被移除的節點又啟動時)）。
+1. 啟動本機的叢集節點。第一次啟動的節點要先加入叢集；沒有叢集資料的節點 1 可能要先等其他節點（見[節點 1 在等待時](#節點-1-在等待時)）。接著向其他節點查目前的成員清單（這次查不出結果時，第 2 步之後再查一次）；已被移除的節點在這裡結束，不做之後的步驟（見[被移除的節點又啟動時](#被移除的節點又啟動時)）。
 2. 等到有可以寫入、而且回應過一次讀取的 leader，最多等 `migrations_wait_ms`（預設 60000 毫秒）。節點停下前記得的狀態不算數。時間內沒有 leader 回應時，節點不做第 3、4 步，而是照[整個叢集一起重開](#整個叢集一起重開)的說明結束，或用本機副本服務。
 3. 有 `migrations_dir` 的話，套用還沒套用的 migration（[第 18 章](18-operations.md)）。
 4. 透過 leader 寫一筆自己的記號，等本機副本讀回這筆記號，才算追上進度。叢集當下不能接受這筆寫入時（例如正在選舉），會重試到 `migrations_wait_ms`。日誌寫 `cluster node N has caught up with the cluster`。
@@ -153,7 +153,7 @@ snapshot 是複寫用的，不是備份。核心沒有備份功能，資料保�
 
 `nodes` 的規則（違反時 `check` 失敗）：
 
-- 一定要有 id 為 1 的節點：`cluster.nodes: node 1 is required`。節點 1 是第一次啟動時建立叢集的那一個。
+- 一定要有 id 為 1 的節點：`cluster.nodes: node 1 is required`。節點 1 是第一次啟動時建立叢集的那一個，而且要清單裡的其他每個節點都在運作、回覆自己沒有叢集之後才建立（見[節點 1 在等待時](#節點-1-在等待時)）。
 - id 不能重複，也不能是 0。
 - `node_id` 要在清單裡：`cluster.node_id 4 is not in cluster.nodes`。
 - 位址要是 `host:port`：`cluster.nodes: node 1 raft '10.0.0.1' must be host:port`。`host` 可以是名稱，例如 Kubernetes 的 `rradius-0.rradius-cluster`。
@@ -314,7 +314,7 @@ configuration ok
 
 ### 一起啟動
 
-三個節點要一起啟動。第一次啟動時叢集由節點 1 建立：節點 2、3 要加入之後才會服務；節點 1 不等它們，單獨啟動時就自己建立叢集並開始服務。每個節點開一個終端機，或像這樣放到背景，日誌寫進檔案：
+三個節點要一起啟動。第一次啟動時叢集由節點 1 建立，而且要節點 2、3 都在運作、回覆自己沒有叢集之後才建立，節點 2、3 再加入。在那之前沒有任何節點服務，少一個節點，三個都服務不了（見[節點 1 在等待時](#節點-1-在等待時)）。每個節點開一個終端機，或像這樣放到背景，日誌寫進檔案：
 
 ```console
 $ for n in 1 2 3; do rradiusd serve --config node$n.toml > node$n.log 2>&1 & done
@@ -325,7 +325,6 @@ $ for n in 1 2 3; do rradiusd serve --config node$n.toml > node$n.log 2>&1 & don
 ```text
 WARN hiqlite::store::state_machine::sqlite::writer: No metadata exists inside the DB yet
 WARN hiqlite::store::state_machine::sqlite::writer: No metadata exists inside the DB yet
-ERROR hiqlite::init: Config: Raft node has not been initialized
 …
 INFO rradius_core::cli: cluster node 1 started
 INFO rradius_core::cli: cluster node 1 has caught up with the cluster
@@ -335,7 +334,39 @@ INFO rradius_core::tacacs: TACACS+ Server listening on 127.0.0.1:27051
 INFO rradius_core::metrics: Metrics listening on 127.0.0.1:27041
 ```
 
-節點 2、3 的日誌在叢集成形之前會有好幾行 `ERROR hiqlite::init: … Raft is not initialized` 或 `Connection refused`：它們在等節點 1 建好叢集。只要接著出現 `has caught up with the cluster`，這些 ERROR 就不必理會。
+節點 2、3 的日誌在叢集成形之前會有好幾行 `ERROR hiqlite::init: … Raft is not initialized` 或 `Connection refused`：它們在等節點 1 建好叢集。只要接著出現 `has caught up with the cluster`，這些 ERROR 就不必理會。節點 2、3 比節點 1 晚啟動時，節點 1 的日誌在它們回覆之前還會有 `Waiting for the other nodes before creating a new cluster` 警告。
+
+### 節點 1 在等待時
+
+節點 1 啟動時沒有叢集資料（第一次啟動，或 `data_dir` 是空的），會先經由 API 埠詢問 `[[cluster.nodes]]` 裡的其他節點，再做任何事：
+
+- 任一節點回覆叢集的成員時，節點 1 加入那個叢集，不建立新的。
+- 同一輪裡其他每個節點都回覆自己沒有叢集時，節點 1 建立叢集。
+- 其他情形就 1 秒後再問。沒在運作或連不到、`secret_api` 不同、超過 3 秒才回覆、帶著叢集資料正在啟動或停止，或回覆任何其他錯誤的節點，都可能持有叢集，所以節點 1 等它。
+
+等待期間節點 1 不開 RADIUS、TACACS+ 與指標埠，自己的 Raft 與 API 埠也還沒開，所以其他節點的日誌會出現連不到它的錯誤。每隔幾秒（下面的實測是 6 到 8 秒）記一行警告，列出它還在等的節點與原因：
+
+```text
+WARN hiqlite::init: Waiting for the other nodes before creating a new cluster: every one of them has to answer that it has none. Still waiting for node 2 (127.0.0.1:27212): Connection refused (os error 61); node 3 (127.0.0.1:27213): Connection refused (os error 61)
+```
+
+| 項目最後的原因 | 意思 | 怎麼做 |
+| --- | --- | --- |
+| `Connection refused (os error 61)`（數字依作業系統而異） | 那個節點的 API 位址沒有程式在聽 | 啟動該節點；檢查它的 `api` 位址與防火牆 |
+| `no answer within 3 s` | 節點沒有及時回覆 | 檢查該節點與兩者之間的網路 |
+| `Token: Invalid API Secret` | 兩個節點的 `secret_api` 不同 | 每個節點用同一個 API 密碼 |
+
+會等多久：
+
+- 有 `migrations_dir` 時，節點 1 在 `migrations_wait_ms` 之後以結束碼 1 結束，最後一行是 `cluster was not ready to apply migrations: node 1 did not join within …`（等著建立叢集的節點 1 訊息裡也寫 join）。等著加入的節點 2、3 也同樣結束。行程管理程式把它們重開後繼續等。
+- 沒有 `migrations_dir` 時，節點 1 一直等。`stop_without_leader_ms` 不限制這段等待。
+- 等待中的節點 1 收到 SIGTERM，大約 25 秒後以結束碼 0 結束，日誌寫 `stopped during startup`。沒有建立任何東西。
+
+叢集建立之前就有節點永久壞掉時：修好它，或從**每一個**節點的 `[[cluster.nodes]]` 拿掉它再啟動；節點 1 就用剩下的節點建立叢集，第三個節點之後再加（[加入節點](#加入節點)）。清單只列節點 1 時沒有對象可問，節點 1 馬上建立叢集。
+
+> **警告：** 只要還有節點可能持有叢集資料（例如節點 1 的磁碟壞掉之後），就不要為了跳過等待而縮短清單。沒有列出持有資料節點的節點 1，會建立第二個空的叢集。
+
+2026-11-28 在一台機器上跑三個節點實測：節點 3 沒開時，節點 1、2 都沒有服務，`migrations_wait_ms = 20000` 時兩者在 20 秒後以結束碼 1 結束；沒有 `migrations_dir` 的節點 1 在 35 秒後仍在等，收到 SIGTERM 25.0 秒後結束；從節點 1、2 的清單拿掉節點 3 後，兩者組成兩個 voter 的叢集。表中三種原因分別由停掉的節點、接受連線但不回覆的埠、不同的 `secret_api` 產生。上面清單裡的其他情形（例如帶著叢集資料、正在啟動或停止的節點）沒有做出來，是照程式寫的。沒有在多台實體主機上測過。
 
 ## 確認叢集成形
 
@@ -563,7 +594,25 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 
 這台機器上從啟動到就緒大約 2 秒，之後 `erin` 在節點 3 登入是 accept。這個做法要求其他節點仍有過半數在運作。
 
+節點 1 也用同樣方式重建。其他節點都沒有回覆叢集時，節點 1 不會把空的 `data_dir` 當成第一次啟動：它等它們（[節點 1 在等待時](#節點-1-在等待時)），它們回來後加入它們的叢集。2026-11-28 實測：三台全停、刪掉節點 1 的 `data_dir`，單獨啟動的節點 1 沒有回應任何請求；啟動節點 2、3 之後它加入它們，停機前寫入的計費紀錄在它上面查得到。
+
 > **警告：** 不要同時清空多數節點的 `data_dir`。資料只存在叢集的節點上，過半數的副本都沒了，資料就沒了。
+
+### 被節點 1 分裂的叢集
+
+較早的版本沒有[節點 1 在等待時](#節點-1-在等待時)說的等待：`data_dir` 是空的節點 1 在連不到其他節點時，會自己建立一個叢集，並用它回應登入與計費。其他節點回來後，看過以下兩種情形：
+
+- 三個節點都在運作、`cluster members` 看起來正常，但節點 1 單獨期間寫入的紀錄只在節點 1 上，重開也不會讓副本一致。
+- 節點 1 之後每次啟動都 panic（`panicked at …/openraft-0.9.25/src/raft_state/log_state_reader.rs:23`），日誌卻寫 `exiting so that a restart recovers it`。節點 2、3 也可能以 `did not catch up with the cluster within …` 結束。
+
+復原步驟：
+
+1. 三個節點都裝目前的版本。裝新版不會修好已經發生的分裂。
+2. 啟動節點 2、3，確認它們有 leader：`rradiusd cluster members --config node2.toml`。
+3. 停掉節點 1。它單獨期間收下的紀錄其他節點沒有，NAS 已經收到那些紀錄的 `Accounting-Response`，不會重送。可能需要它們的話，下一步之前先把它的 `data_dir` 複製起來（資料庫是裡面的 SQLite 檔 `state_machine/db/hiqlite.db`）。
+4. 清空節點 1 的 `data_dir` 再啟動。
+
+2026-11-28 在一台機器上跑三個節點實測：用較早的版本做出這兩種狀態，再用目前的版本復原，之後三份副本一致、節點 1 恢復服務，節點 1 單獨期間收下的紀錄沒有了。從複製出來的目錄讀回那些紀錄沒有試過。
 
 ### 換掉壞掉的主機
 
@@ -871,7 +920,7 @@ configuration ok
 - NAS 把三個節點都設成伺服器。設了 `stop_without_leader_ms` 的話，被隔開的節點會停止回應，NAS 就會換問別台。
 - RADIUS 走節點的實體位址，不是 WireGuard 位址；請求也要從 `radius.clients` 的網段送出，否則不會有回應。管理用的主機不在那個網段時，暫時加一個只有它位址的 `[[radius.clients]]`，reload 後測，測完再移除。
 - 用 EAP 的話，一次登入要在同一個節點完成：NAS 設成主備，或讓負載平衡器依來源固定節點（[第 11 章](11-eap.md)）。
-- 節點不是同時啟動時：第一次啟動，節點 2、3 要等到加入節點 1 建立的叢集；有 `migrations_dir`（如這個範例）時，`migrations_wait_ms` 內沒加入的節點以結束碼 1 結束（`did not join within …`），沒有時會一直等到加入為止；重開時，節點最多等 `migrations_wait_ms` 讓 leader 出現，之後照[整個叢集一起重開](#整個叢集一起重開)的說明處理。這段等待不是故障；日誌出現 `RADIUS Server listening` 才能服務。
+- 節點不是同時啟動時：第一次啟動，要三個節點都在運作才有節點服務，因為節點 1 要另外兩個都回覆之後才建立叢集（[節點 1 在等待時](#節點-1-在等待時)），節點 2、3 再加入；有 `migrations_dir`（如這個範例）時，`migrations_wait_ms` 內沒加入的節點以結束碼 1 結束（`did not join within …`），沒有時會一直等到加入為止；重開時，節點最多等 `migrations_wait_ms` 讓 leader 出現，之後照[整個叢集一起重開](#整個叢集一起重開)的說明處理。這段等待不是故障；日誌出現 `RADIUS Server listening` 才能服務。
 - 每個節點都要設自動重啟（systemd `Restart=on-failure`、Docker `restart: unless-stopped`），因為伺服器在某些情況下會主動以結束碼 1 結束，讓行程管理程式重開它（見[強制結束之後](#強制結束之後)）。
 
 ## 用 Docker Compose 部署
@@ -979,7 +1028,7 @@ $ kubectl rollout status statefulset/rradius
 
 每一點都對應到本章前面的行為：
 
-- **`podManagementPolicy: Parallel`：** 三個 pod 一起啟動。設了 `stop_without_leader_ms` 時，重開的節點在 `migrations_wait_ms` 內找不到 leader 就以結束碼 1 結束、再被啟動；整組停掉的叢集如果一個一個啟動，第一個 pod 永遠不會 ready，另外兩個也就不會被啟動。
+- **`podManagementPolicy: Parallel`：** 三個 pod 一起啟動。設了 `stop_without_leader_ms` 時，重開的節點在 `migrations_wait_ms` 內找不到 leader 就以結束碼 1 結束、再被啟動；整組停掉的叢集如果一個一個啟動，第一個 pod 永遠不會 ready，另外兩個也就不會被啟動。第一次啟動也要它們一起啟動：節點 1 要另外兩個 pod 回覆之後才建立叢集。
 - **`publishNotReadyAddresses: true`（headless Service）：** 還沒就緒的 pod 也保有 DNS 名稱。不然還在等 leader 的節點彼此找不到，就選不出 leader。
 - **`nodes` 用 DNS 名稱：** `rradius-0.rradius-cluster:8100` 這種形式；`listen = "0.0.0.0"`，因為其他 pod 透過 pod 位址連進來。
 - **探針：** 指標埠在節點追上進度後才開，所以先只跑 `startupProbe`（`/livez`，每 5 秒、最多 60 次）。之後 `livenessProbe` 看 `/livez`，`readinessProbe` 看 `/readyz`。
@@ -1211,12 +1260,16 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 **解法：** 設成節點的內部或 WireGuard 位址；真的要聽所有位址就寫 `listen = "0.0.0.0"`。
 
 **症狀：** 第二、三個節點的日誌一開始有很多 `ERROR hiqlite::init: … Raft is not initialized` 或 `Connection refused`。
-**原因：** 節點 1 還沒建好叢集，或其他節點還沒啟動。
-**解法：** 等。出現 `has caught up with the cluster` 就沒事。一直沒出現的話，確認三個節點都啟動了、`raft` 與 `api` 位址互相連得到。
+**原因：** 節點 1 還沒建好叢集（要其他每個節點都回覆之後才建），或其他節點還沒啟動。
+**解法：** 等。出現 `has caught up with the cluster` 就沒事。一直沒出現的話，確認三個節點都啟動了、`raft` 與 `api` 位址互相連得到；節點 1 的日誌會寫出它在等哪些節點。
+
+**症狀：** 節點 1 不服務，一直記 `Waiting for the other nodes before creating a new cluster: …`。
+**原因：** 它沒有叢集資料，而清單裡至少有一個節點既沒有回覆叢集，也沒有回覆自己沒有叢集。
+**解法：** 照[節點 1 在等待時](#節點-1-在等待時)處理警告列出的節點。
 
 **症狀：** 第一次啟動的節點結束，印出 `not ready to apply migrations: node 2 did not join within 10s (the limit is migrations_wait_ms; raise it if a migration file takes longer)`，結束碼 1。
-**原因：** 在 `migrations_wait_ms` 內加入不了叢集：其他節點沒在跑，或連不到。
-**解法：** 先讓其他節點起來；一起啟動時把 `migrations_wait_ms` 設長一點。
+**原因：** 在 `migrations_wait_ms` 內加入不了叢集：其他節點沒在跑，或連不到。第一次啟動時，節點 1 要每個節點都回覆之後才建立叢集，所以少一個節點會讓其他節點（含節點 1）都這樣結束。
+**解法：** 啟動每一個節點；節點 1 日誌裡的 `Waiting for the other nodes` 警告寫出缺哪一個。一起啟動時把 `migrations_wait_ms` 設長一點。
 
 **症狀：** 啟動時印出 `cannot start cluster node 2: node id 2 is in use: …`，結束碼 2。
 **原因：** 叢集裡另一個位址的節點已經用了這個 id，而且還在運作。

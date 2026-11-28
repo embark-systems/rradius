@@ -83,7 +83,7 @@ Accounting can be replayed, and can also be recorded twice because of a retransm
 
 When a node starts, it does not answer requests at once. It does these things in order:
 
-1. Start the local cluster node. A node that starts for the first time has to join the cluster first. Then ask the other nodes for the current member list (when this gives no answer either way, ask again after step 2); a node that has been removed ends here and does none of the later steps (see [When a removed node starts again](#when-a-removed-node-starts-again)).
+1. Start the local cluster node. A node that starts for the first time has to join the cluster first, and a node 1 without cluster data may have to wait for the other nodes (see [When node 1 waits](#when-node-1-waits)). Then ask the other nodes for the current member list (when this gives no answer either way, ask again after step 2); a node that has been removed ends here and does none of the later steps (see [When a removed node starts again](#when-a-removed-node-starts-again)).
 2. Wait for a leader that can accept writes and has answered a read, for at most `migrations_wait_ms` (60000 ms by default). What the node remembers from before it stopped is not enough. When no leader answers in time, the node does not go on to steps 3 and 4: it exits, or serves from its local copy, as [Restart the whole cluster](#restart-the-whole-cluster) describes.
 3. If there is a `migrations_dir`, apply the migrations that are not yet applied ([chapter 18](18-operations.md)).
 4. Write a marker of its own through the leader, and wait until the local copy reads this marker back. Only then has it caught up. A write the cluster cannot take at that moment, as during an election, is made again until `migrations_wait_ms`. The log says `cluster node N has caught up with the cluster`.
@@ -153,7 +153,7 @@ Every key of `[cluster]` needs a restart to take effect; on reload the log lists
 
 Rules for `nodes` (`check` fails when they are broken):
 
-- There has to be a node with id 1: `cluster.nodes: node 1 is required`. Node 1 is the one that creates the cluster on the first start.
+- There has to be a node with id 1: `cluster.nodes: node 1 is required`. Node 1 is the one that creates the cluster on the first start, once every other node in the list is running and has answered that it has no cluster (see [When node 1 waits](#when-node-1-waits)).
 - Ids cannot repeat, and cannot be 0.
 - `node_id` has to be in the list: `cluster.node_id 4 is not in cluster.nodes`.
 - Addresses have to be `host:port`: `cluster.nodes: node 1 raft '10.0.0.1' must be host:port`. `host` can be a name, for example `rradius-0.rradius-cluster` in Kubernetes.
@@ -314,7 +314,7 @@ configuration ok
 
 ### Start them together
 
-Start the three nodes together. On the first start node 1 creates the cluster: nodes 2 and 3 serve only after they have joined it, but node 1 does not wait for them, and started alone it creates the cluster and serves. Open a terminal for each node, or put them in the background like this and write the logs to files:
+Start the three nodes together. On the first start node 1 creates the cluster, and only once nodes 2 and 3 are both running and have answered that they have no cluster; nodes 2 and 3 then join it. No node serves before that, so one missing node holds back all of them (see [When node 1 waits](#when-node-1-waits)). Open a terminal for each node, or put them in the background like this and write the logs to files:
 
 ```console
 $ for n in 1 2 3; do rradiusd serve --config node$n.toml > node$n.log 2>&1 & done
@@ -325,7 +325,6 @@ On this machine, it takes about 9 seconds from start until `/readyz` of all thre
 ```text
 WARN hiqlite::store::state_machine::sqlite::writer: No metadata exists inside the DB yet
 WARN hiqlite::store::state_machine::sqlite::writer: No metadata exists inside the DB yet
-ERROR hiqlite::init: Config: Raft node has not been initialized
 …
 INFO rradius_core::cli: cluster node 1 started
 INFO rradius_core::cli: cluster node 1 has caught up with the cluster
@@ -335,7 +334,39 @@ INFO rradius_core::tacacs: TACACS+ Server listening on 127.0.0.1:27051
 INFO rradius_core::metrics: Metrics listening on 127.0.0.1:27041
 ```
 
-Until the cluster has formed, the logs of nodes 2 and 3 have several lines of `ERROR hiqlite::init: … Raft is not initialized` or `Connection refused`: they are waiting for node 1 to create the cluster. As long as `has caught up with the cluster` follows, you can ignore these ERROR lines.
+Until the cluster has formed, the logs of nodes 2 and 3 have several lines of `ERROR hiqlite::init: … Raft is not initialized` or `Connection refused`: they are waiting for node 1 to create the cluster. As long as `has caught up with the cluster` follows, you can ignore these ERROR lines. When nodes 2 or 3 come up later than node 1, its log also has `Waiting for the other nodes before creating a new cluster` warnings until they answer.
+
+### When node 1 waits
+
+When node 1 starts without cluster data (the first start, or an empty `data_dir`), it asks the other nodes in `[[cluster.nodes]]` over their API ports before it does anything:
+
+- When any node answers with the members of a cluster, node 1 joins that cluster. It does not create one.
+- When every other node answers, in the same round, that it has no cluster, node 1 creates the cluster.
+- Otherwise it asks again after 1 second. A node that is not running or cannot be reached, has another `secret_api`, takes more than 3 seconds to answer, is starting or stopping with cluster data, or answers with any other error may hold the cluster, so node 1 waits for it.
+
+While it waits, node 1 opens no RADIUS, TACACS+ or metrics port, and not yet its own Raft and API ports either, so the logs of the other nodes report connection errors for it. Every few seconds (6 to 8 in the tests below) it logs one warning that lists the nodes it still waits for, each with the reason:
+
+```text
+WARN hiqlite::init: Waiting for the other nodes before creating a new cluster: every one of them has to answer that it has none. Still waiting for node 2 (127.0.0.1:27212): Connection refused (os error 61); node 3 (127.0.0.1:27213): Connection refused (os error 61)
+```
+
+| Reason at the end of the entry | Meaning | What to do |
+| --- | --- | --- |
+| `Connection refused (os error 61)` (the number depends on the operating system) | Nothing listens on that node's API address | Start the node; check its `api` address and the firewall |
+| `no answer within 3 s` | The node did not answer in time | Check the node and the network between the two |
+| `Token: Invalid API Secret` | The two nodes have different `secret_api` | Use the same API secret on every node |
+
+How long the wait lasts:
+
+- With `migrations_dir`, node 1 exits with exit code 1 after `migrations_wait_ms`, and the last line is `cluster was not ready to apply migrations: node 1 did not join within …` (it says "join" also on a node 1 that is waiting to create the cluster). Nodes 2 and 3, which are waiting to join, end the same way. A process manager starts them again and they wait again.
+- Without `migrations_dir`, node 1 waits for as long as it takes. `stop_without_leader_ms` does not limit this wait.
+- SIGTERM ends a waiting node 1 with exit code 0 after about 25 seconds, with `stopped during startup` in the log. Nothing has been created.
+
+When a node is broken for good before the cluster exists, either repair it, or remove its entry from `[[cluster.nodes]]` on **every** node and start again; node 1 then creates the cluster with the nodes that are left, and you can add the third one later ([Add a node](#add-a-node)). A list that names only node 1 has nobody to ask, and node 1 creates the cluster at once.
+
+> **Warning:** Do not shorten the list to get past the wait when any node may still hold cluster data, for example after node 1 lost its disk. A node 1 that does not list the nodes that hold the data creates a second, empty cluster.
+
+Tested on 2026-11-28 with three nodes on one machine: with node 3 not running, nodes 1 and 2 served nothing and, with `migrations_wait_ms = 20000`, both exited with code 1 after 20 seconds; a node 1 without `migrations_dir` was still waiting after 35 seconds and exited 25.0 seconds after SIGTERM; with node 3 removed from the lists of nodes 1 and 2, those two formed a cluster with two voters. The three reasons in the table were produced by a stopped node, a port that accepts connections and never answers, and a different `secret_api`. The other cases in the list above, such as a node with cluster data that is starting or stopping, were not produced; they are described from the code. It was not tested on several physical hosts.
 
 ## Check that the cluster has formed
 
@@ -563,7 +594,25 @@ INFO rradius_core::cli: cluster node 3 has caught up with the cluster
 
 On this machine it takes about 2 seconds from start to ready, after which `erin` logs in on node 3 with accept. This way needs a majority of the other nodes to be still running.
 
+Node 1 is rebuilt the same way. When none of the other nodes answers with the cluster, node 1 does not take its empty `data_dir` for a first start: it waits for them ([When node 1 waits](#when-node-1-waits)), and joins their cluster once they are back. Tested on 2026-11-28 with all three stopped and node 1's `data_dir` removed: started alone, node 1 answered nothing, and after nodes 2 and 3 were started it joined them and had the accounting record written before the stop.
+
 > **Warning:** Do not empty the `data_dir` of a majority of the nodes at the same time. The data exists only on the nodes of the cluster, and when the copies on a majority are gone, the data is gone.
+
+### A cluster that node 1 split
+
+Earlier builds, without the wait described in [When node 1 waits](#when-node-1-waits), let a node 1 with an empty `data_dir` create a cluster of its own while the other nodes could not be reached, and answer logins and accounting from it. After the other nodes came back, one of two things was seen:
+
+- All three nodes ran and `cluster members` looked normal, but records written while node 1 was alone were on node 1 only, and restarting did not make the copies agree.
+- Node 1 panicked (`panicked at …/openraft-0.9.25/src/raft_state/log_state_reader.rs:23`) at every later start, although the log says `exiting so that a restart recovers it`. Nodes 2 and 3 could also exit with `did not catch up with the cluster within …`.
+
+To recover:
+
+1. Install the current build on all three nodes. Installing it does not repair a split that has already happened.
+2. Start nodes 2 and 3 and check that they have a leader: `rradiusd cluster members --config node2.toml`.
+3. Stop node 1. The records it took while it was alone are not on the other nodes, and the NAS, which got an `Accounting-Response` for them, does not send them again. If you may need them, copy its `data_dir` before the next step (the database is the SQLite file `state_machine/db/hiqlite.db` in it).
+4. Empty the `data_dir` of node 1 and start it.
+
+Tested on 2026-11-28 with three nodes on one machine, producing each of the two states with an earlier build and recovering with the current one: afterwards the three copies agreed and node 1 served, and what node 1 had taken while alone was gone. Reading those records out of the copied directory was not tried.
 
 ### Replace a failed host
 
@@ -871,7 +920,7 @@ When you deploy, remember:
 - The NAS configures all three nodes as servers. When `stop_without_leader_ms` is set, a node that is cut off stops answering, and the NAS asks another one.
 - RADIUS uses the node's physical address, not the WireGuard address; requests also have to come from a network in `radius.clients`, or there is no answer. When the host you manage from is not in that network, temporarily add a `[[radius.clients]]` with only its address, test after a reload, and remove it when you are done.
 - With EAP, one login has to finish on the same node: configure the NAS for primary and backup, or let the load balancer pin the node by source ([chapter 11](11-eap.md)).
-- When the nodes do not start at the same time: on the first start, nodes 2 and 3 wait until they have joined the cluster that node 1 creates; with `migrations_dir`, as in this example, a node that has not joined within `migrations_wait_ms` exits with code 1 (`did not join within …`), and without it the node waits until it joins; after a restart, a node waits for a leader for at most `migrations_wait_ms` and then does what [Restart the whole cluster](#restart-the-whole-cluster) describes. The wait is not a failure; a node can serve only after its log shows `RADIUS Server listening`.
+- When the nodes do not start at the same time: on the first start no node serves until all three are running, because node 1 creates the cluster only once the other two answer ([When node 1 waits](#when-node-1-waits)), and nodes 2 and 3 then join it; with `migrations_dir`, as in this example, a node that has not joined within `migrations_wait_ms` exits with code 1 (`did not join within …`), and without it the node waits until it joins; after a restart, a node waits for a leader for at most `migrations_wait_ms` and then does what [Restart the whole cluster](#restart-the-whole-cluster) describes. The wait is not a failure; a node can serve only after its log shows `RADIUS Server listening`.
 - Set every node to restart automatically (`Restart=on-failure` of systemd, `restart: unless-stopped` of Docker), because in some situations the server exits on its own with exit code 1 so that the process manager restarts it (see [After a forced stop](#after-a-forced-stop)).
 
 ## Deploy with Docker Compose
@@ -979,7 +1028,7 @@ The three pods start together and begin to serve after a leader is elected; `rol
 
 Every point corresponds to a behavior described earlier in this chapter:
 
-- **`podManagementPolicy: Parallel`:** the three pods start together. With `stop_without_leader_ms` set, a restarted node that finds no leader within `migrations_wait_ms` exits with code 1 and is started again, so if the pods of a stopped cluster started one by one, the first would never become ready and the other two would not be started.
+- **`podManagementPolicy: Parallel`:** the three pods start together. With `stop_without_leader_ms` set, a restarted node that finds no leader within `migrations_wait_ms` exits with code 1 and is started again, so if the pods of a stopped cluster started one by one, the first would never become ready and the other two would not be started. A first start needs them together too: node 1 creates the cluster only once the other two pods answer.
 - **`publishNotReadyAddresses: true` (headless Service):** pods that are not ready yet keep their DNS names. Otherwise nodes that are waiting for a leader cannot find each other, and no leader can be elected.
 - **`nodes` uses DNS names:** in the form `rradius-0.rradius-cluster:8100`; `listen = "0.0.0.0"`, because the other pods connect through the pod address.
 - **Probes:** the metrics port opens only after the node has caught up with the cluster, so only the `startupProbe` runs first (`/livez`, every 5 seconds, at most 60 times). After that the `livenessProbe` looks at `/livez` and the `readinessProbe` at `/readyz`.
@@ -1211,12 +1260,16 @@ The `deploy/monitoring/` directory of the source has ready-made rules; see [chap
 **Fix:** Set it to the node's internal or WireGuard address; if you really want to listen on all addresses, write `listen = "0.0.0.0"`.
 
 **Symptom:** The logs of the second and third node have many `ERROR hiqlite::init: … Raft is not initialized` or `Connection refused` at the beginning.
-**Cause:** Node 1 has not created the cluster yet, or the other nodes have not started.
-**Fix:** Wait. When `has caught up with the cluster` appears, it is fine. If it never appears, confirm that all three nodes have started and that the `raft` and `api` addresses can reach each other.
+**Cause:** Node 1 has not created the cluster yet, which it does once every other node answers, or the other nodes have not started.
+**Fix:** Wait. When `has caught up with the cluster` appears, it is fine. If it never appears, confirm that all three nodes have started and that the `raft` and `api` addresses can reach each other; the log of node 1 names the nodes it is waiting for.
+
+**Symptom:** Node 1 serves nothing and keeps logging `Waiting for the other nodes before creating a new cluster: …`.
+**Cause:** It has no cluster data, and at least one node in its list has answered neither with a cluster nor that it has none.
+**Fix:** Deal with the nodes the warning names, as in [When node 1 waits](#when-node-1-waits).
 
 **Symptom:** A node that starts for the first time exits and prints `not ready to apply migrations: node 2 did not join within 10s (the limit is migrations_wait_ms; raise it if a migration file takes longer)`, exit code 1.
-**Cause:** It could not join the cluster within `migrations_wait_ms`: the other nodes are not running, or cannot be reached.
-**Fix:** Bring the other nodes up first; when you start them together, set `migrations_wait_ms` longer.
+**Cause:** It could not join the cluster within `migrations_wait_ms`: the other nodes are not running, or cannot be reached. On the first start, node 1 creates the cluster only once every node answers, so one missing node makes the others, node 1 included, end this way.
+**Fix:** Start every node; the `Waiting for the other nodes` warning in the log of node 1 says which one is missing. When you start them together, set `migrations_wait_ms` longer.
 
 **Symptom:** At startup it prints `cannot start cluster node 2: node id 2 is in use: …`, exit code 2.
 **Cause:** A node with a different address in the cluster already uses this id and is still running.

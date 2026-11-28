@@ -313,7 +313,21 @@ LockFile data/logs is locked and in use by another process
 
 Fix: wait for the old process to exit (`pgrep -f rradiusd`), then start. The systemd unit shipped in the package waits up to `TimeoutStopSec=60` seconds when stopping.
 
+### Node 1 waits for the other nodes
+
+A node 1 without cluster data (the first start, or an empty `data_dir`) whose list names other nodes opens no port until it has found a cluster to join or every other node has answered that it has none. Meanwhile it logs:
+
+```text
+… WARN hiqlite::init: Waiting for the other nodes before creating a new cluster: every one of them has to answer that it has none. Still waiting for node 3 (127.0.0.1:27213): Token: Invalid API Secret
+```
+
+With `migrations_dir` it exits with exit code 1 after `migrations_wait_ms` (`cluster was not ready to apply migrations: node 1 did not join within …`); without it, it keeps waiting.
+
+Fix: the end of the warning names each node it waits for and why. Start that node, make its API address reachable, or give it the same `secret_api`. The rules, and what to do when a node is broken for good, are in [When node 1 waits](16-cluster.md#when-node-1-waits).
+
 ### Does not start without a leader
+
+This is about a node that has already joined the cluster; the first-start wait of node 1 above is not limited by `stop_without_leader_ms`.
 
 With `cluster.stop_without_leader_ms` set, if no leader is found at startup (for example only one of three nodes is running), the server waits for a while and then exits with code 1:
 
@@ -784,7 +798,7 @@ You see this message; here are the cause and the fix. All of them are real outpu
 | `LockFile data/logs is locked and in use by another process` | The old process has not finished stopping | Wait for it to exit, then start |
 | `cluster was not ready: no usable leader within …, and stop_without_leader_ms is set` (exit code 1) | The cluster has no majority at startup | Bring up the other nodes first |
 | `cluster node N has been removed from the cluster: node M, its leader, does not list it …` (exit code 1) | This node has been removed from the cluster; the message lists the current members and the data directory | Disable the service of a retired host; to add it back, confirm the cluster with `cluster members` first, then empty `data_dir` and start it ([Chapter 16](16-cluster.md#when-a-removed-node-starts-again)) |
-| `cluster was not ready to apply migrations: …` (exit code 1) | At startup, no leader within `migrations_wait_ms`, so the migrations could not be applied, or the local replica could not catch up; the second half of the message sometimes says "the cluster node gives one migration file 30 s": one file ran for more than 30 seconds | Bring up a majority of the nodes first; when a file is slow by itself, increase `migrations_wait_ms`, then start again ([Chapter 18](18-operations.md#common-mistakes)) |
+| `cluster was not ready to apply migrations: …` (exit code 1) | At startup, no leader within `migrations_wait_ms`, so the migrations could not be applied, or the local replica could not catch up; `node N did not join within …` means the node had not joined the cluster, or, on node 1, was still [waiting for the other nodes](#node-1-waits-for-the-other-nodes) before creating it; the second half of the message sometimes says "the cluster node gives one migration file 30 s": one file ran for more than 30 seconds | Bring up a majority of the nodes first, and on a first start all of them; when a file is slow by itself, increase `migrations_wait_ms`, then start again ([Chapter 18](18-operations.md#common-mistakes)) |
 
 ### While running
 

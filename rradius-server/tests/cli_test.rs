@@ -405,6 +405,8 @@ fn test_cluster_not_ready_for_migrations() {
     let (code, stderr) = run_within(Duration::from_secs(10), &lone_node_config(dir.path()));
     assert_eq!(code, Some(1), "unexpected stderr: {stderr}");
     assert!(stderr.contains("not ready"), "unexpected stderr: {stderr}");
+    // Node 1 waits for the other two before it creates the cluster: the start itself ran out.
+    assert!(stderr.contains("node 1 did not join within"), "unexpected stderr: {stderr}");
 }
 
 /// The cluster is not ready here, which must not hide a mistake in the directory.
@@ -1719,6 +1721,8 @@ fn test_check_spool_changes_nothing() {
     assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 1, "something left behind");
 }
 
+/// Node 1 waits for the other two, which never start.
+// spectra-scenario: cluster-membership / Stopped while waiting
 #[test]
 fn test_stopping_during_startup() {
     for signal in ["-TERM", "-INT"] {
@@ -1730,7 +1734,8 @@ fn test_stopping_during_startup() {
         std::thread::sleep(Duration::from_secs(2));
         assert!(child.try_wait().unwrap().is_none(), "it should still be waiting");
         assert!(Command::new("kill").args([signal, &child.id().to_string()]).status().unwrap().success());
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // A start that has not finished is given 25 s before the process exits.
+        let deadline = Instant::now() + Duration::from_secs(40);
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;

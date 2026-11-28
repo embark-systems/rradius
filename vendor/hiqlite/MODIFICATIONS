@@ -26,9 +26,18 @@ crates.io, with these changes, made for rradius:
    Until the leader is found the client takes this node for it (`is_leader_db` says so too), so
    a write goes to the local Raft, which names the leader it knows of for the client to send it
    to, and fails at once when it knows none. A remote client is unchanged.
+7. src/init.rs, src/network/management.rs, src/store/mod.rs and src/start.rs: a node 1 without
+   data, with other nodes in its list, creates a new cluster only once every one of them answers,
+   in the same round, that it has none. A node that answers with a cluster makes node 1 join it;
+   while a node gives neither answer (unreachable, wrong secret, not running, any error), node 1
+   waits and names it in a warning. Before, with three nodes, the first node asked that could not
+   be reached made node 1 create a second cluster. `GET /cluster/membership/{raft_type}` answers
+   that a node has no cluster only when its Raft holds no log entry and no vote, not merely when
+   it is not running. Unchanged: a node 1 that restored a backup, one whose list holds only
+   itself, and the cache Raft.
 
 Everything else is as published. To move to a newer hiqlite, take its source the same way and
-make changes 1, 4, 5 and 6 again, unless they are no longer needed.
+make changes 1, 4, 5, 6 and 7 again, unless they are no longer needed.
 
 The build prints one rustc warning ("unreachable call" in src/error.rs): it is in the published
 code, which cargo only hides for registry crates.
