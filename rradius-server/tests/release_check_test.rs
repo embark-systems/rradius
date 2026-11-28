@@ -14,20 +14,42 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../packages/common/check-release.sh");
 
-/// `git`, `sed`, `head` and `cut` come from here.
+/// `sed`, `head` and `cut` come from here, and `git` where it is installed here.
 const SYSTEM_PATH: &str = "/usr/bin:/bin";
+
+/// `PATH` of the script under test: `SYSTEM_PATH`, with `git` in front when it is installed
+/// somewhere else (FreeBSD has it in `/usr/local/bin`). Only `git` is linked into `tools`, so no
+/// other program of that directory, such as a real `gh` or `docker`, comes along.
+fn search_path(tools: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    if std::env::split_paths(SYSTEM_PATH).any(|dir| dir.join("git").is_file()) {
+        return Ok(SYSTEM_PATH.to_string());
+    }
+    let found = std::env::var_os("PATH")
+        .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file()))
+        .ok_or("git is not on the PATH")?;
+    std::fs::create_dir_all(tools)?;
+    match std::os::unix::fs::symlink(found, tools.join("git")) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => Err(error.into()),
+        _ => Ok(format!("{}:{SYSTEM_PATH}", tools.display())),
+    }
+}
 
 const VERSION: &str = "1.2.3";
 
 /// A git repository with the files the script reads, and the stand-in for the workflow check.
 struct Repo {
     dir: tempfile::TempDir,
+    /// Outside the repository, so that the working tree stays clean.
+    _tools: tempfile::TempDir,
+    search: String,
 }
 
 impl Repo {
     /// The stand-in exits with `gate_exit` and leaves `.called` behind.
     fn new(gate_exit: i32) -> Result<Self, Box<dyn std::error::Error>> {
-        let repo = Self { dir: tempfile::tempdir()? };
+        let tools = tempfile::tempdir()?;
+        let search = search_path(tools.path())?;
+        let repo = Self { dir: tempfile::tempdir()?, _tools: tools, search };
         repo.write("packages/common/check-release.sh", &std::fs::read_to_string(SCRIPT)?)?;
         repo.make_executable("packages/common/check-release.sh")?;
         repo.write(
@@ -74,7 +96,7 @@ impl Repo {
             .args(["-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"])
             .args(args)
             .current_dir(self.dir.path())
-            .env("PATH", SYSTEM_PATH)
+            .env("PATH", &self.search)
             .output()?;
         assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
         Ok(())
@@ -97,7 +119,7 @@ impl Repo {
             .arg(self.path("packages/common/check-release.sh"))
             .args(args)
             .env_clear()
-            .env("PATH", SYSTEM_PATH)
+            .env("PATH", &self.search)
             .current_dir(Path::new("/"))
             .output()?)
     }
@@ -264,11 +286,12 @@ fn run_gate(code: i32, stdout: &str, stderr: &str) -> Result<Output, Box<dyn std
     std::fs::create_dir_all(gh.parent().ok_or("no parent")?)?;
     std::fs::write(&gh, format!("#!/bin/sh\n[ -z '{stdout}' ] || echo '{stdout}'\n[ -z '{stderr}' ] || echo '{stderr}' >&2\nexit {code}\n"))?;
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))?;
+    let system = search_path(&dir.path().join("tools"))?;
     for args in [&["init", "-q"][..], &["remote", "add", "origin", "https://github.com/example/repo.git"][..]] {
-        let output = Command::new("git").args(args).current_dir(dir.path()).env("PATH", SYSTEM_PATH).output()?;
+        let output = Command::new("git").args(args).current_dir(dir.path()).env("PATH", &system).output()?;
         assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
     }
-    let path = format!("{}:{SYSTEM_PATH}", dir.path().join("bin").display());
+    let path = format!("{}:{system}", dir.path().join("bin").display());
     Ok(Command::new("/bin/sh").arg(&script).arg("abc123").env_clear().env("PATH", path).current_dir(Path::new("/")).output()?)
 }
 

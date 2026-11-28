@@ -3850,7 +3850,8 @@ mod tests {
         } else {
             assert!(result.err().is_some_and(|error| error.to_string().contains("runtime.pin_threads is only supported on Linux and FreeBSD")));
         }
-        assert!(error(&base(&format!("{RADIUS_CLIENT}\n[runtime]\nthreads = 8\n"))).contains("threads"));
+        let unknown = error(&base(&format!("{RADIUS_CLIENT}\n[runtime]\nthreads = 8\n")));
+        assert!(unknown.contains("unknown field `threads`"), "{unknown}");
     }
 
     #[test]

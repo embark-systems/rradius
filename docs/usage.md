@@ -1603,7 +1603,7 @@ In both modes, if every handler ignores, the result is reject.
 | `certificate_query` | none | After an EAP-TLS certificate has passed, this query is used to find the user instead. Exactly one `?`. If a row is found, the user is accepted and the first column is not looked at. When it is not set, `user_query` is used, and a NULL, prefix-only or empty first column is rejected (section 2.12) |
 | `reply_query` | none | The query that gets the reply attributes. Exactly one `?`. Returns two columns, `(attribute, value)` |
 | `default_user` | none | When the user is not found, the password of this account is used for verification (anyone who knows that password passes, so use it with care). On a pass, `account` in the auth record is this account, and `user` is the name that was sent |
-| `timeout_ms` | 5000 | Time limit for each query. Must be greater than 0. With `database`, it includes the time spent waiting for a connection |
+| `timeout_ms` | 5000 | Time limit for each query. Must be greater than 0. With `database`, it includes the time spent waiting for a connection. Checking the password has a limit of its own of the same length, which covers a slow hash waiting for its turn and being computed; past it the backend counts as unavailable (section 2.2) |
 | `database` | none | The name of a `[databases.<name>]` (section 2.17). The query runs on that MySQL or PostgreSQL database, and the placeholder is still written `?`. When it is not set, the cluster's own database is queried. Startup fails if the name does not exist |
 
 - User not found: ignore. More than one row found: reject and log. A password column that is NULL, an empty string, or only a prefix such as `{clear}`: reject.
