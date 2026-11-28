@@ -689,9 +689,12 @@ mod tests {
             (plain.clone(), plain.replace("[lua]\n", "[lua]\nmax_memory_mb = 1\n"), "lua.max_memory_mb"),
         ];
         let mut cases = cases;
-        // Only Linux takes more than one socket, or pinning.
+        // Only Linux takes more than one socket.
         if cfg!(target_os = "linux") {
             cases.push((radius("sockets = 1"), radius("sockets = 2"), "radius.sockets"));
+        }
+        // Only Linux and FreeBSD take pinning.
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
             cases.push((plain.clone(), format!("{plain}[runtime]\npin_threads = true\n"), "[runtime]"));
         }
         for (before, after, name) in cases {

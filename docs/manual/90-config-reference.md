@@ -250,7 +250,7 @@ Main chapter: [19 Performance tuning and load testing](19-performance.md).
 
 | Key | Type | Default | Required | reload | Description |
 | --- | --- | --- | --- | --- | --- |
-| `runtime.pin_threads` | boolean | `false` | | restart | Pin each worker thread to its own CPU; works only on Linux. |
+| `runtime.pin_threads` | boolean | `false` | | restart | Pin each worker thread to its own CPU; works only on Linux and FreeBSD. |
 
 ---
 

@@ -528,7 +528,7 @@ When you send another signal during stopping, the log shows `stopping: asked aga
 
 ## runtime and log
 
-- `[runtime]` has only `pin_threads` (default `false`, needs a restart). It pins each worker thread to one CPU and works only on Linux; set to `true` on another platform, `check` fails: `runtime.pin_threads is only supported on Linux`. For when to use it, see [chapter 19](19-performance.md).
+- `[runtime]` has only `pin_threads` (default `false`, needs a restart). It pins each worker thread to one CPU and works only on Linux and FreeBSD; set to `true` on another platform, `check` fails: `runtime.pin_threads is only supported on Linux and FreeBSD`. For when to use it, see [chapter 19](19-performance.md).
 - `[log]` sets the log level (default `info`), the format (default `text`) and whether authentication records are written (default `true`). The whole table needs a restart to take effect. `[log.trace]` can be reloaded and is used to record the full requests of a given user or client for a while. See [chapter 17](17-monitoring.md) for details.
 
 ## Common mistakes

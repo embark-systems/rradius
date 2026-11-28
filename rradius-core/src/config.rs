@@ -134,7 +134,7 @@ impl ServerConfig {
 /// `[runtime]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RuntimeSettings {
-    /// Each runtime worker thread bound to one CPU; Linux only.
+    /// Each runtime worker thread bound to one CPU; Linux and FreeBSD only.
     pub pin_threads: bool,
 }
 
@@ -1718,8 +1718,8 @@ fn load_text(path: &Path, text: &str, extensions: &crate::extension::Extensions)
         accounts: raw.accounts.map(account_settings).transpose().map_err(fail)?,
         sessions: raw.sessions.map(session_settings).transpose().map_err(fail)?,
         runtime: match raw.runtime {
-            Some(runtime) if runtime.pin_threads && !cfg!(target_os = "linux") => {
-                return Err(fail("runtime.pin_threads is only supported on Linux".to_string()));
+            Some(runtime) if runtime.pin_threads && !cfg!(any(target_os = "linux", target_os = "freebsd")) => {
+                return Err(fail("runtime.pin_threads is only supported on Linux and FreeBSD".to_string()));
             }
             Some(runtime) => RuntimeSettings { pin_threads: runtime.pin_threads },
             None => RuntimeSettings::default(),
@@ -3838,15 +3838,17 @@ mod tests {
         Ok(())
     }
 
+    // spectra-scenario: server-config / Other platforms
+    // spectra-scenario: server-config / Unknown setting
     #[test]
     fn test_runtime_settings() {
         let (_dir, result) = load_str(&base(RADIUS_CLIENT));
         assert_eq!(result.unwrap().runtime, RuntimeSettings { pin_threads: false });
         let (_dir, result) = load_str(&base(&format!("{RADIUS_CLIENT}\n[runtime]\npin_threads = true\n")));
-        if cfg!(target_os = "linux") {
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
             assert!(result.unwrap().runtime.pin_threads);
         } else {
-            assert!(result.unwrap_err().to_string().contains("runtime.pin_threads"));
+            assert!(result.err().is_some_and(|error| error.to_string().contains("runtime.pin_threads is only supported on Linux and FreeBSD")));
         }
         assert!(error(&base(&format!("{RADIUS_CLIENT}\n[runtime]\nthreads = 8\n"))).contains("threads"));
     }

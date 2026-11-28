@@ -219,7 +219,7 @@ no account erin
 
 - 不認得的前綴，或解析不了的值，永遠比對失敗，不會讓伺服器出錯。
 - `{clear}` 後面什麼都沒有、或欄位是 NULL、空字串，都表示「沒有密碼」，任何登入都拒絕。空的 PAP 密碼也不會因此通過。
-- `{crypt}`、`{argon2}` 與 PBKDF2 這幾種故意算得很慢的格式，在處理請求以外的執行緒上比對，同時進行的數量最多等於 CPU 數。排隊加上比對超過 sql 處理器的 `timeout_ms`（預設 5000 毫秒），這筆算「後端不能用」，不回應（見[拒絕與「後端不能用」](#拒絕與後端不能用)）。
+- `{crypt}`、`{argon2}` 與 PBKDF2 這幾種故意算得很慢的格式，在處理請求以外的執行緒上比對，同時進行的數量最多等於 CPU 數。排隊加上比對超過 sql 處理器的 `timeout_ms`（預設 5000 毫秒），這筆算「後端不能用」，不回應（見[拒絕與「後端不能用」](#拒絕與後端不能用)）。例外：Linux 上開了 `[runtime] pin_threads` 時，同時只會比對一筆（[19 章的已知問題](19-performance.md#工作執行緒與-pin_threads)）。
 
 ### 沒有前綴的雜湊不是密碼
 
@@ -909,8 +909,8 @@ rradius_auth_lockout_untracked_total 0
 **解法：** 改正路徑。
 
 **症狀：** 某些帳號偶爾沒有回應，`status` 的 `Discarded: database` 增加，那些帳號存的是 bcrypt 或 PBKDF2。
-**原因：** 慢雜湊同時比對的數量等於 CPU 數，尖峰時排隊加比對超過了 `timeout_ms`，算成後端不能用。
-**解法：** 檢查存放值的成本是否過高（`[auth.password_limits]`）；只用 PAP 的帳號改用比對較快的 `sha512-crypt`；或加 CPU、加節點。
+**原因：** 慢雜湊同時比對的數量等於 CPU 數，尖峰時排隊加比對超過了 `timeout_ms`，算成後端不能用。Linux 上開了 `[runtime] pin_threads` 時同時只比對一筆，登入量不大也會發生（[19 章的已知問題](19-performance.md#工作執行緒與-pin_threads)）。
+**解法：** Linux 上先關掉 `pin_threads` 並重新啟動；檢查存放值的成本是否過高（`[auth.password_limits]`）；只用 PAP 的帳號改用比對較快的 `sha512-crypt`；或加 CPU、加節點。
 
 **症狀：** 設備被鎖住，鎖定時間還沒到，想立刻解鎖。
 **原因：** 計數只在節點的記憶體裡，沒有解鎖指令。

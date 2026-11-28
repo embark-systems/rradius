@@ -2373,21 +2373,118 @@ fn test_version() {
     assert!(!stderr.contains("rradius-server"), "the usage names no old program name: {stderr}");
 }
 
+/// The CPUs in a list such as `0-2,5` or `0, 1, 2`.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn cpu_list(list: &str) -> Result<Vec<usize>, String> {
+    let number = |text: &str| text.trim().parse::<usize>().map_err(|e| format!("CPU list '{list}': {e}"));
+    let mut cpus = Vec::new();
+    for part in list.split(',') {
+        match part.split_once('-') {
+            Some((first, last)) => cpus.extend(number(first)?..=number(last)?),
+            None => cpus.push(number(part)?),
+        }
+    }
+    Ok(cpus)
+}
+
+/// The CPUs in the `status` file of a process or a thread.
+#[cfg(target_os = "linux")]
+fn cpus_in_status(path: &Path) -> Result<Vec<usize>, String> {
+    let status = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let list = status.lines().find_map(|line| line.strip_prefix("Cpus_allowed_list:"));
+    cpu_list(list.ok_or_else(|| format!("{}: no Cpus_allowed_list", path.display()))?)
+}
+
+/// The CPUs the process `pid` may use.
+#[cfg(target_os = "linux")]
+fn process_cpus(pid: u32) -> Result<Vec<usize>, String> {
+    cpus_in_status(Path::new(&format!("/proc/{pid}/status")))
+}
+
+/// Each thread of the process `pid`, as its ID and name, with the CPUs it may use. A thread
+/// that ends while the list is read is left out.
+#[cfg(target_os = "linux")]
+fn thread_cpus(pid: u32) -> Result<Vec<(String, Vec<usize>)>, String> {
+    let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).map_err(|e| e.to_string())?;
+    let mut threads = Vec::new();
+    for task in tasks {
+        let task = task.map_err(|e| e.to_string())?.path();
+        let status = task.join("status");
+        match cpus_in_status(&status) {
+            Ok(cpus) => {
+                // The name only helps to read a failure; a thread may have ended by now.
+                let name = std::fs::read_to_string(task.join("comm")).unwrap_or_default();
+                threads.push((format!("{} {}", task.display(), name.trim()), cpus));
+            }
+            Err(e) if status.exists() => return Err(e),
+            Err(_) => {}
+        }
+    }
+    Ok(threads)
+}
+
+/// The output of a system command, or `None` when it fails.
+#[cfg(target_os = "freebsd")]
+fn system_output(program: &str, args: &[&str]) -> Result<Option<String>, String> {
+    let output = Command::new(program).args(args).output().map_err(|e| format!("{program}: {e}"))?;
+    Ok(output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
+}
+
+/// The CPUs in the first line of `cpuset -g`, such as `tid 100123 mask: 0, 1`.
+#[cfg(target_os = "freebsd")]
+fn cpus_in_mask(text: &str) -> Result<Vec<usize>, String> {
+    let mask = text.lines().next().and_then(|line| line.split_once("mask:"));
+    cpu_list(mask.ok_or_else(|| format!("no mask in: {text}"))?.1)
+}
+
+/// The CPUs the process `pid` may use.
+#[cfg(target_os = "freebsd")]
+fn process_cpus(pid: u32) -> Result<Vec<usize>, String> {
+    let text = system_output("cpuset", &["-g", "-p", &pid.to_string()])?;
+    cpus_in_mask(&text.ok_or_else(|| format!("cpuset -g -p {pid} failed"))?)
+}
+
+/// The thread ID and the thread name of each line of `procstat -t`. The columns start with
+/// the process ID, the thread ID, the command and the thread name; the first line names them.
+#[cfg(target_os = "freebsd")]
+fn thread_list(pid: u32) -> Result<Vec<(String, String)>, String> {
+    let list = system_output("procstat", &["-t", &pid.to_string()])?.ok_or_else(|| format!("procstat -t {pid} failed"))?;
+    let thread = |line: &str| {
+        let mut columns = line.split_whitespace().skip(1);
+        let tid = columns.next()?.to_string();
+        Some((tid, columns.nth(1).unwrap_or("-").to_string()))
+    };
+    Ok(list.lines().skip(1).filter_map(thread).collect())
+}
+
+/// Each thread of the process `pid`, as its ID and name, with the CPUs it may use. A thread
+/// that ends while the list is read is left out.
+#[cfg(target_os = "freebsd")]
+fn thread_cpus(pid: u32) -> Result<Vec<(String, Vec<usize>)>, String> {
+    let mut threads = Vec::new();
+    for (tid, name) in thread_list(pid)? {
+        match system_output("cpuset", &["-g", "-t", &tid])? {
+            Some(text) => threads.push((format!("{tid} {name}"), cpus_in_mask(&text)?)),
+            // `cpuset` fails for a thread that has ended since it was listed, and only then.
+            None if thread_list(pid)?.iter().any(|(listed, _)| *listed == tid) => {
+                return Err(format!("cpuset -g -t {tid} ({name}) failed for a thread that is still running"));
+            }
+            None => {}
+        }
+    }
+    Ok(threads)
+}
+
 /// With `pin_threads`, each worker thread has one CPU of its own, and every other thread,
 /// such as those running database queries, keeps all the CPUs the process had.
-#[cfg(target_os = "linux")]
+// spectra-scenario: server-config / Pinned on Linux
+// spectra-scenario: server-config / Pinned on FreeBSD
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 #[test]
-fn test_pinned_worker_threads() {
-    let cpus_of = |status: &str| -> Vec<usize> {
-        let list = status.lines().find_map(|line| line.strip_prefix("Cpus_allowed_list:")).unwrap().trim().to_string();
-        list.split(',').flat_map(|part| match part.split_once('-') {
-            Some((a, b)) => (a.parse::<usize>().unwrap()..=b.parse().unwrap()).collect::<Vec<_>>(),
-            None => vec![part.parse().unwrap()],
-        }).collect()
-    };
-    let all = cpus_of(&std::fs::read_to_string("/proc/self/status").unwrap());
+fn test_pinned_worker_threads() -> Result<(), String> {
+    let all = process_cpus(std::process::id())?;
     if all.len() < 2 {
-        return;
+        return Ok(());
     }
     let dir = tempfile::tempdir().unwrap();
     // A query slow enough that 32 at once need more threads than started with the server.
@@ -2405,7 +2502,7 @@ fn test_pinned_worker_threads() {
     let auth_port = std::fs::read_to_string(&config).unwrap().lines().find_map(|line| line.strip_prefix("auth_port = ").map(|port| port.parse().unwrap())).unwrap();
     let server = Server { child, dir, config, auth_port };
     assert_eq!(server.access_request(), radius::ACCESS_ACCEPT);
-    let threads_before = std::fs::read_dir(format!("/proc/{}/task", server.child.id())).unwrap().count();
+    let threads_before = thread_cpus(server.child.id())?.len();
     // Pinned by now: the threads these start come from pinned workers. Each asks as a user of
     // its own, so that the log tells the requests apart.
     let asks: Vec<_> = (0..32u8).map(|i| {
@@ -2433,28 +2530,27 @@ fn test_pinned_worker_threads() {
         "no answer within 30 s, as (request, time of a late answer), from user alice<request>: {unanswered:?}; stderr: {}",
         server.stderr()
     );
-    let threads_after = std::fs::read_dir(format!("/proc/{}/task", server.child.id())).unwrap().count();
+    let threads_after = thread_cpus(server.child.id())?.len();
     assert!(threads_after > threads_before, "no thread started after pinning: {threads_before} then {threads_after}");
     // As many workers as the server counts CPUs, which a cgroup limit can make fewer than `all`.
     let stderr = server.stderr();
     let workers: usize = stderr.split("pinned ").nth(1).and_then(|rest| rest.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("not pinned: {stderr}"));
-    let tasks = std::fs::read_dir(format!("/proc/{}/task", server.child.id())).unwrap();
     let mut pinned = Vec::new();
-    for task in tasks {
-        let status = std::fs::read_to_string(task.unwrap().path().join("status")).unwrap();
-        let cpus = cpus_of(&status);
+    let threads = thread_cpus(server.child.id())?;
+    for (thread, cpus) in &threads {
         if cpus.len() == 1 {
             pinned.push(cpus[0]);
         } else {
-            assert_eq!(cpus, all, "a thread neither pinned nor free: {status}");
+            assert_eq!(cpus, &all, "thread {thread} is neither pinned nor free");
         }
     }
     let mut distinct = pinned.clone();
     distinct.sort();
     distinct.dedup();
-    assert_eq!(pinned.len(), workers, "one CPU for each worker, and none for any other thread");
+    assert_eq!(pinned.len(), workers, "one CPU for each worker, and none for any other thread: {threads:?}");
     assert_eq!(distinct.len(), workers.min(all.len()), "each worker on a CPU of its own: {pinned:?}");
     assert!(pinned.iter().all(|cpu| all.contains(cpu)), "{pinned:?} not within {all:?}");
+    Ok(())
 }
 
 /// How many snapshot files the node keeps after 300 writes, one log entry each.

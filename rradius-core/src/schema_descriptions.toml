@@ -533,8 +533,8 @@ zh-TW = "Prometheus 指標端點的埠。"
 # runtime
 
 [fields."runtime.pin_threads"]
-en = "Pin each worker thread to one CPU; Linux only."
-zh-TW = "把工作執行緒各綁在一顆 CPU 上；只在 Linux。"
+en = "Pin each worker thread to one CPU; Linux and FreeBSD only."
+zh-TW = "把工作執行緒各綁在一顆 CPU 上；只在 Linux 與 FreeBSD。"
 
 # shutdown
 

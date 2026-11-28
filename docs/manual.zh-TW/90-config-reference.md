@@ -250,7 +250,7 @@ secret_file = "localhost.secret"     # openssl rand -hex 32 > localhost.secret
 
 | 鍵 | 型別 | 預設 | 必填 | reload | 說明 |
 | --- | --- | --- | --- | --- | --- |
-| `runtime.pin_threads` | 布林 | `false` | | 重啟 | 把每個工作執行緒各綁在一顆 CPU 上；只在 Linux 有作用。 |
+| `runtime.pin_threads` | 布林 | `false` | | 重啟 | 把每個工作執行緒各綁在一顆 CPU 上；只在 Linux 與 FreeBSD 有作用。 |
 
 ---
 

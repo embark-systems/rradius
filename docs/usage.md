@@ -127,7 +127,7 @@ The configuration file is in TOML format and is made of the following sections:
 | `[accounts]` | No | The SQL that runs when `rradiusd user` manages accounts (section 2.14) |
 | `[shutdown]` | No | The two waits after SIGTERM is received (section 2.16) |
 | `[databases.<name>]` | No | External MySQL and PostgreSQL databases, for the `sql` handler and `db_query` (section 2.17) |
-| `[runtime]` | No | `pin_threads`: pin each worker thread to one CPU, on Linux only (section 2.4) |
+| `[runtime]` | No | `pin_threads`: pin each worker thread to one CPU, on Linux and FreeBSD only (section 2.4) |
 
 At least one of `[radius]` and `[tacacs]` is required. All sections reject fields they do not recognize; a misspelled field makes startup fail and names the field.
 
@@ -613,10 +613,12 @@ Dynamic clients (`[radius.dynamic_clients]`) need rradius-enterprise.
 
   ```toml
   [runtime]
-  pin_threads = true   # default false, Linux only
+  pin_threads = true   # default false, Linux and FreeBSD only
   ```
 
   Each worker thread runs on only one CPU, assigned in turn from the CPUs available to the process, and the startup log records `pinned <N> runtime worker threads to CPUs [...]`. Threads created later (the threads that handle database queries and password hashing) get all the CPUs the process could originally use again, and are not pinned to the CPU of some worker thread. When pinning fails, a warning is logged and the server runs unpinned as usual. **It is off by default,** because when CPUs are shared with other processes (a shared host, a container with a CPU quota) pinning can be slower; turn it on only when this machine runs only rradius and its CPUs are not limited. Setting `true` on other platforms makes startup fail, and a change needs a restart.
+
+  **Known issue (Linux):** with `pin_threads`, PAP passwords stored as `{crypt}`, `{argon2}` or PBKDF2 are checked one at a time, however many CPUs there are: the limit on simultaneous checks is decided at the first check, which happens on a worker thread already pinned to one CPU. Such logins are limited to about what one CPU can check. In the `sql` handler and the `ldap` handler in `attribute` mode a request that waits longer than the time limit of the handler gets no answer; `password_verify` of Lua has no such time limit, and its reply can arrive after the NAS has given up. When passwords are stored as slow hashes, do not turn `pin_threads` on under Linux; to keep rradius on a fixed set of CPUs, restrict the whole process instead, by starting it with `taskset -c 0-3` or by setting `CPUAffinity=0-3` in the systemd unit, and the slow-hash limit equals the number of CPUs allowed. Other password formats, CHAP, MS-CHAP, the `ldap` handler in `bind` mode and FreeBSD are not affected.
 
   The table below was measured on 2026-11-08 on Docker's Linux (arm64) on the same Apple M4 Max, with the server pinned to CPUs 0–6 and `rradius-bench` pinned to 7–13 (`taskset`), 2 runs each. These are numbers inside a virtual machine, where pinning is especially sensitive to virtual machine scheduling; measure real hardware separately:
 
@@ -2144,7 +2146,7 @@ CHAP works only with plaintext or `{clear}`; PAP supports all formats. The compa
 
 `{crypt}` picks the algorithm from the content of the hash, including DES, `$1$` (MD5), `$5$` (SHA-256), `$6$` (SHA-512) and bcrypt (`$2a$`, `$2b$`, `$2y$`). For new deployments, use `{argon2}` or bcrypt or `$6$` in `{crypt}`. When the accounts are in the cluster's table, `rradiusd user add` and `user passwd` generate bcrypt, `$6$`, `{nthash}` or `{clear}` according to `scheme` in `[accounts]` (section 2.14). In other cases, use an existing tool, such as the `argon2` command or `htpasswd -B`.
 
-Verification of `{crypt}` and `{argon2}` is slow on purpose, so it runs outside the threads that handle requests. No more checks run at the same time than there are CPU cores, and the rest wait in a queue. `timeout_ms` of the `sql` handler covers the queue and the verification, and a timeout counts as a rejection. The cost of `{argon2}` is set by the parameters in the hash itself, so it has an upper limit; see "Cost limits on stored hashes" below.
+Verification of `{crypt}` and `{argon2}` is slow on purpose, so it runs outside the threads that handle requests. No more checks run at the same time than there are CPU cores, and the rest wait in a queue (the exception: under Linux with `[runtime] pin_threads`, one check runs at a time; see the known issue in section 2.4). `timeout_ms` of the `sql` handler covers the queue and the verification, and a request that times out gets no response rather than a rejection. The cost of `{argon2}` is set by the parameters in the hash itself, so it has an upper limit; see "Cost limits on stored hashes" below.
 
 ### Which formats are weak and how to phase them out
 
@@ -2370,7 +2372,7 @@ rradiusd tuning            # reads the default configuration file; with none, it
   | File descriptors | `RLIMIT_NOFILE` of the process | Same as Linux, plus `kern.maxfilesperproc` | Same as macOS |
   | TCP accept queue (with TACACS+ or RadSec) | `net.core.somaxconn` | `kern.ipc.somaxconn` | `kern.ipc.soacceptqueue` |
   | NIC receive queue | `net.core.netdev_max_backlog`, recommended only when softnet drops packets; not recommended when the number of softnet drops cannot be read | None | None |
-  | Configuration file | `[radius] sockets`, `[runtime] pin_threads` | `sockets` can only be 1 | Same as macOS |
+  | Configuration file | `[radius] sockets`, `[runtime] pin_threads` | `sockets` can only be 1 | `sockets` can only be 1; `[runtime] pin_threads` |
 
 - **When `recv_buffer_bytes` is not set, on Linux raise `rmem_default`, not only `rmem_max`.** In that case rradius does not set `SO_RCVBUF`, and each socket gets `rmem_default`, but that also affects the UDP sockets of every program on the machine. **We recommend setting `[radius] recv_buffer_bytes` instead (section 2.3):** after that, only the upper limit `rmem_max` has to be at least the configured value (at least twice that for `kern.ipc.maxsockbuf` on macOS and FreeBSD), and the report no longer lists the system default but one item that compares `recv_buffer_bytes` with the calculated recommendation; when it is smaller than the recommendation, change the configuration file and restart.
 - **How the recommended values are calculated:** the need for file descriptors is 256 (an estimate for the database files, logs, the cluster and the connection pool) plus `max_connections` of TACACS+, `read_connections`, 2 for each cluster node, and 2 times `max_connections` of RadSec in rradius-enterprise; the recommended limit is twice the need, and at least 65536. The receive buffer of each UDP socket is `max_auth_inflight` divided among the `sockets` sockets, counting 4096 bytes per packet, at least 4 MiB, rounded to a whole MiB. The TCP accept queue is at least 1024, the same as the length the program asks for.

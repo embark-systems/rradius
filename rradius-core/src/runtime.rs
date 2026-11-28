@@ -111,8 +111,48 @@ mod os {
     }
 }
 
+#[cfg(target_os = "freebsd")]
+mod os {
+    /// The calling thread's ID, as the kernel knows it.
+    pub fn thread_id() -> Option<i32> {
+        // SAFETY: pthread_getthreadid_np has no arguments and cannot fail.
+        Some(unsafe { libc::pthread_getthreadid_np() })
+    }
+
+    /// cpuset(2) names the calling thread -1, where the code above passes 0.
+    fn which(id: i32) -> libc::id_t {
+        if id == 0 { -1 } else { libc::id_t::from(id) }
+    }
+
+    /// The CPUs thread `id` may use; 0 is the calling thread.
+    pub fn cpus(id: i32) -> Option<Vec<usize>> {
+        // SAFETY: cpuset_getaffinity writes a cpuset_t we own, of the size we give.
+        unsafe {
+            let mut set: libc::cpuset_t = std::mem::zeroed();
+            if libc::cpuset_getaffinity(libc::CPU_LEVEL_WHICH, libc::CPU_WHICH_TID, which(id), std::mem::size_of::<libc::cpuset_t>(), &mut set) != 0 {
+                return None;
+            }
+            Some((0..libc::CPU_SETSIZE as usize).filter(|cpu| libc::CPU_ISSET(*cpu, &set)).collect())
+        }
+    }
+
+    pub fn set_cpus(id: i32, cpus: &[usize]) -> std::io::Result<()> {
+        // SAFETY: cpuset_setaffinity reads a cpuset_t we own, of the size we give.
+        unsafe {
+            let mut set: libc::cpuset_t = std::mem::zeroed();
+            for cpu in cpus {
+                libc::CPU_SET(*cpu, &mut set);
+            }
+            if libc::cpuset_setaffinity(libc::CPU_LEVEL_WHICH, libc::CPU_WHICH_TID, which(id), std::mem::size_of::<libc::cpuset_t>(), &set) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Elsewhere there is nothing to pin with; the configuration refuses `pin_threads` there.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 mod os {
     pub fn thread_id() -> Option<i32> {
         None
@@ -123,7 +163,7 @@ mod os {
     }
 
     pub fn set_cpus(_id: i32, _cpus: &[usize]) -> std::io::Result<()> {
-        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "pinning threads needs Linux"))
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "pinning threads needs Linux or FreeBSD"))
     }
 }
 

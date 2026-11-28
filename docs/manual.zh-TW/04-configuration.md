@@ -528,7 +528,7 @@ $ rradius-bench run --server 127.0.0.1 --secret "$(cat localhost.secret)" \
 
 ## runtime 與 log
 
-- `[runtime]` 只有 `pin_threads`（預設 `false`，要重啟），把每個工作執行緒綁在一顆 CPU 上，只在 Linux 有效；在其他平台設成 `true` 時 `check` 失敗：`runtime.pin_threads is only supported on Linux`。何時該用見[第 19 章](19-performance.md)。
+- `[runtime]` 只有 `pin_threads`（預設 `false`，要重啟），把每個工作執行緒綁在一顆 CPU 上，只在 Linux 與 FreeBSD 有效；在其他平台設成 `true` 時 `check` 失敗：`runtime.pin_threads is only supported on Linux and FreeBSD`。何時該用見[第 19 章](19-performance.md)。
 - `[log]` 決定日誌的等級（預設 `info`）、格式（預設 `text`）與是否寫認證紀錄（預設 `true`），整個表要重啟才生效；`[log.trace]` 可以 reload，用來暫時記下特定使用者或用戶端的完整請求。詳見[第 17 章](17-monitoring.md)。
 
 ## 常見錯誤

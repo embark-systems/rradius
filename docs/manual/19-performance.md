@@ -128,12 +128,12 @@ The suggested values are calculated from the configuration. The rules are in `rr
 | TCP listen queue | `net.core.somaxconn` | `kern.ipc.somaxconn` | `kern.ipc.soacceptqueue` |
 | Backlog of the network card | `net.core.netdev_max_backlog`: 16384 is suggested when packets are dropped before they reach a socket | — | — |
 | `radius.sockets` | Suggested equal to the number of worker threads (do not set it) | Must be 1 | Must be 1 |
-| `runtime.pin_threads` | Only shows the current value and a note | — | — |
+| `runtime.pin_threads` | Only shows the current value and a note | — | Same as Linux |
 
 - On Linux, the sysctl advice goes in `/etc/sysctl.d/90-rradius.conf`; on macOS and FreeBSD it goes in `/etc/sysctl.conf`.
 - On FreeBSD, the second line of the output reads `(this advice follows the FreeBSD documentation and has not been tested on FreeBSD)`.
 
-> **Not verified on real hardware:** This chapter ran `tuning` only on macOS. The checks for Linux and FreeBSD follow `rradius-core/src/tuning.rs` and were not run on those two platforms.
+> **Not verified on real hardware:** This chapter ran `tuning` only on macOS and on one FreeBSD 15.1 (arm64) virtual machine. The configuration on the virtual machine had no TCP listener, so the listen queue check was not run. Linux was not run; its checks follow `rradius-core/src/tuning.rs`.
 
 > **Note:** The line in which `tuning` talks about `pin_threads` points to [Worker threads and pin_threads](#worker-threads-and-pin_threads) in this chapter.
 
@@ -189,20 +189,76 @@ The number of rradius worker threads equals the number of CPUs the process can u
 
 | Key | Default | Reload | Meaning |
 | --- | --- | --- | --- |
-| `runtime.pin_threads` | `false` | Restart needed | Pin each worker thread to its own CPU; works only on Linux |
+| `runtime.pin_threads` | `false` | Restart needed | Pin each worker thread to its own CPU; works only on Linux and FreeBSD |
 
 - Worker threads are pinned in order to the CPUs the process can use, and when there are fewer CPUs than threads, they take turns. If one of them cannot be pinned, none are pinned.
 - Other threads created later are not affected. They use all the CPUs the process could use originally.
-- On platforms other than Linux, `check` refuses it:
+- On platforms other than Linux and FreeBSD, `check` refuses it:
 
 ```console
 $ rradiusd check --config pin.toml
-pin.toml: runtime.pin_threads is only supported on Linux
+pin.toml: runtime.pin_threads is only supported on Linux and FreeBSD
 ```
 
 Turn it on when this machine runs only rradius and you have measured that it is faster. On a machine that shares CPUs with other services, pinning threads can make them compete for the same CPU.
 
-> **Not verified on real hardware:** `pin_threads = true` can only be enabled on Linux, and this chapter did not measure its effect on Linux.
+> **Known issue (Linux):** with `pin_threads`, the slow password hashes (`{crypt}`, `{argon2}` and the PBKDF2 formats) are checked **one at a time**, however many CPUs the machine has. The limit on simultaneous checks is decided at the first check after a start. That happens on a worker thread already pinned to one CPU, and Linux answers with the number of CPUs that thread may use, so the limit stays 1, and a restart does not change that.
+>
+> - **Affected:** PAP checks against passwords stored in these formats, in the `sql` handler, in the `ldap` handler in `attribute` mode and in `password_verify` of Lua. Such logins are limited to about what one CPU can check. In the `sql` and `ldap` handlers, a request that waits longer than the time limit of the handler (`timeout_ms`) gets no answer. `password_verify` of Lua has no such time limit: the request waits for its turn, the reply can arrive after the NAS has given up, and the server logs no timeout.
+> - **Not affected:** without `pin_threads` (the default); the other formats, such as clear text, `{nthash}` and the `{SHA}` family; CHAP and MS-CHAP; the `ldap` handler in `bind` mode, where the LDAP server compares the password. FreeBSD answers with the number of CPUs of the whole process.
+> - **What to do:** when passwords are stored as slow hashes, do not turn `pin_threads` on under Linux. To keep rradius on a fixed set of CPUs, for example apart from other services, restrict the whole process instead: `taskset -c 0-3 rradiusd serve --config rradius.toml`, or `CPUAffinity=0-3` under `[Service]` of the systemd unit. Leave `pin_threads` off: the number of worker threads and the limit on simultaneous slow-hash checks both equal the number of CPUs allowed, and no thread is pinned to a CPU of its own. A change needs a restart.
+
+### Check that the threads are pinned
+
+The startup log says which CPUs the threads were pinned to. For example, when started on FreeBSD with `cpuset -l 0-3`:
+
+```text
+… INFO rradius_core::cli: pinned 4 runtime worker threads to CPUs [0, 1, 2, 3]
+```
+
+On FreeBSD you can also look with `procstat -S <pid>`: the `CPU MASK` column of each of the 4 worker threads holds a single CPU, and the other threads still show `0-3`. The name `tokio-rt-worker` is not used only by worker threads. Threads created later can have the same name, and their `CPU MASK` is all the CPUs the process could use originally.
+
+### Measurements on a FreeBSD virtual machine
+
+A comparison with `pin_threads` off and on, on one virtual machine, gave **mixed results**.
+
+| Item | Content |
+| --- | --- |
+| Virtual machine | UTM (QEMU with hardware virtualization) on macOS on an Apple M4 Max, 8 virtual CPUs, 8 GiB of memory |
+| Operating system | FreeBSD 15.1-RELEASE-p6, arm64 |
+| rradius | Commit `f805cbe` of the core repo plus the change that adds pinning on FreeBSD, a release build with Rust 1.98.1 |
+| Server | `benchmarks/accept.toml`, started with `cpuset -l 0-3` (4 worker threads), output sent to `/dev/null` |
+| Tool | The same virtual machine, started with `cpuset -l 4-7`, over loopback |
+| Method | 3 seconds of warm-up and 15 seconds of measurement; off and on runs interleaved, 10 pairs for each load |
+| System settings | The receive buffer was the system default (`net.inet.udp.recvspace` of 42080) |
+| Date | 2026-11-27 |
+
+"Off" and "On" are medians of 10 runs each. "Change" is how much "on" differs from "off" within each pair, and then the median of those, so it is not always the ratio of the two columns before it. The last column counts only the 3 pairs during which the Mac had the least other work.
+
+| Load | Measure | Off | On | Change (10 pairs) | Change (3 quietest pairs) |
+| --- | --- | --- | --- | --- | --- |
+| `pap,concurrency=64,window=1` | Responses per second | 244206 | 231774 | −7.4% | −10.3% |
+| Same | p99 | 0.70 ms | 0.82 ms | +21.3% | +35.5% |
+| `pap,concurrency=1024` | Responses per second | 271520 | 320678 | +15.2% | +15.6% |
+| Same | p99 | 3.62 ms | 3.18 ms | −10.5% | −11.8% |
+| `pap,rate=50000` | p50 | 43 μs | 44 μs | +0.5% | +0.1% |
+| Same | p99 | 140 μs | 149 μs | +2.7% | −1.6% |
+
+- **Concurrency 64: worse with pinning.** The p99 was higher in 9 of the 10 pairs.
+- **Concurrency 1024: better with pinning.** The rate and the p99 both improved in 8 of the 10 pairs.
+- **A fixed 50000 per second: no visible difference.** Two runs with pinning did not keep up this rate (a `rate_not_met` warning) and had a p99 of 7.2 and 14.3 ms, while the Mac was compiling other programs.
+
+**Limits of these numbers:**
+
+1. The virtual CPUs were not fixed to physical cores. A worker thread is pinned to a virtual CPU, which can still move between physical cores underneath.
+2. Other work ran on the Mac during the measurements, and the rate went up and down both with and without pinning (for example about 320000 or 230000 per second at concurrency 64). A "quietest" pair is one where, in the samples of both runs, the processes other than the virtual machine together used no more than 60% of one core.
+3. At concurrency 1024, every run had between 1766 and 2128 timeouts (`rradius-bench` exit code 2), with and without pinning alike. By the standard in [How to tell whether a result can be trusted](#how-to-tell-whether-a-result-can-be-trusted), a run with timeouts is not a clean one.
+4. The tool and the server were on the same virtual machine, with no real network.
+5. Do not compare them with Linux numbers: on FreeBSD `radius.sockets` can only be 1, while on Linux the default is one socket per worker thread.
+
+Before you turn it on under FreeBSD, measure with your own load.
+
+> **Not verified on real hardware:** The numbers above come from a virtual machine. This chapter did not measure on a physical FreeBSD machine, and has no Linux measurements. [`usage.md`](../usage.md) records numbers from a Linux virtual machine (Docker), which is a different environment.
 
 ## Limits on concurrent requests
 
@@ -496,8 +552,8 @@ Besides these warnings, check for yourself:
 **Cause:** `sockets` was set to more than 1 on a platform other than Linux.
 **Fix:** Remove `sockets`.
 
-**Symptom:** `check` prints `runtime.pin_threads is only supported on Linux`.
-**Cause:** `pin_threads = true` was set on a platform other than Linux.
+**Symptom:** `check` prints `runtime.pin_threads is only supported on Linux and FreeBSD`.
+**Cause:** `pin_threads = true` was set on a platform other than Linux and FreeBSD.
 **Fix:** Remove it.
 
 **Symptom:** `check` prints `radius.recv_buffer_bytes = 100: it must be from 4096 to 1073741824`.

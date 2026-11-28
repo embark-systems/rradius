@@ -128,12 +128,12 @@ These suggestions are unmeasured starting points: apply them, then confirm with 
 | TCP listen queue | `net.core.somaxconn` | `kern.ipc.somaxconn` | `kern.ipc.soacceptqueue` |
 | 網卡的 backlog | `net.core.netdev_max_backlog`：有封包在送到 socket 之前就被丟時，建議 16384 | — | — |
 | `radius.sockets` | 建議等於工作執行緒數（不要設） | 必須是 1 | 必須是 1 |
-| `runtime.pin_threads` | 只顯示目前的值與說明 | — | — |
+| `runtime.pin_threads` | 只顯示目前的值與說明 | — | 同 Linux |
 
 - Linux 的 sysctl 建議寫進 `/etc/sysctl.d/90-rradius.conf`；macOS 與 FreeBSD 寫進 `/etc/sysctl.conf`。
 - 在 FreeBSD 上，輸出第二行會印 `(this advice follows the FreeBSD documentation and has not been tested on FreeBSD)`。
 
-> **未實機驗證：** 本章只在 macOS 實際跑過 `tuning`。Linux 與 FreeBSD 的檢查項目，依據的是 `rradius-core/src/tuning.rs`，沒有在那兩個平台上執行過。
+> **未實機驗證：** 本章只在 macOS 與一台 FreeBSD 15.1（arm64）虛擬機上實際跑過 `tuning`。虛擬機上的設定沒有 TCP 監聽，所以 listen queue 那一項沒有跑到。Linux 沒有執行過，檢查項目依據的是 `rradius-core/src/tuning.rs`。
 
 > **注意：** `tuning` 說 `pin_threads` 的那一行指向本章的[工作執行緒與 pin_threads](#工作執行緒與-pin_threads)。
 
@@ -189,20 +189,76 @@ rradius 的工作執行緒數等於這個行程能用的 CPU 數（Rust 標準�
 
 | 鍵 | 預設 | reload | 意思 |
 | --- | --- | --- | --- |
-| `runtime.pin_threads` | `false` | 要重啟 | 把每個工作執行緒各綁在一顆 CPU 上，只在 Linux 有作用 |
+| `runtime.pin_threads` | `false` | 要重啟 | 把每個工作執行緒各綁在一顆 CPU 上，只在 Linux 與 FreeBSD 有作用 |
 
 - 工作執行緒依序綁到行程能用的 CPU 上，CPU 比執行緒少時輪流使用。其中一個綁不上，就全部不綁。
 - 之後才建立的其他執行緒不受影響，用的是行程原本能用的全部 CPU。
-- 在 Linux 以外的平台，`check` 直接拒絕：
+- 在 Linux 與 FreeBSD 以外的平台，`check` 直接拒絕：
 
 ```console
 $ rradiusd check --config pin.toml
-pin.toml: runtime.pin_threads is only supported on Linux
+pin.toml: runtime.pin_threads is only supported on Linux and FreeBSD
 ```
 
 適合開的情況：這台機器只跑 rradius，而且量過之後確實比較快。和其他服務共用 CPU 的機器，綁住執行緒反而可能讓它們搶同一顆 CPU。
 
-> **未實機驗證：** `pin_threads = true` 只能在 Linux 上啟用，本章沒有在 Linux 上量過它的效果。
+> **已知問題（Linux）：** 開了 `pin_threads`，慢密碼雜湊（`{crypt}`、`{argon2}` 與 PBKDF2 各種格式）的比對會變成**一次只做一筆**，不論機器有幾顆 CPU。同時比對的上限在啟動後第一次比對時才決定，那時是在已綁到一顆 CPU 的工作執行緒上，Linux 回答的是這個執行緒能用的 CPU 數，所以上限固定是 1，重新啟動也一樣。
+>
+> - **受影響：** 用這些格式存密碼的 PAP 比對，包括 `sql` 處理器、`attribute` 模式的 `ldap` 處理器和 Lua 的 `password_verify`。這類登入的速率上限大約只有一顆 CPU 的量。`sql` 與 `ldap` 處理器：排隊超過處理器的時間上限（`timeout_ms`）時，請求得不到回應。Lua 的 `password_verify` 沒有這個時間上限：請求一直排隊到輪到為止，回應可能在 NAS 放棄之後才送到，伺服器也不會記逾時訊息。
+> - **不受影響：** 沒開 `pin_threads`（預設）；明文、`{nthash}`、`{SHA}` 系列等其他格式；CHAP 與 MS-CHAP；`bind` 模式的 `ldap` 處理器（密碼由 LDAP 伺服器比對）。FreeBSD 回答的是整個行程能用的 CPU 數。
+> - **做法：** 用慢雜湊存密碼的話，Linux 上不要開 `pin_threads`。想讓 rradius 只用固定幾顆 CPU（例如和其他服務分開），改成限定整個行程：`taskset -c 0-3 rradiusd serve --config rradius.toml`，或在 systemd 服務的 `[Service]` 加 `CPUAffinity=0-3`。`pin_threads` 保持關閉，工作執行緒數與慢雜湊同時比對的上限都等於限定的 CPU 數；執行緒不會各綁一顆。改了要重新啟動。
+
+### 確認有沒有綁上
+
+啟動日誌會印出綁到哪些 CPU。例如用 `cpuset -l 0-3` 在 FreeBSD 上啟動：
+
+```text
+… INFO rradius_core::cli: pinned 4 runtime worker threads to CPUs [0, 1, 2, 3]
+```
+
+在 FreeBSD 上也可以用 `procstat -S <pid>` 看：4 個工作執行緒的 `CPU MASK` 欄各只剩一顆 CPU，其他執行緒仍是 `0-3`。名稱 `tokio-rt-worker` 不只工作執行緒在用，之後建立的執行緒也可能叫這個名字，它們的 `CPU MASK` 是行程原本能用的全部 CPU。
+
+### FreeBSD 虛擬機上的量測
+
+在一台虛擬機上比較開與不開 `pin_threads`，結果**有好有壞**。
+
+| 項目 | 內容 |
+| --- | --- |
+| 虛擬機 | Apple M4 Max 的 macOS 上的 UTM（QEMU 加硬體虛擬化），8 顆虛擬 CPU，8 GiB 記憶體 |
+| 作業系統 | FreeBSD 15.1-RELEASE-p6，arm64 |
+| rradius | 核心 repo 的 commit `f805cbe` 加上 FreeBSD 綁核的改動，Rust 1.98.1 的 release 建置 |
+| 伺服器 | `benchmarks/accept.toml`，用 `cpuset -l 0-3` 啟動（4 個工作執行緒），輸出導到 `/dev/null` |
+| 工具 | 同一台虛擬機，用 `cpuset -l 4-7` 啟動，經由 loopback |
+| 量法 | 暖機 3 秒、量 15 秒；開與不開交錯執行，每個負載各 10 組 |
+| 系統設定 | 接收緩衝區是系統預設（`net.inet.udp.recvspace` 為 42080） |
+| 日期 | 2026-11-27 |
+
+「沒開」和「開」是各 10 次的中位數。「差異」是每一組裡「開」相對「沒開」的變化，再取中位數，所以不一定等於前兩欄相除。最後一欄只算 Mac 上其他工作最少的 3 組。
+
+| 負載 | 指標 | 沒開 | 開 | 差異（10 組） | 差異（最安靜的 3 組） |
+| --- | --- | --- | --- | --- | --- |
+| `pap,concurrency=64,window=1` | 每秒回應 | 244206 | 231774 | −7.4% | −10.3% |
+| 同上 | p99 | 0.70 ms | 0.82 ms | +21.3% | +35.5% |
+| `pap,concurrency=1024` | 每秒回應 | 271520 | 320678 | +15.2% | +15.6% |
+| 同上 | p99 | 3.62 ms | 3.18 ms | −10.5% | −11.8% |
+| `pap,rate=50000` | p50 | 43 μs | 44 μs | +0.5% | +0.1% |
+| 同上 | p99 | 140 μs | 149 μs | +2.7% | −1.6% |
+
+- **並行數 64：開了比較差。** 10 組裡有 9 組的 p99 變高。
+- **並行數 1024：開了比較好。** 10 組裡有 8 組的速率和 p99 都改善。
+- **固定每秒 50000 筆：看不出差別。** 開的那一邊有 2 次沒能維持這個速率（`rate_not_met` 警告），p99 是 7.2 與 14.3 ms，當時 Mac 上正在編譯別的程式。
+
+**這組數字的限制：**
+
+1. 虛擬 CPU 沒有固定在實體核心上。工作執行緒綁住的是虛擬 CPU，它底下仍可能在不同的實體核心之間移動。
+2. 量測期間 Mac 上有其他工作，速率在開與不開兩邊都忽高忽低（例如並行數 64 約每秒 32 萬或 23 萬）。「最安靜」的配對是指兩次量測期間取樣到的虛擬機以外行程，CPU 用量合計都不超過一顆核心的 60%。
+3. 並行數 1024 時，每次量測都有 1766 到 2128 個逾時（`rradius-bench` 結束碼 2），開與不開都一樣。照[怎麼判斷結果可不可信](#怎麼判斷結果可不可信)的標準，有逾時的量測不算乾淨。
+4. 工具和伺服器在同一台虛擬機上，沒有真的網路。
+5. 不能拿來和 Linux 的數字比較：FreeBSD 上 `radius.sockets` 只能是 1，Linux 預設每個工作執行緒一個 socket。
+
+在 FreeBSD 上要不要開，請用自己的負載量過再決定。
+
+> **未實機驗證：** 上面是虛擬機的數字。本章沒有在實體的 FreeBSD 機器上量過，也沒有 Linux 的量測；Linux 虛擬機（Docker）上的數字記在 [`usage.zh-TW.md`](../usage.zh-TW.md)，環境不同。
 
 ## 同時處理的上限
 
@@ -496,8 +552,8 @@ warnings:
 **原因：** 在 Linux 以外的平台設了 `sockets` 大於 1。
 **解法：** 拿掉 `sockets`。
 
-**症狀：** `check` 印出 `runtime.pin_threads is only supported on Linux`。
-**原因：** 在 Linux 以外的平台設了 `pin_threads = true`。
+**症狀：** `check` 印出 `runtime.pin_threads is only supported on Linux and FreeBSD`。
+**原因：** 在 Linux 與 FreeBSD 以外的平台設了 `pin_threads = true`。
 **解法：** 拿掉它。
 
 **症狀：** `check` 印出 `radius.recv_buffer_bytes = 100: it must be from 4096 to 1073741824`。

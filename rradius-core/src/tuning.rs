@@ -344,7 +344,7 @@ pub fn advise(platform: Platform, readings: &Readings, needs: &Needs) -> Report 
     if let Some(sockets) = needs.sockets {
         checks.push(sockets_check(platform, sockets));
     }
-    if platform == Platform::Linux {
+    if matches!(platform, Platform::Linux | Platform::FreeBsd) {
         checks.push(Check {
             title: "Worker threads pinned to CPUs ([runtime] pin_threads)".to_string(),
             current: Ok(needs.pin_threads.to_string()),
@@ -624,6 +624,7 @@ mod tests {
         report.checks.iter().find(|check| check.title.contains(title)).ok_or_else(|| format!("no check {title}: {report}"))
     }
 
+    // spectra-scenario: tuning-advice / Linux receive buffer below the suggestion
     #[test]
     fn test_linux_receive_buffer_below_the_suggestion() -> Result<(), String> {
         let report = advise(Platform::Linux, &linux_readings(), &needs(&inputs()));
@@ -648,6 +649,8 @@ mod tests {
         Ok(())
     }
 
+    // spectra-scenario: tuning-advice / A value already high enough
+    // spectra-scenario: tuning-advice / A value already high enough / Already at or above the suggestion
     #[test]
     fn test_a_value_already_high_enough() -> Result<(), String> {
         let mut readings = linux_readings();
@@ -685,6 +688,7 @@ mod tests {
         Ok(())
     }
 
+    // spectra-scenario: tuning-advice / Softnet drops unreadable
     #[test]
     fn test_softnet_drops_unreadable() -> Result<(), String> {
         let mut readings = linux_readings();
@@ -696,6 +700,7 @@ mod tests {
         Ok(())
     }
 
+    // spectra-scenario: tuning-advice / Linux with recv_buffer_bytes
     #[test]
     fn test_linux_with_recv_buffer_bytes() -> Result<(), String> {
         let report = advise(Platform::Linux, &linux_readings(), &needs(&Inputs { recv_buffer: Some(2097152), ..inputs() }));
@@ -716,6 +721,7 @@ mod tests {
         Ok(())
     }
 
+    // spectra-scenario: tuning-advice / macOS with recv_buffer_bytes
     #[test]
     fn test_macos_with_recv_buffer_bytes() -> Result<(), String> {
         let report = advise(Platform::MacOs, &bsd_readings("kern.ipc.somaxconn"), &needs(&Inputs { radius: Some((4096, 1)), recv_buffer: Some(4194304), ..inputs() }));
@@ -726,6 +732,8 @@ mod tests {
         Ok(())
     }
 
+    // spectra-scenario: tuning-advice / Sockets on macOS
+    // spectra-scenario: tuning-advice / Pinning listed on FreeBSD
     #[test]
     fn test_sockets_on_macos() -> Result<(), String> {
         let needs = needs(&Inputs { radius: Some((4096, 4)), ..inputs() });
@@ -744,13 +752,16 @@ mod tests {
         assert!(position("kern.ipc.maxsockbuf") < position("net.inet.udp.recvspace"), "the limit first");
         assert!(check(&report, "RLIMIT_NOFILE")?.persist.as_deref().is_some_and(|persist| persist.contains("NumberOfFiles")));
         assert_eq!(check(&report, "kern.maxfilesperproc")?.suggested.as_deref(), Some("65536"));
-        assert!(!text.contains("pin_threads"), "Linux only: {text}");
+        assert!(!text.contains("pin_threads"), "Linux and FreeBSD only: {text}");
         Ok(())
     }
 
+    // spectra-scenario: tuning-advice / FreeBSD listen queue
+    // spectra-scenario: tuning-advice / Pinning listed on FreeBSD
     #[test]
     fn test_freebsd() -> Result<(), String> {
         let report = advise(Platform::FreeBsd, &bsd_readings("kern.ipc.soacceptqueue"), &needs(&inputs()));
+        assert_eq!(check(&report, "pin_threads")?.current, Ok("false".to_string()));
         let queue = check(&report, "kern.ipc.soacceptqueue")?;
         assert_eq!(queue.now.as_deref(), Some("sysctl -w kern.ipc.soacceptqueue=1024"));
         assert_eq!(queue.persist.as_deref(), Some("/etc/sysctl.conf: kern.ipc.soacceptqueue = 1024"));

@@ -127,7 +127,7 @@ docker/smoke-test.py --auth-port 1812 --acct-port 1813
 | `[accounts]` | 否 | `rradiusd user` 管理帳號時執行的 SQL（2.14 節） |
 | `[shutdown]` | 否 | 收到 SIGTERM 後的兩段等待（2.16 節） |
 | `[databases.<name>]` | 否 | 外部的 MySQL、PostgreSQL，給 `sql` 處理器和 `db_query` 用（2.17 節） |
-| `[runtime]` | 否 | `pin_threads`：把工作執行緒各綁在一顆 CPU 上，只在 Linux（2.4 節） |
+| `[runtime]` | 否 | `pin_threads`：把工作執行緒各綁在一顆 CPU 上，只在 Linux 與 FreeBSD（2.4 節） |
 
 `[radius]` 與 `[tacacs]` 至少要有一個。所有區段都拒絕不認得的欄位，拼錯的欄位會讓啟動失敗並指出欄位名稱。
 
@@ -613,10 +613,12 @@ TACACS+ over TLS（`[tacacs.tls]`）需要 rradius-enterprise。
 
   ```toml
   [runtime]
-  pin_threads = true   # 預設 false，只在 Linux
+  pin_threads = true   # 預設 false，只在 Linux 與 FreeBSD
   ```
 
   每個工作執行緒只在一顆 CPU 上跑，依程序可用的 CPU 輪流分配，啟動時記錄 `pinned <N> runtime worker threads to CPUs [...]`。之後才建立的執行緒（處理資料庫查詢、密碼雜湊的執行緒）恢復程序原本可用的全部 CPU，不會被綁在某個工作執行緒的 CPU 上。綁定失敗時記錄警告，照常不綁地執行。**預設關閉，** 因為和其他程序共用 CPU 時（共用主機、有 CPU 配額的容器）綁核可能更慢；只有這台機器專門跑 rradius、CPU 不受限時才建議開。其他平台設 `true` 會啟動失敗，改了要重新啟動。
+
+  **已知問題（Linux）：** 開了 `pin_threads`，`{crypt}`、`{argon2}` 與 PBKDF2 的 PAP 密碼比對一次只做一筆，不論有幾顆 CPU：同時比對的上限在第一次比對時才決定，那時是在已綁到一顆 CPU 的工作執行緒上。這類登入的速率上限大約只有一顆 CPU 的量。`sql` 處理器與 `attribute` 模式的 `ldap` 處理器：排隊超過處理器的時間上限時得不到回應；Lua 的 `password_verify` 沒有這個時間上限，回應可能在 NAS 放棄之後才送到。用慢雜湊存密碼的話，Linux 上不要開 `pin_threads`；想讓 rradius 只用固定幾顆 CPU，改用 `taskset -c 0-3` 啟動或在 systemd 服務設 `CPUAffinity=0-3` 限定整個行程，慢雜湊的上限就等於限定的 CPU 數。其他密碼格式、CHAP、MS-CHAP、`bind` 模式的 `ldap` 處理器與 FreeBSD 不受影響。
 
   下表是 2026-11-08 在同一台 Apple M4 Max 上 Docker 的 Linux（arm64）量的，伺服器限定 CPU 0–6、`rradius-bench` 限定 7–13（`taskset`），各 2 次。這是虛擬機裡的數字，綁核特別容易受虛擬機排程影響，實體機要另外量：
 
@@ -2144,7 +2146,7 @@ CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固�
 
 `{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradiusd user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
 
-`{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時視為拒絕。`{argon2}` 的成本由雜湊本身的參數決定，所以有上限，見下面〈儲存雜湊的成本上限〉。
+`{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待（例外：Linux 上開了 `[runtime] pin_threads` 時一次只執行一筆，見 2.4 節的已知問題）。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時時不回應，而不是拒絕。`{argon2}` 的成本由雜湊本身的參數決定，所以有上限，見下面〈儲存雜湊的成本上限〉。
 
 ### 哪些格式偏弱，怎麼逐步淘汰
 
@@ -2370,7 +2372,7 @@ rradiusd tuning            # 讀預設的設定檔；沒有時用預設設定估
   | 檔案描述元 | 程序的 `RLIMIT_NOFILE` | 同左，加上 `kern.maxfilesperproc` | 同 macOS |
   | TCP 等待連線佇列（有 TACACS+ 或 RadSec 時） | `net.core.somaxconn` | `kern.ipc.somaxconn` | `kern.ipc.soacceptqueue` |
   | 網卡收包佇列 | `net.core.netdev_max_backlog`，只在 softnet 有丟包時建議；讀不到 softnet 丟包數時不建議 | 無 | 無 |
-  | 設定檔 | `[radius] sockets`、`[runtime] pin_threads` | `sockets` 只能是 1 | 同 macOS |
+  | 設定檔 | `[radius] sockets`、`[runtime] pin_threads` | `sockets` 只能是 1 | `sockets` 只能是 1；`[runtime] pin_threads` |
 
 - **沒設 `recv_buffer_bytes` 時，Linux 要調 `rmem_default`，不是只調 `rmem_max`。** 這時 rradius 不設定 `SO_RCVBUF`，每個 socket 拿到的是 `rmem_default`，但它也會影響機器上所有程式的 UDP socket。**建議改設 `[radius] recv_buffer_bytes`（2.3 節）：** 之後只需上限 `rmem_max` 至少等於設定值（macOS、FreeBSD 的 `kern.ipc.maxsockbuf` 至少兩倍），報告也不再列系統預設值，改列一項比較 `recv_buffer_bytes` 和算出的建議值，比建議小時要改設定檔再重啟。
 - **建議值怎麼算：** 檔案描述元需求是 256（資料庫檔、記錄、叢集與連線池的估計量）加上 TACACS+ 的 `max_connections`、`read_connections`、每個叢集節點 2 條，以及 rradius-enterprise RadSec 的 2 倍 `max_connections`；建議上限是需求的兩倍，至少 65536。每個 UDP socket 的接收緩衝是 `max_auth_inflight` 平分到 `sockets` 個 socket、每個封包以 4096 位元組計，至少 4 MiB，取整到 MiB。TCP 等待佇列至少 1024，和程式要求的長度相同。
