@@ -291,12 +291,42 @@ pub mod test_dc {
         }
     }
 
+    /// What a connection bound before a restart does with its next request.
+    #[derive(Clone, Copy, Default)]
+    pub enum OldConnections {
+        #[default]
+        Close,
+        Silent,
+    }
+
     /// What the test domain controller keeps of the channel it set up last.
     #[derive(Default)]
     pub struct State {
         pub session: Option<Arc<Session>>,
         /// Every sealed call: its opnum and stub.
         pub calls: Vec<(u16, Vec<u8>)>,
+        /// Answers every bind of a secure channel with a bind_nak.
+        pub refuse_binds: bool,
+        /// How many binds were answered with a bind_nak.
+        pub refused_binds: u32,
+        /// Closes the connection of the next secure channel bind without answering it.
+        pub close_bind_once: bool,
+        /// Closes the connection at the next sealed call without answering it.
+        pub close_call_once: bool,
+        /// Answers the next sealed call with an RPC fault.
+        pub fault_once: bool,
+        restarts: u32,
+        old_connections: OldConnections,
+    }
+
+    impl State {
+        /// Restarts the controller: it forgets the channel, refusing to bind with it, and the
+        /// connections bound so far close or fall silent at their next request.
+        pub fn restart(&mut self, old_connections: OldConnections) {
+            self.session = None;
+            self.restarts += 1;
+            self.old_connections = old_connections;
+        }
     }
 
     /// The answer to a sealed call, given the channel, its opnum and its stub. An empty answer
@@ -324,6 +354,19 @@ pub mod test_dc {
         let bind = rpc::parse(&rpc::read_pdu(&mut stream).await?)?;
         let auth = bind.auth.as_ref().map(|(auth, _, _)| *auth);
         let reply_token = NEGOTIATE_RESPONSE.to_le_bytes().iter().chain(&[0; 8]).copied().collect::<Vec<u8>>();
+        let (refused, restarts) = {
+            let mut state = state.lock();
+            let refused = auth.is_some() && (state.refuse_binds || (state.restarts > 0 && state.session.is_none()));
+            state.refused_binds += u32::from(refused);
+            (refused, state.restarts)
+        };
+        if refused {
+            stream.write_all(&rpc::server::bind_nak(bind.call_id)).await?;
+            return Ok(());
+        }
+        if auth.is_some() && std::mem::take(&mut state.lock().close_bind_once) {
+            return Ok(());
+        }
         stream.write_all(&rpc::server::bind_ack(bind.call_id, auth.map(|auth| (auth, &reply_token[..])))).await?;
         if let Some(auth) = auth {
             let Some(session) = state.lock().session.clone() else {
@@ -332,6 +375,26 @@ pub mod test_dc {
             let mut sequence = 0u64;
             loop {
                 let pdu = rpc::parse(&rpc::read_pdu(&mut stream).await?)?;
+                let old = {
+                    let state = state.lock();
+                    (state.restarts != restarts).then_some(state.old_connections)
+                };
+                match old {
+                    Some(OldConnections::Close) => return Ok(()),
+                    Some(OldConnections::Silent) => continue,
+                    None => {}
+                }
+                let (close, fault) = {
+                    let mut state = state.lock();
+                    (std::mem::take(&mut state.close_call_once), std::mem::take(&mut state.fault_once))
+                };
+                if close {
+                    return Ok(());
+                }
+                if fault {
+                    stream.write_all(&rpc::server::fault(pdu.call_id, status::ACCESS_DENIED)).await?;
+                    continue;
+                }
                 let (_, pad, signature) = pdu.auth.clone().ok_or(RpcError::Malformed("not sealed".to_string()))?;
                 let (opnum, mut data) = rpc::server::parse_request(&pdu)?;
                 crypto::unseal(&session.key, sequence, true, &signature, &mut data).map_err(ChannelError::Seal)?;

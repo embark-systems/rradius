@@ -536,7 +536,7 @@ Server log (excerpt):
 
 ### Connections, fault tolerance and metrics
 
-- Each domain controller keeps at most `connections` connections, which are reused. When the domain controller invalidates the secure channel or the connection drops, the handler sets it up again and retries; if that still fails, it moves to the next domain controller. In a test against a Samba domain controller (2026-11-27), the first request after the controller restarted got no answer (log: `RPC bind refused: bind_nak, reason 0`); the next one, or the NAS's retransmission, set the channel up again.
+- Each domain controller keeps at most `connections` connections, which are reused. When a connection drops, the handler retries on a new one. When the domain controller has invalidated the secure channel, the handler discards it and, if the request still has a new connection to try, sets the channel up again and retries once; if the new channel is refused too, or the new connections fail as well, it moves to the next domain controller. So once a restarted domain controller is serving again, the first request sets the channel up again and is answered. Tested against a Samba domain controller (2026-11-28, one login after the restart): no request went unanswered. Several logins at once after a restart were tested only against a simulated domain controller.
 - An idle connection in the pool that does not answer within `timeout_ms` (for example because a firewall dropped it silently) is closed, together with the other idle connections of that domain controller, and the handler retries with a new connection.
 - The computer account password, the session key, the NT-Response and the MPPE keys do not appear in the log at any level.
 
