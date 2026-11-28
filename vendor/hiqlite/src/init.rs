@@ -1,12 +1,16 @@
 use crate::app_state::{AppState, RaftType};
 use crate::helpers::{deserialize_serde, serialize};
 use crate::network::HEADER_NAME_SECRET;
+#[cfg(feature = "sqlite")]
+use crate::network::management::NOT_INITIALIZED;
 use crate::network::management::{ClusterLeaveReq, LearnerReq};
 use crate::{Error, Node, NodeId, helpers};
 use openraft::{Membership, RaftMetrics};
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(feature = "sqlite")]
+use tokio::task::JoinSet;
 use tokio::{fs, time};
 use tracing::{debug, error, warn};
 
@@ -87,6 +91,7 @@ pub async fn init_pristine_node_1_db(
     secret_api: &str,
     tls: bool,
     tls_no_verify: bool,
+    backup_applied: bool,
 ) -> Result<(), Error> {
     if node_id == 1 {
         let this_node = get_this_node(node_id, nodes)?;
@@ -96,8 +101,14 @@ pub async fn init_pristine_node_1_db(
             return Ok(());
         }
 
-        if should_node_1_skip_init(&RaftType::Sqlite, nodes, secret_api, tls, tls_no_verify).await?
-        {
+        // A restore starts node 1 alone on purpose, and a list of one node has nobody to ask.
+        let found_cluster = if backup_applied || nodes.len() < 2 {
+            should_node_1_skip_init(&RaftType::Sqlite, nodes, secret_api, tls, tls_no_verify)
+                .await?
+        } else {
+            wait_for_cluster_or_none(nodes, secret_api, tls, tls_no_verify).await
+        };
+        if found_cluster {
             info!("node 1 (DB) should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
@@ -155,6 +166,131 @@ fn get_this_node(this_node: u64, nodes: &[Node]) -> Result<Node, Error> {
                 format!("This node ({this_node}) is not part of the configured node list").into(),
             )
         })
+}
+
+/// How long one node is given to answer node 1 whether it has a cluster.
+#[cfg(feature = "sqlite")]
+const ANSWER_LIMIT: Duration = Duration::from_secs(3);
+
+/// How long node 1 waits before it says again what it waits for. A round takes at most
+/// `ANSWER_LIMIT` and the pause after it, so less than 10 seconds pass between two warnings.
+#[cfg(feature = "sqlite")]
+const WARN_AFTER: Duration = Duration::from_secs(6);
+
+/// What a node answers to node 1.
+#[cfg(feature = "sqlite")]
+enum Answer {
+    /// The members of its cluster.
+    Cluster,
+    /// It has no Raft state at all.
+    NoCluster,
+    /// Neither, and why.
+    Unknown(String),
+}
+
+/// For a node 1 without data and with other nodes in its list: asks all of them until one
+/// answers with a cluster (`true`), or every one of them, in the same round, answers that it
+/// has none (`false`). A node that gives neither answer may hold the cluster, so node 1 waits
+/// for it, however long that takes.
+#[cfg(feature = "sqlite")]
+async fn wait_for_cluster_or_none(
+    nodes: &[Node],
+    secret_api: &str,
+    tls: bool,
+    tls_no_verify: bool,
+) -> bool {
+    let client = build_http_client(tls_no_verify);
+    let scheme = if tls { "https" } else { "http" };
+    let raft_type = RaftType::Sqlite;
+    let others: Vec<&Node> = nodes.iter().filter(|node| node.id != 1).collect();
+    let mut warned: Option<time::Instant> = None;
+
+    loop {
+        // All at once: a node that does not answer holds up neither the others nor the warning.
+        let mut asked = JoinSet::new();
+        for node in &others {
+            let url = format!(
+                "{scheme}://{}/cluster/membership/{}",
+                node.addr_api,
+                raft_type.as_str()
+            );
+            let request = client.get(url).header(HEADER_NAME_SECRET, secret_api);
+            let (id, name) = (node.id, format!("node {} ({})", node.id, node.addr_api));
+            asked.spawn(async move {
+                let answer = match time::timeout(ANSWER_LIMIT, ask_membership(request)).await {
+                    Ok(answer) => answer,
+                    Err(_) => {
+                        Answer::Unknown(format!("no answer within {} s", ANSWER_LIMIT.as_secs()))
+                    }
+                };
+                (id, name, answer)
+            });
+        }
+
+        let mut without_cluster = 0;
+        let mut waiting_for = BTreeMap::new();
+        while let Some(joined) = asked.join_next().await {
+            match joined {
+                Ok((_, _, Answer::Cluster)) => return true,
+                Ok((_, _, Answer::NoCluster)) => without_cluster += 1,
+                Ok((id, name, Answer::Unknown(reason))) => {
+                    waiting_for.insert(id, format!("{name}: {reason}"));
+                }
+                Err(err) => error!("Error asking a node for its cluster members: {err}"),
+            }
+        }
+        if without_cluster == others.len() {
+            return false;
+        }
+
+        if warned.is_none_or(|at| at.elapsed() >= WARN_AFTER) {
+            warn!(
+                "Waiting for the other nodes before creating a new cluster: every one of them \
+                 has to answer that it has none. Still waiting for {}",
+                waiting_for.into_values().collect::<Vec<_>>().join("; ")
+            );
+            warned = Some(time::Instant::now());
+        }
+        time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// One node's answer. Nothing that goes wrong here ends node 1's start.
+#[cfg(feature = "sqlite")]
+async fn ask_membership(request: reqwest::RequestBuilder) -> Answer {
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(err) => return Answer::Unknown(root_cause(&err)),
+    };
+    let status = response.status();
+    let body = match response.bytes().await {
+        Ok(body) => body,
+        Err(err) => return Answer::Unknown(root_cause(&err)),
+    };
+
+    if status.is_success() {
+        match deserialize_serde::<Membership<NodeId, Node>>(body.as_ref()) {
+            Ok(membership) if membership.nodes().count() > 0 => Answer::Cluster,
+            Ok(_) => Answer::Unknown("a cluster without members".to_string()),
+            Err(err) => Answer::Unknown(format!("its answer cannot be read: {err}")),
+        }
+    } else {
+        match serde_json::from_slice::<Error>(&body) {
+            Ok(Error::Config(message)) if message == NOT_INITIALIZED => Answer::NoCluster,
+            Ok(err) => Answer::Unknown(err.to_string()),
+            Err(_) => Answer::Unknown(format!("status {status} with a body that cannot be read")),
+        }
+    }
+}
+
+/// What an HTTP error comes down to, as "Connection refused", not that a request failed.
+#[cfg(feature = "sqlite")]
+fn root_cause(err: &reqwest::Error) -> String {
+    let mut cause: &dyn std::error::Error = err;
+    while let Some(source) = cause.source() {
+        cause = source;
+    }
+    cause.to_string()
 }
 
 #[tracing::instrument(skip(nodes, secret_api, tls, tls_no_verify))]

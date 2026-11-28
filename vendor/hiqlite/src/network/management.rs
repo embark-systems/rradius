@@ -186,6 +186,10 @@ async fn are_we_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Result<()
     }
 }
 
+/// What `get_membership` answers for a node without any Raft state. A node 1 without data
+/// creates a new cluster only once every other node has answered exactly this.
+pub(crate) const NOT_INITIALIZED: &str = "Raft node has not been initialized";
+
 pub(crate) async fn get_membership(
     state: AppStateExt,
     headers: HeaderMap,
@@ -193,10 +197,15 @@ pub(crate) async fn get_membership(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    if helpers::is_raft_stopped(&state, &raft_type)
-        || !helpers::is_raft_initialized(&state, &raft_type).await?
-    {
-        return Err(Error::Config("Raft node has not been initialized".into()));
+    // A node 1 without data creates a new cluster once every other node answers that it has
+    // none. Only a node without any Raft state may answer that: not one that holds data and is
+    // starting, shutting down or stopped after an error. A stopped Raft core cannot say which
+    // it is, and its error is the answer.
+    if !helpers::is_raft_initialized(&state, &raft_type).await? {
+        return Err(Error::Config(NOT_INITIALIZED.into()));
+    }
+    if helpers::is_raft_stopped(&state, &raft_type) {
+        return Err(Error::Config("Raft node is not running".into()));
     }
 
     let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;

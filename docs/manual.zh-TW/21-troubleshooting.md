@@ -313,7 +313,21 @@ LockFile data/logs is locked and in use by another process
 
 處置：等舊的行程結束（`pgrep -f rradiusd`），再啟動。套件附的 systemd unit 停止時最多等 `TimeoutStopSec=60` 秒。
 
+### 節點 1 在等其他節點
+
+沒有叢集資料（第一次啟動，或 `data_dir` 是空的）、清單列有其他節點的節點 1，在找到可加入的叢集、或其他每個節點都回覆自己沒有叢集之前，不開任何埠。期間它記：
+
+```text
+… WARN hiqlite::init: Waiting for the other nodes before creating a new cluster: every one of them has to answer that it has none. Still waiting for node 3 (127.0.0.1:27213): Token: Invalid API Secret
+```
+
+有 `migrations_dir` 時，它在 `migrations_wait_ms` 之後以結束碼 1 結束（`cluster was not ready to apply migrations: node 1 did not join within …`）；沒有時一直等。
+
+處置：警告最後列出它在等的每個節點與原因。啟動那個節點、讓它的 API 位址連得到，或給它相同的 `secret_api`。規則，以及節點永久壞掉時怎麼辦，見[節點 1 在等待時](16-cluster.md#節點-1-在等待時)。
+
 ### 沒有 leader 就不啟動
+
+這一節講的是已經加入過叢集的節點；上一節節點 1 第一次啟動的等待不受 `stop_without_leader_ms` 限制。
 
 設了 `cluster.stop_without_leader_ms`，而啟動時找不到 leader（例如三個節點只有它一個在跑），等待一段時間後結束，結束碼 1：
 
@@ -784,7 +798,7 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `LockFile data/logs is locked and in use by another process` | 舊的行程還沒停完 | 等它結束再啟動 |
 | `cluster was not ready: no usable leader within …, and stop_without_leader_ms is set`（結束碼 1） | 啟動時叢集沒有過半數 | 先讓其他節點起來 |
 | `cluster node N has been removed from the cluster: node M, its leader, does not list it …`（結束碼 1） | 這個節點已從叢集移除；訊息列出目前的成員與資料目錄 | 淘汰的主機停用服務；要加回就先用 `cluster members` 確認叢集，再清空 `data_dir` 啟動（[第 16 章](16-cluster.md#被移除的節點又啟動時)） |
-| `cluster was not ready to apply migrations: …`（結束碼 1） | 啟動時在 `migrations_wait_ms` 內等不到 leader、套用不完 migration，或本機副本追不上；訊息後半有時寫「the cluster node gives one migration file 30 s」：單一個檔案跑超過 30 秒 | 先讓過半數的節點起來；檔案本身很慢時加長 `migrations_wait_ms`，再啟動一次（[第 18 章](18-operations.md#常見錯誤)） |
+| `cluster was not ready to apply migrations: …`（結束碼 1） | 啟動時在 `migrations_wait_ms` 內等不到 leader、套用不完 migration，或本機副本追不上；`node N did not join within …` 表示節點還沒加入叢集，節點 1 則是建立叢集前仍在[等其他節點](#節點-1-在等其他節點)；訊息後半有時寫「the cluster node gives one migration file 30 s」：單一個檔案跑超過 30 秒 | 先讓過半數的節點起來，第一次啟動則要全部起來；檔案本身很慢時加長 `migrations_wait_ms`，再啟動一次（[第 18 章](18-operations.md#常見錯誤)） |
 
 ### 執行中
 

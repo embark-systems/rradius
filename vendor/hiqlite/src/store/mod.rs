@@ -42,6 +42,7 @@ pub(crate) async fn start_raft_db(
     node_config: &NodeConfig,
     raft_config: Arc<RaftConfig>,
     do_reset_metadata: bool,
+    backup_applied: bool,
 ) -> Result<StateRaftDB, Error> {
     // We always want to start stopped and set to `false` as soon as we found out,
     // that we are not pristine node and need cleanup.
@@ -104,6 +105,7 @@ pub(crate) async fn start_raft_db(
             .as_ref()
             .map(|c| c.danger_tls_no_verify())
             .unwrap_or(false),
+        backup_applied,
     )
     .await?;
 

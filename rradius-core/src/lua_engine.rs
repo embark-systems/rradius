@@ -3802,9 +3802,8 @@ pub(crate) mod tests {
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
             runtime.block_on(async move {
-                let mut started = Vec::new();
-                for id in 1..=count {
-                    let settings = ClusterSettings {
+                let settings: Vec<ClusterSettings> = (1..=count)
+                    .map(|id| ClusterSettings {
                         node_id: id,
                         data_dir: tempfile::tempdir().unwrap().keep(),
                         secret_raft: "test-raft-secret-0123".to_string(),
@@ -3816,9 +3815,14 @@ pub(crate) mod tests {
                         snapshot_every: crate::config::DEFAULT_SNAPSHOT_EVERY,
                         read_connections: 4,
                         stop_without_leader: None,
-                    };
-                    started.push(Db::start(&settings).await.unwrap());
-                }
+                    })
+                    .collect();
+                // All at once: node 1 of a new cluster creates it only when the others answer.
+                let started: Result<Vec<Db>, _> = futures::future::join_all(settings.iter().map(Db::start)).await.into_iter().collect();
+                let started = match started {
+                    Ok(started) => started,
+                    Err(error) => panic!("a cluster node did not start: {error:?}"),
+                };
                 for db in &started {
                     db.wait_healthy(Duration::from_secs(60)).await.unwrap();
                 }

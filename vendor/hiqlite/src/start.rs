@@ -62,6 +62,8 @@ where
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     let backup_applied = backup::restore_backup_start(&node_config).await?;
+    #[cfg(all(feature = "sqlite", not(feature = "backup")))]
+    let backup_applied = false;
 
     let raft_config = Arc::new(
         node_config
@@ -73,8 +75,13 @@ where
 
     let _do_reset_metadata = init::check_execute_reset(&node_config.data_dir).await?;
     #[cfg(feature = "sqlite")]
-    let raft_db =
-        store::start_raft_db(&node_config, raft_config.clone(), _do_reset_metadata).await?;
+    let raft_db = store::start_raft_db(
+        &node_config,
+        raft_config.clone(),
+        _do_reset_metadata,
+        backup_applied,
+    )
+    .await?;
 
     #[cfg(feature = "cache")]
     let raft_cache = store::start_raft_cache::<C>(&node_config, raft_config.clone()).await?;

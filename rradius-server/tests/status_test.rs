@@ -218,6 +218,7 @@ fn test_cluster_wrong_arguments() -> Result<(), String> {
 }
 
 /// `--cluster` on the only node of a cluster: one member, the leader, with its own status.
+// spectra-scenario: cluster-membership / Single node
 #[test]
 fn test_cluster_one_node() -> Result<(), String> {
     let (server, metrics) = server("")?;

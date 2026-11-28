@@ -310,6 +310,7 @@ struct MigratingCluster {
     dir: tempfile::TempDir,
     configs: Vec<PathBuf>,
     auth: Vec<u16>,
+    acct: Vec<u16>,
     metrics: Vec<u16>,
     api: Vec<u16>,
     env: Vec<(&'static str, PathBuf)>,
@@ -323,6 +324,16 @@ impl MigratingCluster {
     /// Like `start`, with environment variables for every node; `env` gets the
     /// cluster's directory.
     fn start_with_env(files: &[(&str, &str)], script: &str, env: impl FnOnce(&Path) -> Vec<(&'static str, PathBuf)>) -> Self {
+        let mut cluster = Self::prepare(files, script);
+        cluster.env = env(cluster.dir.path());
+        for i in 0..3 {
+            cluster.spawn(i);
+        }
+        cluster
+    }
+
+    /// A new cluster's directory and configurations, with no node started.
+    fn prepare(files: &[(&str, &str)], script: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         std::fs::create_dir(dir.path().join("migrations")).unwrap();
@@ -331,6 +342,7 @@ impl MigratingCluster {
         let api: Vec<u16> = (0..3).map(|_| free_port()).collect();
         let auth: Vec<u16> = (0..3).map(|_| free_port()).collect();
         let metrics: Vec<u16> = (0..3).map(|_| free_port()).collect();
+        let acct: Vec<u16> = (0..3).map(|_| free_port()).collect();
         let node_list: String = (0..3)
             .map(|i| format!("[[cluster.nodes]]\nid = {}\nraft = \"127.0.0.1:{}\"\napi = \"127.0.0.1:{}\"\n", i + 1, raft[i], api[i]))
             .collect();
@@ -347,7 +359,7 @@ impl MigratingCluster {
                      [metrics]\nbind = \"127.0.0.1\"\nport = {metrics}\n",
                     dictionary = root.join("../share/dictionary").display(),
                     id = i + 1,
-                    acct = free_port(),
+                    acct = acct[i],
                     metrics = metrics[i],
                 );
                 let path = dir.path().join(format!("node{}.toml", i + 1));
@@ -355,12 +367,8 @@ impl MigratingCluster {
                 path
             })
             .collect();
-        let env = env(dir.path());
-        let mut cluster = Self { dir, nodes: Nodes(vec![None, None, None], Vec::new()), configs, auth, metrics, api, env };
+        let cluster = Self { dir, nodes: Nodes(vec![None, None, None], Vec::new()), configs, auth, acct, metrics, api, env: Vec::new() };
         cluster.write_migrations(files);
-        for i in 0..3 {
-            cluster.spawn(i);
-        }
         cluster
     }
 
@@ -1159,8 +1167,10 @@ fn test_removed_node_that_reaches_no_member_serves() -> Result<(), String> {
     Ok(())
 }
 
-/// Scenario: Another cluster created by a node with empty data. Node 1, alone, makes a cluster
-/// that lists no other node; node 2, which has its data, must not take that for its removal.
+/// Scenario: Another cluster created by a node with empty data. Node 1, listing only itself,
+/// makes a cluster that has no other node; node 2, which has its data, must not take that for
+/// its removal.
+// spectra-scenario: cluster-membership / Another cluster created by a node with empty data
 #[test]
 fn test_another_cluster_does_not_remove_a_node() -> Result<(), String> {
     let mut cluster = MigratingCluster::start(&[("1_users.sql", USERS_WITH_ALICE)], "return 'accept'");
@@ -1171,6 +1181,13 @@ fn test_another_cluster_does_not_remove_a_node() -> Result<(), String> {
         cluster.terminate(i);
     }
     std::fs::remove_dir_all(cluster.dir.path().join("data1")).map_err(|e| e.to_string())?;
+    // Listing the others, node 1 would wait for them and join their cluster.
+    cluster.edit_config(0, |text| {
+        let (Some(others), Some(radius)) = (text.find("[[cluster.nodes]]\nid = 2\n"), text.find("[radius]")) else {
+            return text;
+        };
+        format!("{}{}", &text[..others], &text[radius..])
+    });
     cluster.spawn(0);
     assert_eq!(cluster.first_answer(0), radius::ACCESS_ACCEPT, "node 1 with a cluster of its own");
     let led = eventually(Duration::from_secs(30), || metric(cluster.metrics[0], "rradius_cluster_is_leader") == Some(1.0));
@@ -1392,5 +1409,184 @@ fn test_members_passes_over_a_removed_node_still_running() -> Result<(), String>
     assert_eq!(status.and_then(|status| status.code()), Some(1));
     let log = std::fs::read_to_string(&nodes.1[(removed - 1) as usize]).map_err(|e| e.to_string())?;
     assert!(log.contains(&removal_error(removed as usize - 1)), "{log}");
+    Ok(())
+}
+
+/// What node 1 logs while it waits for the other nodes before creating a cluster.
+const WAITING: &str = "Waiting for the other nodes before creating a new cluster";
+
+/// How that warning names node `index + 1`.
+fn named(cluster: &MigratingCluster, index: usize) -> String {
+    format!("node {} (127.0.0.1:{})", index + 1, cluster.api[index])
+}
+
+/// Fails if one of `nodes` answers a login or an accounting request within `time`, or is no
+/// longer running after it.
+fn silent(cluster: &mut MigratingCluster, nodes: &[usize], time: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + time;
+    let mut identifier = 0u8;
+    while Instant::now() < deadline {
+        for &node in nodes {
+            identifier = identifier.wrapping_add(1);
+            let login = access_request(identifier, "alice");
+            let accounting = RadiusPacket::create_accounting_request(identifier, vec![(40, vec![0, 0, 0, 1]), (44, b"while-waiting".to_vec())], SECRET);
+            for (port, request) in [(cluster.auth[node], &login), (cluster.acct[node], &accounting)] {
+                if let Some(reply) = send(port, request, Duration::from_millis(500)) {
+                    return Err(format!("node {} answered with code {}: {}", node + 1, reply.code, cluster.last_log(node)));
+                }
+            }
+        }
+    }
+    for &node in nodes {
+        if let Some(status) = cluster.exit_code(node, Duration::from_millis(200)) {
+            return Err(format!("node {} exited with {status}: {}", node + 1, cluster.last_log(node)));
+        }
+    }
+    Ok(())
+}
+
+/// Waits until `cluster members` lists all three nodes as voters.
+fn three_voters(cluster: &MigratingCluster) -> Result<(), String> {
+    let config = cluster.configs[0].to_string_lossy().into_owned();
+    let mut members = (None, String::new(), String::new());
+    let all = eventually(Duration::from_secs(60), || {
+        members = cluster_command(&["members", "--config", &config]).unwrap_or_default();
+        voters_and_leader(&members.1).0 == [1, 2, 3]
+    });
+    if all { Ok(()) } else { Err(format!("not three voters: {members:?}")) }
+}
+
+/// Records the accounting session `session` through node 2, as `tests/fixtures/cluster.lua` does.
+fn record_on_node_2(cluster: &MigratingCluster, session: &str) -> Result<(), String> {
+    let request = RadiusPacket::create_accounting_request(2, vec![(40, vec![0, 0, 0, 1]), (44, session.as_bytes().to_vec())], SECRET);
+    let acknowledged = eventually(Duration::from_secs(30), || send(cluster.acct[1], &request, Duration::from_secs(2)).map(|r| r.code) == Some(radius::ACCOUNTING_RESPONSE));
+    if acknowledged { Ok(()) } else { Err(format!("no Accounting-Response for {session}: {}", cluster.last_log(1))) }
+}
+
+/// Waits until node `index + 1` accepts `user`, which says it has that user's session.
+fn has_session(cluster: &MigratingCluster, index: usize, user: &str) -> Result<(), String> {
+    let seen = eventually(Duration::from_secs(10), || send(cluster.auth[index], &access_request(3, user), Duration::from_secs(2)).map(|r| r.code) == Some(radius::ACCESS_ACCEPT));
+    if seen { Ok(()) } else { Err(format!("node {} does not accept {user}: {}", index + 1, cluster.last_log(index))) }
+}
+
+/// A new cluster, started in full, that records one session; then stopped, and node 1's data
+/// removed.
+fn stopped_with_node_1_emptied() -> Result<MigratingCluster, String> {
+    let mut cluster = MigratingCluster::start(&[("1_users.sql", USERS_WITH_ALICE)], include_str!("fixtures/cluster.lua"));
+    for i in 0..3 {
+        cluster.first_answer(i);
+    }
+    three_voters(&cluster)?;
+    record_on_node_2(&cluster, "from-node-2")?;
+    for i in 0..3 {
+        has_session(&cluster, i, "lookup")?;
+    }
+    for i in 0..3 {
+        cluster.terminate(i);
+    }
+    std::fs::remove_dir_all(cluster.dir.path().join("data1")).map_err(|e| e.to_string())?;
+    Ok(cluster)
+}
+
+/// Node 1, its data gone and started alone, waits for the others instead of creating a second
+/// cluster, and joins theirs.
+// spectra-scenario: cluster-membership / First start of every node
+// spectra-scenario: cluster-membership / Node 1 lost its data and starts alone
+#[test]
+fn test_node_1_without_data_waits_for_its_cluster() -> Result<(), String> {
+    let mut cluster = stopped_with_node_1_emptied()?;
+    cluster.spawn(0);
+    // Long enough for a node 1 that creates a cluster of its own to be serving it.
+    silent(&mut cluster, &[0], Duration::from_secs(15))?;
+    let warned = eventually(Duration::from_secs(30), || {
+        let log = cluster.last_log(0);
+        log.lines().any(|line| line.contains(WAITING) && line.contains(&named(&cluster, 1)) && line.contains(&named(&cluster, 2)))
+    });
+    assert!(warned, "{}", cluster.last_log(0));
+    cluster.spawn(1);
+    cluster.spawn(2);
+    for i in 0..3 {
+        cluster.first_answer(i);
+    }
+    has_session(&cluster, 0, "lookup")?;
+    // One cluster: what node 2 records now reaches node 1.
+    record_on_node_2(&cluster, "later-from-node-2")?;
+    has_session(&cluster, 0, "lookup-later")?;
+    three_voters(&cluster)
+}
+
+/// The same with all three started at once.
+// spectra-scenario: cluster-membership / Node 1 lost its data and every node starts together
+#[test]
+fn test_node_1_without_data_starting_with_the_others() -> Result<(), String> {
+    let mut cluster = stopped_with_node_1_emptied()?;
+    for i in 0..3 {
+        cluster.spawn(i);
+    }
+    for i in 0..3 {
+        cluster.first_answer(i);
+    }
+    three_voters(&cluster)?;
+    for i in 0..3 {
+        has_session(&cluster, i, "lookup")?;
+    }
+    record_on_node_2(&cluster, "later-from-node-2")?;
+    for i in 0..3 {
+        has_session(&cluster, i, "lookup-later")?;
+    }
+    Ok(())
+}
+
+/// A new cluster with node 3 missing: neither of the others serves until it is there.
+// spectra-scenario: cluster-membership / First start with a node missing
+#[test]
+fn test_new_cluster_waits_for_every_node() -> Result<(), String> {
+    let mut cluster = MigratingCluster::prepare(&[("1_users.sql", USERS_WITH_ALICE)], "return 'accept'");
+    cluster.spawn(0);
+    cluster.spawn(1);
+    silent(&mut cluster, &[0, 1], Duration::from_secs(15))?;
+    // It goes on saying what it waits for.
+    let repeated = eventually(Duration::from_secs(15), || cluster.last_log(0).lines().filter(|line| line.contains(WAITING)).count() >= 2);
+    assert!(repeated, "{}", cluster.last_log(0));
+    let log = cluster.last_log(0);
+    let last = log.lines().rfind(|line| line.contains(WAITING)).ok_or("no waiting warning")?;
+    assert!(last.contains(&named(&cluster, 2)) && !last.contains(&named(&cluster, 1)), "{last}");
+    cluster.spawn(2);
+    for i in 0..3 {
+        assert_eq!(cluster.first_answer(i), radius::ACCESS_ACCEPT, "node {}", i + 1);
+    }
+    three_voters(&cluster)
+}
+
+/// Stopped while it waits, node 1 ends cleanly and has created nothing.
+// spectra-scenario: cluster-membership / Stopped while waiting
+#[test]
+fn test_node_1_stopped_while_waiting() -> Result<(), String> {
+    let mut cluster = MigratingCluster::prepare(&[("1_users.sql", USERS_WITH_ALICE)], "return 'accept'");
+    cluster.spawn(0);
+    assert!(eventually(Duration::from_secs(30), || cluster.last_log(0).contains(WAITING)), "{}", cluster.last_log(0));
+    let id = cluster.nodes.0[0].as_ref().ok_or("node 1 is not running")?.id().to_string();
+    Command::new("kill").args(["-TERM", &id]).status().map_err(|e| e.to_string())?;
+    // A start that has not finished is given 25 s before the process exits.
+    assert_eq!(cluster.exit_code(0, Duration::from_secs(40)), Some(0), "{}", cluster.last_log(0));
+    // Started again it waits again: it has no cluster.
+    cluster.spawn(0);
+    assert!(eventually(Duration::from_secs(30), || cluster.last_log(0).contains(WAITING)), "{}", cluster.last_log(0));
+    Ok(())
+}
+
+/// A node that refuses node 1's api secret has not said that it has no cluster.
+// spectra-scenario: cluster-membership / Different api secret
+#[test]
+fn test_node_1_waits_for_a_node_with_another_api_secret() -> Result<(), String> {
+    let mut cluster = MigratingCluster::prepare(&[("1_users.sql", USERS_WITH_ALICE)], "return 'accept'");
+    cluster.edit_config(2, |text| text.replacen(API_SECRET, "another-api-secret-034", 1));
+    for i in 0..3 {
+        cluster.spawn(i);
+    }
+    silent(&mut cluster, &[0, 1], Duration::from_secs(15))?;
+    let log = cluster.last_log(0);
+    let last = log.lines().rfind(|line| line.contains(WAITING)).ok_or(format!("no waiting warning: {log}"))?;
+    assert!(last.contains(&named(&cluster, 2)) && !last.contains(&named(&cluster, 1)), "{last}");
     Ok(())
 }
