@@ -443,6 +443,7 @@ password_verify(stored, given) -> boolean
 - **Parameters:** `stored`, the stored password, in the same format as the password column of the sql handler (a `{crypt}` or `{clear}` prefix, or a hash without a prefix; see chapter 07); `given`, the password the user typed.
 - **Returns:** `true` if they match. If either is `nil`, the result is `false`; a format that is not recognized is also `false`, not an error.
 - **Note:** it does not count failures, so `[auth.lockout]` has no control over it. When a script compares passwords itself, it must limit the number of guesses itself.
+- **Waiting:** at most as many slow-hash checks (`{crypt}`, `{argon2}`, PBKDF2) run at once as there are CPUs, and the rest queue. Queueing and checking have no time limit and do not count toward `lua.max_execution_ms`; when logins arrive faster than they can be checked, the reply can arrive after the NAS has given up.
 
 ## CoA and Disconnect
 

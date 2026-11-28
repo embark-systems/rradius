@@ -7,9 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-/// Worker threads of the runtime: one per CPU the process may use.
+/// Worker threads of the runtime: one per CPU the process may use. Read once, first by `build`,
+/// and kept: a pinned worker asking Linux again would be told one CPU.
 pub fn worker_threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get())
+    static CPUS: OnceLock<usize> = OnceLock::new();
+    *CPUS.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 
 /// Threads started so far; the first `worker_threads()` are the workers. `build` waits for them

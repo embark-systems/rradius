@@ -443,6 +443,7 @@ password_verify(stored, given) -> 布林
 - **參數：** `stored`，存放的密碼，格式與 sql 處理器的密碼欄位相同（`{crypt}`、`{clear}` 等前綴與不帶前綴的雜湊，見第 7 章）；`given`，使用者輸入的密碼。
 - **回傳：** 相符是 `true`。任何一個是 `nil` 時是 `false`；格式不認得也是 `false`，不會出錯。
 - **注意：** 不會累計失敗次數，`[auth.lockout]` 管不到。腳本自己比對密碼時，要自己限制猜測次數。
+- **等待：** 慢雜湊（`{crypt}`、`{argon2}`、PBKDF2）同時比對的數量最多等於 CPU 數，其餘排隊；排隊與比對沒有時間上限，也不算進 `lua.max_execution_ms`，登入量超過比對能力時回應可能在 NAS 放棄之後才送到。
 
 ## CoA 與 Disconnect
 

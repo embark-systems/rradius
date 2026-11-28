@@ -202,11 +202,7 @@ pin.toml: runtime.pin_threads is only supported on Linux and FreeBSD
 
 Turn it on when this machine runs only rradius and you have measured that it is faster. On a machine that shares CPUs with other services, pinning threads can make them compete for the same CPU.
 
-> **Known issue (Linux):** with `pin_threads`, the slow password hashes (`{crypt}`, `{argon2}` and the PBKDF2 formats) are checked **one at a time**, however many CPUs the machine has. The limit on simultaneous checks is decided at the first check after a start. That happens on a worker thread already pinned to one CPU, and Linux answers with the number of CPUs that thread may use, so the limit stays 1, and a restart does not change that.
->
-> - **Affected:** PAP checks against passwords stored in these formats, in the `sql` handler, in the `ldap` handler in `attribute` mode and in `password_verify` of Lua. Such logins are limited to about what one CPU can check. In the `sql` and `ldap` handlers, a request that waits longer than the time limit of the handler (`timeout_ms`) gets no answer. `password_verify` of Lua has no such time limit: the request waits for its turn, the reply can arrive after the NAS has given up, and the server logs no timeout.
-> - **Not affected:** without `pin_threads` (the default); the other formats, such as clear text, `{nthash}` and the `{SHA}` family; CHAP and MS-CHAP; the `ldap` handler in `bind` mode, where the LDAP server compares the password. FreeBSD answers with the number of CPUs of the whole process.
-> - **What to do:** when passwords are stored as slow hashes, do not turn `pin_threads` on under Linux. To keep rradius on a fixed set of CPUs, for example apart from other services, restrict the whole process instead: `taskset -c 0-3 rradiusd serve --config rradius.toml`, or `CPUAffinity=0-3` under `[Service]` of the systemd unit. Leave `pin_threads` off: the number of worker threads and the limit on simultaneous slow-hash checks both equal the number of CPUs allowed, and no thread is pinned to a CPU of its own. A change needs a restart.
+Under Linux, to keep rradius on a fixed set of CPUs, for example apart from other services, restrict the whole process: `taskset -c 0-3 rradiusd serve --config rradius.toml`, or `CPUAffinity=0-3` under `[Service]` of the systemd unit. The number of worker threads and the limit on simultaneous checks of slow password hashes (`{crypt}`, `{argon2}` and the PBKDF2 formats) both equal the number of CPUs allowed. A change needs a restart.
 
 ### Check that the threads are pinned
 

@@ -395,7 +395,8 @@ pub async fn verify_pap_blocking(stored: &str, given: &[u8]) -> bool {
         return verify_pap(stored, given);
     }
     static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    let slots = SLOTS.get_or_init(|| Arc::new(Semaphore::new(std::thread::available_parallelism().map_or(1, |n| n.get()))));
+    // Not `available_parallelism` here: a pinned worker would be told one CPU.
+    let slots = SLOTS.get_or_init(|| Arc::new(Semaphore::new(crate::runtime::worker_threads())));
     let Ok(slot) = slots.clone().acquire_owned().await else { return false };
     let (stored, given) = (stored.to_string(), zeroize::Zeroizing::new(given.to_vec()));
     // The slot goes with the work: dropping this future does not stop a running hash.
@@ -768,6 +769,48 @@ mod tests {
         assert!(ticks.load(std::sync::atomic::Ordering::SeqCst) > 1, "the thread handling requests was blocked");
         let highest = HIGHEST_RUNNING.load(std::sync::atomic::Ordering::SeqCst);
         assert!((1..=limit).contains(&highest), "{highest} ran at once, the limit is {limit}");
+    }
+
+    /// With `pin_threads` the first comparison comes from a worker bound to one CPU, which Linux
+    /// then reports as all there is. The limit and the counters are per process, so the test runs
+    /// itself again, alone, and pins that process.
+    // spectra-scenario: auth-chain / Slow hashes with pinned worker threads
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[test]
+    fn test_pinned_workers_keep_the_slow_hash_limit() -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD: &str = "RRADIUS_TEST_PINNED_SLOW_HASHES";
+        const STORED: &str = "{PBKDF2-SHA256}20000$cGlubmVkLXdvcmtlcnM$YlCbFSN8K1tUipoPz7YtaH031g0c1H30O9KAQ6aYjvM";
+        let cpus = std::thread::available_parallelism()?.get();
+        if cpus < 2 {
+            eprintln!("not run: with one CPU the limit is 1, pinned or not");
+            return Ok(());
+        }
+        if std::env::var_os(CHILD).is_none() {
+            let (_, module) = module_path!().split_once("::").ok_or("no module path")?;
+            let name = format!("{module}::test_pinned_workers_keep_the_slow_hash_limit");
+            let output = std::process::Command::new(std::env::current_exe()?).args([&name, "--exact", "--nocapture"]).env(CHILD, "1").output()?;
+            let (out, err) = (String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(output.status.success() && out.contains("1 passed"), "{out}{err}");
+            return Ok(());
+        }
+        let runtime = crate::runtime::build()?;
+        let on_a_worker = runtime.block_on(async {
+            crate::runtime::pin_workers()?;
+            // Started by a worker, as while handling a request.
+            let on_a_worker = tokio::spawn(async move {
+                let tasks: Vec<_> = (0..cpus * 4).map(|_| tokio::spawn(verify_pap_blocking(STORED, b"password"))).collect();
+                for task in tasks {
+                    assert!(task.await?);
+                }
+                Ok::<_, tokio::task::JoinError>(crate::runtime::worker_threads())
+            })
+            .await??;
+            Ok::<_, Box<dyn std::error::Error>>(on_a_worker)
+        })?;
+        let highest = HIGHEST_RUNNING.load(Ordering::SeqCst);
+        assert!((2..=cpus).contains(&highest), "{highest} ran at once on {cpus} CPUs");
+        assert_eq!(on_a_worker, cpus, "worker_threads() on a pinned worker");
+        Ok(())
     }
 
     #[test]

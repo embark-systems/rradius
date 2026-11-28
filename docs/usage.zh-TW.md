@@ -618,7 +618,7 @@ TACACS+ over TLS（`[tacacs.tls]`）需要 rradius-enterprise。
 
   每個工作執行緒只在一顆 CPU 上跑，依程序可用的 CPU 輪流分配，啟動時記錄 `pinned <N> runtime worker threads to CPUs [...]`。之後才建立的執行緒（處理資料庫查詢、密碼雜湊的執行緒）恢復程序原本可用的全部 CPU，不會被綁在某個工作執行緒的 CPU 上。綁定失敗時記錄警告，照常不綁地執行。**預設關閉，** 因為和其他程序共用 CPU 時（共用主機、有 CPU 配額的容器）綁核可能更慢；只有這台機器專門跑 rradius、CPU 不受限時才建議開。其他平台設 `true` 會啟動失敗，改了要重新啟動。
 
-  **已知問題（Linux）：** 開了 `pin_threads`，`{crypt}`、`{argon2}` 與 PBKDF2 的 PAP 密碼比對一次只做一筆，不論有幾顆 CPU：同時比對的上限在第一次比對時才決定，那時是在已綁到一顆 CPU 的工作執行緒上。這類登入的速率上限大約只有一顆 CPU 的量。`sql` 處理器與 `attribute` 模式的 `ldap` 處理器：排隊超過處理器的時間上限時得不到回應；Lua 的 `password_verify` 沒有這個時間上限，回應可能在 NAS 放棄之後才送到。用慢雜湊存密碼的話，Linux 上不要開 `pin_threads`；想讓 rradius 只用固定幾顆 CPU，改用 `taskset -c 0-3` 啟動或在 systemd 服務設 `CPUAffinity=0-3` 限定整個行程，慢雜湊的上限就等於限定的 CPU 數。其他密碼格式、CHAP、MS-CHAP、`bind` 模式的 `ldap` 處理器與 FreeBSD 不受影響。
+  Linux 上想讓 rradius 只用固定幾顆 CPU（例如和其他服務分開）時，限定整個行程：用 `taskset -c 0-3` 啟動，或在 systemd 服務設 `CPUAffinity=0-3`。工作執行緒數，以及慢密碼雜湊（`{crypt}`、`{argon2}` 與 PBKDF2）同時比對的上限，都等於限定的 CPU 數。改了要重新啟動。
 
   下表是 2026-11-08 在同一台 Apple M4 Max 上 Docker 的 Linux（arm64）量的，伺服器限定 CPU 0–6、`rradius-bench` 限定 7–13（`taskset`），各 2 次。這是虛擬機裡的數字，綁核特別容易受虛擬機排程影響，實體機要另外量：
 
@@ -1852,7 +1852,7 @@ max_entries = 100000          # 每個節點最多記住幾個鍵，預設 10000
 | `db_execute(name, sql [, params])` | 在 `[databases.<name>]` 執行寫入，回傳受影響的列數 |
 | `now_unix()` | 目前的 Unix 時間（秒） |
 | `totp_verify(secret, code)` | 以 RFC 6238 驗證 TOTP 驗證碼（HMAC-SHA-1、6 位數、30 秒一步，前後各容許一步）。符合時回傳時間步，否則回傳 `nil`；`secret` 不是 Base32 時腳本出錯 |
-| `password_verify(stored, given)` | 用驗證鏈比對 PAP 密碼的方式，檢查 `given` 是不是儲存值 `stored` 對應的密碼，回傳 `true` 或 `false`。支援所有儲存格式（明文、`{clear}`、`{crypt}`、`{argon2}`、`{SHA}`、`{nthash}` 等，見第 5 節），慢的雜湊在請求執行緒之外計算，並套用 `[auth.password_limits]` 的成本上限、沒有前綴的雜湊不當密碼、沒有前綴的摘要警告，也計入 `rradius_password_checks_total`。`stored` 要是文字；`stored` 或 `given` 是 `nil`、`stored` 去掉前綴後是空的、或被上述規則拒絕時回傳 `false`，不會讓腳本出錯。警告指名請求的 `User-Name`，不含儲存值與密碼。**不計失敗、不鎖定：** 直接由腳本驗證的登入不受 `[auth.lockout]` 保護，要限制猜測就改用 `[auth]` 驗證鏈 |
+| `password_verify(stored, given)` | 用驗證鏈比對 PAP 密碼的方式，檢查 `given` 是不是儲存值 `stored` 對應的密碼，回傳 `true` 或 `false`。支援所有儲存格式（明文、`{clear}`、`{crypt}`、`{argon2}`、`{SHA}`、`{nthash}` 等，見第 5 節），慢的雜湊在請求執行緒之外計算，並套用 `[auth.password_limits]` 的成本上限、沒有前綴的雜湊不當密碼、沒有前綴的摘要警告，也計入 `rradius_password_checks_total`。慢雜湊的排隊與比對沒有時間上限，也不算進 `max_execution_ms`。`stored` 要是文字；`stored` 或 `given` 是 `nil`、`stored` 去掉前綴後是空的、或被上述規則拒絕時回傳 `false`，不會讓腳本出錯。警告指名請求的 `User-Name`，不含儲存值與密碼。**不計失敗、不鎖定：** 直接由腳本驗證的登入不受 `[auth.lockout]` 保護，要限制猜測就改用 `[auth]` 驗證鏈 |
 | `random_token()` | 回傳 32 個十六進位字元的隨機值，可用來產生 `State` |
 | `wpa_pmk(passphrase, ssid)` | 回傳 WPA2 的 PMK（PBKDF2-HMAC-SHA1、4096 輪、32 octets）的 64 個小寫十六進位字元。`passphrase` 要是 8–63 個可列印 ASCII 字元（或 64 個十六進位字元的 PSK，原樣回傳），`ssid` 要是 1–32 octets，否則腳本出錯，訊息不含密碼。每次呼叫都要跑 4096 輪，約數毫秒，見 2.15 節 |
 | `send_disconnect`、`send_coa` | 要求 NAS 中斷連線或變更權限（RFC 5176），需要 rradius-enterprise；rradiusd 呼叫時腳本出錯 |
@@ -2146,7 +2146,7 @@ CHAP 只能搭配明文或 `{clear}`；PAP 支援全部格式。比對使用固�
 
 `{crypt}` 依雜湊內容判斷演算法，包含 DES、`$1$`（MD5）、`$5$`（SHA-256）、`$6$`（SHA-512）與 bcrypt（`$2a$`、`$2b$`、`$2y$`）。新部署建議使用 `{argon2}` 或 `{crypt}` 的 bcrypt、`$6$`。帳號在叢集的資料表時，`rradiusd user add` 和 `user passwd` 會依 `[accounts]` 的 `scheme` 產生 bcrypt、`$6$`、`{nthash}` 或 `{clear}`（2.14 節）；其他情況請用現成工具，例如 `argon2` 指令或 `htpasswd -B`。
 
-`{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待（例外：Linux 上開了 `[runtime] pin_threads` 時一次只執行一筆，見 2.4 節的已知問題）。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時時不回應，而不是拒絕。`{argon2}` 的成本由雜湊本身的參數決定，所以有上限，見下面〈儲存雜湊的成本上限〉。
+`{crypt}` 和 `{argon2}` 的驗證刻意很慢，所以會在處理請求的執行緒之外執行，同時執行數不超過 CPU 核心數，其餘排隊等待。`sql` 處理器的 `timeout_ms` 涵蓋排隊與驗證，逾時時不回應，而不是拒絕。`{argon2}` 的成本由雜湊本身的參數決定，所以有上限，見下面〈儲存雜湊的成本上限〉。
 
 ### 哪些格式偏弱，怎麼逐步淘汰
 

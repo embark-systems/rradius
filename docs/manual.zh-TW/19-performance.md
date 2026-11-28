@@ -202,11 +202,7 @@ pin.toml: runtime.pin_threads is only supported on Linux and FreeBSD
 
 適合開的情況：這台機器只跑 rradius，而且量過之後確實比較快。和其他服務共用 CPU 的機器，綁住執行緒反而可能讓它們搶同一顆 CPU。
 
-> **已知問題（Linux）：** 開了 `pin_threads`，慢密碼雜湊（`{crypt}`、`{argon2}` 與 PBKDF2 各種格式）的比對會變成**一次只做一筆**，不論機器有幾顆 CPU。同時比對的上限在啟動後第一次比對時才決定，那時是在已綁到一顆 CPU 的工作執行緒上，Linux 回答的是這個執行緒能用的 CPU 數，所以上限固定是 1，重新啟動也一樣。
->
-> - **受影響：** 用這些格式存密碼的 PAP 比對，包括 `sql` 處理器、`attribute` 模式的 `ldap` 處理器和 Lua 的 `password_verify`。這類登入的速率上限大約只有一顆 CPU 的量。`sql` 與 `ldap` 處理器：排隊超過處理器的時間上限（`timeout_ms`）時，請求得不到回應。Lua 的 `password_verify` 沒有這個時間上限：請求一直排隊到輪到為止，回應可能在 NAS 放棄之後才送到，伺服器也不會記逾時訊息。
-> - **不受影響：** 沒開 `pin_threads`（預設）；明文、`{nthash}`、`{SHA}` 系列等其他格式；CHAP 與 MS-CHAP；`bind` 模式的 `ldap` 處理器（密碼由 LDAP 伺服器比對）。FreeBSD 回答的是整個行程能用的 CPU 數。
-> - **做法：** 用慢雜湊存密碼的話，Linux 上不要開 `pin_threads`。想讓 rradius 只用固定幾顆 CPU（例如和其他服務分開），改成限定整個行程：`taskset -c 0-3 rradiusd serve --config rradius.toml`，或在 systemd 服務的 `[Service]` 加 `CPUAffinity=0-3`。`pin_threads` 保持關閉，工作執行緒數與慢雜湊同時比對的上限都等於限定的 CPU 數；執行緒不會各綁一顆。改了要重新啟動。
+Linux 上想讓 rradius 只用固定幾顆 CPU（例如和其他服務分開）時，限定整個行程：`taskset -c 0-3 rradiusd serve --config rradius.toml`，或在 systemd 服務的 `[Service]` 加 `CPUAffinity=0-3`。工作執行緒數，以及慢密碼雜湊（`{crypt}`、`{argon2}` 與 PBKDF2 各種格式）同時比對的上限，都等於限定的 CPU 數。改了要重新啟動。
 
 ### 確認有沒有綁上
 

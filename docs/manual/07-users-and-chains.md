@@ -219,7 +219,7 @@ Rules:
 
 - An unknown prefix, or a value that cannot be parsed, always fails the check and never makes the server fail.
 - `{clear}` with nothing after it, a NULL column and an empty string all mean "no password", and every login is rejected. An empty PAP password does not get through because of that either.
-- The deliberately slow formats, `{crypt}`, `{argon2}` and PBKDF2, are checked on threads other than the request-handling ones, with at most as many checks at the same time as there are CPUs. If queueing plus checking exceeds the `timeout_ms` of the sql handler (default 5000 ms), the request counts as "backend unavailable" and gets no answer (see [Rejection and "backend unavailable"](#rejection-and-backend-unavailable)). The exception: under Linux with `[runtime] pin_threads`, only one check runs at a time ([the known issue in chapter 19](19-performance.md#worker-threads-and-pin_threads)).
+- The deliberately slow formats, `{crypt}`, `{argon2}` and PBKDF2, are checked on threads other than the request-handling ones, with at most as many checks at the same time as there are CPUs. If queueing plus checking exceeds the `timeout_ms` of the sql handler (default 5000 ms), the request counts as "backend unavailable" and gets no answer (see [Rejection and "backend unavailable"](#rejection-and-backend-unavailable)).
 
 ### A hash without a prefix is not a password
 
@@ -909,8 +909,8 @@ These three metrics appear only when `[auth.lockout]` is set. **Verified.**
 **Fix:** Correct the path.
 
 **Symptom:** Some accounts occasionally get no answer, `Discarded: database` in `status` goes up, and those accounts store bcrypt or PBKDF2.
-**Cause:** The number of slow-hash checks at the same time equals the number of CPUs; at peak, queueing plus checking exceeds `timeout_ms` and counts as backend unavailable. Under Linux with `[runtime] pin_threads`, only one check runs at a time, so this also happens at a modest login rate ([the known issue in chapter 19](19-performance.md#worker-threads-and-pin_threads)).
-**Fix:** Under Linux, first turn `pin_threads` off and restart; check whether the cost of the stored values is too high (`[auth.password_limits]`); switch accounts that use only PAP to the faster `sha512-crypt`; or add CPUs or nodes.
+**Cause:** The number of slow-hash checks at the same time equals the number of CPUs; at peak, queueing plus checking exceeds `timeout_ms` and counts as backend unavailable.
+**Fix:** Check whether the cost of the stored values is too high (`[auth.password_limits]`); switch accounts that use only PAP to the faster `sha512-crypt`; or add CPUs or nodes.
 
 **Symptom:** A device is locked, the lock time is not over, and you want to unlock it now.
 **Cause:** The counts are only in the node's memory, and there is no unlock command.
