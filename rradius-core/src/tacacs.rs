@@ -3594,12 +3594,13 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_unknown_client_connection_closed() {
         let clients = ClientTable::new(vec![("10.0.0.5", None, b"k".to_vec(), None)]).unwrap();
-        let server = TacacsServer::new(([127, 0, 0, 1], 14949).into(), Arc::new(clients), test_engine().await, MAX_BODY_LEN);
+        let addr = SocketAddr::from(([127, 0, 0, 1], crate::test_support::server::free_port()));
+        let server = TacacsServer::new(addr, Arc::new(clients), test_engine().await, MAX_BODY_LEN);
         tokio::spawn(async move { server.run().await });
 
         let mut stream = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                match tokio::net::TcpStream::connect("127.0.0.1:14949").await {
+                match tokio::net::TcpStream::connect(addr).await {
                     Ok(stream) => return stream,
                     Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
                 }
@@ -3622,12 +3623,13 @@ pub(crate) mod tests {
             ("127.0.0.1", Some("loopback-host".to_string()), b"k-host".to_vec(), None),
         ])
         .unwrap();
-        let server = TacacsServer::new(([127, 0, 0, 1], 14950).into(), Arc::new(clients), test_engine().await, MAX_BODY_LEN);
+        let addr = SocketAddr::from(([127, 0, 0, 1], crate::test_support::server::free_port()));
+        let server = TacacsServer::new(addr, Arc::new(clients), test_engine().await, MAX_BODY_LEN);
         tokio::spawn(async move { server.run().await });
 
         let mut stream = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                match tokio::net::TcpStream::connect("127.0.0.1:14950").await {
+                match tokio::net::TcpStream::connect(addr).await {
                     Ok(stream) => return stream,
                     Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
                 }

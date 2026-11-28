@@ -12,8 +12,25 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../packages/deb/docker-build.sh");
 
-/// `git`, `tar`, `mktemp` and the rest come from here.
+/// `tar`, `mktemp` and the rest come from here, and `git` where it is installed here.
 const SYSTEM_PATH: &str = "/usr/bin:/bin";
+
+/// `PATH` of the script under test: `SYSTEM_PATH`, with `git` in front when it is installed
+/// somewhere else (FreeBSD has it in `/usr/local/bin`). Only `git` is linked into `tools`, so no
+/// other program of that directory, such as a real `gh` or `docker`, comes along.
+fn search_path(tools: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    if std::env::split_paths(SYSTEM_PATH).any(|dir| dir.join("git").is_file()) {
+        return Ok(SYSTEM_PATH.to_string());
+    }
+    let found = std::env::var_os("PATH")
+        .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file()))
+        .ok_or("git is not on the PATH")?;
+    std::fs::create_dir_all(tools)?;
+    match std::os::unix::fs::symlink(found, tools.join("git")) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => Err(error.into()),
+        _ => Ok(format!("{}:{SYSTEM_PATH}", tools.display())),
+    }
+}
 
 /// Writes down each call, answers `docker version` from `$ENGINE` (fails when it is empty), and
 /// for `docker run` leaves a package in the directory mounted on `/out`.
@@ -32,11 +49,16 @@ esac
 
 struct Repo {
     dir: tempfile::TempDir,
+    /// Outside the repository, so that `git add -A` does not take it in.
+    _tools: tempfile::TempDir,
+    search: String,
 }
 
 impl Repo {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let repo = Self { dir: tempfile::tempdir()? };
+        let tools = tempfile::tempdir()?;
+        let search = search_path(tools.path())?;
+        let repo = Self { dir: tempfile::tempdir()?, _tools: tools, search };
         repo.script("packages/deb/docker-build.sh", &std::fs::read_to_string(SCRIPT)?)?;
         repo.script("packages/common/check-release.sh", "#!/bin/sh\nexit 0\n")?;
         repo.git(&["init", "-q"])?;
@@ -66,7 +88,7 @@ impl Repo {
             .args(["-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"])
             .args(args)
             .current_dir(self.dir.path())
-            .env("PATH", SYSTEM_PATH)
+            .env("PATH", &self.search)
             .output()?;
         assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
         Ok(())
@@ -80,7 +102,7 @@ impl Repo {
             .arg(self.path("out"))
             .args(args)
             .env_clear()
-            .env("PATH", format!("{}:{SYSTEM_PATH}", self.path("bin").display()))
+            .env("PATH", format!("{}:{}", self.path("bin").display(), self.search))
             .env("LOG", self.path("docker.log"))
             .env("ENGINE", engine)
             .envs(env.iter().copied())
