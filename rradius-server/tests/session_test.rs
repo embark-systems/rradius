@@ -4,7 +4,6 @@
 
 use rradius_core::radius::{self, RadiusPacket};
 use rradius_core::test_support::server::*;
-use std::net::UdpSocket;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -51,7 +50,7 @@ fn server() -> Result<Server, String> {
 
 /// Sends an Accounting-Request (Start 1 or Stop 2) and waits for its response.
 fn account(server: &Server, status: u32, user: &str, session: &str, nas: [u8; 4], time: u32) -> Result<(), String> {
-    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let socket = udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
     socket.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
     let attributes = vec![(40, status.to_be_bytes().to_vec()), (1, user.as_bytes().to_vec()), (44, session.as_bytes().to_vec()), (4, nas.to_vec()), (46, time.to_be_bytes().to_vec())];
     let packet = RadiusPacket::create_accounting_request(1, attributes, b"s");

@@ -1,4 +1,4 @@
-use rradius_core::test_support::server::free_port;
+use rradius_core::test_support::server::{free_port, tokio_udp_socket};
 use rradius_core::{
     radius::{self, RadiusServer, RadiusPacket},
     tacacs::{self, TacacsServer, TacacsPacket},
@@ -11,7 +11,6 @@ use hmac::{Hmac, KeyInit, Mac};
 use md5::{Digest, Md5};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::UdpSocket;
 use tokio::net::TcpStream;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{sleep, timeout};
@@ -30,7 +29,7 @@ fn test_config() -> (tempfile::TempDir, ServerConfig) {
         "dictionary = \"{dictionary}\"\n[lua]\nscript = \"{script}\"\n\
          [cluster]\ndata_dir = \"data\"\nsecret_raft = \"test-raft-secret-0123\"\nsecret_api = \"test-api-secret-01234\"\nlisten = \"127.0.0.1\"\n\
          [[cluster.nodes]]\nid = 1\nraft = \"127.0.0.1:{raft}\"\napi = \"127.0.0.1:{api}\"\n\
-         [radius]\nbind = \"127.0.0.1\"\nauth_port = 18120\nacct_port = 18130\n\
+         [radius]\nbind = \"127.0.0.1\"\nauth_port = {auth}\nacct_port = {acct}\n\
          [[radius.clients]]\nname = \"local\"\naddress = \"127.0.0.1\"\nsecret = \"{SECRET}\"\n\
          [tacacs]\nbind = \"127.0.0.1\"\nport = 4900\n\
          [[tacacs.clients]]\nname = \"local\"\naddress = \"127.0.0.1\"\nsecret = \"{SECRET}\"\n",
@@ -38,6 +37,8 @@ fn test_config() -> (tempfile::TempDir, ServerConfig) {
         script = root.join("tests/fixtures/auth.lua").display(),
         raft = free_port(),
         api = free_port(),
+        auth = free_port(),
+        acct = free_port(),
     );
     let path = dir.path().join("rradius.toml");
     std::fs::write(&path, body).unwrap();
@@ -63,7 +64,7 @@ async fn load_engine(config: &ServerConfig) -> Arc<LuaAuthEngine> {
 /// Sends `packet` to `addr`, resending every 100 ms until a reply arrives or `deadline` passes.
 /// Resending covers the window before the spawned server has bound its socket.
 async fn udp_exchange(packet: &[u8], addr: &str, deadline: Duration) -> Option<Vec<u8>> {
-    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let socket = tokio_udp_socket([127, 0, 0, 1].into()).unwrap();
     let mut buf = [0u8; 4096];
     timeout(deadline, async {
         loop {
@@ -91,6 +92,7 @@ async fn test_full_radius_flow() {
     let (_dir, config) = test_config();
     let (engine, dictionary) = (load_engine(&config).await, load_dictionary(&config));
     let radius = config.radius.unwrap();
+    let (auth, acct_addr) = (radius.auth_addr.to_string(), radius.acct_addr.to_string());
     let server = Arc::new(RadiusServer::new(radius.auth_addr, radius.acct_addr, radius.clients, engine, dictionary));
     tokio::spawn(async move {
         let _ = server.run().await;
@@ -99,7 +101,7 @@ async fn test_full_radius_flow() {
     // nemo's Access-Request with Message-Authenticator gets an Access-Accept carrying Filter-Id.
     let request_authenticator = [0x5au8; 16];
     let request = RadiusPacket::create_access_request(10, request_authenticator, vec![(1, b"nemo".to_vec())], SECRET.as_bytes());
-    let reply = udp_exchange(&request, "127.0.0.1:18120", WAIT).await.expect("no Access-Accept within timeout");
+    let reply = udp_exchange(&request, &auth, WAIT).await.expect("no Access-Accept within timeout");
     let res = RadiusPacket::parse(&reply).unwrap();
     assert_eq!(res.code, radius::ACCESS_ACCEPT);
     assert_eq!(res.identifier, 10);
@@ -109,7 +111,7 @@ async fn test_full_radius_flow() {
 
     // Any other user gets an Access-Reject.
     let other = RadiusPacket::create_access_request(13, request_authenticator, vec![(1, b"mallory".to_vec())], SECRET.as_bytes());
-    let reply = udp_exchange(&other, "127.0.0.1:18120", WAIT).await.expect("no Access-Reject within timeout");
+    let reply = udp_exchange(&other, &auth, WAIT).await.expect("no Access-Reject within timeout");
     let res = RadiusPacket::parse(&reply).unwrap();
     assert_eq!(res.code, radius::ACCESS_REJECT);
     assert_eq!(res.identifier, 13);
@@ -118,30 +120,30 @@ async fn test_full_radius_flow() {
 
     // Wrong shared secret: silently discarded.
     let bad = RadiusPacket::create_access_request(11, request_authenticator, vec![(1, b"nemo".to_vec())], b"wrong");
-    assert!(udp_exchange(&bad, "127.0.0.1:18120", Duration::from_millis(500)).await.is_none());
+    assert!(udp_exchange(&bad, &auth, Duration::from_millis(500)).await.is_none());
 
     // The first attribute of a response is its Message-Authenticator.
-    let reply = udp_exchange(&request, "127.0.0.1:18120", WAIT).await.expect("no Access-Accept within timeout");
+    let reply = udp_exchange(&request, &auth, WAIT).await.expect("no Access-Accept within timeout");
     assert_eq!(RadiusPacket::parse(&reply).unwrap().attributes[0].0, radius::MESSAGE_AUTHENTICATOR);
 
     // By default a request with no Message-Authenticator is discarded.
     let bare = RadiusPacket { code: radius::ACCESS_REQUEST, identifier: 14, authenticator: request_authenticator, attributes: vec![(1, b"nemo".to_vec())] }.encode();
-    assert!(udp_exchange(&bare, "127.0.0.1:18120", Duration::from_millis(500)).await.is_none());
+    assert!(udp_exchange(&bare, &auth, Duration::from_millis(500)).await.is_none());
 
     // Status-Server is answered on both ports, whatever the script would decide.
     let mut status = RadiusPacket { code: radius::STATUS_SERVER, identifier: 15, authenticator: [0x33u8; 16], attributes: vec![(radius::MESSAGE_AUTHENTICATOR, vec![0; 16])] }.encode();
     let mut mac = Hmac::<Md5>::new_from_slice(SECRET.as_bytes()).unwrap();
     mac.update(&status);
     status[22..38].copy_from_slice(&mac.finalize().into_bytes());
-    let reply = udp_exchange(&status, "127.0.0.1:18120", WAIT).await.expect("no answer to Status-Server on the authentication port");
+    let reply = udp_exchange(&status, &auth, WAIT).await.expect("no answer to Status-Server on the authentication port");
     assert_eq!(RadiusPacket::parse(&reply).unwrap().code, radius::ACCESS_ACCEPT);
-    let reply = udp_exchange(&status, "127.0.0.1:18130", WAIT).await.expect("no answer to Status-Server on the accounting port");
+    let reply = udp_exchange(&status, &acct_addr, WAIT).await.expect("no answer to Status-Server on the accounting port");
     assert_eq!(RadiusPacket::parse(&reply).unwrap().code, radius::ACCOUNTING_RESPONSE);
 
     // Accounting-Request Start gets an Accounting-Response.
     let acct = RadiusPacket::create_accounting_request(12, vec![(40, vec![0, 0, 0, 1]), (44, b"session-1".to_vec())], SECRET.as_bytes());
     let acct_authenticator: [u8; 16] = acct[4..20].try_into().unwrap();
-    let reply = udp_exchange(&acct, "127.0.0.1:18130", WAIT).await.expect("no Accounting-Response within timeout");
+    let reply = udp_exchange(&acct, &acct_addr, WAIT).await.expect("no Accounting-Response within timeout");
     let res = RadiusPacket::parse(&reply).unwrap();
     assert_eq!(res.code, radius::ACCOUNTING_RESPONSE);
     assert_eq!(res.identifier, 12);
@@ -223,12 +225,14 @@ async fn test_auth_chain_sql_and_site_rule() {
          [auth]\npolicy = \"all_accept\"\n\
          [[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE username = ?\"\n\
          [[auth.handlers]]\ntype = \"lua\"\nscript = \"site.lua\"\n\
-         [radius]\nbind = \"127.0.0.1\"\nauth_port = 18320\nacct_port = 18330\n\
+         [radius]\nbind = \"127.0.0.1\"\nauth_port = {auth}\nacct_port = {acct}\n\
          [[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"{SECRET}\"\n",
         dictionary = root.join("../share/dictionary").display(),
         script = root.join("tests/fixtures/auth.lua").display(),
         raft = free_port(),
         api = free_port(),
+        auth = free_port(),
+        acct = free_port(),
     );
     let path = dir.path().join("rradius.toml");
     std::fs::write(&path, body).unwrap();
@@ -246,6 +250,7 @@ async fn test_auth_chain_sql_and_site_rule() {
     let server = Arc::new(
         RadiusServer::new(radius.auth_addr, radius.acct_addr, radius.clients.clone(), engine, load_dictionary(&config)).with_auth_chains(chains),
     );
+    let auth = radius.auth_addr.to_string();
     tokio::spawn(async move {
         let _ = server.run().await;
     });
@@ -267,9 +272,9 @@ async fn test_auth_chain_sql_and_site_rule() {
             SECRET.as_bytes(),
         )
     };
-    let allowed = udp_exchange(&access(20, "02-00-00-00-00-01"), "127.0.0.1:18320", WAIT).await.expect("no reply");
+    let allowed = udp_exchange(&access(20, "02-00-00-00-00-01"), &auth, WAIT).await.expect("no reply");
     assert_eq!(RadiusPacket::parse(&allowed).unwrap().code, radius::ACCESS_ACCEPT);
-    let blocked = udp_exchange(&access(21, "02-00-00-00-00-99"), "127.0.0.1:18320", WAIT).await.expect("no reply");
+    let blocked = udp_exchange(&access(21, "02-00-00-00-00-99"), &auth, WAIT).await.expect("no reply");
     assert_eq!(RadiusPacket::parse(&blocked).unwrap().code, radius::ACCESS_REJECT);
 }
 
@@ -284,12 +289,14 @@ async fn test_wrong_length_user_password_is_rejected_without_counting_a_failure(
          [auth]\npolicy = \"all_accept\"\n\
          [[auth.handlers]]\ntype = \"sql\"\nuser_query = \"SELECT password FROM users WHERE username = ?\"\n\
          [auth.lockout]\nmax_failures = 2\nlock_seconds = 60\n\
-         [radius]\nbind = \"127.0.0.1\"\nauth_port = 18340\nacct_port = 18350\n\
+         [radius]\nbind = \"127.0.0.1\"\nauth_port = {auth}\nacct_port = {acct}\n\
          [[radius.clients]]\naddress = \"127.0.0.1\"\nsecret = \"{SECRET}\"\n",
         dictionary = root.join("../share/dictionary").display(),
         script = root.join("tests/fixtures/auth.lua").display(),
         raft = free_port(),
         api = free_port(),
+        auth = free_port(),
+        acct = free_port(),
     );
     let path = dir.path().join("rradius.toml");
     std::fs::write(&path, body)?;
@@ -305,6 +312,7 @@ async fn test_wrong_length_user_password_is_rejected_without_counting_a_failure(
     let engine = Arc::new(LuaAuthEngine::new(vms, db, script)?);
     let radius = config.radius.as_ref().ok_or("no [radius]")?;
     let server = Arc::new(RadiusServer::new(radius.auth_addr, radius.acct_addr, radius.clients.clone(), engine, load_dictionary(&config)).with_auth_chains(chains));
+    let auth = radius.auth_addr.to_string();
     tokio::spawn(async move {
         let _ = server.run().await;
     });
@@ -320,10 +328,10 @@ async fn test_wrong_length_user_password_is_rejected_without_counting_a_failure(
 
     // More wrong-length requests than max_failures: each is rejected, none locks the account.
     for id in 0..5u8 {
-        let reply = udp_exchange(&send(id, vec![9; 240]), "127.0.0.1:18340", WAIT).await.ok_or("no reply to the long password")?;
+        let reply = udp_exchange(&send(id, vec![9; 240]), &auth, WAIT).await.ok_or("no reply to the long password")?;
         assert_eq!(RadiusPacket::parse(&reply)?.code, radius::ACCESS_REJECT, "request {id}");
     }
-    let reply = udp_exchange(&send(10, cipher), "127.0.0.1:18340", WAIT).await.ok_or("no reply to the right password")?;
+    let reply = udp_exchange(&send(10, cipher), &auth, WAIT).await.ok_or("no reply to the right password")?;
     assert_eq!(RadiusPacket::parse(&reply)?.code, radius::ACCESS_ACCEPT, "the account must not be locked");
     Ok(())
 }

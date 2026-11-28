@@ -4,7 +4,7 @@
 //! to this program (`cargo build -p rradius-bench`).
 
 use rradius_core::test_support::bench::{bench_binary, eap_certificates, number, start_full, step, users, Output, Server, PASSWORD, SECRET, SQL_CHAIN};
-use rradius_core::test_support::server::free_port;
+use rradius_core::test_support::server::{free_port, udp_socket};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,8 +58,8 @@ fn test_eap_wrong_password_rejected() -> Result<(), String> {
 fn relay(server: SocketAddr, mut change: impl FnMut(&mut Vec<u8>) -> bool + Send + 'static) -> u16 {
     use hmac::{Hmac, KeyInit, Mac};
     use md5::{Digest, Md5};
-    let outside = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let inside = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let outside = udp_socket([127, 0, 0, 1].into()).unwrap();
+    let inside = udp_socket([127, 0, 0, 1].into()).unwrap();
     inside.connect(server).unwrap();
     let port = outside.local_addr().unwrap().port();
     let (outside_in, inside_out) = (outside.try_clone().unwrap(), inside.try_clone().unwrap());

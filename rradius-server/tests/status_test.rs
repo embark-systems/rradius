@@ -4,7 +4,6 @@
 use rradius_core::radius::RadiusPacket;
 use rradius_core::test_support::server::*;
 use std::io::{Read, Write};
-use std::net::UdpSocket;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -40,7 +39,7 @@ fn ready(port: u16) -> Option<u16> {
 
 /// Sends an Access-Request and waits for its answer.
 fn login(server: &Server, identifier: u8) -> Result<(), String> {
-    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let socket = udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
     let packet = RadiusPacket::create_access_request(identifier, [identifier; 16], vec![(1, b"alice".to_vec())], b"s");
     socket.send_to(&packet, ("127.0.0.1", server.auth_port)).map_err(|e| e.to_string())?;
     socket.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;

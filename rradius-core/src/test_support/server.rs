@@ -5,7 +5,8 @@
 use crate::radius::RadiusPacket;
 use md5::Md5;
 use std::io::{Read, Write};
-use std::net::UdpSocket;
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -13,7 +14,9 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A port for one server to bind later, handed out once, from below the range systems use
-/// for outgoing connections (above 32767 on Linux, above 49151 on macOS).
+/// for outgoing connections (above 32767 on Linux, above 49151 on macOS). FreeBSD's range,
+/// from 10000, covers these ports: a test makes its UDP sockets with [`udp_socket`], which
+/// stays out of them.
 ///
 /// This does not ask the system for a free port, or check that a port is free, because
 /// both open a socket. Closing it leaves the port for anyone to take first, and on macOS,
@@ -42,6 +45,35 @@ const FIRST_PORT: u16 = 20000;
 /// How many lanes there are, and how many ports each has: 48 * 250 ports end at 31999.
 const LANES: u16 = 48;
 const LANE_PORTS: u16 = 250;
+
+/// A UDP socket on `ip`, on a port the system picks outside the lanes. Every socket a test
+/// binds to port 0 is made here, those that play a server too: on a port of the lanes it
+/// could be the target of its own requests, or receive what another test sends to the server
+/// it expects there, and either would be taken for an answer.
+pub fn udp_socket(ip: IpAddr) -> std::io::Result<UdpSocket> {
+    udp_socket_outside(ip, FIRST_PORT..=FIRST_PORT + LANES * LANE_PORTS - 1)
+}
+
+/// [`udp_socket`] for tokio. Call it inside a runtime.
+pub fn tokio_udp_socket(ip: IpAddr) -> std::io::Result<tokio::net::UdpSocket> {
+    let socket = udp_socket(ip)?;
+    socket.set_nonblocking(true)?;
+    tokio::net::UdpSocket::from_std(socket)
+}
+
+/// How often a port is asked for. FreeBSD hands out a port of the lanes about one time in five.
+const TRIES: u32 = 1000;
+
+fn udp_socket_outside(ip: IpAddr, avoid: RangeInclusive<u16>) -> std::io::Result<UdpSocket> {
+    for _ in 0..TRIES {
+        // A socket that is refused is closed at once: holding them could use up the open files.
+        let socket = UdpSocket::bind((ip, 0))?;
+        if !avoid.contains(&socket.local_addr()?.port()) {
+            return Ok(socket);
+        }
+    }
+    Err(std::io::Error::other(format!("no UDP port outside {}-{} in {TRIES} tries", avoid.start(), avoid.end())))
+}
 
 fn unix_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
@@ -176,7 +208,7 @@ impl Server {
 
     /// Sends an Access-Request until the server answers, and returns the code.
     pub fn access_request(&self) -> u8 {
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = udp_socket(Ipv4Addr::LOCALHOST.into()).unwrap();
         socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         let packet = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec())], b"s");
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -683,6 +715,40 @@ mod port_tests {
         assert_eq!(all.held.len() + 2, usize::from(LANES), "every lane is held by someone");
         all.used = LANE_PORTS;
         assert_eq!(all.next(), None);
+        Ok(())
+    }
+
+    /// A test's socket is never on a port of the lanes, where a server of another test may be
+    /// asked something, or where this socket's own requests may be going.
+    #[test]
+    fn test_udp_socket_stays_out_of_the_lanes() -> Result<(), String> {
+        // Held all together, so that they are on different ports.
+        let mut held = Vec::new();
+        for _ in 0..100 {
+            let socket = udp_socket(Ipv4Addr::LOCALHOST.into()).map_err(|e| e.to_string())?;
+            let port = socket.local_addr().map_err(|e| e.to_string())?.port();
+            assert!(!(FIRST_PORT..FIRST_PORT + LANES * LANE_PORTS).contains(&port), "{port}");
+            held.push(socket);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_udp_socket_says_why_there_is_none() -> Result<(), String> {
+        let error = udp_socket_outside(Ipv4Addr::LOCALHOST.into(), 0..=u16::MAX).err().ok_or("a socket on none of the ports")?;
+        let message = error.to_string();
+        assert!(message.contains("0-65535") && message.contains("1000 tries"), "{message}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tokio_udp_socket_sends_and_receives() -> Result<(), String> {
+        let io = |e: std::io::Error| e.to_string();
+        let (a, b) = (tokio_udp_socket(Ipv4Addr::LOCALHOST.into()).map_err(io)?, tokio_udp_socket(Ipv4Addr::LOCALHOST.into()).map_err(io)?);
+        a.send_to(b"ping", b.local_addr().map_err(io)?).await.map_err(io)?;
+        let mut buffer = [0u8; 8];
+        let (size, from) = tokio::time::timeout(Duration::from_secs(5), b.recv_from(&mut buffer)).await.map_err(|e| e.to_string())?.map_err(io)?;
+        assert_eq!((&buffer[..size], from), (&b"ping"[..], a.local_addr().map_err(io)?));
         Ok(())
     }
 }

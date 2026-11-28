@@ -1,9 +1,8 @@
 //! Three `rradiusd` processes forming one hiqlite cluster. Nodes run as
 //! separate processes because stopping one in-process node does not behave like
 //! a node failure (see spikes/hiqlite/FINDINGS.md).
-use rradius_core::test_support::server::free_port;
+use rradius_core::test_support::server::{free_port, udp_socket};
 use rradius_core::radius::{self, RadiusPacket};
-use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -55,7 +54,7 @@ impl Drop for Nodes {
 
 /// Sends one RADIUS packet and waits up to `wait` for the reply.
 fn send(port: u16, packet: &[u8], wait: Duration) -> Option<RadiusPacket> {
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
     socket.set_read_timeout(Some(wait)).unwrap();
     socket.send_to(packet, ("127.0.0.1", port)).unwrap();
     let mut buf = [0u8; 4096];

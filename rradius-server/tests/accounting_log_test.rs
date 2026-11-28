@@ -35,7 +35,7 @@ fn request(identifier: u8, status: u32, session: &str) -> Vec<u8> {
 }
 
 fn udp(wait: Duration) -> Result<UdpSocket, String> {
-    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let socket = udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
     socket.set_read_timeout(Some(wait)).map_err(|e| e.to_string())?;
     Ok(socket)
 }

@@ -162,7 +162,7 @@ mod tests {
     /// A NAS on loopback: `behave` gets each request it reads, in order, and returns the
     /// datagrams to write back.
     async fn nas(behave: impl Fn(usize, &[u8]) -> Vec<Vec<u8>> + Send + 'static) -> Result<SocketAddr, String> {
-        let socket = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let socket = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
         let address = socket.local_addr().map_err(|e| e.to_string())?;
         tokio::spawn(async move {
             let mut buffer = [0u8; MAX_PACKET_LEN];

@@ -10,10 +10,9 @@ use rradius_core::config::{DatabaseKind, DatabaseSettings, DatabaseTls};
 use rradius_core::external_db::ExternalDatabases;
 use rradius_core::lua_engine::{LuaAuthEngine, LuaRequest};
 use rradius_core::radius::{self, RadiusPacket};
-use rradius_core::test_support::server::{free_port, hidden_password, write_config, Server};
+use rradius_core::test_support::server::{free_port, hidden_password, udp_socket, write_config, Server};
 use rradius_core::test_support::{database_settings, test_db, test_vms};
 use std::collections::BTreeMap;
-use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -153,7 +152,7 @@ fn start_server(databases_and_auth: &str, script: &str, spool: bool) -> Result<S
 
 /// The answer to a PAP Access-Request, or `None` when there is none within `wait`.
 fn login(server: &Server, user: &str, password: &str, wait: Duration) -> Result<Option<RadiusPacket>, String> {
-    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let socket = udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
     socket.set_read_timeout(Some(wait)).map_err(|e| e.to_string())?;
     let authenticator: [u8; 16] = std::array::from_fn(|i| i as u8 + user.len() as u8 + password.len() as u8);
     let packet = RadiusPacket::create_access_request(authenticator[0], authenticator, vec![(1, user.as_bytes().to_vec()), (2, hidden_password(password.as_bytes(), b"s", &authenticator))], b"s");
@@ -168,7 +167,7 @@ fn login(server: &Server, user: &str, password: &str, wait: Duration) -> Result<
 /// The answer to a CHAP Access-Request, the Request Authenticator as the challenge.
 fn chap_login(server: &Server, user: &str, password: &str) -> Result<RadiusPacket, String> {
     use md5::{Digest, Md5};
-    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let socket = udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
     socket.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
     let authenticator: [u8; 16] = std::array::from_fn(|i| 0x50 + i as u8);
     let ident = 7u8;
@@ -187,7 +186,7 @@ fn chap_login(server: &Server, user: &str, password: &str) -> Result<RadiusPacke
 
 /// Sends an Accounting-Request for `session` and returns whether it was answered.
 fn account(server: &Server, identifier: u8, session: &str, octets: u32, wait: Duration) -> Result<bool, String> {
-    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let socket = udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
     socket.set_read_timeout(Some(wait)).map_err(|e| e.to_string())?;
     let packet = RadiusPacket::create_accounting_request(identifier, vec![(40, vec![0, 0, 0, 2]), (44, session.as_bytes().to_vec()), (43, octets.to_be_bytes().to_vec())], b"s");
     socket.send_to(&packet, ("127.0.0.1", server.port_acct())).map_err(|e| e.to_string())?;

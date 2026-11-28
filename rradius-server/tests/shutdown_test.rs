@@ -47,7 +47,7 @@ fn get(port: u16, path: &str) -> Option<(u16, String)> {
 
 /// Sends an Access-Request from a socket of its own, for `ask` to wait for its answer.
 fn send(server: &Server, identifier: u8) -> Result<UdpSocket, String> {
-    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let socket = udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
     let packet = RadiusPacket::create_access_request(identifier, [identifier; 16], vec![(1, b"alice".to_vec())], b"s");
     socket.send_to(&packet, ("127.0.0.1", server.auth_port)).map_err(|e| e.to_string())?;
     Ok(socket)
