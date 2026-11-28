@@ -91,8 +91,9 @@ pub struct AuthResult {
     /// Whether a handler that accepted is one that compares passwords. An accept from a script
     /// that only says whether an account is active does not mean a password was right.
     pub verified: bool,
-    /// Not accepted because the cluster database could not be used: no answer is right, so that
-    /// the request comes again or goes to another server, not a refusal.
+    /// Not accepted because a backend (the cluster database, an external database, a directory, a
+    /// domain controller, or a password check that ran out of time) could not be used: no answer
+    /// is right, so that the request comes again or goes to another server, not a refusal.
     pub unavailable: bool,
 }
 
@@ -1398,6 +1399,8 @@ mod tests {
 
     /// A directory that is down is not a wrong password: 20 logins from one origin count for
     /// nothing, and once it is back the right password is accepted; wrong ones still lock.
+    // spectra-scenario: auth-chain / LDAP is down and nobody is locked
+    // spectra-scenario: auth-chain / A wrong password still counts
     #[tokio::test]
     async fn test_directory_down_does_not_lock() {
         use crate::ldap_handler::tests::{mock_server, settings};

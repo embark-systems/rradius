@@ -548,11 +548,11 @@ struct Session {
     answered_id: u8,
     last_request: Vec<u8>,
     settings: Arc<EapSettings>,
-    /// What waits for the cluster database, to be done again when the same Response comes again.
+    /// What waits for a backend, to be done again when the same Response comes again.
     retry: Option<Retry>,
 }
 
-/// A step that could not finish for want of the cluster database, and the EAP Identifier of the
+/// A step that could not finish for want of a backend, and the EAP Identifier of the
 /// Response it answers. Done again from here, the message is not read twice: a TLS record or an
 /// AKA' check code would not survive that.
 enum Retry {
@@ -651,7 +651,7 @@ impl Session {
 
     /// Runs one Response through the conversation. May take a while: TLS signs here.
     fn step(&mut self, packet: &EapPacket, state: [u8; 16]) -> Step {
-        // The NAS sent again what waited for the database: that step again, and nothing more.
+        // The NAS sent again what waited for a backend: that step again, and nothing more.
         // Only for that Response: a stray one in between leaves it waiting.
         if let Some(retry) = self.retry.take_if(|retry| retry.id() == packet.id) {
             return match retry {
@@ -1642,7 +1642,7 @@ impl EapService {
         Step::Discard
     }
 
-    /// As `lookup_waits`, for a chain that could not decide for want of the cluster database.
+    /// As `lookup_waits`, for a step before the chain, or a chain, that could not use its backend.
     pub fn authorization_waits(&self, pending: PendingAuth) -> Step {
         let PendingAuth { session, id, name, secret, proof, .. } = pending;
         if let Some(mut session) = session {

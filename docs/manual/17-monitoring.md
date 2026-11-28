@@ -253,7 +253,7 @@ The metric you will look at most when troubleshooting is `rradius_radius_discard
 | `overload` | The requests being handled at the same time have reached `max_auth_inflight` or `max_acct_inflight` (Chapter 19) |
 | `unknown_client` | The source address does not belong to any `[[radius.clients]]` |
 | `invalid` | Malformed, or the authenticator or Message-Authenticator is wrong; the most common cause is a shared secret mismatch |
-| `database` | The cluster database cannot be used, so the login gets no answer |
+| `database` | A backend cannot be used (the cluster database, an external database, LDAP, a domain controller, or a password verification that timed out), so the login gets no answer |
 | `no_leader` | `stop_without_leader_ms` is set and there has been no leader for too long |
 
 The request with the wrong shared secret sent above is counted here:

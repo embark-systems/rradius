@@ -184,7 +184,7 @@ Packets that were received but not answered:
 | `overload` | The requests in progress have reached `max_auth_inflight` or `max_acct_inflight` |
 | `unknown_client` | The source does not belong to any client |
 | `invalid` | Malformed, the authenticator or Message-Authenticator does not verify, or it does not fit the policy. The most common cause is a shared secret that does not match |
-| `database` | The cluster database is unavailable, so an Access-Request gets no answer |
+| `database` | A backend is unavailable (the cluster database, an external database, LDAP, a domain controller, or a password verification that timed out), so an Access-Request gets no answer |
 | `no_leader` | `cluster.stop_without_leader_ms` has taken effect |
 
 #### `rradius_radius_response_seconds`

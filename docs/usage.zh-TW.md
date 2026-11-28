@@ -799,7 +799,7 @@ port = 9812         # 預設
 | `rradius_radius_client_responses_total{client="...",code="access_accept\|access_reject\|access_challenge\|accounting_response"}` | 送給每個 client 的回應，口徑和上一行相同。設定裡的每個 client 從 0 開始；重新載入時新增新的，移除不在設定裡的。一個 client 四個序列，client 很多時要留意 |
 | `rradius_radius_status_server_total` | 回應的 Status-Server |
 | `rradius_radius_duplicates_total` | 由重送快取回覆，或因為還在處理而丟棄的重送 |
-| `rradius_radius_discarded_total{reason="overload\|unknown_client\|invalid\|database\|no_leader"}` | 沒有回應的封包；`invalid` 包含格式錯誤、驗證失敗和不符合 Message-Authenticator 政策；`database` 是叢集資料庫不能用而沒有決定的登入，`no_leader` 是 `stop_without_leader_ms` 讓它不回應的（2.2 節〈資料庫不能用時〉） |
+| `rradius_radius_discarded_total{reason="overload\|unknown_client\|invalid\|database\|no_leader"}` | 沒有回應的封包；`invalid` 包含格式錯誤、驗證失敗和不符合 Message-Authenticator 政策；`database` 是後端（叢集資料庫、外部資料庫、LDAP、網域控制站，或逾時的密碼驗證）不能用而沒有決定的登入，`no_leader` 是 `stop_without_leader_ms` 讓它不回應的（2.2 節〈資料庫不能用時〉） |
 | `rradius_radius_response_seconds{kind="auth\|acct"}` | 處理一個請求到送出回應的時間，Prometheus histogram（`_bucket{le}`、`_sum` 秒、`_count`）。從封包通過重送檢查開始算，到回應交給傳送端為止；企業版經 RadSec 進來的請求也算在內。bucket 的上限固定為 0.05、0.1、0.25、0.5、1、2.5、5、10、25、50、100、250、500 ms 與 1、2.5、5、10 s，再加 `+Inf`。重送快取的回覆、Status-Server 和沒有回應的封包都不計，所以 `_count` 會比 `rradius_radius_packets_total` 少 |
 | `rradius_cluster_leader`、`rradius_cluster_is_leader`、`rradius_cluster_applied_index`、`rradius_cluster_seconds_without_leader` | 這個節點看到的叢集狀態，見 2.2 節〈叢集狀態指標〉 |
 | `rradius_tacacs_connections_total{result="accepted\|refused"}` | TACACS+ 連線 |
@@ -1822,7 +1822,7 @@ max_entries = 100000          # 每個節點最多記住幾個鍵，預設 10000
 - 每個請求有自己的全域變數，請求之間不共享；需要跨請求保存的資料請寫入資料庫。
 - **記憶體上限：** 每個 VM 最多用 `[lua].max_memory_mb`。超過時要配置的腳本會得到 `memory error: not enough memory`，處理方式和其他腳本錯誤相同，程序不會結束；當時在同一個 VM 上的其他腳本也可能遇到。腳本結束時 VM 用量超過上限一半，會做一次完整回收，這段時間會卡住一個工作執行緒，也不會有新請求分到這個 VM。之後用量比回收後多出上限的四分之一，或超過上限的八分之七，才會再做。**回收是逐步進行的：** 反覆產生很大的字串時，即使都沒有留下，也可能來不及回收而出錯。實測預設 256 MiB 時，反覆產生 8 MiB 的字串 400 次沒有問題，16 MiB 就會出錯。這個上限不涵蓋 Lua 以外的記憶體，例如等待中的資料庫查詢結果。
 - 腳本在一個請求中的執行時間超過 `[lua].max_execution_ms` 時會被中止並視為拒絕；等待資料庫的時間不計入。時間每 64 次迴圈回跳或函式呼叫才檢查一次，超過後每次都檢查。`pcall` 接得住這個錯誤，但下一次迴圈或呼叫又會出錯，而且就算腳本接住後正常回傳 `accept`，也算失敗。所以超過後最多再跑 64 次才被中止，迴圈內容很慢時會晚一些。執行較久的腳本會定期讓出，不會阻擋其他請求。
-- 腳本出錯（含逾時）時，該請求視為拒絕；但出錯或拒絕是因為叢集資料庫不能用（`sql_query`、`sql_execute` 逾時或找不到 leader，腳本用 `pcall` 接住也一樣）時，認證請求不回應、TACACS+ 回 ERROR（2.2 節〈資料庫不能用時〉）。錯誤會記錄為 `Lua script error (<protocol>/<phase>): <訊息>`，訊息中的位置是腳本路徑與行號，例如 `/etc/rradius/auth.lua:3: attempt to index nil with 'y'`。
+- 腳本出錯（含逾時）時，該請求視為拒絕；但出錯或拒絕是因為資料庫不能用（`sql_query`、`sql_execute` 逾時或找不到 leader，或 `db_query`、`db_execute` 用不了外部資料庫，腳本用 `pcall` 接住也一樣）時，認證請求不回應、TACACS+ 回 ERROR（2.2 節〈資料庫不能用時〉）。錯誤會記錄為 `Lua script error (<protocol>/<phase>): <訊息>`，訊息中的位置是腳本路徑與行號，例如 `/etc/rradius/auth.lua:3: attempt to index nil with 'y'`。
 
 ### 4.2 全域變數
 

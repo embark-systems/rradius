@@ -102,7 +102,7 @@ NAS 看到的結果只有幾種，原因各不相同：
 | 沒有回應（逾時） | 丟掉了請求，或答不出來 | `status` 的 `Discarded` 幾行，以及日誌的 `not answered` |
 | TACACS+ 的 ERROR | 答不出來 | 日誌的 `answered ERROR` |
 
-「沒有回應」是刻意的：資料庫不能用、沒有 leader（設了 `stop_without_leader_ms`，或請求需要寫入時）、過載時，伺服器不回 Reject，讓 NAS 重送或改問別台伺服器，而不是把使用者踢掉。
+「沒有回應」是刻意的：後端（資料庫、LDAP 目錄、網域控制站）不能用或密碼驗證逾時、沒有 leader（設了 `stop_without_leader_ms`，或請求需要寫入時）、過載時，伺服器不回 Reject，讓 NAS 重送或改問別台伺服器，而不是把使用者踢掉。
 
 `status` 的 RADIUS 區段：
 
@@ -121,7 +121,7 @@ RADIUS
 | --- | --- | --- |
 | `Discarded: unknown client` | 來源位址不在用戶端清單 | [用戶端比對失敗](#用戶端比對失敗) |
 | `Discarded: invalid` | 共用密碼不一致、缺 Message-Authenticator、封包格式錯 | [共用密碼不一致](#共用密碼不一致) |
-| `Discarded: database` | 驗證或計費需要的資料庫不能用 | [資料庫不能用](#資料庫不能用) |
+| `Discarded: database` | 驗證或計費需要的資料庫，或驗證用的 LDAP 目錄、網域控制站不能用，或密碼驗證逾時 | [資料庫不能用](#資料庫不能用) |
 | `Discarded: no leader` | 設了 `stop_without_leader_ms`，叢集沒有 leader | [叢集沒有 leader](#叢集沒有-leader) |
 | `Discarded: overload` | 同時處理的請求超過上限 | [過載與 UDP 丟包](#過載與-udp-丟包) |
 
@@ -411,7 +411,7 @@ NAS 與伺服器的共用密碼不同時，結果依請求有沒有 Message-Auth
 
 ## 資料庫不能用
 
-驗證或計費要用的資料庫連不上時，伺服器**不回應**，而不是拒絕。
+驗證或計費要用的資料庫連不上，或驗證用的 LDAP 目錄、網域控制站不能用，或密碼驗證逾時的時候，伺服器**不回應**，而不是拒絕。
 
 ### 外部資料庫
 
@@ -638,7 +638,7 @@ EAP 的設定與憑證見[第 11 章](11-eap.md)。
 
 `status` 的 TACACS+ 區段 `Malformed` 增加。`rradius-bench` 那一端看到的是 `lengths: the fields of the reply do not add up to its length, so the shared secret may be wrong`。
 
-驗證用的資料庫不能用時，TACACS+ 不是不回應，而是回 ERROR：
+驗證用的後端（資料庫、LDAP 目錄、網域控制站）不能用，或密碼驗證逾時的時候，TACACS+ 不是不回應，而是回 ERROR。授權腳本呼叫的資料庫不能用時也回 ERROR，日誌是 `TACACS+ authorization for client <名稱> answered ERROR: the database could not be used`。認證的情況：
 
 ```text
 … WARN rradius_core::lua_engine: TACACS+ authentication for client router1 answered ERROR: the authentication backend could not be used
@@ -807,7 +807,7 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `RADIUS packet from unknown client X discarded` | 來源位址不在用戶端清單 | 用日誌裡的位址加用戶端 |
 | `RADIUS: discarded N Access-Requests lacking a Message-Authenticator, …` | NAS 沒送 Message-Authenticator，或共用密碼錯而且沒送 | 開啟 NAS 的 Message-Authenticator；不行就只對它設 `"no"` |
 | （沒有日誌，`Discarded: invalid` 增加） | 共用密碼不一致 | 重設兩邊的共用密碼 |
-| `RADIUS Access-Request from client X not answered: the authentication backend could not be used` | 驗證用的資料庫或目錄不能用 | 查前一行的錯誤 |
+| `RADIUS Access-Request from client X not answered: the authentication backend could not be used` | 驗證用的資料庫、目錄或網域控制站不能用，或密碼驗證逾時 | 查前一行的錯誤 |
 | `auth sql handler error: database X: pool timed out while waiting for an open connection` | 外部資料庫連不上 | 查資料庫與網路 |
 | `databases.X: not reachable at startup: …; /readyz answers 503 until it is` | `required_for_ready` 的資料庫連不上 | 同上 |
 | `Lua script error (radius/accounting): runtime error: no leader for 5 s` | 叢集沒有 leader，寫不了 | 讓過半數的節點恢復 |
@@ -826,7 +826,8 @@ trace 的輸出含有個人資料，給別人之前先把使用者名稱、位�
 | `TACACS+ connection from X closed: a body did not decode, so the shared secret may be wrong` | TACACS+ 共用密碼不一致 | 重設兩邊的共用密碼 |
 | `TACACS+ overloaded: closed N connections` | 連線數到了 `tacacs.max_connections` | [連線被關掉：上限](#連線被關掉上限) |
 | `TACACS+ connection from X closed: it already holds max_connections_per_source = N connections` | 這個來源位址的連線數到了上限 | 同上 |
-| `TACACS+ authentication for client X answered ERROR: the authentication backend could not be used` | 驗證用的資料庫不能用 | 查資料庫 |
+| `TACACS+ authentication for client X answered ERROR: the authentication backend could not be used` | 驗證用的資料庫、目錄或網域控制站不能用，或密碼驗證逾時 | 查前一行的錯誤 |
+| `TACACS+ authorization for client X answered ERROR: the database could not be used` | 授權腳本呼叫的資料庫不能用 | 查資料庫 |
 | `script exceeded the execution limit of N ms` | 腳本跑太久 | 修正腳本，或調整 `lua.max_execution_ms` |
 | `script http_request refused: … is not in lua.http.allowed_hosts` | 腳本呼叫的主機不在白名單 | 加進 `allowed_hosts` |
 | `stopping: after N ms, M RADIUS requests were still being handled and K TACACS+ connections open; they are cut off` | 停止時等了 `[shutdown] drain_ms` 還有請求沒做完（腳本、LDAP 或資料庫太慢），那些請求沒有回應，設備會重送到別台 | 找出變慢的原因，或加長 `drain_ms`（[第 18 章](18-operations.md#關機要多久)） |

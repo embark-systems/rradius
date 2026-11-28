@@ -80,10 +80,10 @@ TACACS+ 的回覆帶一個狀態。你在日誌、測試工具與設備上看到
 | 認證 | `FAIL` | 拒絕：密碼錯、帳號不存在、enable 被拒、太長的密碼等 |
 | 認證 | `GETUSER`、`GETPASS` | ASCII 登入時，問帳號、問密碼 |
 | 認證 | `RESTART` | 這個認證方式在這裡無法檢查，請設備換一種再試 |
-| 認證 | `ERROR` | 無法判斷：資料庫無法使用、封包內容不合規定 |
+| 認證 | `ERROR` | 無法判斷：認證後端無法使用、封包內容不合規定 |
 | 授權 | `PASS_ADD` | 允許，並附上回覆的 AV pair |
 | 授權 | `FAIL` | 拒絕 |
-| 授權 | `ERROR` | 無法判斷：資料庫無法使用、封包不合規定、回覆的 AV pair 超過 255 個 |
+| 授權 | `ERROR` | 無法判斷：叢集或外部資料庫無法使用、封包不合規定、回覆的 AV pair 超過 255 個 |
 | 計費 | `SUCCESS` | 腳本回傳 `accept`，紀錄寫好了 |
 | 計費 | `ERROR` | 腳本沒有接受 |
 
@@ -739,11 +739,11 @@ end
 
 ## 資料庫無法使用時
 
-叢集資料庫無法使用（例如呼叫逾時，或腳本要寫入而叢集沒有 leader）而無法判斷時，認證與授權回 `ERROR`，不是 `FAIL`，讓設備改問下一台 TACACS+ 伺服器。資料本身說「不行」的（帳號不存在、密碼錯），照樣回 `FAIL`。日誌：
+後端無法使用而無法判斷時，認證與授權回 `ERROR`，不是 `FAIL`，讓設備改問下一台 TACACS+ 伺服器。認證的後端是叢集資料庫（例如呼叫逾時，或腳本要寫入而叢集沒有 leader）、外部資料庫、LDAP 目錄、網域控制站，或逾時的密碼驗證。授權只跑腳本，所以是腳本呼叫的叢集資料庫或外部資料庫。資料本身說「不行」的（帳號不存在、密碼錯），照樣回 `FAIL`。日誌：
 
 ```text
 TACACS+ authentication for client <名稱> answered ERROR: the authentication backend could not be used
-TACACS+ authorization for client <名稱> answered ERROR: the cluster database could not be used
+TACACS+ authorization for client <名稱> answered ERROR: the database could not be used
 ```
 
 叢集設了 `[cluster] stop_without_leader_ms`、而且這個節點沒有 leader 超過這段時間時，認證與授權一律回 `ERROR`，連腳本都不跑。計費照常交給腳本；腳本寫不進資料庫時回 `ERROR`。這個設定與叢集的行為見[第 16 章](16-cluster.md)。

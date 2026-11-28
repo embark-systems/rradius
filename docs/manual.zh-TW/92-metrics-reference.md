@@ -184,7 +184,7 @@ NAS 重送的請求：從重送快取直接回答，或因為原本那筆還在�
 | `overload` | 處理中的請求已達 `max_auth_inflight` 或 `max_acct_inflight` |
 | `unknown_client` | 來源不屬於任何用戶端 |
 | `invalid` | 格式錯誤、驗證碼或 Message-Authenticator 驗不過、不符合政策；最常見的是共用密碼不一致 |
-| `database` | 叢集資料庫無法使用，Access-Request 不回應 |
+| `database` | 後端無法使用（叢集資料庫、外部資料庫、LDAP、網域控制站，或密碼驗證逾時），Access-Request 不回應 |
 | `no_leader` | `cluster.stop_without_leader_ms` 已經生效 |
 
 #### `rradius_radius_response_seconds`

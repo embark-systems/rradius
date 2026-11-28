@@ -1389,7 +1389,7 @@ impl TacacsServer {
                 }));
                 let decision = engine.authenticate(request).await;
                 if decision.database_failed && !decision.accepted() {
-                    crate::lua_engine::log_line(tracing::Level::WARN, format!("TACACS+ authorization for client {} answered ERROR: the cluster database could not be used", client.name));
+                    crate::lua_engine::log_line(tracing::Level::WARN, format!("TACACS+ authorization for client {} answered ERROR: the database could not be used", client.name));
                     return (author_response(AUTHOR_STATUS_ERROR, &[]), false);
                 }
                 let message = server_msg(&decision.response_attributes, client);
@@ -1697,6 +1697,7 @@ pub(crate) mod tests {
 
     /// A directory that is down answers an ASCII login with ERROR, not FAIL, and logs no
     /// particular backend.
+    // spectra-scenario: auth-chain / TACACS+ gets ERROR for a directory that is down
     #[tokio::test]
     async fn test_unavailable_directory_answers_error() -> Result<(), String> {
         use crate::ldap_handler::{tests::settings, LdapHandler, PasswordCheck};
@@ -2850,6 +2851,7 @@ pub(crate) mod tests {
     }
 
     /// A PAP login whose chain cannot reach the directory answers ERROR, not FAIL.
+    // spectra-scenario: auth-chain / TACACS+ gets ERROR for a directory that is down
     #[tokio::test]
     async fn test_unavailable_directory_answers_error_for_pap() -> Result<(), String> {
         use crate::ldap_handler::{tests::settings, LdapHandler, PasswordCheck};
@@ -2859,6 +2861,29 @@ pub(crate) mod tests {
         let chains = Arc::new(AuthChains::new(Some(chain), []));
         let engine = script_engine("return 'reject'").await;
         assert_eq!(authen_status(test_client(), chains, engine, b"alice", b"pw").await, AUTHEN_STATUS_ERROR);
+        Ok(())
+    }
+
+    /// An authorization script whose external database is down answers ERROR, and the log does
+    /// not name the cluster database.
+    // spectra-scenario: tacacs-aaa / External database down during authorization
+    #[tokio::test]
+    async fn test_authorization_unavailable_external_database() -> Result<(), String> {
+        use crate::config::{DatabaseKind, DatabaseTls};
+        use crate::external_db::test_support::{closed_port, settings};
+        let mut all = std::collections::BTreeMap::new();
+        all.insert("billing".to_string(), settings(DatabaseKind::Postgresql, "127.0.0.1", closed_port()?, DatabaseTls::Off));
+        let databases = crate::external_db::ExternalDatabases::open(&all);
+        let script = "pcall(db_query, 'billing', 'SELECT 1') return 'reject'";
+        let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), script)?.with_databases(databases));
+        let mut reply = None;
+        let log = crate::test_support::radius::logged_during(async {
+            let request = encrypted_request(TYPE_AUTHOR, 1, 0, &author_body(b"alice", &[b"service=shell"]));
+            reply = Some(exchange_with(engine, request).await);
+        })
+        .await;
+        assert_eq!(reply.ok_or("no reply")?.body[0], AUTHOR_STATUS_ERROR);
+        assert!(log.contains("answered ERROR: the database could not be used") && !log.contains("cluster database"), "{log}");
         Ok(())
     }
 

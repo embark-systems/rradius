@@ -80,10 +80,10 @@ A TACACS+ reply carries a status. These are the values you see in logs, in test 
 | Authentication | `FAIL` | Rejected: wrong password, unknown account, enable refused, password too long, and so on |
 | Authentication | `GETUSER`, `GETPASS` | During an ASCII login: asks for the user name, asks for the password |
 | Authentication | `RESTART` | This authentication type cannot be checked here; asks the device to try another one |
-| Authentication | `ERROR` | Cannot decide: database unavailable, packet body not valid |
+| Authentication | `ERROR` | Cannot decide: authentication backend unavailable, packet body not valid |
 | Authorization | `PASS_ADD` | Allowed, with the reply AV pairs attached |
 | Authorization | `FAIL` | Denied |
-| Authorization | `ERROR` | Cannot decide: database unavailable, packet not valid, reply has more than 255 AV pairs |
+| Authorization | `ERROR` | Cannot decide: cluster or external database unavailable, packet not valid, reply has more than 255 AV pairs |
 | Accounting | `SUCCESS` | The script returned `accept` and the record was written |
 | Accounting | `ERROR` | The script did not accept |
 
@@ -739,11 +739,11 @@ When a packet can be decoded but a field is not valid (privilege level above 15,
 
 ## When the database is unavailable
 
-When the cluster database is unavailable (for example a call times out, or the script has to write and the cluster has no leader) and a decision cannot be made, authentication and authorization answer `ERROR`, not `FAIL`, so the device asks the next TACACS+ server. When the data itself says "no" (unknown account, wrong password), the answer is still `FAIL`. The log:
+When a backend is unavailable and a decision cannot be made, authentication and authorization answer `ERROR`, not `FAIL`, so the device asks the next TACACS+ server. For authentication the backend is the cluster database (for example a call times out, or the script has to write and the cluster has no leader), an external database, an LDAP directory, a domain controller, or a password verification that timed out. Authorization only runs the script, so there it is the cluster database or an external database that the script calls. When the data itself says "no" (unknown account, wrong password), the answer is still `FAIL`. The log:
 
 ```text
 TACACS+ authentication for client <name> answered ERROR: the authentication backend could not be used
-TACACS+ authorization for client <name> answered ERROR: the cluster database could not be used
+TACACS+ authorization for client <name> answered ERROR: the database could not be used
 ```
 
 When the cluster has `[cluster] stop_without_leader_ms` set and this node has had no leader for longer than that, authentication and authorization always answer `ERROR`, and the script does not even run. Accounting is still handed to the script; when the script cannot write to the database it answers `ERROR`. For this setting and the behavior of the cluster, see [chapter 16](16-cluster.md).

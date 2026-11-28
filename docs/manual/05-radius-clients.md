@@ -376,10 +376,10 @@ Besides the drops described above, the server also deliberately does not answer 
 | The source is not a known client | `reason="unknown_client"` |
 | The packet is malformed, or the Message-Authenticator is wrong or missing | `reason="invalid"` |
 | The number of requests being handled has reached the limit | `reason="overload"` |
-| The database is temporarily unusable when deciding an Access-Request (timeout, no leader found, write queue full) | `reason="database"` |
+| A backend is temporarily unusable when deciding an Access-Request: the cluster database (timeout, no leader found, write queue full), an external database, the LDAP directory, the domain controllers, or a password verification that timed out | `reason="database"` |
 | The cluster node has lost the majority and stopped serving | `reason="no_leader"` |
 
-The counters in the table are all labels of `rradius_radius_discarded_total`. When the database cannot be used, the log line is `RADIUS Access-Request from client <name> not answered: the authentication backend could not be used`. When the data says "no" (no such account, wrong password, the database was queried fine but a script rejects), an Access-Reject is still returned; only "cannot decide" gets no answer. For how accounting requests are handled when the database cannot be used, see [chapter 13](13-accounting.md).
+The counters in the table are all labels of `rradius_radius_discarded_total`. When a backend cannot be used, the log line is `RADIUS Access-Request from client <name> not answered: the authentication backend could not be used`. When the data says "no" (no such account, wrong password, the database was queried fine but a script rejects), an Access-Reject is still returned; only "cannot decide" gets no answer. For how accounting requests are handled when the database cannot be used, see [chapter 13](13-accounting.md).
 
 > **Not verified on real hardware:** The database-unusable and `no_leader` rows come from the code and the specification. This chapter did not create a real database failure to verify them. For clusters, see [chapter 16](16-cluster.md).
 

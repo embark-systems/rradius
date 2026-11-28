@@ -253,7 +253,7 @@ rradius_radius_responses_total{code="accounting_response"} 1
 | `overload` | 同時處理中的請求已經達到 `max_auth_inflight` 或 `max_acct_inflight`（第 19 章） |
 | `unknown_client` | 來源位址不屬於任何 `[[radius.clients]]` |
 | `invalid` | 格式錯誤、驗證碼或 Message-Authenticator 不對，最常見的原因是共用密碼不一致 |
-| `database` | 叢集資料庫無法使用，登入沒有回應 |
+| `database` | 後端無法使用（叢集資料庫、外部資料庫、LDAP、網域控制站，或密碼驗證逾時），登入沒有回應 |
 | `no_leader` | 設了 `stop_without_leader_ms`，沒有 leader 太久 |
 
 上面送的那一筆錯誤共用密碼，就記在這裡：
