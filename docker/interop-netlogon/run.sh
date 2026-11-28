@@ -35,6 +35,10 @@ check() {
 cleanup() {
     if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; fi
     if [ "$failed" -ne 0 ]; then
+        if [ -f "$work/restart.log" ]; then
+            echo "== rradius log up to the end of the DC restart checks"
+            tail -40 "$work/restart.log"
+        fi
         echo "== rradius log"
         tail -40 "$work/rradius.log" 2>/dev/null
         echo "== DC log"
@@ -200,6 +204,15 @@ docker restart "$dc" >/dev/null
 wait_for_dc
 check "login after the DC restarts" accepted alice Alice-Pass-1
 check "the channel set up again" test "$(metric 'rradius_netlogon_channel_setups_total{result="ok"}')" -ge 2
+# eapol_test retransmits, so its success alone does not show a request that got no answer.
+none_unanswered() {
+    count=$(metric 'rradius_netlogon_logons_total{result="unavailable"}')
+    echo "result=\"unavailable\" counted: $count"
+    [ "$count" = 0 ]
+}
+check "no request left unanswered by the restart" none_unanswered
+# The next start of rradius writes over the log.
+cp "$work/rradius.log" "$work/restart.log"
 
 # A wrong computer account password: the channel cannot be set up, and nothing is answered.
 stop_rradius

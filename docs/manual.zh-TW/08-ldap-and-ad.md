@@ -536,7 +536,7 @@ $ rradius-bench run … --user alice --password Alice-Pass-1 --load pap,concurre
 
 ### 連線、容錯與指標
 
-- 每台網域控制站最多保持 `connections` 條連線，重複使用。secure channel 被網域控制站作廢或連線斷掉時，重新建立再試一次，還是不行就換下一台。對 Samba 網域控制站實測（2026-11-27）時，網域控制站重啟後的第一筆請求沒有回應（日誌 `RPC bind refused: bind_nak, reason 0`），下一筆或 NAS 的重傳才重新建好。
+- 每台網域控制站最多保持 `connections` 條連線，重複使用。連線斷掉時，用新的連線再試。secure channel 被網域控制站作廢時丟掉它，這筆請求還有新連線可試的話，重新建立後再試一次；新的 channel 也被拒絕，或新的連線也失敗，就換下一台。所以網域控制站重啟並恢復服務後，第一筆請求會重建 channel 並得到回應。對 Samba 網域控制站實測（2026-11-28，重啟後登入一次）：沒有任何請求沒有回應。重啟後同時有多筆登入的情形，只用模擬的網域控制站測過。
 - 池子裡閒置的連線在 `timeout_ms` 內沒有回應（例如被防火牆悄悄丟掉），關掉那台的閒置連線，用新的連線再試一次。
 - 電腦帳號的密碼、session key、NT-Response 與 MPPE 金鑰不會出現在任何層級的日誌。
 

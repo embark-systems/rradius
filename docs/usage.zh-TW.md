@@ -1769,7 +1769,7 @@ DC 回覆的對應：
 - **只處理 MS-CHAPv2。** PAP、CHAP、憑證登入一律略過，不連 DC。PAP 要對 AD 驗證請用 `ldap` 處理器的 `bind` 模式。
 - **群組以 SID 表示，** 例如 `S-1-5-21-…-1110`。比對的是 DC 在登入回覆中給的群組：網域 SID 加上每個群組 RID，以及額外 SID（其他網域、通用群組）。不必另外查 LDAP。SID 可以用 PowerShell 的 `Get-ADGroup staff | Select SID` 查。不在群組和密碼錯誤的回應相同。
 - **帳號名稱：** 登入用串接處理後的名稱（3.6 節），再去掉 `網域\` 前綴，網域一律用 `domain`。challenge hash 用收到的名稱，和本機驗證相同。
-- **連線重用與換 DC：** 每台 DC 的連線共用同一組 secure channel，在請求之間重用。連線中斷，或 DC 表示 channel 已失效（`STATUS_ACCESS_DENIED`、密封或綁定被拒）時，重建 channel 並在新連線上重試一次，仍失敗就換下一台。在 `timeout_ms` 內沒有回應的連線會關閉：若是閒置後重用的連線（可能已被防火牆或 NAT 悄悄丟掉），一併關掉其他閒置連線，在新連線上重試一次；新連線也沒有回應就換下一台。
+- **連線重用與換 DC：** 每台 DC 的連線共用同一組 secure channel，在請求之間重用。同一筆請求對一台 DC 最多用閒置連線試一次、用新連線試兩次；閒置連線的失敗不算在新連線的兩次裡。連線中斷本身不會重建 channel。DC 表示 channel 已失效（`STATUS_ACCESS_DENIED`、RPC fault、密封或綁定被拒）時丟掉 channel；這筆請求還有新連線可試的話，由下一條新連線重新建立，之後只再試這一次。DC 重啟並恢復服務後的第一筆請求就是這樣得到回應。都沒有成功就換下一台。在 `timeout_ms` 內沒有回應的連線會關閉：若是閒置後重用的連線（可能已被防火牆或 NAT 悄悄丟掉），一併關掉其他閒置連線，接著用新連線試；新連線也沒有回應就換下一台。
 - **全部 DC 都不能用時，** 和 `sql` 處理器的資料庫不能用時相同：RADIUS 不回應，計入 `rradius_radius_discarded_total{reason="database"}`，TACACS+ 回 ERROR，讓設備重送或換伺服器（2.2 節〈資料庫不能用時〉），並記錄 ERROR。電腦帳號密碼錯誤、DC 不支援 AES 這類設定問題也記錄 ERROR。
 - **秘密不進記錄：** 電腦帳號密碼、session key、user session key、NT-Response 和 MPPE 金鑰在任何記錄層級都不會出現，用完即清除。
 - `check` 和啟動只檢查設定與密碼檔，不連 DC。channel 在第一個請求時才建立。

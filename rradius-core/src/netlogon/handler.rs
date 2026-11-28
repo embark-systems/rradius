@@ -102,8 +102,10 @@ struct DomainController {
 
 /// Why a domain controller gave no answer to go by.
 enum Failure {
-    /// It may answer on a fresh connection, after the channel is set up again.
+    /// It may answer on a fresh connection.
     Retry(String),
+    /// It refused the secure channel, which is now discarded; it may answer with a new one.
+    Refused(String),
     /// Try the next one.
     Give(String),
 }
@@ -228,10 +230,13 @@ impl NetlogonHandler {
         None
     }
 
-    /// One logon with `controller`: on an idle connection, or a fresh one; once more on a fresh
-    /// connection, after setting the channel up again if it was the trouble. An idle connection
-    /// that does not answer may have been dropped by a firewall while it sat unused, so it is
-    /// closed along with the other idle ones, and the logon tried once on a fresh connection.
+    /// One logon with `controller`: on an idle connection if there is one, then on up to two
+    /// fresh ones, setting the channel up again if the controller refused it. A failure on the
+    /// idle connection does not use up a fresh attempt: after a restart of the controller it is
+    /// only the fresh connection that learns the channel is gone. An idle connection that does
+    /// not answer may have been dropped by a firewall while it sat unused, so it is closed along
+    /// with the other idle ones. Once this request has discarded the channel, one more attempt
+    /// follows and no further one.
     async fn ask_one(&self, controller: &DomainController, request: &Request<'_>) -> Result<Answer, String> {
         let timeout = self.settings.timeout;
         let _slot = tokio::time::timeout(timeout, controller.slots.acquire())
@@ -239,41 +244,59 @@ impl NetlogonHandler {
             .map_err(|_| format!("no connection free within {} ms", timeout.as_millis()))?
             .map_err(|e| e.to_string())?;
         let mut reason = String::new();
-        for fresh in [false, true] {
-            let idle = if fresh { None } else { controller.idle.lock().pop() };
+        let mut idle = controller.idle.lock().pop();
+        let mut fresh = 0;
+        let mut discarded = false;
+        while fresh < 2 {
+            let last = discarded;
             let pooled = idle.is_some();
-            let mut connection = match idle {
-                Some(connection) => connection,
-                None => match tokio::time::timeout(timeout, self.connect(controller)).await {
-                    Ok(Ok(connection)) => connection,
-                    Ok(Err(Failure::Retry(why))) if !fresh => {
-                        reason = why;
-                        continue;
+            let connection = match idle.take() {
+                Some(connection) => Some(connection),
+                None => {
+                    fresh += 1;
+                    match tokio::time::timeout(timeout, self.connect(controller)).await {
+                        Ok(Ok(connection)) => Some(connection),
+                        Ok(Err(Failure::Retry(why))) => {
+                            reason = why;
+                            None
+                        }
+                        Ok(Err(Failure::Refused(why))) => {
+                            discarded = true;
+                            reason = why;
+                            None
+                        }
+                        Ok(Err(Failure::Give(why))) => return Err(why),
+                        Err(_) => return Err(format!("no connection within {} ms", timeout.as_millis())),
                     }
-                    Ok(Err(Failure::Retry(why) | Failure::Give(why))) => return Err(why),
-                    Err(_) => return Err(format!("no connection within {} ms", timeout.as_millis())),
-                },
+                }
             };
-            match tokio::time::timeout(timeout, logon::logon(&mut connection.sealed, request)).await {
-                Err(_) if pooled => {
-                    controller.idle.lock().clear();
-                    reason = format!("no answer within {} ms on an idle connection", timeout.as_millis());
-                }
-                Err(_) => return Err(format!("no answer within {} ms", timeout.as_millis())),
-                Ok(Ok(answer)) if answer.status == status::ACCESS_DENIED => {
-                    forget_session(controller, &connection.session);
-                    reason = "the domain controller refused the secure channel (STATUS_ACCESS_DENIED)".to_string();
-                }
-                Ok(Ok(answer)) => {
-                    controller.idle.lock().push(connection);
-                    return Ok(answer);
-                }
-                Ok(Err(e)) => {
-                    if channel_gone(&e) {
-                        forget_session(controller, &connection.session);
+            if let Some(mut connection) = connection {
+                match tokio::time::timeout(timeout, logon::logon(&mut connection.sealed, request)).await {
+                    Err(_) if pooled => {
+                        controller.idle.lock().clear();
+                        reason = format!("no answer within {} ms on an idle connection", timeout.as_millis());
                     }
-                    reason = e.to_string();
+                    Err(_) => return Err(format!("no answer within {} ms", timeout.as_millis())),
+                    Ok(Ok(answer)) if answer.status == status::ACCESS_DENIED => {
+                        forget_session(controller, &connection.session);
+                        discarded = true;
+                        reason = "the domain controller refused the secure channel (STATUS_ACCESS_DENIED)".to_string();
+                    }
+                    Ok(Ok(answer)) => {
+                        controller.idle.lock().push(connection);
+                        return Ok(answer);
+                    }
+                    Ok(Err(e)) => {
+                        if channel_gone(&e) {
+                            forget_session(controller, &connection.session);
+                            discarded = true;
+                        }
+                        reason = e.to_string();
+                    }
                 }
+            }
+            if last {
+                break;
             }
         }
         Err(reason)
@@ -292,6 +315,7 @@ impl NetlogonHandler {
             Err(e) => {
                 if channel_gone(&e) {
                     forget_session(controller, &session);
+                    return Err(Failure::Refused(e.to_string()));
                 }
                 Err(Failure::Retry(e.to_string()))
             }
@@ -441,6 +465,7 @@ pub mod test_support {
 mod tests {
     use super::test_support::{domain_controller, rig, settings};
     use super::*;
+    use crate::netlogon::channel::test_dc::OldConnections;
     use crate::netlogon::logon::test_dc::domain_sid;
     use std::sync::atomic::Ordering;
     use tokio::io::AsyncWriteExt;
@@ -566,6 +591,7 @@ mod tests {
 
     /// Scenario: First domain controller down; then one that does not answer, and one that is not
     /// authoritative.
+    // spectra-scenario: netlogon-auth / First domain controller down
     #[tokio::test]
     async fn test_next_domain_controller() -> Result<(), String> {
         let (port, _, quirks) = domain_controller("Secret1").await?;
@@ -615,8 +641,12 @@ mod tests {
     }
 
     /// Scenario: All down, and a call that gets no answer in time.
+    // spectra-scenario: netlogon-auth / All down
     #[tokio::test]
     async fn test_all_down() -> Result<(), String> {
+        let (refusing, _) = make(vec![Some(closed_port().await?), Some(closed_port().await?)], |_| {});
+        assert_eq!(decide(&refusing, "alice", "Secret1").await, (Outcome::Reject, Vec::new(), true));
+
         let (handler, counters) = handler_with_timeout(vec![Some(closed_port().await?), Some(silent_port().await?)]);
         let (outcome, attributes, unavailable) = decide(&handler, "alice", "Secret1").await;
         assert_eq!((outcome, attributes.len(), unavailable), (Outcome::Reject, 0, true));
@@ -640,6 +670,7 @@ mod tests {
 
     /// Scenario: The domain controller restarts on another port. The port the endpoint mapper
     /// gave first refuses connections; it is asked again, and the logon goes to the new port.
+    // spectra-scenario: netlogon-auth / Domain controller moved to another port
     #[tokio::test]
     async fn test_endpoint_mapper_asked_again() -> Result<(), String> {
         let (port, _, _) = domain_controller("Secret1").await?;
@@ -683,6 +714,7 @@ mod tests {
 
     /// Scenario: An idle connection a firewall dropped. The logon on it gets no answer; it is
     /// tried again on a fresh connection, with the same secure channel.
+    // spectra-scenario: netlogon-auth / Idle connection dropped
     #[tokio::test]
     async fn test_idle_connection_without_answer() -> Result<(), String> {
         let (port, _, quirks) = domain_controller("Secret1").await?;
@@ -698,6 +730,126 @@ mod tests {
         quirks.silent_once.store(true, Ordering::Relaxed);
         handler.controllers[0].idle.lock().clear();
         assert_eq!(decide(&handler, "alice", "Secret1").await, (Outcome::Reject, Vec::new(), true));
+        Ok(())
+    }
+
+    // spectra-scenario: netlogon-auth / Restart closes the idle connection
+    // spectra-scenario: netlogon-auth / Channel reset by the domain controller
+    #[tokio::test]
+    async fn test_restart_with_closed_idle_connection() -> Result<(), String> {
+        let rig = rig("Secret1", |_| {}).await?;
+        assert_eq!(decide(&rig.handler, "alice", "Secret1").await.0, Outcome::Accept);
+        assert_eq!(rig.handler.controllers[0].idle.lock().len(), 1);
+        rig.state.lock().restart(OldConnections::Close);
+        let (outcome, _, unavailable) = decide(&rig.handler, "alice", "Secret1").await;
+        assert_eq!((outcome, unavailable), (Outcome::Accept, false));
+        let counters = &rig.counters;
+        assert_eq!((counters.setups_ok.get(), counters.unavailable.get(), counters.open.get()), (2, 0, 1));
+        Ok(())
+    }
+
+    // spectra-scenario: netlogon-auth / Restart leaves the idle connection silent
+    #[tokio::test]
+    async fn test_restart_with_silent_idle_connection() -> Result<(), String> {
+        let rig = rig("Secret1", |settings| settings.timeout = Duration::from_millis(300)).await?;
+        assert_eq!(decide(&rig.handler, "alice", "Secret1").await.0, Outcome::Accept);
+        rig.state.lock().restart(OldConnections::Silent);
+        let (outcome, _, unavailable) = decide(&rig.handler, "alice", "Secret1").await;
+        assert_eq!((outcome, unavailable), (Outcome::Accept, false));
+        let counters = &rig.counters;
+        assert_eq!((counters.setups_ok.get(), counters.unavailable.get(), counters.open.get()), (2, 0, 1));
+        Ok(())
+    }
+
+    async fn decide_four(handler: &NetlogonHandler) -> [Outcome; 4] {
+        let one = || decide(handler, "alice", "Secret1");
+        let (a, b, c, d) = tokio::join!(one(), one(), one(), one());
+        [a.0, b.0, c.0, d.0]
+    }
+
+    // spectra-scenario: netlogon-auth / Several logons after a restart
+    #[tokio::test]
+    async fn test_restart_with_concurrent_logons() -> Result<(), String> {
+        let rig = rig("Secret1", |_| {}).await?;
+        assert_eq!(decide_four(&rig.handler).await, [Outcome::Accept; 4]);
+        assert!(rig.handler.controllers[0].idle.lock().len() >= 2, "the restart is to meet several idle connections");
+        rig.state.lock().restart(OldConnections::Close);
+        assert_eq!(decide_four(&rig.handler).await, [Outcome::Accept; 4]);
+        assert_eq!((rig.counters.setups_ok.get(), rig.counters.unavailable.get()), (2, 0));
+        Ok(())
+    }
+
+    // spectra-scenario: netlogon-auth / New channel refused too
+    #[tokio::test]
+    async fn test_rebuilt_channel_refused() -> Result<(), String> {
+        // The old channel is refused on a fresh connection, then the new one: no third bind.
+        let restarted = rig("Secret1", |_| {}).await?;
+        assert_eq!(decide(&restarted.handler, "alice", "Secret1").await.0, Outcome::Accept);
+        {
+            let mut state = restarted.state.lock();
+            state.restart(OldConnections::Close);
+            state.refuse_binds = true;
+        }
+        assert_eq!(decide(&restarted.handler, "alice", "Secret1").await, (Outcome::Reject, Vec::new(), true));
+        assert_eq!(restarted.state.lock().refused_binds, 2);
+        assert_eq!((restarted.counters.setups_ok.get(), restarted.counters.unavailable.get(), restarted.counters.open.get()), (2, 1, 0));
+
+        // A request that discards the channel on its idle connection gets one more attempt only.
+        let denied = rig("Secret1", |_| {}).await?;
+        assert_eq!(decide(&denied.handler, "alice", "Secret1").await.0, Outcome::Accept);
+        denied.state.lock().refuse_binds = true;
+        denied.quirks.deny_once.store(true, Ordering::Relaxed);
+        assert_eq!(decide(&denied.handler, "alice", "Secret1").await, (Outcome::Reject, Vec::new(), true));
+        assert_eq!(denied.state.lock().refused_binds, 1);
+        assert_eq!(denied.counters.setups_ok.get(), 2);
+        Ok(())
+    }
+
+    /// An idle connection that gives no answer takes the other idle ones with it.
+    // spectra-scenario: netlogon-auth / Idle connection dropped
+    #[tokio::test]
+    async fn test_silent_idle_connection_closes_the_others() -> Result<(), String> {
+        let rig = rig("Secret1", |settings| settings.timeout = Duration::from_secs(1)).await?;
+        assert_eq!(decide_four(&rig.handler).await, [Outcome::Accept; 4]);
+        assert!(rig.handler.controllers[0].idle.lock().len() >= 2, "there are to be other idle connections");
+        rig.quirks.silent_once.store(true, Ordering::Relaxed);
+        assert_eq!(decide(&rig.handler, "alice", "Secret1").await.0, Outcome::Accept);
+        assert_eq!((rig.handler.controllers[0].idle.lock().len(), rig.counters.open.get()), (1, 1));
+        assert_eq!((rig.counters.setups_ok.get(), rig.counters.unavailable.get()), (1, 0));
+        Ok(())
+    }
+
+    /// An RPC fault ends the channel, and the request that met it gets one more attempt only.
+    #[tokio::test]
+    async fn test_fault_discards_channel() -> Result<(), String> {
+        let rig = rig("Secret1", |_| {}).await?;
+        assert_eq!(decide(&rig.handler, "alice", "Secret1").await.0, Outcome::Accept);
+        rig.state.lock().fault_once = true;
+        assert_eq!(decide(&rig.handler, "alice", "Secret1").await.0, Outcome::Accept);
+        assert_eq!((rig.counters.setups_ok.get(), rig.counters.open.get()), (2, 1));
+        {
+            let mut state = rig.state.lock();
+            state.fault_once = true;
+            state.refuse_binds = true;
+        }
+        assert_eq!(decide(&rig.handler, "alice", "Secret1").await, (Outcome::Reject, Vec::new(), true));
+        assert_eq!(rig.state.lock().refused_binds, 1);
+        Ok(())
+    }
+
+    /// A fresh connection that fails, other than by silence or a refusal, is tried once more.
+    #[tokio::test]
+    async fn test_failed_fresh_connection_tried_again() -> Result<(), String> {
+        for at_bind in [true, false] {
+            let rig = rig("Secret1", |_| {}).await?;
+            {
+                let mut state = rig.state.lock();
+                state.close_bind_once = at_bind;
+                state.close_call_once = !at_bind;
+            }
+            assert_eq!(decide(&rig.handler, "alice", "Secret1").await.0, Outcome::Accept, "at bind: {at_bind}");
+            assert_eq!((rig.counters.setups_ok.get(), rig.counters.unavailable.get(), rig.counters.open.get()), (1, 0, 1), "at bind: {at_bind}");
+        }
         Ok(())
     }
 

@@ -331,6 +331,13 @@ pub mod server {
         pdu
     }
 
+    /// A refused bind, with the reason "not specified".
+    pub fn bind_nak(call_id: u32) -> Vec<u8> {
+        let mut pdu = header(PTYPE_BIND_NAK, PFC_FIRST_FRAG | PFC_LAST_FRAG, HEADER_LEN + 4, 0, call_id);
+        pdu.extend_from_slice(&[0; 4]);
+        pdu
+    }
+
     pub fn fault(call_id: u32, status: u32) -> Vec<u8> {
         let mut pdu = header(PTYPE_FAULT, PFC_FIRST_FRAG | PFC_LAST_FRAG, HEADER_LEN + 16, 0, call_id);
         pdu.extend_from_slice(&[0; 8]);
