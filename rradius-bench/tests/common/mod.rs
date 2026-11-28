@@ -3,7 +3,8 @@
 
 use rradius_bench::packet::{write_response, Signer, ACCESS_ACCEPT, ACCESS_REJECT, ACCOUNTING_RESPONSE, MAX_PACKET};
 use serde_json::Value;
-use std::net::{SocketAddr, TcpListener, UdpSocket};
+use std::net::{IpAddr, SocketAddr, TcpListener, UdpSocket};
+use std::ops::RangeInclusive;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,8 @@ use std::time::{Duration, Instant};
 /// 49151 on macOS), which nothing here asks for, and a port is taken only when neither a UDP
 /// socket nor a TCP listener can be bound to it. A test program counts up from a start of
 /// its own, so two of them running side by side do not look at the same ports first.
+/// FreeBSD gives out 10000 to 65535, which holds these ports: there only the sockets of
+/// [`udp_socket`] are kept off them, and a TCP connection may still be given one.
 pub fn closed_port() -> u16 {
     static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
     let start = 20_000 + (std::process::id() % 8_000) as u16;
@@ -27,6 +30,25 @@ pub fn closed_port() -> u16 {
             return port;
         }
     }
+}
+
+/// The ports of the lanes `rradius_core::test_support::server::free_port` hands out, which
+/// hold those of [`closed_port`] too.
+const LANE_PORTS: RangeInclusive<u16> = 20_000..=31_999;
+
+/// A UDP socket on `ip`, on a port the system picks outside the lanes: on one of those it
+/// could be the target of its own datagrams, or receive what another test sends to the server
+/// it expects there. A copy of `udp_socket` in `rradius_core::test_support::server`, as this
+/// crate does not depend on that one.
+pub fn udp_socket(ip: IpAddr) -> std::io::Result<UdpSocket> {
+    for _ in 0..1000 {
+        // A socket that is refused is closed at once: holding them could use up the open files.
+        let socket = UdpSocket::bind((ip, 0))?;
+        if !LANE_PORTS.contains(&socket.local_addr()?.port()) {
+            return Ok(socket);
+        }
+    }
+    Err(std::io::Error::other(format!("no UDP port outside {}-{} in 1000 tries", LANE_PORTS.start(), LANE_PORTS.end())))
 }
 
 pub const SECRET: &str = "test-secret";
@@ -63,7 +85,7 @@ pub struct Responder {
 impl Responder {
     /// `handle` gets the request and how many came before it.
     pub fn start(mut handle: impl FnMut(&UdpSocket, SocketAddr, &[u8], usize) + Send + 'static) -> Responder {
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
         socket.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
         let address = socket.local_addr().unwrap();
         let stop = Arc::new(AtomicBool::new(false));

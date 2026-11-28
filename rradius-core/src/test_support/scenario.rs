@@ -3,11 +3,10 @@
 //! share around it. A test names the program and the directory of its scenarios with
 //! `Scenarios`.
 
-use super::server::free_port;
+use super::server::{free_port, udp_socket};
 use crate::radius::RadiusPacket;
 use md5::{Digest, Md5};
 use std::collections::HashMap;
-use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -249,7 +248,7 @@ impl Server {
 
     /// Sends `packet` to `port` until an answer comes, at most a few times.
     pub fn exchange(&self, port: u16, packet: &[u8]) -> Option<RadiusPacket> {
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
         socket.set_read_timeout(Some(Duration::from_millis(1000))).unwrap();
         let mut buffer = [0u8; 4096];
         for _ in 0..5 {

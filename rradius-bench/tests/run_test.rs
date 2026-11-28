@@ -5,7 +5,7 @@ use common::*;
 use rradius_bench::packet::{ACCESS_ACCEPT, ACCESS_CHALLENGE, CLASS, FRAMED_IP_ADDRESS};
 use std::collections::HashSet;
 use std::io::{Read, Write};
-use std::net::{TcpListener, UdpSocket};
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -228,7 +228,7 @@ fn test_concurrency_is_held() {
     let seen = most.clone();
     // Holds requests until no more come, then answers them all.
     let held = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
     socket.set_read_timeout(Some(Duration::from_millis(30))).unwrap();
     let address = socket.local_addr().unwrap();
     let finished = Arc::new(AtomicBool::new(false));

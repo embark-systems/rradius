@@ -5913,7 +5913,11 @@ pub(crate) mod tests {
     async fn test_eap_sessions_swept_while_running() {
         let (dir, _, engine) = eap_rig("return 'accept'");
         let settings = Arc::new(EapSettings { session_timeout: Duration::from_millis(20), ..crate::eap::tests::eap_settings(dir.path(), None) });
-        let server = Arc::new(eap_server(&settings, &engine));
+        let mut server = eap_server(&settings, &engine);
+        // It listens for real below, so on ports of the lanes: `any_addr` leaves them to the system.
+        let free = crate::test_support::server::free_port;
+        (server.auth_addr, server.acct_addr) = (([127, 0, 0, 1], free()).into(), ([127, 0, 0, 1], free()).into());
+        let server = Arc::new(server);
         let _ = eap_begin(&server, dir.path(), b"alice.example.com").await;
         assert_eq!(server.metrics.eap_open.get(), 1);
         let running = tokio::spawn(server.clone().run());
@@ -6921,8 +6925,8 @@ pub(crate) mod tests {
     }
 
     /// Sends a request to `target` from `local` until there is an answer, and returns its source.
-    async fn answered_from(local: &str, target: SocketAddr, request: &[u8], running: &tokio::task::JoinHandle<io::Result<()>>) -> (SocketAddr, u8) {
-        let socket = UdpSocket::bind(local).await.unwrap();
+    async fn answered_from(local: IpAddr, target: SocketAddr, request: &[u8], running: &tokio::task::JoinHandle<io::Result<()>>) -> (SocketAddr, u8) {
+        let socket = crate::test_support::server::tokio_udp_socket(local).unwrap();
         let mut buffer = [0u8; 4096];
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
@@ -6956,9 +6960,9 @@ pub(crate) mod tests {
     async fn test_several_addresses() {
         // Both wildcards, on one port: only if `::` keeps to IPv6. Linux refuses it otherwise.
         let Some((auth_port, _, running)) = server_on("0.0.0.0", "::").await else { return };
-        for (local, target) in [("127.0.0.1:0", "127.0.0.1"), ("[::1]:0", "::1")] {
-            let target = SocketAddr::new(target.parse().unwrap(), auth_port);
-            assert_eq!(answered_from(local, target, &pap(1, "alice", "x"), &running).await.1, ACCESS_ACCEPT);
+        for address in ["127.0.0.1", "::1"] {
+            let target = SocketAddr::new(address.parse().unwrap(), auth_port);
+            assert_eq!(answered_from(target.ip(), target, &pap(1, "alice", "x"), &running).await.1, ACCESS_ACCEPT);
         }
     }
 
@@ -6966,12 +6970,12 @@ pub(crate) mod tests {
     async fn test_two_addresses_each_serve_both_ports() {
         let Some((auth_port, acct_port, running)) = server_on("127.0.0.1", "::1").await else { return };
         let accounting = RadiusPacket::create_accounting_request(2, vec![(1, b"alice".to_vec()), (40, 1u32.to_be_bytes().to_vec())], SECRET);
-        for (local, address) in [("127.0.0.1:0", "127.0.0.1"), ("[::1]:0", "::1")] {
+        for address in ["127.0.0.1", "::1"] {
             let ip: IpAddr = address.parse().unwrap();
             let target = SocketAddr::new(ip, auth_port);
-            assert_eq!(answered_from(local, target, &pap(1, "alice", "x"), &running).await, (target, ACCESS_ACCEPT), "from the address asked");
+            assert_eq!(answered_from(ip, target, &pap(1, "alice", "x"), &running).await, (target, ACCESS_ACCEPT), "from the address asked");
             let target = SocketAddr::new(ip, acct_port);
-            assert_eq!(answered_from(local, target, &accounting, &running).await, (target, ACCOUNTING_RESPONSE), "from the address asked");
+            assert_eq!(answered_from(ip, target, &accounting, &running).await, (target, ACCOUNTING_RESPONSE), "from the address asked");
         }
     }
 
@@ -7003,9 +7007,9 @@ pub(crate) mod tests {
         let server = RadiusServer::new(SocketAddr::new(ip, auth_port), SocketAddr::new(ip, acct_port), Arc::new(clients), Arc::new(engine), share_dictionary()).with_sockets(1);
         let running = tokio::spawn(Arc::new(server).run());
         let target = SocketAddr::new(ip, auth_port);
-        answered_from("127.0.0.1:0", target, &pap(200, "quick", "x"), &running).await;
+        answered_from(target.ip(), target, &pap(200, "quick", "x"), &running).await;
         for pause in [Some(Duration::from_millis(30)), None] {
-            let socket = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+            let socket = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
             socket.send_to(&pap(1, "slow", "x"), target).await.map_err(|e| e.to_string())?;
             if let Some(pause) = pause {
                 tokio::time::sleep(pause).await;
@@ -7075,11 +7079,11 @@ pub(crate) mod tests {
         let running = tokio::spawn(Arc::new(server).run());
         let target = SocketAddr::new("127.0.0.1".parse().unwrap(), auth_port);
         // The first answer says it serves.
-        let (from, code) = answered_from("127.0.0.1:0", target, &pap(200, "alice", "x"), &running).await;
+        let (from, code) = answered_from(target.ip(), target, &pap(200, "alice", "x"), &running).await;
         assert_eq!((from, code), (target, ACCESS_ACCEPT));
         let clients = (0..50u8).map(|client| {
             tokio::spawn(async move {
-                let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                let socket = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap();
                 let mut buffer = [0u8; 4096];
                 let mut replies = Vec::new();
                 for identifier in 0..4u8 {
@@ -7934,29 +7938,31 @@ pub(crate) mod tests {
             if get_attr('User-Name') == 'slow' then SLOW_LOOP end
             return 'accept'".replace("SLOW_LOOP", "local t = now_unix() while now_unix() - t < 2 do end")).unwrap()
             .with_max_execution(std::time::Duration::from_secs(10)));
-        let server = Arc::new(RadiusServer::new(([127, 0, 0, 1], 18220).into(), ([127, 0, 0, 1], 18230).into(), local_clients("xyzzy5461"), engine, share_dictionary()));
+        let free = crate::test_support::server::free_port;
+        let auth_port = free();
+        let server = Arc::new(RadiusServer::new(([127, 0, 0, 1], auth_port).into(), ([127, 0, 0, 1], free()).into(), local_clients("xyzzy5461"), engine, share_dictionary()));
         tokio::spawn(server.run());
 
-        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap();
         let mut buf = [0u8; 4096];
-        async fn exchange(client: &UdpSocket, id: u8) -> RadiusPacket {
+        async fn exchange(client: &UdpSocket, port: u16, id: u8) -> RadiusPacket {
             let fast = RadiusPacket::create_access_request(id, [id; 16], vec![(1, b"fast".to_vec())], SECRET);
             let mut buf = [0u8; 4096];
             loop {
-                client.send_to(&fast, "127.0.0.1:18220").await.unwrap();
+                client.send_to(&fast, ("127.0.0.1", port)).await.unwrap();
                 if let Ok(Ok((size, _))) = tokio::time::timeout(std::time::Duration::from_millis(100), client.recv_from(&mut buf)).await {
                     return RadiusPacket::parse(&buf[..size]).unwrap();
                 }
             }
         }
         // Wait until the server answers, so the slow request is not lost before it binds.
-        tokio::time::timeout(std::time::Duration::from_secs(5), exchange(&client, 1)).await.expect("server not answering");
+        tokio::time::timeout(std::time::Duration::from_secs(5), exchange(&client, auth_port, 1)).await.expect("server not answering");
 
         let slow = RadiusPacket::create_access_request(9, [9u8; 16], vec![(1, b"slow".to_vec())], SECRET);
-        client.send_to(&slow, "127.0.0.1:18220").await.unwrap();
+        client.send_to(&slow, ("127.0.0.1", auth_port)).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(1), exchange(&client, 2)).await.expect("fast request was blocked");
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(1), exchange(&client, auth_port, 2)).await.expect("fast request was blocked");
         assert_eq!(reply.identifier, 2, "only the fast request can be answered while the slow script runs");
 
         // `exchange` sends its request again every 100 ms, so on a slow machine the fast request
@@ -8357,10 +8363,10 @@ pub(crate) mod tests {
     async fn test_same_packet_to_two_sockets_is_two_requests() {
         let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'accept'").unwrap());
         let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()));
-        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap();
         let packet = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
         for _ in 0..2 {
-            let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let socket = Arc::new(crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap());
             client.send_to(&packet, socket.local_addr().unwrap()).await.unwrap();
             tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
             let mut buffer = [0u8; MAX_PACKET_LEN];
@@ -8377,10 +8383,10 @@ pub(crate) mod tests {
         let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}\nreturn 'accept'")).map_err(|e| e.to_string())?.with_max_execution(Duration::from_secs(120)).with_query_timeout(Duration::from_secs(120)));
         let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()));
         server.report_slots();
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
+        let socket = Arc::new(crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?);
         let to = socket.local_addr().map_err(|e| e.to_string())?;
         tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
-        let client = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let client = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
         let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
         client.send_to(&request, to).await.map_err(|e| e.to_string())?;
         let in_progress = |count: u32| format!("rradius_radius_requests_in_progress{{kind=\"auth\"}} {count}\n");
@@ -8409,10 +8415,10 @@ pub(crate) mod tests {
     async fn test_traffic_bytes_of_a_request_and_its_response() -> Result<(), String> {
         let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'accept'").map_err(|e| e.to_string())?);
         let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()));
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
+        let socket = Arc::new(crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?);
         let to = socket.local_addr().map_err(|e| e.to_string())?;
         tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
-        let client = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let client = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
         let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
         client.send_to(&request, to).await.map_err(|e| e.to_string())?;
         let mut buffer = [0u8; MAX_PACKET_LEN];
@@ -8439,10 +8445,10 @@ pub(crate) mod tests {
         let mut table = ClientTable::default();
         table.add("10.9.9.9", Some("other".to_string()), b"secret".to_vec(), crate::clients::ClientOptions::default()).map_err(|e| e.to_string())?;
         let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), Arc::new(table), engine, share_dictionary()));
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
+        let socket = Arc::new(crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?);
         let to = socket.local_addr().map_err(|e| e.to_string())?;
         tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
-        let client = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let client = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
         let request = RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
         client.send_to(&request, to).await.map_err(|e| e.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -8465,10 +8471,10 @@ pub(crate) mod tests {
         let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), format!("{SLOW}\nreturn 'accept'")).map_err(|e| e.to_string())?.with_max_execution(Duration::from_secs(120)).with_query_timeout(Duration::from_secs(120)));
         let stopping = crate::stopping::Stopping::new();
         let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()).with_limits(8, 8).with_stopping(stopping.clone()));
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?);
+        let socket = Arc::new(crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?);
         let to = socket.local_addr().map_err(|e| e.to_string())?;
         let receiving = tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
-        let client = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let client = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).map_err(|e| e.to_string())?;
         let request = |identifier: u8| RadiusPacket::create_access_request(identifier, [identifier; 16], vec![(1, b"alice".to_vec()), (MESSAGE_AUTHENTICATOR, vec![0; 16])], b"secret");
         client.send_to(&request(1), to).await.map_err(|e| e.to_string())?;
         // Being handled: its slot is taken.
@@ -8505,10 +8511,10 @@ pub(crate) mod tests {
     async fn test_overload_line_is_shared_by_the_sockets_of_a_port() {
         let engine = Arc::new(LuaAuthEngine::new(crate::test_support::test_vms(), crate::test_support::test_db(), "return 'accept'").unwrap());
         let server = Arc::new(RadiusServer::new(any_addr(), any_addr(), local_clients("secret"), engine, share_dictionary()).with_limits(0, 0));
-        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap();
         let log = logged_during(async {
             for _ in 0..2 {
-                let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+                let socket = Arc::new(crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap());
                 client.send_to(b"x", socket.local_addr().unwrap()).await.unwrap();
                 tokio::spawn(server.clone().receive_loop(PacketKind::Auth, socket));
             }
@@ -8819,7 +8825,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_authentication_limit() {
         let (auth, _) = limited_server("auth-limit", 1, 10, false).await;
-        let (slow_client, client) = (UdpSocket::bind("127.0.0.1:0").await.unwrap(), UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (slow_client, client) = (crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap(), crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap());
         let slow = RadiusPacket::create_access_request(1, [1u8; 16], vec![(1, b"slow".to_vec())], SECRET);
         start_slow_request(&slow_client, auth, &slow, "auth-limit").await;
 
@@ -8838,7 +8844,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_no_record_for_a_packet_discarded_by_overload() {
         let (auth, _acct) = limited_server("rec-overload", 1, 10, false).await;
-        let (holder, client) = (UdpSocket::bind("127.0.0.1:0").await.unwrap(), UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (holder, client) = (crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap(), crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap());
         let slow = RadiusPacket::create_access_request(1, [71; 16], vec![(1, b"slow".to_vec())], SECRET);
         start_slow_request(&holder, auth, &slow, "rec-overload").await;
         let discarded = RadiusPacket::create_access_request(2, [72; 16], vec![(1, b"rec-discarded".to_vec())], SECRET);
@@ -8850,7 +8856,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_accounting_limit_leaves_authentication_its_own() {
         let (auth, acct) = limited_server("acct-limit", 10, 1, true).await;
-        let (acct_client, client) = (UdpSocket::bind("127.0.0.1:0").await.unwrap(), UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (acct_client, client) = (crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap(), crate::test_support::server::tokio_udp_socket([127, 0, 0, 1].into()).unwrap());
         let start = |id: u8| RadiusPacket::create_accounting_request(id, vec![(40, vec![0, 0, 0, 1])], SECRET);
         start_slow_request(&acct_client, acct, &start(1), "acct-limit").await;
 

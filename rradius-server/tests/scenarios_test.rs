@@ -8,10 +8,10 @@
 use md5::Md5;
 use rradius_core::radius::RadiusPacket;
 use std::collections::HashMap;
-use std::net::UdpSocket;
 use std::process::Command;
 use std::time::Duration;
 use rradius_core::test_support::scenario::*;
+use rradius_core::test_support::server::udp_socket;
 
 /// The program these tests start.
 const PROGRAM: &str = env!("CARGO_BIN_EXE_rradiusd");
@@ -930,7 +930,7 @@ fn test_memory_stops_growing_under_steady_load() {
         .map(|_| {
             let (stop, answered, accepted, secret) = (stop.clone(), answered.clone(), accepted.clone(), server.secret.clone());
             std::thread::spawn(move || {
-                let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+                let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
                 socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
                 let mut buffer = [0u8; 4096];
                 while !stop.load(Ordering::Relaxed) {

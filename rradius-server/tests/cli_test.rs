@@ -2,7 +2,6 @@ use hmac::{Hmac, KeyInit, Mac};
 use md5::Md5;
 use rradius_core::radius::{self, RadiusPacket};
 use std::io::{Read, Write};
-use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -322,7 +321,7 @@ fn test_discard_is_logged() {
     assert_eq!(server.access_request(), radius::ACCESS_ACCEPT, "the server is up");
 
     let bare = RadiusPacket { code: radius::ACCESS_REQUEST, identifier: 2, authenticator: [2; 16], attributes: vec![(1, b"alice".to_vec())] }.encode();
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
     socket.send_to(&bare, ("127.0.0.1", server.auth_port)).unwrap();
     socket.send_to(&bare, ("127.0.0.1", server.auth_port)).unwrap();
     std::thread::sleep(Duration::from_millis(300));
@@ -344,7 +343,7 @@ fn test_status_server_can_be_turned_off() {
     let mut mac = Hmac::<Md5>::new_from_slice(b"s").unwrap();
     mac.update(&status);
     status[22..38].copy_from_slice(&mac.finalize().into_bytes());
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
     socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
     socket.send_to(&status, ("127.0.0.1", server.auth_port)).unwrap();
     assert!(socket.recv_from(&mut [0u8; 4096]).is_err(), "answered with status_server = false");
@@ -617,7 +616,7 @@ impl Asking for Server {
     fn ask_as(&self, name: &[u8], secret: &[u8]) -> Option<u8> {
         static SENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
         let sent = SENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
         socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         let packet = RadiusPacket::create_access_request(sent, [sent; 16], vec![(1, name.to_vec())], secret);
         socket.send_to(&packet, ("127.0.0.1", self.auth_port)).unwrap();
@@ -813,7 +812,7 @@ fn test_reload_does_not_move_ports() {
     assert!(log.contains("radius.auth_port"), "{log}");
 
     assert_eq!(server.ask(b"s"), Some(radius::ACCESS_REJECT), "still on the old port, with the new script");
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
     socket.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
     socket.send_to(&RadiusPacket::create_access_request(1, [1; 16], vec![(1, b"alice".to_vec())], b"s"), ("127.0.0.1", new_port)).unwrap();
     assert!(socket.recv_from(&mut [0u8; 4096]).is_err(), "answered on the new port");
@@ -1124,7 +1123,7 @@ trait AskingSlowly {
 impl AskingSlowly for Server {
     /// One Access-Request for `name`, given up to a minute for a script that logs a lot.
     fn ask_slowly(&self, id: u8, name: &[u8]) -> u8 {
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
         socket.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
         let packet = RadiusPacket::create_access_request(id, [id; 16], vec![(1, name.to_vec())], b"s");
         socket.send_to(&packet, ("127.0.0.1", self.auth_port)).unwrap();
@@ -1272,7 +1271,7 @@ fn test_passwords_are_not_logged() {
         let mut server = Server { child, dir, config, auth_port };
         server.access_request();
 
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
         socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let ask = |id: u8, name: &[u8], attributes: Vec<(u8, Vec<u8>)>, authenticator: [u8; 16]| {
             let mut all = vec![(1u8, name.to_vec())];
@@ -1393,7 +1392,7 @@ fn test_mschapv1_through_real_processes() -> Result<(), Box<dyn std::error::Erro
         }
 
         // RADIUS: the same exchange as a request. Without a chain the top-level script decides and no response is checked.
-        let socket = UdpSocket::bind("127.0.0.1:0")?;
+        let socket = udp_socket([127, 0, 0, 1].into())?;
         socket.set_read_timeout(Some(Duration::from_secs(5)))?;
         let ask = |id: u8, user: &[u8], nt_response: &[u8; 24], flags: u8, authenticator: [u8; 16]| -> Result<RadiusPacket, String> {
             let attributes = vec![(1u8, user.to_vec()), microsoft(11, &CHALLENGE), microsoft(1, &response(nt_response, flags))];
@@ -2094,7 +2093,7 @@ fn test_spool_survives_a_restart() {
     let mut server = Server { child, dir, config, auth_port };
     server.wait_for_log("Servers started");
 
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
     socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let packet = RadiusPacket::create_accounting_request(9, vec![(40, vec![0, 0, 0, 1]), (44, b"spooled-session".to_vec())], b"s");
     socket.send_to(&packet, ("127.0.0.1", acct_port)).unwrap();
@@ -2196,7 +2195,7 @@ impl Accounts for Server {
             hidden.extend_from_slice(&previous);
         }
         let packet = RadiusPacket::create_access_request(sent, authenticator, vec![(1, name.as_bytes().to_vec()), (2, hidden)], b"s");
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
         socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         socket.send_to(&packet, ("127.0.0.1", self.auth_port)).unwrap();
         let mut buf = [0u8; 4096];
@@ -2412,7 +2411,7 @@ fn test_pinned_worker_threads() {
     let asks: Vec<_> = (0..32u8).map(|i| {
         let port = server.auth_port;
         std::thread::spawn(move || {
-            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
             let user = format!("alice{i}").into_bytes();
             let packet = RadiusPacket::create_access_request(i, [i; 16], vec![(1, user)], b"s");
@@ -2499,7 +2498,7 @@ fn four_slow_reads(read_connections: usize) -> Duration {
     let asks: Vec<_> = (0..4u8).map(|i| {
         let port = server.auth_port;
         std::thread::spawn(move || {
-            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let socket = udp_socket([127, 0, 0, 1].into()).unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(120))).unwrap();
             let packet = RadiusPacket::create_access_request(10 + i, [10 + i; 16], vec![(1, b"alice".to_vec())], b"s");
             socket.send_to(&packet, ("127.0.0.1", port)).unwrap();
