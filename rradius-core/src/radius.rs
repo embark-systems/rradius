@@ -22,6 +22,10 @@ use crate::metrics::Metrics;
 use crate::reload::Live;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+/// What the log says of an Access-Request left unanswered because a backend could not be used,
+/// whichever it was; the handler that found it out logs which.
+const BACKEND_UNAVAILABLE: &str = "the authentication backend could not be used";
+
 pub const ACCESS_REQUEST: u8 = 1;
 pub const ACCESS_ACCEPT: u8 = 2;
 pub const ACCESS_REJECT: u8 = 3;
@@ -2403,10 +2407,10 @@ impl RadiusServer {
                 (decision.outcome, decision.response_attributes, "script", "script", Some(user.to_string()), unavailable)
             }
         };
-        // Not a refusal: the NAS sends it again, or asks a server that can reach the database.
+        // Not a refusal: the NAS sends it again, or asks a server that can reach the backend.
         if unavailable {
             self.metrics.radius_discarded_database.inc();
-            log_line(tracing::Level::WARN, format!("RADIUS Access-Request from client {} not answered: the authentication backend could not be used", client.name));
+            log_line(tracing::Level::WARN, format!("RADIUS Access-Request from client {} not answered: {BACKEND_UNAVAILABLE}", client.name));
             return None;
         }
         // The chain accepted the password: the second factor asks for the code, or checks one.
@@ -2578,7 +2582,7 @@ impl RadiusServer {
         if unavailable {
             crate::auth_chain::wipe_keys(&mut reply);
             self.metrics.radius_discarded_database.inc();
-            log_line(tracing::Level::WARN, format!("RADIUS {} request from client {} not answered: the cluster database could not be used", name.to_uppercase(), client.name));
+            log_line(tracing::Level::WARN, format!("RADIUS {} request from client {} not answered: {BACKEND_UNAVAILABLE}", name.to_uppercase(), client.name));
             return None;
         }
         let account = account.unwrap_or_else(|| identity.clone());
@@ -2648,7 +2652,7 @@ impl RadiusServer {
                 }
             };
             if waits {
-                unavailable("the cluster database could not be used");
+                unavailable(BACKEND_UNAVAILABLE);
                 self.eap.authorization_waits(*pending);
                 return None;
             }
@@ -2715,9 +2719,9 @@ impl RadiusServer {
                     Some(inner) => Ok((inner.account.clone(), inner.attributes, inner.account)),
                     None => self.decide_on_certificate(state, client, packet, &finished).await,
                 };
-                // The chain could not decide for want of the database: the conversation waits.
-                if let Err((reason, _, true)) = &decided {
-                    unavailable(reason);
+                // The chain could not decide for want of a backend: the conversation waits.
+                if let Err((_, _, true)) = &decided {
+                    unavailable(BACKEND_UNAVAILABLE);
                     self.eap.finish_waits(finished);
                     return None;
                 }
@@ -2756,7 +2760,7 @@ impl RadiusServer {
 
     /// What the chain says of the name in a verified certificate: the name, the reply attributes
     /// and the account, or why not and the account.
-    /// The refusal says whether it was for want of the cluster database.
+    /// The refusal says whether it was because a backend could not be used.
     async fn decide_on_certificate(&self, state: &RadiusState, client: &Client, packet: &RadiusPacket, finished: &Finished) -> Result<(String, Vec<(String, AttrValue)>, String), (String, String, bool)> {
         let certificate = finished.certificate.as_ref().ok_or_else(|| ("no certificate".to_string(), String::new(), false))?;
         let (name, subject) = certificate_name(certificate, &finished.identity, finished.match_identity).map_err(|reason| (reason, String::new(), false))?;
@@ -2847,7 +2851,7 @@ impl RadiusServer {
 
     /// Asks the client's chain, or the top-level script without one, about a name that a verified
     /// certificate proved. Scripts see that name as `User-Name`.
-    /// The last value says a refusal came of the cluster database being unavailable.
+    /// The last value says a refusal came of a backend being unavailable.
     async fn authorize_certificate(&self, state: &RadiusState, client: &Client, packet: &RadiusPacket, name: &str, method: &'static str, subject: Option<CertificateSubject>) -> (Outcome, Vec<(String, AttrValue)>, Option<String>, bool) {
         let mut attributes = request_attributes(packet, &self.dictionary, &client.secret);
         attributes.retain(|(attribute, _)| attribute != "User-Name");
@@ -5368,6 +5372,73 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Runs a conversation from its Identity until the server leaves a request unanswered, and
+    /// returns that request.
+    async fn eap_until_unanswered(server: &RadiusServer, peer: &mut crate::eap::tests::Peer, outer: &[u8]) -> Result<Vec<u8>, String> {
+        let mut identifier = 1u8;
+        let mut request = peap_request(identifier, outer, &crate::eap::tests::identity_response(1, outer), None);
+        for _ in 0..64 {
+            let Some(response) = server.handle_auth(&request, LOCALHOST).await else {
+                return Ok(request);
+            };
+            let response = RadiusPacket::parse(&response).map_err(|e| format!("{e:?}"))?;
+            if response.code != ACCESS_CHALLENGE {
+                return Err(format!("answered with code {}", response.code));
+            }
+            identifier += 1;
+            request = peap_request(identifier, outer, &peer.answer(&joined(&response)), response.attribute(STATE));
+        }
+        Err("the conversation did not end".to_string())
+    }
+
+    /// No domain controller answers: the request waits, and the same request goes on to an
+    /// Access-Accept once the chain can decide.
+    // spectra-scenario: auth-chain / Domain controller does not answer during PEAP
+    // spectra-scenario: eap / Chain backend returns before the NAS gives up
+    #[tokio::test]
+    async fn test_peap_unavailable_controller_waits() -> Result<(), String> {
+        use crate::netlogon::handler::test_support::{chain, chain_without_controller};
+        let (dir, server) = peap_server_with("peap-no-dc", "return 'reject'", Some(chain_without_controller()));
+        let mut peer = crate::eap::tests::peap_peer(dir.path(), crate::eap::tests::mschap_inner("alice", "secret", Arc::default()));
+        let mut unanswered = Err("not run".to_string());
+        let log = logged_during(async { unanswered = eap_until_unanswered(&server, &mut peer, b"anonymous").await }).await;
+        let mut request = unanswered?;
+        assert_eq!(server.metrics.radius_discarded_database.get(), 1);
+        assert!(log.contains("EAP request from client peap-no-dc not answered: the authentication backend could not be used") && !log.contains("cluster database"), "{log}");
+
+        let state = server.state();
+        let chains = Arc::new(AuthChains::new(Some(chain("secret").await?), Vec::new()));
+        server.replace_state(RadiusState::new(state.clients.clone(), state.engine.clone(), Some(chains)));
+        for _ in 0..64 {
+            let response = server.handle_auth(&request, LOCALHOST).await.ok_or("not answered again")?;
+            let response = RadiusPacket::parse(&response).map_err(|e| format!("{e:?}"))?;
+            if response.code != ACCESS_CHALLENGE {
+                assert_eq!(response.code, ACCESS_ACCEPT);
+                return Ok(());
+            }
+            let identifier = request[1].wrapping_add(1);
+            request = peap_request(identifier, b"anonymous", &peer.answer(&joined(&response)), response.attribute(STATE));
+        }
+        Err("the conversation did not end".to_string())
+    }
+
+    /// The handshake succeeds and the directory that would authorize the name is down: not
+    /// answered, and the log does not call it a refusal.
+    // spectra-scenario: auth-chain / Backend down while a certificate is authorized
+    #[tokio::test]
+    async fn test_eap_tls_unavailable_directory() -> Result<(), String> {
+        let (dir, settings, engine) = eap_rig("return 'reject'");
+        let server = eap_server(&settings, &engine).with_auth_chains(Arc::new(AuthChains::new(Some(directory_down()?), Vec::new())));
+        let mut peer = crate::eap::tests::Peer::new(crate::eap::tests::client_connection(dir.path(), Some("alice"), &rustls::version::TLS12));
+        let mut unanswered = Err("not run".to_string());
+        let log = logged_during(async { unanswered = eap_until_unanswered(&server, &mut peer, b"alice.example.com").await }).await;
+        unanswered?;
+        assert_eq!(server.metrics.radius_discarded_database.get(), 1);
+        assert!(log.contains("not answered: the authentication backend could not be used"), "{log}");
+        assert!(!log.contains("not answered: not authorized") && !log.contains("cluster database"), "{log}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_peap_wrong_password() {
         let (dir, server) = peap_server("peap-wrong", "peap_wrong", "return 'accept'").await;
@@ -6122,6 +6193,7 @@ pub(crate) mod tests {
 
     /// A directory that is down leaves a login unanswered and counted, as an unavailable
     /// database does, and logs no particular backend.
+    // spectra-scenario: auth-chain / RADIUS gets no answer for a directory that is down
     #[tokio::test]
     async fn test_unavailable_directory_leaves_login_unanswered() -> Result<(), String> {
         use crate::ldap_handler::{tests::settings, LdapHandler, PasswordCheck};
@@ -6662,7 +6734,7 @@ pub(crate) mod tests {
             use crate::pre_chain::Identified;
             let outcome = request.user.strip_prefix("pre-outcome-")?;
             let identified = match outcome {
-                "found" | "found-rejected" => Identified::Found { identity: format!("proven-{outcome}"), reply: vec![("Tunnel-Password".to_string(), AttrValue::Bytes(b"the-key".to_vec()))] },
+                "found" | "found-rejected" | "found-down" => Identified::Found { identity: format!("proven-{outcome}"), reply: vec![("Tunnel-Password".to_string(), AttrValue::Bytes(b"the-key".to_vec()))] },
                 "refused" => Identified::Refused { log: Some(format!("fake refused {} from {}", request.user, request.client.name)) },
                 "unavailable" => Identified::Unavailable { log: "fake could not read its table".to_string() },
                 _ => Identified::Busy,
@@ -6732,7 +6804,35 @@ pub(crate) mod tests {
         })
         .await;
         assert_eq!(server.metrics.radius_discarded_database.get(), discarded + 1);
-        assert!(log.contains("RADIUS FAKE request from client nas-a not answered: the cluster database could not be used"), "{log}");
+        assert!(log.contains("RADIUS FAKE request from client nas-a not answered: the authentication backend could not be used") && !log.contains("cluster database"), "{log}");
+        Ok(())
+    }
+
+    /// A chain whose `ldap` handler finds nothing listening, for names that a certificate or
+    /// an authenticator proved.
+    fn directory_down() -> Result<AuthChain, String> {
+        use crate::ldap_handler::{tests::settings, LdapHandler, LdapSettings, PasswordCheck};
+        let url = format!("ldap://127.0.0.1:{}", crate::test_support::server::free_port());
+        let settings = LdapSettings { certificate_filter: Some("(uid={user})".to_string()), ..settings(vec![url], PasswordCheck::Bind) };
+        let handler = LdapHandler::new(settings).map_err(|e| format!("{e:?}"))?;
+        Ok(AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![crate::auth_chain::Handler::Ldap(handler)]))
+    }
+
+    /// A pre-chain authenticator finds an identity and the chain's directory is down: not
+    /// answered, counted, and logged under the authenticator's name.
+    // spectra-scenario: auth-chain / Backend down after a pre-chain authenticator
+    #[tokio::test]
+    async fn test_pre_chain_unavailable_directory() -> Result<(), String> {
+        let server = traced_server("return 'reject'", None);
+        let state = server.state();
+        let chains = Arc::new(AuthChains::new(Some(directory_down()?), Vec::new()));
+        server.replace_state(RadiusState::new(state.clients.clone(), state.engine.clone(), Some(chains)).with_pre_chain(Some(Arc::new(FakePreChain))));
+        let log = logged_during(async {
+            assert!(server.receive(PacketKind::Auth, &pap(1, "pre-outcome-found-down", "unused"), from("127.0.0.1")).await.is_none(), "not answered");
+        })
+        .await;
+        assert_eq!(server.metrics.radius_discarded_database.get(), 1);
+        assert!(log.contains("RADIUS FAKE request from client nas-a not answered: the authentication backend could not be used") && !log.contains("cluster database"), "{log}");
         Ok(())
     }
 

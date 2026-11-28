@@ -376,10 +376,10 @@ rradius_radius_duplicates_total 1
 | 來源不是已知的用戶端 | `reason="unknown_client"` |
 | 封包格式錯誤、Message-Authenticator 不對或缺少 | `reason="invalid"` |
 | 同時處理的請求到達上限 | `reason="overload"` |
-| 決定 Access-Request 時資料庫暫時不能用（逾時、找不到 leader、寫入佇列滿了） | `reason="database"` |
+| 決定 Access-Request 時後端暫時不能用：叢集資料庫（逾時、找不到 leader、寫入佇列滿了）、外部資料庫、LDAP 目錄、網域控制站，或密碼驗證逾時 | `reason="database"` |
 | 叢集節點失去多數、已停止服務 | `reason="no_leader"` |
 
-上表的計數都是 `rradius_radius_discarded_total` 的標籤。資料庫不能用時，日誌是 `RADIUS Access-Request from client <name> not answered: the authentication backend could not be used`。資料說「不」的情況（沒有這個帳號、密碼錯、資料庫都查得到而腳本拒絕）照樣回 Access-Reject；只有「無法判斷」才不回答。計費請求在資料庫不能用時的處理見[第 13 章](13-accounting.md)。
+上表的計數都是 `rradius_radius_discarded_total` 的標籤。後端不能用時，日誌是 `RADIUS Access-Request from client <name> not answered: the authentication backend could not be used`。資料說「不」的情況（沒有這個帳號、密碼錯、資料庫都查得到而腳本拒絕）照樣回 Access-Reject；只有「無法判斷」才不回答。計費請求在資料庫不能用時的處理見[第 13 章](13-accounting.md)。
 
 > **未實機驗證：** 資料庫不能用與 `no_leader` 這兩列依程式碼與規格整理，本章沒有實際製造資料庫故障來驗證。叢集的情況見[第 16 章](16-cluster.md)。
 

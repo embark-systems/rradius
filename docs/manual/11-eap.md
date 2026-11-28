@@ -707,13 +707,13 @@ You normally do not need to tune these values. For when you do:
 
 ## When the database is unavailable
 
-The EAP conversation itself is in memory, but the last step (the auth chain querying the table) needs the cluster database. When the database is temporarily unavailable (for example a call times out; read-only queries are still answered from the local replica when there is no leader, see Chapter 16):
+The EAP conversation itself is in memory, but the last step (the auth chain deciding about the name) needs a backend: the cluster database, an external database, an LDAP directory or a domain controller. When it is temporarily unavailable (for example a database call times out or no domain controller answers; read-only queries of the cluster database are still answered from the local replica when there is no leader, see Chapter 16), or a password verification times out:
 
-- The request is not answered, `rradius_radius_discarded_total{reason="database"}` goes up by 1, and the log says `EAP request from client <name> not answered: …`.
+- The request is not answered, `rradius_radius_discarded_total{reason="database"}` goes up by 1, and the log says `EAP request from client <name> not answered: the authentication backend could not be used`.
 - The conversation is kept. When the NAS retransmits the same EAP-Response, rradius redoes that step and does not read the TLS data again.
 - Each retransmission counts as a round and is still subject to `session_timeout_ms` and the limit of 256 rounds.
 
-So when the database is down briefly, supplicants only log in more slowly and are not rejected; when the outage is too long, the conversation times out and the supplicant must start over.
+So when the backend is down briefly, supplicants only log in more slowly and are not rejected; when the outage is too long, the conversation times out and the supplicant must start over.
 
 > **Not verified on real hardware:** This part was only checked against the code and the spec, and was never run under a real database failure. For the overall behavior when the cluster has no leader, see [Chapter 16](16-cluster.md).
 
@@ -758,7 +758,7 @@ The log lines related to EAP are all WARN:
 | --- | --- |
 | `EAP conversation with client <name> refused: <reason>` | The handshake succeeded but authorization did not pass, for example `not authorized`, `the EAP Identity does not fit the certificate` |
 | `EAP conversation with client <name> failed: <reason>` | The conversation failed midway, for example wrong password, method not allowed, TLS handshake failure |
-| `EAP request from client <name> not answered: <reason>` | The database is unavailable and the request got no answer; the conversation waits for the NAS to retransmit |
+| `EAP request from client <name> not answered: <reason>` | A backend is unavailable and the request got no answer; the conversation waits for the NAS to retransmit |
 
 Each conversation that ends also has an `rradius_auth` authentication record. The log never prints the MSK or TLS content, and never prints the password inside the tunnel. The full description of metrics and logs is in [Chapter 17](17-monitoring.md) and [Appendix C](92-metrics-reference.md).
 

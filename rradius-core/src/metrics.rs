@@ -368,7 +368,8 @@ pub struct Metrics {
     pub radius_discarded_overload: Counter,
     pub radius_discarded_unknown_client: Counter,
     pub radius_discarded_invalid: Counter,
-    /// Access-Requests left unanswered because the cluster database could not be used.
+    /// Access-Requests left unanswered because a backend could not be used, whichever it was; the
+    /// label stays `database`.
     pub radius_discarded_database: Counter,
     /// Requests left unanswered under `[cluster] stop_without_leader_ms`.
     pub radius_discarded_no_leader: Counter,

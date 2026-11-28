@@ -411,7 +411,7 @@ lock_seconds = 300
 
 - The unit of counting is "account + source device": the source is `Calling-Station-Id` for RADIUS and `rem_addr` for TACACS+; when there is none, it is an empty string.
 - While locked, requests are refused immediately and the password is not checked, even if it is correct. A successful login clears the count.
-- A login that fails because the database is unavailable is not counted; an account that does not exist is counted all the same, so the lockout behavior does not show whether an account exists.
+- A login that fails because a backend (a database, an LDAP directory, a domain controller) is unavailable, or because password verification timed out, is not counted; an account that does not exist is counted all the same, so the lockout behavior does not show whether an account exists.
 - The counts are kept in the memory of each node: a reload keeps them, a restart resets them, and nodes of a cluster do not share them.
 - It can be reloaded.
 

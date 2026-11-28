@@ -102,7 +102,7 @@ The NAS sees only a few kinds of result, and each has different causes:
 | No response (timeout) | Dropped the request, or could not answer | The `Discarded` lines of `status`, and `not answered` in the log |
 | TACACS+ ERROR | Could not answer | `answered ERROR` in the log |
 
-"No response" is deliberate. When the database is unavailable, there is no leader (with `stop_without_leader_ms` set, or when the request needs a write) or the server is overloaded, the server does not send a Reject. It lets the NAS retransmit or ask another server, instead of kicking the user out.
+"No response" is deliberate. When a backend (a database, an LDAP directory, a domain controller) is unavailable or password verification times out, when there is no leader (with `stop_without_leader_ms` set, or when the request needs a write) or the server is overloaded, the server does not send a Reject. It lets the NAS retransmit or ask another server, instead of kicking the user out.
 
 The RADIUS section of `status`:
 
@@ -121,7 +121,7 @@ RADIUS
 | --- | --- | --- |
 | `Discarded: unknown client` | The source address is not in the client list | [Client matching fails](#client-matching-fails) |
 | `Discarded: invalid` | Shared secret mismatch, missing Message-Authenticator, malformed packet | [Shared secret mismatch](#shared-secret-mismatch) |
-| `Discarded: database` | The database needed for authentication or accounting is unavailable | [Database unavailable](#database-unavailable) |
+| `Discarded: database` | The database needed for authentication or accounting, or the LDAP directory or domain controller that authentication uses, is unavailable, or password verification timed out | [Database unavailable](#database-unavailable) |
 | `Discarded: no leader` | `stop_without_leader_ms` is set and the cluster has no leader | [Cluster has no leader](#cluster-has-no-leader) |
 | `Discarded: overload` | More requests are being handled at once than the limit | [Overload and UDP packet loss](#overload-and-udp-packet-loss) |
 
@@ -411,7 +411,7 @@ In testing, a row `No-Such-Attr` was added to the `user_reply` table and `alice`
 
 ## Database unavailable
 
-When the database that authentication or accounting uses cannot be reached, the server **does not answer** instead of rejecting.
+When the database that authentication or accounting uses cannot be reached, or the LDAP directory or domain controllers that authentication uses cannot be used, or password verification times out, the server **does not answer** instead of rejecting.
 
 ### External databases
 
@@ -638,7 +638,7 @@ When the shared secrets differ, the server cannot decode the packet body and clo
 
 `Malformed` in the TACACS+ section of `status` grows. On the `rradius-bench` side you see `lengths: the fields of the reply do not add up to its length, so the shared secret may be wrong`.
 
-When the database used for authentication is unavailable, TACACS+ does not stay silent but answers ERROR:
+When a backend used for authentication (a database, an LDAP directory, a domain controller) is unavailable, or password verification times out, TACACS+ does not stay silent but answers ERROR. Authorization answers ERROR too when a database that the script calls is unavailable, and logs `TACACS+ authorization for client <name> answered ERROR: the database could not be used`. For authentication:
 
 ```text
 … WARN rradius_core::lua_engine: TACACS+ authentication for client router1 answered ERROR: the authentication backend could not be used
@@ -807,7 +807,7 @@ You see this message; here are the cause and the fix. All of them are real outpu
 | `RADIUS packet from unknown client X discarded` | The source address is not in the client list | Add a client with the address from the log |
 | `RADIUS: discarded N Access-Requests lacking a Message-Authenticator, …` | The NAS does not send a Message-Authenticator, or the secret is wrong and none was sent | Turn on Message-Authenticator on the NAS; if that is not possible, set `"no"` for that client only |
 | (no log, `Discarded: invalid` grows) | Shared secret mismatch | Set the shared secret again on both sides |
-| `RADIUS Access-Request from client X not answered: the authentication backend could not be used` | The database or directory used for authentication is unavailable | Look at the error on the previous line |
+| `RADIUS Access-Request from client X not answered: the authentication backend could not be used` | The database, directory or domain controller used for authentication is unavailable, or password verification timed out | Look at the error on the previous line |
 | `auth sql handler error: database X: pool timed out while waiting for an open connection` | The external database cannot be reached | Check the database and the network |
 | `databases.X: not reachable at startup: …; /readyz answers 503 until it is` | A database with `required_for_ready` cannot be reached | Same as above |
 | `Lua script error (radius/accounting): runtime error: no leader for 5 s` | The cluster has no leader, so it cannot write | Bring back a majority of the nodes |
@@ -826,7 +826,8 @@ You see this message; here are the cause and the fix. All of them are real outpu
 | `TACACS+ connection from X closed: a body did not decode, so the shared secret may be wrong` | TACACS+ shared secret mismatch | Set the shared secret again on both sides |
 | `TACACS+ overloaded: closed N connections` | The number of connections reached `tacacs.max_connections` | [Connection closed: limits](#connection-closed-limits) |
 | `TACACS+ connection from X closed: it already holds max_connections_per_source = N connections` | The number of connections from this source address reached the limit | Same as above |
-| `TACACS+ authentication for client X answered ERROR: the authentication backend could not be used` | The database used for authentication is unavailable | Check the database |
+| `TACACS+ authentication for client X answered ERROR: the authentication backend could not be used` | The database, directory or domain controller used for authentication is unavailable, or password verification timed out | Look at the error on the previous line |
+| `TACACS+ authorization for client X answered ERROR: the database could not be used` | A database that the authorization script calls is unavailable | Check the database |
 | `script exceeded the execution limit of N ms` | The script ran too long | Fix the script, or adjust `lua.max_execution_ms` |
 | `script http_request refused: … is not in lua.http.allowed_hosts` | The host the script calls is not on the allow list | Add it to `allowed_hosts` |
 | `stopping: after N ms, M RADIUS requests were still being handled and K TACACS+ connections open; they are cut off` | At shutdown, the server waited `[shutdown] drain_ms` and some requests were still not finished (script, LDAP or database too slow); those requests get no response and the device retransmits to another server | Find out why it is slow, or increase `drain_ms` ([Chapter 18](18-operations.md#how-long-shutdown-takes)) |

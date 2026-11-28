@@ -75,7 +75,7 @@ What happens to authentication and accounting when you stop nodes of a three-nod
 
 Accounting can be replayed, and can also be recorded twice because of a retransmit after a timeout, so the accounting script has to be safe to run more than once (for example keyed on `Acct-Session-Id` with `INSERT OR IGNORE`); see [chapter 13](13-accounting.md).
 
-**When the database cannot be used, the server does not answer instead of rejecting.** When a login cannot be decided because the cluster database timed out or found no leader, RADIUS sends no reply and TACACS+ answers ERROR. The NAS or device then asks another node, and the user does not see "wrong password". Such requests are counted in `rradius_radius_discarded_total{reason="database"}`, and the log says `not answered: the cluster database could not be used`. The server rejects only when it is sure the account does not exist or the password is wrong, and all database calls of the script succeeded.
+**When the database cannot be used, the server does not answer instead of rejecting.** When a login cannot be decided because the cluster database timed out or found no leader, RADIUS sends no reply and TACACS+ answers ERROR. The NAS or device then asks another node, and the user does not see "wrong password". Such requests are counted in `rradius_radius_discarded_total{reason="database"}`, and the log says `not answered: the authentication backend could not be used` for RADIUS, `answered ERROR: the authentication backend could not be used` for TACACS+ authentication, and `answered ERROR: the database could not be used` for TACACS+ authorization. The server rejects only when it is sure the account does not exist or the password is wrong, and all database calls of the script succeeded.
 
 **A node cut off from the others reads old data.** While it is separated from the majority, an account disabled on the other side, a NAS deleted there, or a key revoked there is still valid on this node until the network recovers. If you cannot accept that, set `stop_without_leader_ms`.
 
@@ -1229,7 +1229,7 @@ The `/metrics` of every node has these, and the values are this node's own view:
 | `rradius_db_batched_writes_total` | counter | Script writes committed in one transaction together with other writes |
 | `rradius_db_split_batches_total` | counter | How many times a combined transaction failed and was split to find the statement that failed |
 | `rradius_radius_discarded_total{reason="no_leader"}` | counter | Requests not answered because of `stop_without_leader_ms` |
-| `rradius_radius_discarded_total{reason="database"}` | counter | Requests not answered because the database could not be used (for example a write failed) |
+| `rradius_radius_discarded_total{reason="database"}` | counter | Requests not answered because a backend could not be used: the cluster database (for example a write failed), an external database, LDAP, a domain controller, or a password verification that timed out |
 
 Suggested directions for alerts:
 

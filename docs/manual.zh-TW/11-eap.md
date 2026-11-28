@@ -707,13 +707,13 @@ return 'reject'
 
 ## 資料庫無法使用時
 
-EAP 對話本身在記憶體裡，但最後那一步（驗證鏈查資料表）需要叢集資料庫。資料庫暫時不能用時（例如呼叫逾時；唯讀的查詢在沒有 leader 時仍用本機副本回答，見第 16 章）：
+EAP 對話本身在記憶體裡，但最後那一步（驗證鏈判斷這個名稱）需要後端：叢集資料庫、外部資料庫、LDAP 目錄或網域控制站。後端暫時不能用（例如資料庫呼叫逾時，或沒有網域控制站回應；叢集資料庫的唯讀查詢在沒有 leader 時仍用本機副本回答，見第 16 章）或密碼驗證逾時的時候：
 
-- 這個請求不回應，`rradius_radius_discarded_total{reason="database"}` 加 1，日誌寫 `EAP request from client <名稱> not answered: …`。
+- 這個請求不回應，`rradius_radius_discarded_total{reason="database"}` 加 1，日誌寫 `EAP request from client <名稱> not answered: the authentication backend could not be used`。
 - 對話留著。NAS 重送同一個 EAP-Response 時，rradius 重做那一步，不會把 TLS 資料再讀一次。
 - 每次重送都算一輪，仍受 `session_timeout_ms` 與 256 輪的限制。
 
-所以資料庫短暫中斷時，用戶端只是登入慢一點，不會被拒絕；中斷太久，對話逾時，用戶端要重新開始。
+所以後端短暫中斷時，用戶端只是登入慢一點，不會被拒絕；中斷太久，對話逾時，用戶端要重新開始。
 
 > **未實機驗證：** 這一段只對照了程式碼與 spec，沒有在實際的資料庫故障下跑過。叢集沒有 leader 時的整體行為見[第 16 章](16-cluster.md)。
 
@@ -758,7 +758,7 @@ EAP
 | --- | --- |
 | `EAP conversation with client <名稱> refused: <原因>` | 握手成功，但授權不過，例如 `not authorized`、`the EAP Identity does not fit the certificate` |
 | `EAP conversation with client <名稱> failed: <原因>` | 對話中途失敗，例如密碼錯、方法不允許、TLS 握手失敗 |
-| `EAP request from client <名稱> not answered: <原因>` | 資料庫無法使用，請求沒有回應，對話等 NAS 重送 |
+| `EAP request from client <名稱> not answered: <原因>` | 後端無法使用，請求沒有回應，對話等 NAS 重送 |
 
 每段結束的對話另有一行 `rradius_auth` 認證紀錄。日誌不會寫出 MSK 或 TLS 的內容，也不會寫出通道裡的密碼。指標與日誌的完整說明在[第 17 章](17-monitoring.md)與[附錄 C](92-metrics-reference.md)。
 

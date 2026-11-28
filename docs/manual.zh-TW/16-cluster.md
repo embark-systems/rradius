@@ -75,7 +75,7 @@ leader 停掉時，剩下的節點會自己選出新的 leader，不需要人介
 
 因為計費可能被重放、也可能因為逾時重送而記兩次，計費腳本要能重複執行（例如以 `Acct-Session-Id` 為鍵、用 `INSERT OR IGNORE`），見[第 13 章](13-accounting.md)。
 
-**資料庫不能用時不回應，而不是拒絕。** 登入因為叢集資料庫逾時或找不到 leader 而無法決定時，RADIUS 不回覆、TACACS+ 回 ERROR，NAS 與設備就會改問其他節點，使用者也不會看到「密碼錯」。這種請求算進 `rradius_radius_discarded_total{reason="database"}`，日誌寫 `not answered: the cluster database could not be used`。只有確定帳號不存在或密碼錯、而且腳本的資料庫呼叫都成功時才回拒絕。
+**資料庫不能用時不回應，而不是拒絕。** 登入因為叢集資料庫逾時或找不到 leader 而無法決定時，RADIUS 不回覆、TACACS+ 回 ERROR，NAS 與設備就會改問其他節點，使用者也不會看到「密碼錯」。這種請求算進 `rradius_radius_discarded_total{reason="database"}`，日誌在 RADIUS 寫 `not answered: the authentication backend could not be used`，TACACS+ 認證寫 `answered ERROR: the authentication backend could not be used`，TACACS+ 授權寫 `answered ERROR: the database could not be used`。只有確定帳號不存在或密碼錯、而且腳本的資料庫呼叫都成功時才回拒絕。
 
 **被隔開的節點讀的是舊資料。** 它跟多數節點斷開時，在另一側停用的帳號、刪掉的 NAS、撤掉的金鑰，在它這裡都還有效，直到網路恢復。不能接受的話設 `stop_without_leader_ms`。
 
@@ -1229,7 +1229,7 @@ $ kubectl exec rradius-0 -- rradiusd status --cluster --config /etc/rradius/rrad
 | `rradius_db_batched_writes_total` | counter | 跟其他寫入合在一個交易裡提交的腳本寫入 |
 | `rradius_db_split_batches_total` | counter | 合併的交易失敗、拆開來找出失敗的那一句的次數 |
 | `rradius_radius_discarded_total{reason="no_leader"}` | counter | 因 `stop_without_leader_ms` 沒有回應的請求 |
-| `rradius_radius_discarded_total{reason="database"}` | counter | 因資料庫無法使用（例如寫入失敗）沒有回應的請求 |
+| `rradius_radius_discarded_total{reason="database"}` | counter | 因後端無法使用而沒有回應的請求：叢集資料庫（例如寫入失敗）、外部資料庫、LDAP、網域控制站，或逾時的密碼驗證 |
 
 建議的告警方向：
 

@@ -459,6 +459,13 @@ pub mod test_support {
         let rig = rig(password, |_| {}).await?;
         Ok(crate::auth_chain::AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![crate::auth_chain::Handler::Netlogon(rig.handler)]))
     }
+
+    /// The same, pointed at a port where no domain controller listens.
+    pub fn chain_without_controller() -> crate::auth_chain::AuthChain {
+        let ports = vec![Some(crate::test_support::server::free_port())];
+        let handler = NetlogonHandler::with_ports(settings(1), ports, epm::PORT, Arc::new(NetlogonCounters::default()));
+        crate::auth_chain::AuthChain::new(crate::config::AuthPolicy::FirstMatch, vec![crate::auth_chain::Handler::Netlogon(handler)])
+    }
 }
 
 #[cfg(test)]
